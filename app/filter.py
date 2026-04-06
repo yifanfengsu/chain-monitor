@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from lp_registry import get_lp_pool_meta, is_lp_pool
+from state_manager import is_runtime_adjacent_watch_active, maybe_get_runtime_adjacent_watch_meta
 
 # 地址簿路径：固定定位到项目根目录 data/addresses.json，避免受 cwd 影响。
 ADDRESS_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "addresses.json"
@@ -351,6 +352,15 @@ def _intelligence_patch(address: str) -> dict:
         return {}
 
 
+def _runtime_adjacent_patch(address: str) -> dict:
+    if not address:
+        return {}
+    try:
+        return dict(maybe_get_runtime_adjacent_watch_meta(address) or {})
+    except Exception:
+        return {}
+
+
 def shorten_address(address):
     """把长地址压缩成 0x1234...abcd 便于消息展示。"""
     if not address:
@@ -361,6 +371,53 @@ def shorten_address(address):
         return address
 
     return f"{address[:8]}...{address[-6:]}"
+
+
+def _format_address_label_from_parts(
+    address: str,
+    meta: dict | None = None,
+    intel_patch: dict | None = None,
+    runtime_patch: dict | None = None,
+    pool_meta: dict | None = None,
+) -> str:
+    if not address:
+        return ""
+
+    address = address.lower()
+    short_address = shorten_address(address)
+    pool_meta = pool_meta or get_lp_pool_meta(address)
+    if pool_meta:
+        return str(pool_meta.get("label") or "").strip() or short_address
+
+    meta = meta or ADDRESS_META.get(address) or {}
+    intel_patch = intel_patch or {}
+    runtime_patch = runtime_patch or {}
+
+    label = str(meta.get("label") or "").strip()
+    if label:
+        return f"{label} ({short_address})"
+
+    display_role = _display_role_label(meta)
+    if display_role and display_role != "未分类":
+        return f"{display_role} ({short_address})"
+
+    suspected_role = str(intel_patch.get("suspected_role") or "").strip()
+    if suspected_role and suspected_role != "unknown":
+        return f"{suspected_role} ({short_address})"
+
+    display_hint = str(
+        runtime_patch.get("display_hint_label")
+        or intel_patch.get("display_hint_label")
+        or ""
+    ).strip()
+    if display_hint:
+        return f"{display_hint} ({short_address})"
+
+    fallback_label = ADDRESS_LABELS.get(address)
+    if fallback_label:
+        return f"{fallback_label} ({short_address})"
+
+    return short_address
 
 
 def _display_role_label(meta: dict) -> str:
@@ -379,30 +436,16 @@ def format_address_label(address):
 
     address = address.lower()
     pool_meta = get_lp_pool_meta(address)
-    if pool_meta:
-        return str(pool_meta.get("label") or "").strip() or shorten_address(address)
-
     meta = ADDRESS_META.get(address)
-    short_address = shorten_address(address)
-
-    if meta:
-        label = str(meta.get("label") or "").strip()
-        if label:
-            return f"{label} ({short_address})"
-        display_role = _display_role_label(meta)
-        if display_role and display_role != "未分类":
-            return f"{display_role} ({short_address})"
-
     intel_patch = _intelligence_patch(address)
-    suspected_role = str(intel_patch.get("suspected_role") or "").strip()
-    if suspected_role and suspected_role != "unknown":
-        return f"{suspected_role} ({short_address})"
-
-    label = ADDRESS_LABELS.get(address)
-    if label:
-        return f"{label} ({short_address})"
-
-    return short_address
+    runtime_patch = _runtime_adjacent_patch(address)
+    return _format_address_label_from_parts(
+        address=address,
+        meta=meta,
+        intel_patch=intel_patch,
+        runtime_patch=runtime_patch,
+        pool_meta=pool_meta,
+    )
 
 
 def get_address_meta(address):
@@ -509,8 +552,37 @@ def get_address_meta(address):
         "candidate_score": 0.0,
         "first_seen_ts": 0,
         "last_seen_ts": 0,
+        "runtime_adjacent_watch": False,
+        "watch_meta_source": "",
+        "anchor_watch_address": "",
+        "anchor_label": "",
+        "root_tx_hash": "",
+        "opened_at": 0,
+        "expire_at": 0,
+        "hop": 0,
+        "strategy_hint": "",
+        "observed_count": 0,
+        "display_hint_label": "",
+        "display_hint_reason": "",
+        "display_hint_anchor_label": "",
+        "display_hint_anchor_address": "",
+        "display_hint_usd_value": 0.0,
+        "display_hint_token_symbol": "",
+        "anchor_strategy_role": "",
+        "downstream_case_id": "",
     })
-    result.update(_intelligence_patch(address))
+    intel_patch = _intelligence_patch(address)
+    runtime_patch = _runtime_adjacent_patch(address)
+    result.update(intel_patch)
+    result.update(runtime_patch)
+    if not meta:
+        result["priority"] = int(runtime_patch.get("priority") or result.get("priority", 3) or 3)
+    result["display"] = _format_address_label_from_parts(
+        address=address,
+        meta=meta,
+        intel_patch=intel_patch,
+        runtime_patch=runtime_patch,
+    )
     return result
 
 
@@ -535,6 +607,37 @@ def get_watch_context(data):
     - 转账：流入/流出/内部划转
     """
     watch_address = (data.get("watch_address") or "").lower()
+    if watch_address and is_runtime_adjacent_watch_active(watch_address):
+        from_addr = (data.get("from") or "").lower()
+        to_addr = (data.get("to") or "").lower() if data.get("to") else None
+        runtime_watch_meta = get_address_meta(watch_address)
+        if watch_address == from_addr:
+            counterparty = to_addr
+            counterparty_meta = get_address_meta(counterparty)
+            return {
+                "direction": "流出",
+                "watch_address": watch_address,
+                "counterparty": counterparty,
+                "watch_address_label": format_address_label(watch_address),
+                "counterparty_label": format_address_label(counterparty),
+                "watch_meta": runtime_watch_meta,
+                "counterparty_meta": counterparty_meta,
+                "flow_label": build_flow_description("流出", runtime_watch_meta, counterparty_meta),
+            }
+        if watch_address == to_addr:
+            counterparty = from_addr
+            counterparty_meta = get_address_meta(counterparty)
+            return {
+                "direction": "流入",
+                "watch_address": watch_address,
+                "counterparty": counterparty,
+                "watch_address_label": format_address_label(watch_address),
+                "counterparty_label": format_address_label(counterparty),
+                "watch_meta": runtime_watch_meta,
+                "counterparty_meta": counterparty_meta,
+                "flow_label": build_flow_description("流入", runtime_watch_meta, counterparty_meta),
+            }
+
     if watch_address and is_lp_pool(watch_address, active_only=True):
         watch_meta = get_address_meta(watch_address)
         counterparty = str(
@@ -563,7 +666,7 @@ def get_watch_context(data):
         }
 
     if data.get("kind") == "swap":
-        if not watch_address or watch_address not in WATCH_ADDRESSES:
+        if not watch_address or (watch_address not in WATCH_ADDRESSES and not is_runtime_adjacent_watch_active(watch_address)):
             return None
 
         watch_meta = get_address_meta(watch_address)
@@ -590,8 +693,8 @@ def get_watch_context(data):
     to_addr = (data.get("to") or "").lower() if data.get("to") else None
 
     # 仅 active 地址才算“监控地址”。
-    from_watch = from_addr in WATCH_ADDRESSES
-    to_watch = bool(to_addr and to_addr in WATCH_ADDRESSES)
+    from_watch = from_addr in WATCH_ADDRESSES or is_runtime_adjacent_watch_active(from_addr)
+    to_watch = bool(to_addr and (to_addr in WATCH_ADDRESSES or is_runtime_adjacent_watch_active(to_addr)))
     from_meta = get_address_meta(from_addr)
     to_meta = get_address_meta(to_addr)
 
@@ -732,7 +835,7 @@ def _resolve_watch_metas(watch_context, data):
 
     if not metas and data.get("watch_address"):
         watch_address = str(data["watch_address"]).lower()
-        if watch_address in ALL_WATCH_ADDRESSES or is_lp_pool(watch_address):
+        if watch_address in ALL_WATCH_ADDRESSES or is_lp_pool(watch_address) or is_runtime_adjacent_watch_active(watch_address):
             metas.append(get_address_meta(watch_address))
 
     return metas

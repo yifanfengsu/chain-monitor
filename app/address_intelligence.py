@@ -26,6 +26,7 @@ class AddressIntelligenceManager:
         self.max_counterparties = int(max_counterparties)
         self.candidate_threshold = float(candidate_threshold)
         self._intel_by_address: dict[str, AddressIntel] = {}
+        self._display_hints_by_address: dict[str, dict] = {}
 
     def observe_event(
         self,
@@ -123,18 +124,34 @@ class AddressIntelligenceManager:
         return payload
 
     def get_meta_patch(self, address: str) -> dict:
+        self._expire_display_hints()
         intel = self._intel_by_address.get(str(address or "").lower())
-        if not intel:
+        hint = self._display_hints_by_address.get(str(address or "").lower())
+        if not intel and not hint:
             return {}
 
-        return {
-            "intelligence_status": intel.candidate_status,
-            "suspected_role": intel.suspected_role,
-            "role_confidence": round(float(intel.role_confidence or 0.0), 3),
-            "candidate_score": round(float(intel.candidate_score or 0.0), 2),
-            "first_seen_ts": int(intel.first_seen_ts or 0),
-            "last_seen_ts": int(intel.last_seen_ts or 0),
-        }
+        patch = {}
+        if intel:
+            patch.update({
+                "intelligence_status": intel.candidate_status,
+                "suspected_role": intel.suspected_role,
+                "role_confidence": round(float(intel.role_confidence or 0.0), 3),
+                "candidate_score": round(float(intel.candidate_score or 0.0), 2),
+                "first_seen_ts": int(intel.first_seen_ts or 0),
+                "last_seen_ts": int(intel.last_seen_ts or 0),
+            })
+        if hint:
+            patch.update({
+                "display_hint_label": str(hint.get("display_hint_label") or ""),
+                "display_hint_reason": str(hint.get("display_hint_reason") or ""),
+                "display_hint_anchor_label": str(hint.get("display_hint_anchor_label") or ""),
+                "display_hint_anchor_address": str(hint.get("display_hint_anchor_address") or ""),
+                "display_hint_usd_value": round(float(hint.get("display_hint_usd_value") or 0.0), 2),
+                "display_hint_token_symbol": str(hint.get("display_hint_token_symbol") or ""),
+                "display_hint_expire_at": int(hint.get("display_hint_expire_at") or 0),
+                "display_hint_source": str(hint.get("display_hint_source") or "adjacent_watch"),
+            })
+        return patch
 
     def get_candidate_pool(self, min_score: float | None = None) -> list[dict]:
         threshold = float(min_score if min_score is not None else self.candidate_threshold)
@@ -151,6 +168,47 @@ class AddressIntelligenceManager:
             "size": len(self._intel_by_address),
             "candidates": self.get_candidate_pool(),
         }
+
+    def mark_display_hint(
+        self,
+        address: str,
+        display_hint_label: str,
+        expire_at: int,
+        display_hint_reason: str = "",
+        display_hint_anchor_label: str = "",
+        display_hint_anchor_address: str = "",
+        display_hint_usd_value: float = 0.0,
+        display_hint_token_symbol: str = "",
+        display_hint_source: str = "adjacent_watch",
+    ) -> dict | None:
+        addr = str(address or "").lower()
+        if not addr:
+            return None
+        payload = {
+            "display_hint_label": str(display_hint_label or ""),
+            "display_hint_reason": str(display_hint_reason or ""),
+            "display_hint_anchor_label": str(display_hint_anchor_label or ""),
+            "display_hint_anchor_address": str(display_hint_anchor_address or "").lower(),
+            "display_hint_usd_value": float(display_hint_usd_value or 0.0),
+            "display_hint_token_symbol": str(display_hint_token_symbol or ""),
+            "display_hint_expire_at": int(expire_at or 0),
+            "display_hint_source": str(display_hint_source or "adjacent_watch"),
+        }
+        self._display_hints_by_address[addr] = payload
+        return dict(payload)
+
+    def clear_display_hint(self, address: str) -> None:
+        addr = str(address or "").lower()
+        if not addr:
+            return
+        self._display_hints_by_address.pop(addr, None)
+
+    def _expire_display_hints(self) -> None:
+        now_ts = int(time.time())
+        for address, hint in list(self._display_hints_by_address.items()):
+            if int(hint.get("display_hint_expire_at") or 0) > now_ts:
+                continue
+            self._display_hints_by_address.pop(address, None)
 
     def _candidate_addresses(
         self,

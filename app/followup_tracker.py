@@ -3,6 +3,23 @@ import hashlib
 import time
 
 from config import (
+    ADJACENT_WATCH_ALLOWED_ROLE_GROUPS,
+    ADJACENT_WATCH_CLOSING_SEC,
+    ADJACENT_WATCH_COOLING_SEC,
+    ADJACENT_WATCH_ENABLE,
+    ADJACENT_WATCH_EXCLUDE_EXCHANGE,
+    ADJACENT_WATCH_EXCLUDE_LP_POOL,
+    ADJACENT_WATCH_EXCLUDE_PROTOCOL,
+    ADJACENT_WATCH_EXCLUDE_ROUTER,
+    ADJACENT_WATCH_FOLLOWUP_MIN_RATIO,
+    ADJACENT_WATCH_FOLLOWUP_MIN_USD,
+    ADJACENT_WATCH_MAJOR_ASSET_SUPER_LARGE_USD,
+    ADJACENT_WATCH_MAX_HOPS,
+    ADJACENT_WATCH_MAX_NOTIFICATIONS,
+    ADJACENT_WATCH_OTHER_ASSET_SUPER_LARGE_USD,
+    ADJACENT_WATCH_STABLE_SUPER_LARGE_USD,
+    ADJACENT_WATCH_SUPER_LARGE_USD,
+    ADJACENT_WATCH_WINDOW_SEC,
     LIQUIDATION_EXECUTION_MIN_SCORE,
     LIQUIDATION_RISK_MIN_SCORE,
     SMART_MONEY_CASE_WINDOW_SEC,
@@ -17,11 +34,13 @@ from constants import (
     WETH_TOKEN_CONTRACT,
 )
 from filter import (
+    get_address_meta,
     get_threshold,
     is_exchange_strategy_role,
     is_market_maker_strategy_role,
     is_priority_smart_money_strategy_role,
     is_smart_money_strategy_role,
+    shorten_address,
 )
 from models import BehaviorCase, Event, Signal
 
@@ -29,10 +48,13 @@ from models import BehaviorCase, Event, Signal
 EXCHANGE_FOLLOWUP_CASE_FAMILY = "exchange_cross_token_followup"
 SMART_MONEY_EXECUTION_CASE_FAMILY = "smart_money_execution_case"
 LIQUIDATION_CASE_FAMILY = "liquidation_case_family"
+DOWNSTREAM_FOLLOWUP_CASE_FAMILY = "downstream_counterparty_followup"
 EXCHANGE_FOLLOWUP_INTENTS = {
     "exchange_deposit_candidate",
     "possible_sell_preparation",
 }
+DOWNSTREAM_STABLE_SYMBOLS = set(STABLE_TOKEN_SYMBOLS) | {"USD1"}
+DOWNSTREAM_MAJOR_SYMBOLS = set(MAJOR_FOLLOWUP_ASSET_SYMBOLS) | {"BTC", "ETH"}
 
 
 class FollowupTracker:
@@ -51,6 +73,7 @@ class FollowupTracker:
         exchange_followup_window_sec: int = 900,
         smart_money_case_window_sec: int = SMART_MONEY_CASE_WINDOW_SEC,
         liquidation_case_window_sec: int = 900,
+        downstream_followup_window_sec: int = ADJACENT_WATCH_WINDOW_SEC,
     ) -> None:
         self.merge_window_sec = int(merge_window_sec)
         self.cooling_sec = int(cooling_sec)
@@ -58,6 +81,15 @@ class FollowupTracker:
         self.exchange_followup_window_sec = int(exchange_followup_window_sec)
         self.smart_money_case_window_sec = int(smart_money_case_window_sec)
         self.liquidation_case_window_sec = int(liquidation_case_window_sec)
+        self.downstream_followup_window_sec = int(downstream_followup_window_sec)
+        self.downstream_followup_cooling_sec = int(ADJACENT_WATCH_COOLING_SEC)
+        self.downstream_followup_closing_sec = int(ADJACENT_WATCH_CLOSING_SEC)
+        self.downstream_followup_enabled = bool(ADJACENT_WATCH_ENABLE)
+        self.downstream_followup_allowed_roles = {str(item or "").strip() for item in ADJACENT_WATCH_ALLOWED_ROLE_GROUPS if item}
+        self.downstream_followup_max_hops = max(int(ADJACENT_WATCH_MAX_HOPS or 1), 1)
+        self.downstream_followup_min_usd = float(ADJACENT_WATCH_FOLLOWUP_MIN_USD)
+        self.downstream_followup_min_ratio = float(ADJACENT_WATCH_FOLLOWUP_MIN_RATIO)
+        self.downstream_followup_max_notifications = max(int(ADJACENT_WATCH_MAX_NOTIFICATIONS or 1), 1)
         self._cases: dict[str, BehaviorCase] = {}
         self._open_case_ids_by_watch: dict[str, set[str]] = defaultdict(set)
         self._open_case_ids_by_token: dict[str, set[str]] = defaultdict(set)
@@ -75,14 +107,39 @@ class FollowupTracker:
         watch_meta = watch_meta or {}
         behavior = behavior or {}
 
-        exchange_result = self._match_exchange_followup_case(
-            event=event,
-            watch_meta=watch_meta,
-            now_ts=now_ts,
-        )
-        matched = exchange_result.get("case")
-        created = bool(exchange_result.get("created"))
-        used_exchange_case = matched is not None
+        downstream_result = {
+            "case": None,
+            "created": False,
+            "downstream_followup_case": False,
+            "downstream_followup_anchor": False,
+            "downstream_followup_type": "",
+            "downstream_followup_stage": "",
+        }
+        if self.downstream_followup_enabled:
+            downstream_result = self._match_downstream_followup_case(
+                event=event,
+                watch_meta=watch_meta,
+                now_ts=now_ts,
+            )
+        matched = downstream_result.get("case")
+        created = bool(downstream_result.get("created"))
+        used_downstream_case = bool(downstream_result.get("downstream_followup_case"))
+
+        exchange_result = {
+            "case": None,
+            "created": False,
+            "exchange_followup_anchor": False,
+            "exchange_followup_confirmed": False,
+        }
+        if matched is None:
+            exchange_result = self._match_exchange_followup_case(
+                event=event,
+                watch_meta=watch_meta,
+                now_ts=now_ts,
+            )
+            matched = exchange_result.get("case")
+            created = bool(exchange_result.get("created"))
+        used_exchange_case = bool(exchange_result.get("case") is not None and matched is exchange_result.get("case"))
 
         smart_money_result = {
             "case": None,
@@ -127,6 +184,10 @@ class FollowupTracker:
             "created": created,
             "invalidated_cases": invalidated_cases,
             "stale_updates": stale_updates,
+            "used_downstream_case": used_downstream_case,
+            "downstream_followup_anchor": bool(downstream_result.get("downstream_followup_anchor")),
+            "downstream_followup_type": str(downstream_result.get("downstream_followup_type") or ""),
+            "downstream_followup_stage": str(downstream_result.get("downstream_followup_stage") or ""),
             "used_exchange_case": used_exchange_case,
             "exchange_followup_anchor": bool(exchange_result.get("exchange_followup_anchor")),
             "exchange_followup_confirmed": bool(exchange_result.get("exchange_followup_confirmed")),
@@ -166,6 +227,8 @@ class FollowupTracker:
             self._update_smart_money_case_metadata(behavior_case, event, watch_meta or {})
         if self._is_liquidation_case(behavior_case):
             self._update_liquidation_case_metadata(behavior_case, event, watch_meta or {})
+        if self._is_downstream_followup_case(behavior_case):
+            self._update_downstream_case_metadata(behavior_case, event, watch_meta or {})
 
         behavior_case.summary = self._case_summary(behavior_case, event, watch_meta or {})
         behavior_case.followup_steps = self._followup_steps(behavior_case, event)
@@ -184,6 +247,11 @@ class FollowupTracker:
             behavior_case.signal_ids.append(signal_id)
 
         if self._is_exchange_followup_case(behavior_case):
+            return behavior_case
+        if self._is_downstream_followup_case(behavior_case):
+            status, stage = self._downstream_status_and_stage(behavior_case)
+            behavior_case.status = status
+            behavior_case.stage = stage
             return behavior_case
 
         if self._is_smart_money_case(behavior_case):
@@ -208,6 +276,40 @@ class FollowupTracker:
         for _, behavior_case in list(self._cases.items()):
             if behavior_case.status in {"closed", "invalidated"}:
                 continue
+            if self._is_downstream_followup_case(behavior_case):
+                metadata = self._ensure_downstream_case_metadata(behavior_case)
+                active_until = int(metadata.get("active_until") or metadata.get("expire_at") or 0)
+                cooling_until = int(metadata.get("cooling_until") or 0)
+                closing_until = int(metadata.get("closing_until") or 0)
+                previous_status = str(behavior_case.status or "")
+                previous_stage = str(behavior_case.stage or "")
+                if closing_until and reference_now >= closing_until:
+                    metadata["last_lifecycle_stage"] = previous_stage
+                    metadata["lifecycle_reason"] = "downstream_window_expired"
+                    behavior_case.status = "closed"
+                    behavior_case.stage = "expired"
+                    self._detach_open_case(behavior_case)
+                    if previous_status != behavior_case.status or previous_stage != behavior_case.stage:
+                        updates.append(behavior_case)
+                    continue
+                if cooling_until and reference_now >= cooling_until:
+                    metadata["last_lifecycle_stage"] = previous_stage
+                    metadata["lifecycle_reason"] = "downstream_window_closing"
+                    behavior_case.status = "cooled"
+                    behavior_case.stage = "closing"
+                    self._detach_open_case(behavior_case)
+                    if previous_status != behavior_case.status or previous_stage != behavior_case.stage:
+                        updates.append(behavior_case)
+                    continue
+                if active_until and reference_now >= active_until:
+                    metadata["last_lifecycle_stage"] = previous_stage
+                    metadata["lifecycle_reason"] = "downstream_window_cooling"
+                    behavior_case.status = "cooled"
+                    behavior_case.stage = "cooling"
+                    self._detach_open_case(behavior_case)
+                    if previous_status != behavior_case.status or previous_stage != behavior_case.stage:
+                        updates.append(behavior_case)
+                    continue
             idle_sec = reference_now - int(behavior_case.last_event_ts or reference_now)
             if idle_sec >= self.closing_sec:
                 behavior_case.status = "closed"
@@ -288,6 +390,8 @@ class FollowupTracker:
         return allowed
 
     def case_notification_decision(self, behavior_case: BehaviorCase, stage: str | None) -> tuple[bool, str]:
+        if self._is_downstream_followup_case(behavior_case):
+            return self._downstream_case_notification_decision(behavior_case, stage)
         if self._is_smart_money_case(behavior_case):
             return self._smart_money_case_notification_decision(behavior_case, stage)
         if self._is_liquidation_case(behavior_case):
@@ -315,6 +419,20 @@ class FollowupTracker:
         stage: str,
         signal: Signal | None = None,
     ) -> BehaviorCase:
+        if self._is_downstream_followup_case(behavior_case):
+            metadata = self._ensure_downstream_case_metadata(behavior_case)
+            emitted = list(metadata.get("emitted_notification_stages") or [])
+            if stage not in emitted:
+                emitted.append(stage)
+            metadata["emitted_notification_stages"] = emitted[-self.downstream_followup_max_notifications:]
+            metadata["emitted_notification_count"] = len(metadata["emitted_notification_stages"])
+            signal_id = ""
+            if signal is not None:
+                signal_id = str(signal.signal_id or signal.event_id or signal.tx_hash or "")
+            metadata["last_notification_signal_id"] = signal_id
+            metadata["last_notification_stage"] = stage
+            return behavior_case
+
         if self._is_smart_money_case(behavior_case):
             metadata = self._ensure_smart_money_case_metadata(behavior_case)
             emitted = list(metadata.get("emitted_notification_stages") or [])
@@ -422,6 +540,35 @@ class FollowupTracker:
             return False, "liquidation_case_not_escalated"
         if stage == "execution_confirmed" and not bool(metadata.get("execution_confirmed")):
             return False, "liquidation_case_execution_not_confirmed"
+        return True, "allowed"
+
+    def _downstream_case_notification_decision(
+        self,
+        behavior_case: BehaviorCase,
+        stage: str | None,
+    ) -> tuple[bool, str]:
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        if behavior_case.status in {"closed", "invalidated"}:
+            return False, "downstream_window_expired"
+        if behavior_case.status == "cooled":
+            return False, "downstream_case_inactive"
+        emitted = set(metadata.get("emitted_notification_stages") or [])
+        if stage is None:
+            return False, "downstream_case_stage_not_emittable"
+        if stage not in {
+            "followup_opened",
+            "downstream_seen",
+            "exchange_arrival_confirmed",
+            "swap_execution_confirmed",
+            "distribution_confirmed",
+        }:
+            return False, "downstream_case_stage_not_emittable"
+        if stage in emitted:
+            return False, "downstream_case_already_emitted"
+        if len(emitted) >= self.downstream_followup_max_notifications:
+            return False, "downstream_case_notification_cap_reached"
+        if stage != "followup_opened" and not bool(metadata.get("current_event_is_followup")):
+            return False, str(metadata.get("current_followup_reason") or "downstream_followup_not_confirmed")
         return True, "allowed"
 
     def _find_matching_case(self, event: Event, now_ts: int) -> BehaviorCase | None:
@@ -599,6 +746,108 @@ class FollowupTracker:
             "liquidation_case": True,
         }
 
+    def _match_downstream_followup_case(
+        self,
+        event: Event,
+        watch_meta: dict,
+        now_ts: int,
+    ) -> dict:
+        existing = self.match_downstream_followup_case(event, now_ts=now_ts)
+        is_anchor = self.is_downstream_followup_anchor(event, watch_meta=watch_meta)
+        followup = self._classify_downstream_followup_event(event, existing)
+        opened = False
+
+        if existing is None and not is_anchor:
+            return {
+                "case": None,
+                "created": False,
+                "downstream_followup_case": False,
+                "downstream_followup_anchor": False,
+                "downstream_followup_type": "",
+                "downstream_followup_stage": "",
+            }
+        if existing is not None and not (is_anchor or followup.get("matched")):
+            metadata = self._ensure_downstream_case_metadata(existing)
+            if str(event.address or "").lower() == str(metadata.get("downstream_address") or existing.watch_address or "").lower():
+                metadata["current_event_is_anchor"] = False
+                metadata["current_event_is_followup"] = False
+                metadata["current_followup_type"] = str(followup.get("followup_type") or "")
+                metadata["current_followup_reason"] = str(followup.get("reason") or "downstream_followup_not_confirmed")
+                metadata["current_stage"] = str(existing.stage or "followup_opened")
+                metadata["last_observed_usd"] = round(float(event.usd_value or 0.0), 2)
+                metadata["last_observed_tx_hash"] = str(event.tx_hash or "")
+                return {
+                    "case": existing,
+                    "created": False,
+                    "downstream_followup_case": True,
+                    "downstream_followup_anchor": False,
+                    "downstream_followup_type": str(followup.get("followup_type") or ""),
+                    "downstream_followup_stage": str(existing.stage or "followup_opened"),
+                }
+            return {
+                "case": None,
+                "created": False,
+                "downstream_followup_case": False,
+                "downstream_followup_anchor": False,
+                "downstream_followup_type": "",
+                "downstream_followup_stage": "",
+            }
+
+        if existing is None and is_anchor:
+            existing = self._open_downstream_followup_case(event, watch_meta=watch_meta)
+            opened = True
+        elif existing is not None and is_anchor:
+            self._refresh_downstream_anchor(existing, event, watch_meta=watch_meta, now_ts=now_ts)
+
+        if existing is not None and followup.get("matched"):
+            self.attach_downstream_followup_event(existing, event, followup)
+
+        if existing is not None:
+            metadata = self._ensure_downstream_case_metadata(existing)
+            metadata["current_event_is_anchor"] = bool(is_anchor)
+            metadata["current_event_is_followup"] = bool(followup.get("matched"))
+            metadata["current_followup_type"] = str(followup.get("followup_type") or metadata.get("current_followup_type") or "")
+            metadata["current_followup_reason"] = str(followup.get("reason") or metadata.get("current_followup_reason") or "")
+            metadata["current_stage"] = str(followup.get("stage") or existing.stage or "")
+
+        return {
+            "case": existing,
+            "created": opened,
+            "downstream_followup_case": bool(existing is not None),
+            "downstream_followup_anchor": bool(is_anchor),
+            "downstream_followup_type": str(followup.get("followup_type") or ""),
+            "downstream_followup_stage": str(followup.get("stage") or (existing.stage if existing is not None else "")),
+        }
+
+    def match_downstream_followup_case(
+        self,
+        event: Event,
+        now_ts: int | None = None,
+    ) -> BehaviorCase | None:
+        reference_ts = int(now_ts or event.ts or time.time())
+        candidates = []
+        case_address = self._downstream_case_address(event)
+        if not case_address:
+            return None
+
+        for behavior_case in list(self._cases.values()):
+            if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+                continue
+            if behavior_case.status in {"closed", "invalidated"}:
+                continue
+            metadata = self._ensure_downstream_case_metadata(behavior_case)
+            if str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower() != case_address:
+                continue
+            closing_until = int(metadata.get("closing_until") or metadata.get("expire_at") or 0)
+            if closing_until and reference_ts > closing_until:
+                continue
+            candidates.append(behavior_case)
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: int(item.last_event_ts or 0), reverse=True)
+        return candidates[0]
+
     def match_exchange_followup_case(
         self,
         event: Event,
@@ -726,6 +975,65 @@ class FollowupTracker:
         behavior_case.stage = "followup_confirmed"
         return True
 
+    def attach_downstream_followup_event(
+        self,
+        behavior_case: BehaviorCase,
+        event: Event,
+        followup: dict,
+    ) -> bool:
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        tx_hash = str(event.tx_hash or "")
+        followup_events = list(metadata.get("followup_events") or [])
+        followup_type = str(followup.get("followup_type") or "downstream_seen")
+        stage = str(followup.get("stage") or "downstream_seen")
+        record = {
+            "event_id": str(event.event_id or ""),
+            "tx_hash": tx_hash,
+            "ts": int(event.ts or time.time()),
+            "followup_type": followup_type,
+            "stage": stage,
+            "usd_value": round(float(event.usd_value or 0.0), 2),
+            "counterparty": str(followup.get("counterparty") or ""),
+            "counterparty_label": str(followup.get("counterparty_label") or ""),
+            "token_symbol": self._display_symbol(event.token, event.metadata.get("token_symbol")),
+        }
+        duplicate = any(
+            item.get("event_id") == record["event_id"] or (
+                item.get("tx_hash") == record["tx_hash"] and item.get("followup_type") == record["followup_type"]
+            )
+            for item in followup_events
+        )
+        if not duplicate:
+            followup_events.append(record)
+        metadata["followup_events"] = followup_events[-12:]
+        metadata["followup_confirmed"] = True
+        metadata["current_event_is_followup"] = True
+        metadata["current_followup_type"] = followup_type
+        metadata["current_followup_reason"] = str(followup.get("reason") or "downstream_followup_confirmed")
+        metadata["last_followup_type"] = followup_type
+        metadata["last_followup_stage"] = stage
+        metadata["last_followup_tx_hash"] = tx_hash
+        metadata["last_followup_usd"] = round(float(event.usd_value or 0.0), 2)
+        metadata["last_counterparty"] = str(followup.get("counterparty") or "")
+        metadata["last_counterparty_label"] = str(followup.get("counterparty_label") or "")
+        if followup_type == "exchange_arrival":
+            metadata["downstream_exchange_arrival"] = True
+        if followup_type in {"swap_execution", "protocol_path"}:
+            metadata["downstream_execution_confirmed"] = True
+        if followup_type == "distribution":
+            metadata["downstream_distribution_detected"] = True
+        if followup_type == "return_flow":
+            metadata["downstream_return_confirmed"] = True
+        if followup.get("counterparty"):
+            destinations = list(metadata.get("destinations_seen") or [])
+            counterparty = str(followup.get("counterparty") or "")
+            if counterparty not in destinations:
+                destinations.append(counterparty)
+            metadata["destinations_seen"] = destinations[-8:]
+        behavior_case.status = "developing"
+        behavior_case.stage = stage
+        return True
+
     def _open_exchange_followup_case(self, event: Event, watch_meta: dict | None = None) -> BehaviorCase:
         watch_meta = watch_meta or {}
         watch_address = str(event.address or "").lower()
@@ -770,6 +1078,96 @@ class FollowupTracker:
         self._cases[case_id] = behavior_case
         self._attach_open_case(behavior_case)
         return behavior_case
+
+    def _open_downstream_followup_case(self, event: Event, watch_meta: dict | None = None) -> BehaviorCase:
+        watch_meta = watch_meta or {}
+        downstream_address = self._downstream_counterparty_address(event)
+        downstream_meta = get_address_meta(downstream_address)
+        anchor_label = str(watch_meta.get("label") or event.address or "重点地址")
+        anchor_symbol = self._display_symbol(event.token, event.metadata.get("token_symbol"))
+        case_id = self._build_downstream_case_id(
+            downstream_address=downstream_address,
+            ts=int(event.ts or time.time()),
+        )
+        behavior_case = BehaviorCase(
+            case_id=case_id,
+            watch_address=downstream_address,
+            token=(event.token or "native").lower(),
+            direction_bucket="sell",
+            intent_type=DOWNSTREAM_FOLLOWUP_CASE_FAMILY,
+            opened_at=int(event.ts or time.time()),
+            last_event_ts=int(event.ts or time.time()),
+            status="open",
+            stage="followup_opened",
+            root_tx_hash=str(event.tx_hash or ""),
+        )
+        behavior_case.metadata = {
+            "case_family": DOWNSTREAM_FOLLOWUP_CASE_FAMILY,
+            "anchor_watch_address": str(event.address or "").lower(),
+            "anchor_label": anchor_label,
+            "anchor_strategy_role": str(watch_meta.get("strategy_role") or event.strategy_role or "unknown"),
+            "anchor_priority": int(watch_meta.get("priority", 1) or 1),
+            "downstream_address": downstream_address,
+            "downstream_label": self._downstream_label(downstream_address, downstream_meta),
+            "root_tx_hash": str(event.tx_hash or ""),
+            "anchor_token": (event.token or "native").lower(),
+            "anchor_symbol": anchor_symbol,
+            "anchor_usd_value": round(float(event.usd_value or 0.0), 2),
+            "anchor_intent": str(event.intent_type or "pure_transfer"),
+            "opened_at": int(event.ts or time.time()),
+            "active_until": int(event.ts or time.time()) + self.downstream_followup_window_sec,
+            "cooling_until": int(event.ts or time.time()) + self.downstream_followup_cooling_sec,
+            "closing_until": int(event.ts or time.time()) + self.downstream_followup_closing_sec,
+            "expire_at": int(event.ts or time.time()) + self.downstream_followup_window_sec,
+            "deadline_ts": int(event.ts or time.time()) + self.downstream_followup_window_sec,
+            "window_sec": int(self.downstream_followup_window_sec),
+            "max_notifications": int(self.downstream_followup_max_notifications),
+            "hop": 1,
+            "reason": "anchor_large_transfer",
+            "strategy_hint": "runtime_adjacent_watch",
+            "followup_confirmed": False,
+            "downstream_execution_confirmed": False,
+            "downstream_exchange_arrival": False,
+            "downstream_distribution_detected": False,
+            "downstream_return_confirmed": False,
+            "emitted_notification_stages": [],
+            "followup_events": [],
+            "destinations_seen": [],
+            "current_event_is_anchor": True,
+            "current_event_is_followup": False,
+            "current_followup_type": "",
+            "current_followup_reason": "downstream_anchor_opened",
+            "current_stage": "followup_opened",
+        }
+        behavior_case.summary = self._case_summary(behavior_case, event, watch_meta)
+        behavior_case.followup_steps = self._followup_steps(behavior_case, event)
+        self._cases[case_id] = behavior_case
+        self._attach_open_case(behavior_case)
+        return behavior_case
+
+    def _refresh_downstream_anchor(
+        self,
+        behavior_case: BehaviorCase,
+        event: Event,
+        watch_meta: dict | None = None,
+        now_ts: int | None = None,
+    ) -> None:
+        watch_meta = watch_meta or {}
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        reference_ts = int(now_ts or event.ts or time.time())
+        metadata["anchor_watch_address"] = str(event.address or metadata.get("anchor_watch_address") or "").lower()
+        metadata["anchor_label"] = str(watch_meta.get("label") or metadata.get("anchor_label") or "")
+        metadata["anchor_strategy_role"] = str(watch_meta.get("strategy_role") or metadata.get("anchor_strategy_role") or event.strategy_role or "unknown")
+        metadata["anchor_priority"] = int(watch_meta.get("priority", metadata.get("anchor_priority", 1)) or 1)
+        metadata["anchor_usd_value"] = round(max(float(metadata.get("anchor_usd_value") or 0.0), float(event.usd_value or 0.0)), 2)
+        metadata["anchor_symbol"] = self._display_symbol(event.token, event.metadata.get("token_symbol"))
+        metadata["active_until"] = max(int(metadata.get("active_until") or 0), reference_ts + self.downstream_followup_window_sec)
+        metadata["cooling_until"] = max(int(metadata.get("cooling_until") or 0), reference_ts + self.downstream_followup_cooling_sec)
+        metadata["closing_until"] = max(int(metadata.get("closing_until") or 0), reference_ts + self.downstream_followup_closing_sec)
+        metadata["expire_at"] = int(metadata.get("active_until") or reference_ts + self.downstream_followup_window_sec)
+        metadata["deadline_ts"] = int(metadata.get("active_until") or reference_ts + self.downstream_followup_window_sec)
+        metadata["current_event_is_anchor"] = True
+        metadata["current_followup_reason"] = "downstream_anchor_refreshed"
 
     def _open_smart_money_execution_case(self, event: Event, watch_meta: dict | None = None) -> BehaviorCase:
         watch_meta = watch_meta or {}
@@ -905,6 +1303,26 @@ class FollowupTracker:
                     updates.append(behavior_case)
                     seen_case_ids.add(behavior_case.case_id)
                 continue
+            if self._is_downstream_followup_case(behavior_case):
+                metadata = self._ensure_downstream_case_metadata(behavior_case)
+                active_until = int(metadata.get("active_until") or metadata.get("expire_at") or 0)
+                closing_until = int(metadata.get("closing_until") or 0)
+                if closing_until and now_ts > closing_until:
+                    behavior_case.status = "closed"
+                    behavior_case.stage = "expired"
+                    metadata["lifecycle_reason"] = "downstream_window_expired"
+                    self._detach_open_case(behavior_case)
+                    updates.append(behavior_case)
+                    seen_case_ids.add(behavior_case.case_id)
+                    continue
+                if active_until and now_ts > active_until:
+                    behavior_case.status = "cooled"
+                    behavior_case.stage = "cooling"
+                    metadata["lifecycle_reason"] = "downstream_window_cooling"
+                    self._detach_open_case(behavior_case)
+                    updates.append(behavior_case)
+                    seen_case_ids.add(behavior_case.case_id)
+                continue
             if self._is_smart_money_case(behavior_case):
                 continue
             if self._is_liquidation_case(behavior_case):
@@ -958,6 +1376,8 @@ class FollowupTracker:
         self._open_case_ids_by_token.get((behavior_case.token or "native").lower(), set()).discard(behavior_case.case_id)
 
     def _status_and_stage(self, behavior_case: BehaviorCase, event: Event) -> tuple[str, str]:
+        if self._is_downstream_followup_case(behavior_case):
+            return self._downstream_status_and_stage(behavior_case)
         if self._is_exchange_followup_case(behavior_case):
             return self._exchange_status_and_stage(behavior_case)
         if self._is_smart_money_case(behavior_case):
@@ -987,6 +1407,21 @@ class FollowupTracker:
         if len(behavior_case.event_ids) >= 2:
             return "developing", "anchor_tracking"
         return "open", "anchor_tracking"
+
+    def _downstream_status_and_stage(self, behavior_case: BehaviorCase) -> tuple[str, str]:
+        if behavior_case.status in {"cooled", "closed", "invalidated"}:
+            return behavior_case.status, behavior_case.stage
+
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        if bool(metadata.get("downstream_execution_confirmed")):
+            return "confirmed", "swap_execution_confirmed"
+        if bool(metadata.get("downstream_exchange_arrival")):
+            return "confirmed", "exchange_arrival_confirmed"
+        if bool(metadata.get("downstream_distribution_detected")):
+            return "developing", "distribution_confirmed"
+        if list(metadata.get("followup_events") or []):
+            return "developing", str(metadata.get("last_followup_stage") or "downstream_seen")
+        return "open", "followup_opened"
 
     def _smart_money_status_and_stage(self, behavior_case: BehaviorCase) -> tuple[str, str]:
         if behavior_case.status in {"cooled", "closed", "invalidated"}:
@@ -1132,6 +1567,18 @@ class FollowupTracker:
         metadata["current_event_stage"] = stage
 
     def _case_summary(self, behavior_case: BehaviorCase, event: Event, watch_meta: dict) -> str:
+        if self._is_downstream_followup_case(behavior_case):
+            metadata = self._ensure_downstream_case_metadata(behavior_case)
+            anchor_label = str(metadata.get("anchor_label") or watch_meta.get("label") or "重点地址")
+            downstream_label = str(metadata.get("downstream_label") or self._downstream_label(metadata.get("downstream_address"), None))
+            anchor_symbol = str(metadata.get("anchor_symbol") or event.metadata.get("token_symbol") or event.token or "资产")
+            if bool(metadata.get("downstream_execution_confirmed")):
+                return f"{anchor_label} 下游大额转移后已升级为执行观察（{downstream_label}）"
+            if bool(metadata.get("downstream_exchange_arrival")):
+                return f"{anchor_label} 下游大额转移后已进入交易场景（{downstream_label}）"
+            if bool(metadata.get("downstream_distribution_detected")):
+                return f"{anchor_label} 下游大额转移后出现大额分发（{downstream_label}）"
+            return f"{anchor_label} -> {downstream_label} 的 {anchor_symbol} 下游观察窗口"
         if self._is_exchange_followup_case(behavior_case):
             label = str(watch_meta.get("label") or event.address or "重点地址")
             metadata = self._ensure_exchange_followup_metadata(behavior_case)
@@ -1172,6 +1619,31 @@ class FollowupTracker:
         return f"{label} 的 {token} {intent} 跟踪案例"
 
     def _followup_steps(self, behavior_case: BehaviorCase, event: Event) -> list[str]:
+        if self._is_downstream_followup_case(behavior_case):
+            metadata = self._ensure_downstream_case_metadata(behavior_case)
+            if bool(metadata.get("downstream_execution_confirmed")):
+                return [
+                    "观察下游地址是否继续沿协议路径完成第二次大额执行",
+                    "观察执行后是否快速进入交易所或回流锚点地址",
+                    "观察窗口结束前是否出现更多同方向高价值动作",
+                ]
+            if bool(metadata.get("downstream_exchange_arrival")):
+                return [
+                    "观察交易所到达后是否继续出现跨 token 执行或回流",
+                    "观察是否很快出现反向大额流出，削弱交易场景解释",
+                    "观察窗口内是否再有第二次高价值动作",
+                ]
+            if bool(metadata.get("downstream_distribution_detected")):
+                return [
+                    "观察是否继续向更多地址拆分，形成明确分发结构",
+                    "观察是否有一部分资金回流锚点或同类地址",
+                    "观察是否最终转入交易所或协议执行路径",
+                ]
+            return [
+                "观察 30 分钟窗口内是否再出现高价值转出",
+                "观察是否进入交易所、协议路由或真实 swap 执行",
+                "观察是否只剩零散小额测试转账，若是则自然过期",
+            ]
         if self._is_exchange_followup_case(behavior_case):
             metadata = self._ensure_exchange_followup_metadata(behavior_case)
             if bool(metadata.get("followup_confirmed")):
@@ -1260,6 +1732,12 @@ class FollowupTracker:
     def _build_exchange_followup_case_id(self, watch_address: str, ts: int) -> str:
         bucket = int(ts / max(self.exchange_followup_window_sec, 1))
         raw = "|".join([watch_address, EXCHANGE_FOLLOWUP_CASE_FAMILY, str(bucket)])
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        return f"case_{digest}"
+
+    def _build_downstream_case_id(self, downstream_address: str, ts: int) -> str:
+        bucket = int(ts / max(self.downstream_followup_window_sec, 1))
+        raw = "|".join([downstream_address, DOWNSTREAM_FOLLOWUP_CASE_FAMILY, str(bucket)])
         digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
         return f"case_{digest}"
 
@@ -1353,6 +1831,56 @@ class FollowupTracker:
         metadata.setdefault("current_event_is_followup_confirmation", False)
         return metadata
 
+    def _ensure_downstream_case_metadata(self, behavior_case: BehaviorCase) -> dict:
+        metadata = behavior_case.metadata
+        metadata.setdefault("case_family", DOWNSTREAM_FOLLOWUP_CASE_FAMILY)
+        metadata.setdefault("anchor_watch_address", "")
+        metadata.setdefault("anchor_label", "")
+        metadata.setdefault("anchor_strategy_role", "unknown")
+        metadata.setdefault("anchor_priority", 1)
+        metadata.setdefault("downstream_address", behavior_case.watch_address)
+        metadata.setdefault("downstream_label", self._downstream_label(behavior_case.watch_address, None))
+        metadata.setdefault("root_tx_hash", behavior_case.root_tx_hash)
+        metadata.setdefault("anchor_token", behavior_case.token)
+        metadata.setdefault("anchor_symbol", "")
+        metadata.setdefault("anchor_usd_value", 0.0)
+        metadata.setdefault("anchor_intent", "")
+        metadata.setdefault("opened_at", int(behavior_case.opened_at or 0))
+        metadata.setdefault("active_until", int(behavior_case.opened_at or 0) + self.downstream_followup_window_sec)
+        metadata.setdefault("cooling_until", int(behavior_case.opened_at or 0) + self.downstream_followup_cooling_sec)
+        metadata.setdefault("closing_until", int(behavior_case.opened_at or 0) + self.downstream_followup_closing_sec)
+        metadata.setdefault("expire_at", metadata.get("active_until"))
+        metadata.setdefault("deadline_ts", metadata.get("active_until"))
+        metadata.setdefault("window_sec", int(self.downstream_followup_window_sec))
+        metadata.setdefault("max_notifications", int(self.downstream_followup_max_notifications))
+        metadata.setdefault("hop", 1)
+        metadata.setdefault("reason", "anchor_large_transfer")
+        metadata.setdefault("strategy_hint", "runtime_adjacent_watch")
+        metadata.setdefault("followup_confirmed", False)
+        metadata.setdefault("downstream_execution_confirmed", False)
+        metadata.setdefault("downstream_exchange_arrival", False)
+        metadata.setdefault("downstream_distribution_detected", False)
+        metadata.setdefault("downstream_return_confirmed", False)
+        metadata.setdefault("emitted_notification_stages", [])
+        metadata.setdefault("followup_events", [])
+        metadata.setdefault("destinations_seen", [])
+        metadata.setdefault("current_event_is_anchor", False)
+        metadata.setdefault("current_event_is_followup", False)
+        metadata.setdefault("current_followup_type", "")
+        metadata.setdefault("current_followup_reason", "")
+        metadata.setdefault("current_stage", behavior_case.stage or "")
+        metadata.setdefault("last_followup_type", "")
+        metadata.setdefault("last_followup_stage", "")
+        metadata.setdefault("last_followup_tx_hash", "")
+        metadata.setdefault("last_followup_usd", 0.0)
+        metadata.setdefault("last_counterparty", "")
+        metadata.setdefault("last_counterparty_label", "")
+        metadata.setdefault("last_notification_signal_id", "")
+        metadata.setdefault("last_notification_stage", "")
+        metadata.setdefault("emitted_notification_count", len(list(metadata.get("emitted_notification_stages") or [])))
+        metadata.setdefault("lifecycle_reason", "")
+        return metadata
+
     def _ensure_smart_money_case_metadata(self, behavior_case: BehaviorCase) -> dict:
         metadata = behavior_case.metadata
         metadata.setdefault("case_family", SMART_MONEY_EXECUTION_CASE_FAMILY)
@@ -1407,6 +1935,12 @@ class FollowupTracker:
         case_family = str((behavior_case.metadata or {}).get("case_family") or "")
         return case_family == EXCHANGE_FOLLOWUP_CASE_FAMILY or behavior_case.intent_type == EXCHANGE_FOLLOWUP_CASE_FAMILY
 
+    def _is_downstream_followup_case(self, behavior_case: BehaviorCase | None) -> bool:
+        if behavior_case is None:
+            return False
+        case_family = str((behavior_case.metadata or {}).get("case_family") or "")
+        return case_family == DOWNSTREAM_FOLLOWUP_CASE_FAMILY or behavior_case.intent_type == DOWNSTREAM_FOLLOWUP_CASE_FAMILY
+
     def _is_smart_money_case(self, behavior_case: BehaviorCase | None) -> bool:
         if behavior_case is None:
             return False
@@ -1424,6 +1958,208 @@ class FollowupTracker:
             return float(get_threshold(watch_meta or {}))
         except Exception:
             return 1000.0
+
+    def is_downstream_followup_anchor(self, event: Event, watch_meta: dict | None = None) -> bool:
+        watch_meta = watch_meta or {}
+        if not self.downstream_followup_enabled:
+            return False
+        if event.kind != "token_transfer" or str(event.side or "") != "流出":
+            return False
+        if self.downstream_followup_max_hops < 1:
+            return False
+
+        strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
+        if self.downstream_followup_allowed_roles and strategy_role not in self.downstream_followup_allowed_roles:
+            return False
+
+        raw = event.metadata.get("raw") or {}
+        downstream_address = self._downstream_counterparty_address(event)
+        if not downstream_address:
+            return False
+        counterparty_meta = get_address_meta(downstream_address)
+        has_explicit_label = str(counterparty_meta.get("label") or "").strip().lower() not in {
+            "",
+            str(counterparty_meta.get("address") or "").strip().lower(),
+        }
+        if has_explicit_label:
+            return False
+        if str(counterparty_meta.get("role") or "unknown") not in {"", "unknown"}:
+            return False
+        if bool(raw.get("possible_internal_transfer")):
+            return False
+        if self._excluded_downstream_counterparty(counterparty_meta):
+            return False
+
+        usd_value = float(event.usd_value or 0.0)
+        return usd_value >= self._downstream_anchor_min_usd(event)
+
+    def _classify_downstream_followup_event(
+        self,
+        event: Event,
+        behavior_case: BehaviorCase | None,
+    ) -> dict:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return {"matched": False}
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        reference_ts = int(event.ts or time.time())
+        if int(metadata.get("closing_until") or metadata.get("expire_at") or 0) and reference_ts > int(metadata.get("closing_until") or metadata.get("expire_at") or 0):
+            return {"matched": False, "reason": "downstream_window_expired"}
+        if str(event.address or "").lower() != str(metadata.get("downstream_address") or "").lower():
+            return {"matched": False, "reason": "downstream_followup_not_confirmed"}
+        if event.kind not in {"token_transfer", "swap"}:
+            return {"matched": False, "reason": "downstream_followup_not_confirmed"}
+
+        usd_value = float(event.usd_value or 0.0)
+        min_followup_usd = max(
+            self.downstream_followup_min_usd,
+            float(metadata.get("anchor_usd_value") or 0.0) * max(self.downstream_followup_min_ratio, 0.0),
+        )
+        if usd_value < min_followup_usd:
+            followup_type = "observed_small_noise" if usd_value > 0 else ""
+            return {
+                "matched": False,
+                "reason": "amount_below_downstream_followup_min",
+                "followup_type": followup_type,
+                "min_followup_usd": round(min_followup_usd, 2),
+            }
+
+        raw = event.metadata.get("raw") or {}
+        counterparty = str(raw.get("counterparty") or raw.get("to") or "").lower()
+        counterparty_meta = get_address_meta(counterparty)
+        counterparty_label = self._downstream_label(counterparty, counterparty_meta)
+
+        if event.kind == "swap" or str(event.intent_type or "") == "swap_execution":
+            return {
+                "matched": True,
+                "followup_type": "swap_execution",
+                "stage": "swap_execution_confirmed",
+                "counterparty": counterparty,
+                "counterparty_label": counterparty_label,
+                "reason": "downstream_target_is_protocol",
+            }
+        if self._is_exchange_meta(counterparty_meta):
+            return {
+                "matched": True,
+                "followup_type": "exchange_arrival",
+                "stage": "exchange_arrival_confirmed",
+                "counterparty": counterparty,
+                "counterparty_label": counterparty_label,
+                "reason": "downstream_target_is_exchange",
+            }
+        if self._is_protocol_or_router(counterparty_meta):
+            protocol_reason = "downstream_target_is_router" if str(counterparty_meta.get("semantic_role") or "") == "router_contract" or str(counterparty_meta.get("suspected_role") or "") == "router_adjacent" or str(counterparty_meta.get("strategy_role") or "") == "aggregator_router" else "downstream_target_is_protocol"
+            return {
+                "matched": True,
+                "followup_type": "protocol_path",
+                "stage": "swap_execution_confirmed",
+                "counterparty": counterparty,
+                "counterparty_label": counterparty_label,
+                "reason": protocol_reason,
+            }
+        if counterparty and counterparty == str(metadata.get("anchor_watch_address") or "").lower():
+            return {
+                "matched": True,
+                "followup_type": "return_flow",
+                "stage": "downstream_seen",
+                "counterparty": counterparty,
+                "counterparty_label": counterparty_label,
+                "reason": "downstream_return_flow",
+            }
+
+        existing_destinations = set(metadata.get("destinations_seen") or [])
+        if counterparty and counterparty not in existing_destinations and len(existing_destinations) >= 1:
+            return {
+                "matched": True,
+                "followup_type": "distribution",
+                "stage": "distribution_confirmed",
+                "counterparty": counterparty,
+                "counterparty_label": counterparty_label,
+                "reason": "downstream_distribution_confirmed",
+            }
+
+        return {
+            "matched": True,
+            "followup_type": "downstream_seen",
+            "stage": "downstream_seen",
+            "counterparty": counterparty,
+            "counterparty_label": counterparty_label,
+            "reason": "downstream_followup_confirmed",
+        }
+
+    def _update_downstream_case_metadata(
+        self,
+        behavior_case: BehaviorCase,
+        event: Event,
+        watch_meta: dict,
+    ) -> None:
+        metadata = self._ensure_downstream_case_metadata(behavior_case)
+        metadata["current_event_is_anchor"] = False
+        metadata["current_event_is_followup"] = False
+        metadata["current_stage"] = behavior_case.stage
+        metadata["expire_at"] = int(metadata.get("active_until") or metadata.get("expire_at") or 0)
+        metadata["deadline_ts"] = int(metadata.get("active_until") or metadata.get("deadline_ts") or 0)
+        metadata["anchor_label"] = str(metadata.get("anchor_label") or watch_meta.get("anchor_label") or metadata.get("anchor_label") or "")
+        metadata["downstream_label"] = str(metadata.get("downstream_label") or self._downstream_label(metadata.get("downstream_address"), None))
+        metadata["last_seen_ts"] = int(event.ts or time.time())
+
+    def _downstream_case_address(self, event: Event) -> str:
+        event_address = str(event.address or "").lower()
+        if event_address and not self.is_downstream_followup_anchor(event, watch_meta={"strategy_role": event.strategy_role}):
+            return event_address
+        return self._downstream_counterparty_address(event)
+
+    def _downstream_counterparty_address(self, event: Event) -> str:
+        raw = event.metadata.get("raw") or {}
+        counterparty = str(raw.get("counterparty") or "").lower()
+        if counterparty:
+            return counterparty
+        if str(event.side or "") == "流出":
+            return str(raw.get("to") or "").lower()
+        if str(event.side or "") == "流入":
+            return str(raw.get("from") or "").lower()
+        return ""
+
+    def _downstream_anchor_min_usd(self, event: Event) -> float:
+        symbol = self._display_symbol(event.token, event.metadata.get("token_symbol"))
+        if self._is_stable_asset(event.token, symbol) or symbol in DOWNSTREAM_STABLE_SYMBOLS:
+            return float(ADJACENT_WATCH_STABLE_SUPER_LARGE_USD)
+        if self._is_major_followup_asset(event.token, symbol) or symbol in DOWNSTREAM_MAJOR_SYMBOLS:
+            return float(ADJACENT_WATCH_MAJOR_ASSET_SUPER_LARGE_USD)
+        return float(ADJACENT_WATCH_OTHER_ASSET_SUPER_LARGE_USD or ADJACENT_WATCH_SUPER_LARGE_USD)
+
+    def _excluded_downstream_counterparty(self, counterparty_meta: dict) -> bool:
+        strategy_role = str(counterparty_meta.get("strategy_role") or "unknown")
+        semantic_role = str(counterparty_meta.get("semantic_role") or "unknown")
+        if ADJACENT_WATCH_EXCLUDE_ROUTER and (
+            strategy_role == "aggregator_router" or semantic_role == "router_contract" or str(counterparty_meta.get("suspected_role") or "") == "router_adjacent"
+        ):
+            return True
+        if ADJACENT_WATCH_EXCLUDE_PROTOCOL and (
+            strategy_role == "protocol_treasury" or semantic_role == "protocol_wallet" or str(counterparty_meta.get("suspected_role") or "") == "protocol_adjacent"
+        ):
+            return True
+        if ADJACENT_WATCH_EXCLUDE_EXCHANGE and self._is_exchange_meta(counterparty_meta):
+            return True
+        if ADJACENT_WATCH_EXCLUDE_LP_POOL and strategy_role == "lp_pool":
+            return True
+        return False
+
+    def _is_exchange_meta(self, meta: dict) -> bool:
+        return str(meta.get("strategy_role") or "").startswith("exchange_") or str(meta.get("role") or "") == "exchange"
+
+    def _is_protocol_or_router(self, meta: dict) -> bool:
+        strategy_role = str(meta.get("strategy_role") or "")
+        semantic_role = str(meta.get("semantic_role") or "")
+        suspected_role = str(meta.get("suspected_role") or "")
+        return strategy_role in {"aggregator_router", "protocol_treasury"} or semantic_role in {"router_contract", "protocol_wallet"} or suspected_role in {"router_adjacent", "protocol_adjacent"}
+
+    def _downstream_label(self, address: str | None, meta: dict | None) -> str:
+        addr = str(address or "").lower()
+        meta = meta or get_address_meta(addr)
+        hint = str(meta.get("display_hint_label") or "").strip()
+        if hint:
+            return f"{hint} ({shorten_address(addr)})"
+        return meta.get("display") or shorten_address(addr)
 
     def _is_stable_asset(self, token_contract: str | None, token_symbol: str | None) -> bool:
         contract = str(token_contract or "").lower()

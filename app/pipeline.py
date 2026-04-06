@@ -2,13 +2,8 @@ import time
 import hashlib
 
 from analyzer import BehaviorAnalyzer
-from config import (
-    DELIVERY_ALLOW_EXCHANGE_OBSERVE,
-    DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
-    DELIVERY_ALLOW_LP_OBSERVE,
-    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE,
-)
 from constants import STABLE_TOKEN_CONTRACTS
+from delivery_policy import can_emit_delivery_notification
 from filter import (
     get_address_meta,
     get_flow_endpoints,
@@ -132,6 +127,7 @@ class SignalPipeline:
         event.metadata["intent"] = preliminary_intent
 
         self.state_manager.apply_event(event)
+        self._touch_runtime_adjacent_watch(event, watch_meta)
         self._record_counterparty(event, watch_context, parsed)
 
         address_snapshot = self.state_manager.get_address_snapshot(
@@ -193,6 +189,7 @@ class SignalPipeline:
                 token=stale_case.token,
                 is_open=False,
             )
+            self._expire_adjacent_watch_for_case(stale_case)
         for invalid_case in (case_result or {}).get("invalidated_cases") or []:
             self.state_manager.update_case_pointer(
                 case_id=invalid_case.case_id,
@@ -200,8 +197,10 @@ class SignalPipeline:
                 token=invalid_case.token,
                 is_open=False,
             )
+            self._expire_adjacent_watch_for_case(invalid_case)
         if behavior_case is not None:
             self._bind_case_to_event(event, behavior_case, case_result)
+            self._register_adjacent_watch_from_case(event, behavior_case, case_result, watch_meta)
             self.state_manager.register_case(
                 case_id=behavior_case.case_id,
                 watch_address=behavior_case.watch_address,
@@ -223,6 +222,12 @@ class SignalPipeline:
                 "summary": behavior_case.summary,
             }
             self._apply_exchange_followup_case_context(
+                event=event,
+                behavior_case=behavior_case,
+                case_result=case_result,
+                watch_meta=watch_meta,
+            )
+            self._apply_downstream_followup_case_context(
                 event=event,
                 behavior_case=behavior_case,
                 case_result=case_result,
@@ -391,6 +396,12 @@ class SignalPipeline:
                     case_result=case_result,
                     watch_meta=watch_meta,
                 )
+                self._apply_downstream_followup_case_context(
+                    event=event,
+                    behavior_case=behavior_case,
+                    case_result=case_result,
+                    watch_meta=watch_meta,
+                )
                 self._apply_smart_money_case_context(
                     event=event,
                     behavior_case=behavior_case,
@@ -405,6 +416,7 @@ class SignalPipeline:
                 )
 
         self._sync_exchange_followup_to_signal(event, signal, behavior_case)
+        self._sync_downstream_followup_to_signal(event, signal, behavior_case)
         self._sync_smart_money_case_to_signal(event, signal, behavior_case)
         self._sync_liquidation_to_signal(event, signal, behavior_case)
 
@@ -470,9 +482,16 @@ class SignalPipeline:
                 archive_status=archive_status,
                 archive_ts=archive_ts,
             )
+            self._archive_case_decision_followup(
+                behavior_case=behavior_case,
+                event=event,
+                signal=signal,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
             return None
 
-        if delivery_class == "primary":
+        if delivery_class == "primary" or self._is_downstream_followup_case(behavior_case):
             self._archive_signal(signal, event, archive_status, archive_ts)
         self._archive_delivery_audit(
             event=event,
@@ -487,7 +506,6 @@ class SignalPipeline:
         if behavior_case is not None:
             self._archive_case_followup(behavior_case, signal, archive_status, archive_ts)
 
-        self.quality_gate.mark_emitted(event)
         return {
             "event": event,
             "signal": signal,
@@ -636,14 +654,25 @@ class SignalPipeline:
         wrote = False
         try:
             for stale_case in case_result.get("stale_updates") or []:
+                action = "expired" if self._is_downstream_followup_case(stale_case) else "stale"
                 wrote = bool(
                     self.archive_store.write_case_update(
                         stale_case,
                         event=event,
-                        action="stale",
+                        action=action,
                         archive_ts=archive_ts,
                     )
                 ) or wrote
+                self._archive_downstream_case_followup(
+                    behavior_case=stale_case,
+                    archive_status=archive_status,
+                    archive_ts=archive_ts,
+                    status=str(getattr(stale_case, "status", "") or ""),
+                    stage=str(getattr(stale_case, "stage", "") or ""),
+                    should_notify=False,
+                    reason=str((getattr(stale_case, "metadata", {}) or {}).get("lifecycle_reason") or "downstream_window_expired"),
+                    event=event,
+                )
 
             for invalid_case in case_result.get("invalidated_cases") or []:
                 wrote = bool(
@@ -654,6 +683,16 @@ class SignalPipeline:
                         archive_ts=archive_ts,
                     )
                 ) or wrote
+                self._archive_downstream_case_followup(
+                    behavior_case=invalid_case,
+                    archive_status=archive_status,
+                    archive_ts=archive_ts,
+                    status="invalidated",
+                    stage=str(getattr(invalid_case, "stage", "") or "invalidated"),
+                    should_notify=False,
+                    reason="downstream_followup_redundant",
+                    event=event,
+                )
 
             behavior_case = case_result.get("case")
             if behavior_case is not None:
@@ -666,6 +705,16 @@ class SignalPipeline:
                         archive_ts=archive_ts,
                     )
                 ) or wrote
+                self._archive_downstream_case_followup(
+                    behavior_case=behavior_case,
+                    archive_status=archive_status,
+                    archive_ts=archive_ts,
+                    status=str(getattr(behavior_case, "status", "") or ""),
+                    stage=str(getattr(behavior_case, "stage", "") or ""),
+                    should_notify=False,
+                    reason=str((event.metadata or {}).get("downstream_observation_reason") or (getattr(behavior_case, "metadata", {}) or {}).get("current_followup_reason") or ("downstream_anchor_opened" if bool(case_result.get("created")) else "downstream_case_updated")),
+                    event=event,
+                )
         except Exception as e:
             print(f"case update 归档失败: {e}")
 
@@ -683,23 +732,123 @@ class SignalPipeline:
                 action="signal_attached",
                 archive_ts=archive_ts,
             )
-            wrote_followup = bool(
-                self.archive_store.write_case_followup(
-                    behavior_case.case_id,
-                    {
-                        "signal_id": getattr(signal, "signal_id", ""),
-                        "signal_type": getattr(signal, "type", ""),
-                        "confidence": float(getattr(signal, "confidence", 0.0) or 0.0),
-                        "status": behavior_case.status,
-                        "stage": behavior_case.stage,
-                    },
+            if self._is_downstream_followup_case(behavior_case):
+                self._archive_downstream_case_followup(
+                    behavior_case=behavior_case,
+                    archive_status=archive_status,
                     archive_ts=archive_ts,
+                    status=str(getattr(behavior_case, "status", "") or ""),
+                    stage=str(getattr(behavior_case, "stage", "") or ""),
+                    should_notify=True,
+                    reason="signal_attached",
+                    signal=signal,
                 )
-            )
+                wrote_followup = True
+            else:
+                wrote_followup = bool(
+                    self.archive_store.write_case_followup(
+                        behavior_case.case_id,
+                        {
+                            "signal_id": getattr(signal, "signal_id", ""),
+                            "signal_type": getattr(signal, "type", ""),
+                            "confidence": float(getattr(signal, "confidence", 0.0) or 0.0),
+                            "status": behavior_case.status,
+                            "stage": behavior_case.stage,
+                        },
+                        archive_ts=archive_ts,
+                    )
+                )
         except Exception as e:
             print(f"case followup 归档失败: {e}")
 
         archive_status["case_followup"] = bool(archive_status.get("case_followup") or wrote_followup)
+
+    def _archive_case_decision_followup(
+        self,
+        behavior_case,
+        event: Event,
+        signal,
+        archive_status: dict,
+        archive_ts: int,
+    ) -> None:
+        if behavior_case is None:
+            return
+        reason = str(
+            (event.metadata or {}).get("case_notification_reason")
+            or getattr(signal, "delivery_reason", "")
+            or getattr(event, "delivery_reason", "")
+            or ""
+        )
+        self._archive_downstream_case_followup(
+            behavior_case=behavior_case,
+            archive_status=archive_status,
+            archive_ts=archive_ts,
+            status=str(getattr(behavior_case, "status", "") or ""),
+            stage=str((event.metadata or {}).get("downstream_followup_stage") or getattr(behavior_case, "stage", "") or ""),
+            should_notify=False,
+            reason=reason,
+            event=event,
+            signal=signal,
+        )
+
+    def _archive_downstream_case_followup(
+        self,
+        behavior_case,
+        archive_status: dict,
+        archive_ts: int,
+        status: str,
+        stage: str,
+        should_notify: bool,
+        reason: str,
+        event: Event | None = None,
+        signal=None,
+    ) -> None:
+        if self.archive_store is None or behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        followup = {
+            "case_family": str(metadata.get("case_family") or ""),
+            "case_id": str(getattr(behavior_case, "case_id", "") or ""),
+            "stage": str(stage or getattr(behavior_case, "stage", "") or ""),
+            "status": str(status or getattr(behavior_case, "status", "") or ""),
+            "anchor_watch_address": str(metadata.get("anchor_watch_address") or ""),
+            "anchor_label": str(metadata.get("anchor_label") or ""),
+            "downstream_address": str(metadata.get("downstream_address") or getattr(behavior_case, "watch_address", "") or ""),
+            "downstream_label": str(metadata.get("downstream_label") or ""),
+            "anchor_tx_hash": str(metadata.get("root_tx_hash") or getattr(behavior_case, "root_tx_hash", "") or ""),
+            "followup_type": str(
+                metadata.get("current_followup_type")
+                or metadata.get("last_followup_type")
+                or (event.metadata.get("downstream_followup_type") if event is not None else "")
+                or ""
+            ),
+            "usd_value": round(
+                float(
+                    (event.usd_value if event is not None and event.usd_value is not None else 0.0)
+                    or metadata.get("last_followup_usd")
+                    or metadata.get("anchor_usd_value")
+                    or 0.0
+                ),
+                2,
+            ),
+            "should_notify": bool(should_notify),
+            "reason": str(reason or metadata.get("current_followup_reason") or metadata.get("lifecycle_reason") or ""),
+            "hop": int(metadata.get("hop") or 1),
+            "window_sec": int(metadata.get("window_sec") or 0),
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+            "delivery_class": str(getattr(signal, "delivery_class", "") or (event.delivery_class if event is not None else "") or ""),
+        }
+        try:
+            wrote = bool(
+                self.archive_store.write_case_followup(
+                    str(getattr(behavior_case, "case_id", "") or ""),
+                    followup,
+                    archive_ts=archive_ts,
+                )
+            )
+            archive_status["case_followup"] = bool(archive_status.get("case_followup") or wrote)
+        except Exception as e:
+            print(f"downstream case followup 归档失败: {e}")
 
     def _archive_non_primary_signal(
         self,
@@ -718,6 +867,13 @@ class SignalPipeline:
             gate_metrics=gate_metrics,
             stage="strategy",
             gate_reason=reason,
+            archive_status=archive_status,
+            archive_ts=archive_ts,
+        )
+        self._archive_case_decision_followup(
+            behavior_case=self.followup_tracker.get_case(getattr(signal, "case_id", "")) if self.followup_tracker and getattr(signal, "case_id", "") else None,
+            event=event,
+            signal=signal,
             archive_status=archive_status,
             archive_ts=archive_ts,
         )
@@ -949,6 +1105,60 @@ class SignalPipeline:
             "followup_strength": _text(gate_metrics.get("followup_strength"), event_metadata.get("followup_strength")),
             "followup_semantic": _text(gate_metrics.get("followup_semantic"), event_metadata.get("followup_semantic")),
             "followup_confirmed": _bool_value(gate_metrics.get("followup_confirmed"), event_metadata.get("followup_confirmed")),
+            "case_family": _text(event_metadata.get("case_family"), signal_metadata.get("case_family")),
+            "downstream_followup": _bool_value(event_metadata.get("downstream_followup"), signal_metadata.get("downstream_followup")),
+            "notification_stage": _text(
+                event_metadata.get("delivered_notification_stage"),
+                signal_metadata.get("delivered_notification_stage"),
+                event_metadata.get("pending_case_notification_stage"),
+                signal_metadata.get("pending_case_notification_stage"),
+                event_metadata.get("case_notification_stage"),
+                signal_metadata.get("case_notification_stage"),
+            ),
+            "pending_case_notification": _bool_value(
+                event_metadata.get("pending_case_notification"),
+                signal_metadata.get("pending_case_notification"),
+            ),
+            "pending_notification_stage": _text(
+                event_metadata.get("pending_case_notification_stage"),
+                signal_metadata.get("pending_case_notification_stage"),
+            ),
+            "pending_notification_reason": _text(
+                event_metadata.get("pending_case_notification_reason"),
+                signal_metadata.get("pending_case_notification_reason"),
+            ),
+            "delivered_notification": _bool_value(
+                (audit_extras or {}).get("delivered"),
+                event_metadata.get("delivered_notification"),
+                signal_metadata.get("delivered_notification"),
+            ),
+            "delivered_notification_stage": _text(
+                event_metadata.get("delivered_notification_stage"),
+                signal_metadata.get("delivered_notification_stage"),
+            ),
+            "delivered_notification_reason": _text(
+                event_metadata.get("delivered_notification_reason"),
+                signal_metadata.get("delivered_notification_reason"),
+            ),
+            "anchor_tx_hash": _text(event_metadata.get("anchor_tx_hash")),
+            "anchor_watch_address": _text(event_metadata.get("anchor_watch_address"), event_metadata.get("downstream_anchor_address")),
+            "anchor_label": _text(event_metadata.get("anchor_label"), event_metadata.get("downstream_anchor_label")),
+            "downstream_address": _text(event_metadata.get("downstream_address")),
+            "downstream_label": _text(event_metadata.get("downstream_label"), event_metadata.get("downstream_object_label")),
+            "downstream_followup_type": _text(event_metadata.get("downstream_followup_type")),
+            "downstream_followup_label": _text(event_metadata.get("downstream_followup_label")),
+            "downstream_followup_stage": _text(event_metadata.get("downstream_followup_stage")),
+            "downstream_followup_reason": _text(event_metadata.get("downstream_followup_reason")),
+            "downstream_followup_audit_reason": _text(
+                event_metadata.get("downstream_observation_reason"),
+                event_metadata.get("case_notification_reason"),
+                gate_reason,
+            ),
+            "followup_stage": _text(event_metadata.get("followup_stage"), event_metadata.get("downstream_followup_stage")),
+            "followup_type": _text(event_metadata.get("followup_type"), event_metadata.get("downstream_followup_type")),
+            "hop": _int_value(event_metadata.get("hop")),
+            "window_sec": _int_value(event_metadata.get("window_sec")),
+            "runtime_state": _text(event_metadata.get("downstream_runtime_state")),
             "execution_required_but_missing": _bool_value(gate_metrics.get("execution_required_but_missing"), event_metadata.get("execution_required_but_missing")),
             "stable_non_swap_filtered_flag": _bool_value(gate_metrics.get("stable_non_swap_filtered_flag"), gate_reason == "stable_non_swap_filtered"),
             "stable_non_swap_hard_filter_usd": _num(gate_metrics.get("stable_non_swap_hard_filter_usd"), digits=2),
@@ -1008,6 +1218,88 @@ class SignalPipeline:
         except Exception as e:
             print(f"地址情报采集失败: {e}")
             return None
+
+    def _touch_runtime_adjacent_watch(self, event: Event, watch_meta: dict | None) -> None:
+        if not bool((watch_meta or {}).get("runtime_adjacent_watch")):
+            return
+        try:
+            self.state_manager.touch_adjacent_watch(
+                event.address,
+                ts=int(event.ts or 0),
+                event_type=str(event.intent_type or event.kind or ""),
+            )
+        except Exception as e:
+            print(f"runtime adjacent watch touch 失败: {e}")
+
+    def _expire_adjacent_watch_for_case(self, behavior_case) -> None:
+        if not self._is_downstream_followup_case(behavior_case):
+            return
+        try:
+            status = str(getattr(behavior_case, "status", "") or "")
+            if status in {"invalidated", "closed"}:
+                self.state_manager.close_adjacent_watch(
+                    behavior_case.watch_address,
+                    ts=int(time.time()),
+                    reason=status or "closed",
+                )
+            else:
+                self.state_manager.expire_adjacent_watch(behavior_case.watch_address, now_ts=int(time.time()))
+        except Exception as e:
+            print(f"runtime adjacent watch 过期失败: {e}")
+
+    def _register_adjacent_watch_from_case(
+        self,
+        event: Event,
+        behavior_case,
+        case_result: dict | None,
+        watch_meta: dict | None,
+    ) -> None:
+        if not self._is_downstream_followup_case(behavior_case):
+            return
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        if not bool((case_result or {}).get("downstream_followup_anchor")):
+            return
+        if int(metadata.get("hop") or 1) > 1:
+            return
+        try:
+            registered = self.state_manager.register_adjacent_watch(
+                address=str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower(),
+                anchor_watch_address=str(metadata.get("anchor_watch_address") or event.address or "").lower(),
+                anchor_label=str(metadata.get("anchor_label") or (watch_meta or {}).get("label") or ""),
+                root_tx_hash=str(metadata.get("root_tx_hash") or event.tx_hash or ""),
+                token=event.token,
+                anchor_usd_value=float(metadata.get("anchor_usd_value") or event.usd_value or 0.0),
+                opened_at=int(metadata.get("opened_at") or event.ts or time.time()),
+                active_until=int(metadata.get("active_until") or metadata.get("expire_at") or event.ts or time.time()),
+                cooling_until=int(metadata.get("cooling_until") or event.ts or time.time()),
+                closing_until=int(metadata.get("closing_until") or event.ts or time.time()),
+                hop=int(metadata.get("hop") or 1),
+                reason="new_large_counterparty",
+                strategy_hint="runtime_adjacent_watch",
+                runtime_label_hint="new_large_counterparty",
+                metadata={
+                    "priority": int((watch_meta or {}).get("priority", 1) or 1),
+                    "token_symbol": str(event.metadata.get("token_symbol") or ""),
+                    "anchor_strategy_role": str(metadata.get("anchor_strategy_role") or (watch_meta or {}).get("strategy_role") or event.strategy_role or "unknown"),
+                    "display_hint_label": "new_large_counterparty",
+                    "display_hint_reason": "anchor_super_large_outflow",
+                    "case_id": str(behavior_case.case_id or ""),
+                    "window_sec": int(metadata.get("window_sec") or 0),
+                },
+            )
+            if registered and self.address_intelligence is not None:
+                self.address_intelligence.mark_display_hint(
+                    address=str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower(),
+                    display_hint_label="new_large_counterparty",
+                    expire_at=int(metadata.get("active_until") or metadata.get("expire_at") or event.ts or time.time()),
+                    display_hint_reason="anchor_super_large_outflow",
+                    display_hint_anchor_label=str(metadata.get("anchor_label") or (watch_meta or {}).get("label") or ""),
+                    display_hint_anchor_address=str(metadata.get("anchor_watch_address") or event.address or "").lower(),
+                    display_hint_usd_value=float(metadata.get("anchor_usd_value") or event.usd_value or 0.0),
+                    display_hint_token_symbol=str(event.metadata.get("token_symbol") or ""),
+                )
+        except Exception as e:
+            print(f"runtime adjacent watch 注册失败: {e}")
 
     def _match_or_open_case(self, event: Event, watch_meta: dict, behavior: dict) -> dict | None:
         if self.followup_tracker is None:
@@ -1123,6 +1415,147 @@ class SignalPipeline:
             intent_meta["execution_required_but_missing"] = execution_required_but_missing
             event.metadata["intent"] = intent_meta
             event.metadata["exchange_followup_confirmation_applied"] = True
+
+    def _apply_downstream_followup_case_context(
+        self,
+        event: Event,
+        behavior_case,
+        case_result: dict | None,
+        watch_meta: dict | None = None,
+    ) -> None:
+        if not self._is_downstream_followup_case(behavior_case):
+            return
+
+        watch_meta = watch_meta or {}
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        stage = str(metadata.get("current_stage") or behavior_case.stage or "followup_opened")
+        followup_type = str(metadata.get("current_followup_type") or metadata.get("last_followup_type") or "")
+        downstream_address = str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower()
+        downstream_label = str(metadata.get("downstream_label") or get_address_meta(downstream_address).get("display") or downstream_address)
+        anchor_label = str(metadata.get("anchor_label") or watch_meta.get("label") or metadata.get("anchor_watch_address") or "")
+        anchor_symbol = str(metadata.get("anchor_symbol") or event.metadata.get("token_symbol") or event.token or "资产")
+        anchor_usd_value = float(metadata.get("anchor_usd_value") or 0.0)
+        active_until = int(metadata.get("active_until") or metadata.get("expire_at") or 0)
+        cooling_until = int(metadata.get("cooling_until") or 0)
+        closing_until = int(metadata.get("closing_until") or 0)
+        last_counterparty_label = str(metadata.get("last_counterparty_label") or event.metadata.get("counterparty_label") or "")
+        notification_stage = str((case_result or {}).get("downstream_followup_stage") or stage or "")
+        event_is_anchor = bool((case_result or {}).get("downstream_followup_anchor"))
+        followup_active = bool(metadata.get("followup_confirmed"))
+        followup_reason = str(metadata.get("current_followup_reason") or metadata.get("lifecycle_reason") or "")
+        runtime_state = "active"
+        now_ts = int(event.ts or time.time())
+        if closing_until and now_ts >= closing_until:
+            runtime_state = "closed"
+        elif cooling_until and now_ts >= cooling_until:
+            runtime_state = "closing"
+        elif active_until and now_ts >= active_until:
+            runtime_state = "cooling"
+
+        label = "超大额下游观察已开启"
+        detail = f"{anchor_label} 刚向 {downstream_label} 转出 {_usd_text(anchor_usd_value)} {anchor_symbol}，已开启短时下游观察窗口。"
+        reason = "继续观察该下游地址是否进入交易所、DEX 执行或继续大额分发。"
+        path_label = f"{anchor_label} -> {downstream_label}"
+        next_hint = "优先看是否转入交易所、命中路由/协议，或继续出现 >=25% anchor 的大额动作。"
+
+        if stage == "exchange_arrival_confirmed":
+            label = "下游资金进入交易场景"
+            detail = f"{downstream_label} 随后又把大额 {anchor_symbol} 转向 {last_counterparty_label or '交易所地址'}，更像进入交易场景。"
+            reason = "这笔资金与前序锚点大额转移处于同一观察窗口内，已从单次转账升级为交易场景 follow-up。"
+            path_label = f"{anchor_label} -> {downstream_label} -> {last_counterparty_label or '交易所地址'}"
+        elif stage == "swap_execution_confirmed":
+            label = "下游已升级为真实执行"
+            detail = f"{downstream_label} 在观察窗口内出现大额执行路径，当前已从库存转移升级为更明确的执行行为。"
+            reason = "后续动作直接命中 swap/协议路径，说明这笔资金已不只是临时库存停留。"
+            path_label = f"{anchor_label} -> {downstream_label} -> {last_counterparty_label or '协议路径'}"
+        elif stage == "distribution_confirmed":
+            label = "下游开始大额分发"
+            detail = f"{downstream_label} 已向多个地址拆分大额资金，当前更像进入分发/分仓阶段。"
+            reason = "观察窗口内出现第二个高价值下游目的地，已超过单一去向噪声。"
+            path_label = f"{anchor_label} -> {downstream_label} -> 多地址分发"
+        elif stage == "downstream_seen":
+            label = "下游出现高价值后续动作"
+            detail = f"{downstream_label} 在观察窗口内再次出现高价值动作，当前先按后续延续观察处理。"
+            reason = "金额再次达到高价值阈值，但还需要继续确认是交易、分发还是回流。"
+            path_label = f"{anchor_label} -> {downstream_label} -> {last_counterparty_label or '后续去向'}"
+
+        event.metadata["case"] = {
+            **dict(event.metadata.get("case") or {}),
+            "case_id": behavior_case.case_id,
+            "status": behavior_case.status,
+            "stage": behavior_case.stage,
+            "summary": behavior_case.summary,
+            "case_family": metadata.get("case_family", ""),
+            "anchor_label": anchor_label,
+            "downstream_address": downstream_address,
+            "downstream_label": downstream_label,
+        }
+        event.metadata["case_family"] = metadata.get("case_family", "")
+        event.metadata["case_summary"] = behavior_case.summary
+        event.metadata["case_followup_steps"] = list(behavior_case.followup_steps or [])
+        event.metadata["downstream_followup"] = True
+        event.metadata["downstream_followup_active"] = True
+        event.metadata["downstream_followup_anchor_event"] = event_is_anchor
+        event.metadata["downstream_followup_confirmed_event"] = bool(followup_active and not event_is_anchor)
+        event.metadata["downstream_followup_type"] = followup_type
+        event.metadata["downstream_followup_stage"] = stage
+        event.metadata["followup_stage"] = stage
+        event.metadata["followup_type"] = followup_type
+        event.metadata["downstream_anchor_label"] = anchor_label
+        event.metadata["downstream_anchor_address"] = str(metadata.get("anchor_watch_address") or "")
+        event.metadata["downstream_anchor_usd_value"] = anchor_usd_value
+        event.metadata["downstream_anchor_token"] = str(metadata.get("anchor_token") or event.token or "")
+        event.metadata["downstream_object_label"] = downstream_label
+        event.metadata["downstream_followup_label"] = label
+        event.metadata["downstream_followup_detail"] = detail
+        event.metadata["downstream_followup_reason"] = reason
+        event.metadata["downstream_followup_stage_label"] = self._notification_stage_label(notification_stage or stage)
+        event.metadata["downstream_followup_path_label"] = path_label
+        event.metadata["downstream_followup_next_hint"] = next_hint
+        event.metadata["anchor_tx_hash"] = str(metadata.get("root_tx_hash") or behavior_case.root_tx_hash or "")
+        event.metadata["anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
+        event.metadata["anchor_label"] = anchor_label
+        event.metadata["downstream_address"] = downstream_address
+        event.metadata["downstream_label"] = downstream_label
+        event.metadata["downstream_followup_type_label"] = followup_type
+        event.metadata["hop"] = int(metadata.get("hop") or 1)
+        event.metadata["window_sec"] = int(metadata.get("window_sec") or 0)
+        event.metadata["active_until"] = active_until
+        event.metadata["cooling_until"] = cooling_until
+        event.metadata["closing_until"] = closing_until
+        event.metadata["downstream_runtime_state"] = runtime_state
+        event.metadata["downstream_observation_reason"] = followup_reason
+
+        if stage in {"exchange_arrival_confirmed", "swap_execution_confirmed", "distribution_confirmed", "downstream_seen"} and not bool(event.metadata.get("downstream_followup_confirmation_applied")):
+            boost = 0.12
+            if stage == "swap_execution_confirmed":
+                boost = 0.20
+            elif stage == "exchange_arrival_confirmed":
+                boost = 0.16
+            event.confirmation_score = self._clamp(max(float(event.confirmation_score or 0.0), 0.58) + boost, 0.0, 0.95)
+            if stage in {"exchange_arrival_confirmed", "swap_execution_confirmed"}:
+                event.intent_stage = "confirmed"
+            for evidence in [
+                f"{anchor_label} 的超大额下游观察窗口已建立",
+                f"{downstream_label} 在窗口内出现新的高价值后续动作",
+            ]:
+                if evidence not in event.intent_evidence:
+                    event.intent_evidence.append(evidence)
+            if stage == "exchange_arrival_confirmed":
+                evidence = "下游资金已进入交易所相关地址"
+                if evidence not in event.intent_evidence:
+                    event.intent_evidence.append(evidence)
+            if stage == "swap_execution_confirmed":
+                evidence = "下游地址已出现真实执行/协议路径"
+                if evidence not in event.intent_evidence:
+                    event.intent_evidence.append(evidence)
+            intent_meta = dict(event.metadata.get("intent") or {})
+            intent_meta["intent_stage"] = event.intent_stage
+            intent_meta["confirmation_score"] = round(float(event.confirmation_score or 0.0), 3)
+            intent_meta["intent_evidence"] = list(event.intent_evidence or [])
+            intent_meta["downstream_counterparty_followup"] = True
+            event.metadata["intent"] = intent_meta
+            event.metadata["downstream_followup_confirmation_applied"] = True
 
     def _apply_smart_money_case_context(
         self,
@@ -1281,6 +1714,54 @@ class SignalPipeline:
             "followup_assets": followup_fields["followup_assets"],
         }
 
+    def _sync_downstream_followup_to_signal(self, event: Event, signal, behavior_case) -> None:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return
+
+        payload = {
+            "case_family": str(event.metadata.get("case_family") or ""),
+            "downstream_followup": bool(event.metadata.get("downstream_followup")),
+            "downstream_followup_active": bool(event.metadata.get("downstream_followup_active")),
+            "downstream_followup_anchor_event": bool(event.metadata.get("downstream_followup_anchor_event")),
+            "downstream_followup_confirmed_event": bool(event.metadata.get("downstream_followup_confirmed_event")),
+            "downstream_followup_type": str(event.metadata.get("downstream_followup_type") or ""),
+            "downstream_followup_stage": str(event.metadata.get("downstream_followup_stage") or ""),
+            "followup_stage": str(event.metadata.get("followup_stage") or event.metadata.get("downstream_followup_stage") or ""),
+            "followup_type": str(event.metadata.get("followup_type") or event.metadata.get("downstream_followup_type") or ""),
+            "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
+            "downstream_anchor_address": str(event.metadata.get("downstream_anchor_address") or ""),
+            "downstream_anchor_usd_value": float(event.metadata.get("downstream_anchor_usd_value") or 0.0),
+            "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
+            "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
+            "downstream_followup_detail": str(event.metadata.get("downstream_followup_detail") or ""),
+            "downstream_followup_reason": str(event.metadata.get("downstream_followup_reason") or ""),
+            "downstream_followup_audit_reason": str(event.metadata.get("downstream_observation_reason") or ""),
+            "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
+            "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
+            "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
+            "downstream_address": str(event.metadata.get("downstream_address") or ""),
+            "downstream_label": str(event.metadata.get("downstream_label") or event.metadata.get("downstream_object_label") or ""),
+            "anchor_watch_address": str(event.metadata.get("anchor_watch_address") or event.metadata.get("downstream_anchor_address") or ""),
+            "anchor_label": str(event.metadata.get("anchor_label") or event.metadata.get("downstream_anchor_label") or ""),
+            "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
+            "hop": int(event.metadata.get("hop") or 1),
+            "window_sec": int(event.metadata.get("window_sec") or 0),
+            "downstream_runtime_state": str(event.metadata.get("downstream_runtime_state") or ""),
+            "notification_stage_label": str(event.metadata.get("notification_stage_label") or ""),
+        }
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+        signal.metadata["case"] = {
+            **dict(signal.metadata.get("case") or {}),
+            "case_id": behavior_case.case_id,
+            "status": behavior_case.status,
+            "stage": behavior_case.stage,
+            "summary": behavior_case.summary,
+            "case_family": payload["case_family"],
+            "anchor_label": payload["downstream_anchor_label"],
+            "downstream_address": payload["downstream_address"],
+        }
+
     def _sync_smart_money_case_to_signal(self, event: Event, signal, behavior_case) -> None:
         if behavior_case is None or not self._is_smart_money_case(behavior_case):
             return
@@ -1341,6 +1822,8 @@ class SignalPipeline:
 
     def _apply_case_notification_control(self, event: Event, signal, behavior_case) -> bool:
         if behavior_case is None or not (
+            self._is_downstream_followup_case(behavior_case)
+            or
             self._is_exchange_followup_case(behavior_case)
             or self._is_smart_money_case(behavior_case)
             or self._is_liquidation_case(behavior_case)
@@ -1360,18 +1843,15 @@ class SignalPipeline:
         if not allowed:
             return False
 
-        self._mark_case_signal_emitted(behavior_case, stage, signal)
-        self._apply_case_notification_metadata(
-            event=event,
-            signal=signal,
-            behavior_case=behavior_case,
-            stage=stage,
-            allowed=True,
-            reason="allowed",
-        )
         return True
 
     def _resolve_case_notification_stage(self, event: Event, signal, behavior_case) -> str | None:
+        if self._is_downstream_followup_case(behavior_case):
+            return str(
+                event.metadata.get("downstream_followup_stage")
+                or getattr(behavior_case, "stage", "")
+                or ""
+            ) or None
         if self._is_exchange_followup_case(behavior_case):
             if bool(event.metadata.get("exchange_followup_confirmed_event")) and bool(event.metadata.get("followup_confirmed")):
                 return "followup_confirmed"
@@ -1398,6 +1878,8 @@ class SignalPipeline:
         if self.followup_tracker is None:
             return True, "no_followup_tracker"
         if not (
+            self._is_downstream_followup_case(behavior_case)
+            or
             self._is_exchange_followup_case(behavior_case)
             or self._is_smart_money_case(behavior_case)
             or self._is_liquidation_case(behavior_case)
@@ -1414,6 +1896,12 @@ class SignalPipeline:
             return
         try:
             self.followup_tracker.mark_case_notification_emitted(behavior_case, stage, signal)
+            if self._is_downstream_followup_case(behavior_case):
+                self.state_manager.mark_adjacent_watch_notification(
+                    getattr(behavior_case, "watch_address", ""),
+                    ts=int(time.time()),
+                    stage=stage,
+                )
         except Exception as e:
             print(f"case 通知状态标记失败: {e}")
 
@@ -1427,15 +1915,28 @@ class SignalPipeline:
         reason: str,
     ) -> None:
         metadata = behavior_case.metadata if behavior_case is not None else {}
+        case_id = str(getattr(behavior_case, "case_id", "") or "")
+        case_family = str(metadata.get("case_family") or event.metadata.get("case_family") or "")
         payload = {
             "case_notification_stage": stage,
             "case_notification_allowed": bool(allowed),
             "case_notification_suppressed": not bool(allowed),
             "case_notification_reason": reason,
+            "pending_case_notification": bool(allowed),
+            "pending_case_notification_stage": stage if allowed else "",
+            "pending_case_notification_reason": reason if allowed else "",
+            "pending_case_notification_case_id": case_id if allowed else "",
+            "pending_case_notification_case_family": case_family if allowed else "",
+            "delivered_notification": False,
+            "delivered_notification_stage": "",
+            "delivered_notification_reason": "",
+            "downstream_observation_reason": event.metadata.get("downstream_observation_reason", "") or reason,
             "followup_confirmed": bool(metadata.get("followup_confirmed")),
             "followup_assets": list(metadata.get("followup_tokens_seen") or []),
             "followup_label": event.metadata.get("followup_label", ""),
             "followup_detail": event.metadata.get("followup_detail", ""),
+            "downstream_followup_label": event.metadata.get("downstream_followup_label", ""),
+            "downstream_followup_detail": event.metadata.get("downstream_followup_detail", ""),
             "liquidation_case_label": event.metadata.get("liquidation_case_label", ""),
             "liquidation_case_detail": event.metadata.get("liquidation_case_detail", ""),
             "notification_stage_label": self._notification_stage_label(stage),
@@ -1453,7 +1954,45 @@ class SignalPipeline:
         if behavior_case is not None:
             behavior_case.metadata["last_notification_decision"] = decision
 
+    def _apply_notification_delivery_metadata(
+        self,
+        event: Event,
+        signal,
+        delivered: bool,
+        reason: str,
+    ) -> None:
+        stage = str(
+            event.metadata.get("pending_case_notification_stage")
+            or signal.metadata.get("pending_case_notification_stage")
+            or ""
+        )
+        payload = {
+            "delivered_notification": bool(delivered),
+            "delivered_notification_stage": stage if delivered else "",
+            "delivered_notification_reason": str(reason or ""),
+            "pending_case_notification": False,
+        }
+        event.metadata.update(payload)
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+
     def _notification_stage_label(self, stage: str | None) -> str:
+        if stage == "followup_opened":
+            return "观察开启"
+        if stage == "downstream_seen":
+            return "后续动作"
+        if stage == "exchange_arrival_confirmed":
+            return "进入交易场景"
+        if stage == "swap_execution_confirmed":
+            return "执行确认"
+        if stage == "distribution_confirmed":
+            return "分发确认"
+        if stage == "cooling":
+            return "观察降温"
+        if stage == "closing":
+            return "窗口关闭中"
+        if stage == "expired":
+            return "观察过期"
         if stage == "anchor_opened":
             return "观察建立"
         if stage == "followup_confirmed":
@@ -1471,37 +2010,64 @@ class SignalPipeline:
         return ""
 
     def _should_emit_delivery_notification(self, event: Event, signal) -> bool:
-        delivery_class = str(signal.delivery_class or event.delivery_class or "drop")
-        if delivery_class == "primary":
-            return True
-        if delivery_class != "observe":
-            return False
+        return can_emit_delivery_notification(event, signal)
 
-        role_group = strategy_role_group(event.strategy_role)
-        if role_group == "lp_pool":
-            if str(event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}:
-                return bool(DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE)
-            return bool(DELIVERY_ALLOW_LP_OBSERVE)
-        if role_group == "exchange":
-            return bool(DELIVERY_ALLOW_EXCHANGE_OBSERVE)
-        if role_group == "smart_money":
-            if not DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE:
-                return False
-            allowed_reasons = {
-                "smart_money_transfer_observe",
-                "market_maker_execution_observe",
-                "market_maker_inventory_observe",
-                "market_maker_inventory_shift_observe",
-                "market_maker_non_execution_observe",
-                "smart_money_non_execution_observe",
-                "smart_money_execution_observe",
-            }
-            return str(signal.delivery_reason or event.delivery_reason or "") in allowed_reasons
-        return False
+    def _resolve_behavior_case_for_signal(self, signal):
+        if self.followup_tracker is None:
+            return None
+        return self.followup_tracker.get_case(getattr(signal, "case_id", ""))
+
+    def finalize_notification_delivery(
+        self,
+        event: Event,
+        signal,
+        delivered: bool,
+        behavior_case=None,
+        behavior: dict | None = None,
+        gate_metrics: dict | None = None,
+        archive_status: dict | None = None,
+    ) -> None:
+        behavior_case = behavior_case or self._resolve_behavior_case_for_signal(signal)
+        delivery_reason = "notifier_delivered" if delivered else "notifier_send_failed"
+        self._apply_notification_delivery_metadata(
+            event=event,
+            signal=signal,
+            delivered=delivered,
+            reason=delivery_reason,
+        )
+        if delivered:
+            stage = str(
+                event.metadata.get("pending_case_notification_stage")
+                or signal.metadata.get("pending_case_notification_stage")
+                or ""
+            ) or None
+            self._mark_case_signal_emitted(behavior_case, stage, signal)
+            self.quality_gate.mark_emitted(event)
+
+        self._archive_delivery_audit(
+            event=event,
+            signal=signal,
+            behavior=behavior,
+            gate_metrics=gate_metrics,
+            stage="notifier_delivery",
+            gate_reason=delivery_reason,
+            archive_status=archive_status or {},
+            archive_ts=int(getattr(signal, "archive_ts", 0) or event.archive_ts or time.time()),
+            audit_extras={
+                "delivered": bool(delivered),
+                "pending_notification_stage": str(event.metadata.get("pending_case_notification_stage") or ""),
+                "pending_notification_reason": str(event.metadata.get("pending_case_notification_reason") or ""),
+                "delivered_notification_stage": str(event.metadata.get("delivered_notification_stage") or ""),
+            },
+        )
 
     def _is_exchange_followup_case(self, behavior_case) -> bool:
         metadata = getattr(behavior_case, "metadata", {}) or {}
         return str(metadata.get("case_family") or "") == "exchange_cross_token_followup"
+
+    def _is_downstream_followup_case(self, behavior_case) -> bool:
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        return str(metadata.get("case_family") or "") == "downstream_counterparty_followup"
 
     def _is_smart_money_case(self, behavior_case) -> bool:
         metadata = getattr(behavior_case, "metadata", {}) or {}
@@ -1560,6 +2126,27 @@ class SignalPipeline:
             "token_open_case_ids": token_snapshot.get("open_case_ids", []),
             "watch_label": watch_meta.get("label", ""),
             "pool_snapshot": pool_snapshot,
+            "case_family": str(event.metadata.get("case_family") or ""),
+            "downstream_followup": bool(event.metadata.get("downstream_followup")),
+            "notification_stage": str(
+                event.metadata.get("delivered_notification_stage")
+                or event.metadata.get("pending_case_notification_stage")
+                or event.metadata.get("case_notification_stage")
+                or ""
+            ),
+            "pending_notification_stage": str(event.metadata.get("pending_case_notification_stage") or ""),
+            "delivered_notification_stage": str(event.metadata.get("delivered_notification_stage") or ""),
+            "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
+            "anchor_watch_address": str(event.metadata.get("anchor_watch_address") or ""),
+            "anchor_label": str(event.metadata.get("anchor_label") or ""),
+            "downstream_address": str(event.metadata.get("downstream_address") or ""),
+            "downstream_label": str(event.metadata.get("downstream_label") or ""),
+            "downstream_followup_type": str(event.metadata.get("downstream_followup_type") or ""),
+            "followup_stage": str(event.metadata.get("followup_stage") or ""),
+            "followup_type": str(event.metadata.get("followup_type") or ""),
+            "hop": int(event.metadata.get("hop") or 0),
+            "window_sec": int(event.metadata.get("window_sec") or 0),
+            "runtime_state": str(event.metadata.get("downstream_runtime_state") or ""),
             "lp_analysis": dict(event.metadata.get("lp_analysis") or {}),
             "liquidation_stage": str(event.metadata.get("liquidation_stage") or "none"),
             "liquidation_score": float(event.metadata.get("liquidation_score") or 0.0),
@@ -2384,3 +2971,10 @@ class SignalPipeline:
 
     def _clamp(self, value: float, low: float, high: float) -> float:
         return max(low, min(high, float(value)))
+
+
+def _usd_text(value: float) -> str:
+    usd_value = float(value or 0.0)
+    if usd_value >= 100_000:
+        return f"${usd_value:,.0f}"
+    return f"${usd_value:,.2f}"

@@ -16,6 +16,7 @@ from config import (
 from constants import ERC20_TRANSFER_EVENT_SIG
 from filter import WATCH_ADDRESSES
 from lp_registry import ACTIVE_LP_POOL_ADDRESSES
+from state_manager import get_runtime_adjacent_watch_addresses
 
 # 使用 HTTPProvider 做新区块轮询。
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -32,7 +33,14 @@ QUEUE_STATS = {
 
 # get_logs 的 topic OR 数量不宜过大，按批次分片查询。
 TOPIC_CHUNK_SIZE = 25
-MONITORED_TRANSFER_ADDRESSES = WATCH_ADDRESSES | ACTIVE_LP_POOL_ADDRESSES
+
+
+def get_monitored_watch_addresses() -> set[str]:
+    return WATCH_ADDRESSES | get_runtime_adjacent_watch_addresses()
+
+
+def get_monitored_transfer_addresses() -> set[str]:
+    return get_monitored_watch_addresses() | ACTIVE_LP_POOL_ADDRESSES
 
 
 def _to_hex(value):
@@ -77,8 +85,9 @@ def _chunked(iterable, size):
         yield chunk
 
 
-def _extract_touched_watch_addresses(logs):
+def _extract_touched_watch_addresses(logs, monitored_watch_addresses: set[str] | None = None):
     """从 Transfer 日志中找出与监控地址相关的地址集合。"""
+    monitored_watch_addresses = monitored_watch_addresses or get_monitored_watch_addresses()
     touched = set()
     for log in logs:
         topics = log.get("topics") or []
@@ -87,9 +96,9 @@ def _extract_touched_watch_addresses(logs):
 
         from_addr = _address_from_topic(topics[1])
         to_addr = _address_from_topic(topics[2])
-        if from_addr in WATCH_ADDRESSES:
+        if from_addr in monitored_watch_addresses:
             touched.add(from_addr)
-        if to_addr in WATCH_ADDRESSES:
+        if to_addr in monitored_watch_addresses:
             touched.add(to_addr)
     return touched
 
@@ -226,10 +235,11 @@ async def _fetch_transfer_logs_for_block(block_num: int):
     - from 在监控地址内
     - 或 to 在监控地址内
     """
-    if not MONITORED_TRANSFER_ADDRESSES:
+    monitored_addresses = get_monitored_transfer_addresses()
+    if not monitored_addresses:
         return {}
 
-    watch_topics = [_topic_for_address(addr) for addr in MONITORED_TRANSFER_ADDRESSES]
+    watch_topics = [_topic_for_address(addr) for addr in monitored_addresses]
     grouped = defaultdict(list)
     seen = set()
 
@@ -409,6 +419,7 @@ async def producer():
             for block_num in range(last_block + 1, latest_block + 1):
                 block = w3.eth.get_block(block_num, full_transactions=True)
                 print(f"新区块: {block_num}, 交易数: {len(block.transactions)}")
+                monitored_watch_addresses = get_monitored_watch_addresses()
 
                 # 先抓 token flow 候选（不依赖 Router，可覆盖聚合器/代理/多跳）。
                 tx_transfer_logs = await _fetch_transfer_logs_for_block(block_num)
@@ -425,18 +436,18 @@ async def producer():
                         continue
 
                     if tx["value"] > 0 and (
-                        from_addr in WATCH_ADDRESSES
-                        or (to_addr and to_addr in WATCH_ADDRESSES)
+                        from_addr in monitored_watch_addresses
+                        or (to_addr and to_addr in monitored_watch_addresses)
                     ):
                         touched_watch_addresses = [
                             addr for addr in [from_addr, to_addr]
-                            if addr and addr in WATCH_ADDRESSES
+                            if addr and addr in monitored_watch_addresses
                         ]
                         await _enqueue(_build_eth_candidate(tx, block_num, touched_watch_addresses))
 
                 # 为每个触达地址单独生成候选，方便后续行为建模按地址归因。
                 for tx_hash, logs in tx_transfer_logs.items():
-                    touched_watch_addresses = _extract_touched_watch_addresses(logs)
+                    touched_watch_addresses = _extract_touched_watch_addresses(logs, monitored_watch_addresses)
                     touched_lp_pools = _extract_touched_lp_pools(logs)
                     if not touched_watch_addresses and not touched_lp_pools:
                         continue
@@ -451,7 +462,7 @@ async def producer():
                     for watch_address in touched_watch_addresses:
                         enriched = dict(candidate)
                         enriched["watch_address"] = watch_address
-                        enriched["monitor_type"] = "watch_address"
+                        enriched["monitor_type"] = "watch_address" if watch_address in WATCH_ADDRESSES else "adjacent_watch"
                         await _enqueue(enriched)
                     for pool_address in touched_lp_pools:
                         enriched = dict(candidate)

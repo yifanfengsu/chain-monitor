@@ -65,7 +65,16 @@ async def handle_tx(raw_item):
 
         signal = result["signal"]
         event = result["event"]
-        await send_signal(signal, event)
+        delivered = await send_signal(signal, event)
+        pipeline.finalize_notification_delivery(
+            event=event,
+            signal=signal,
+            delivered=delivered,
+            behavior_case=result.get("case"),
+            behavior=result.get("behavior"),
+            gate_metrics=(result.get("gate").metrics if result.get("gate") is not None else None),
+            archive_status=result.get("archive_status"),
+        )
 
     except Exception as e:
         print("处理交易出错:", e)

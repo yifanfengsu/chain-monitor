@@ -108,6 +108,31 @@ class AddressIntel:
 
 
 @dataclass
+class AdjacentWatchState:
+    """运行时临时相邻观察地址状态。"""
+
+    address: str
+    anchor_watch_address: str
+    anchor_label: str
+    root_tx_hash: str
+    token: str | None
+    anchor_usd_value: float
+    opened_at: int
+    active_until: int
+    cooling_until: int
+    closing_until: int
+    hop: int = 1
+    reason: str = ""
+    strategy_hint: str = ""
+    emitted_notification_count: int = 0
+    observed_count: int = 0
+    last_seen_ts: int = 0
+    last_event_type: str = ""
+    runtime_label_hint: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class BehaviorCase:
     """重点行为案例的生命周期状态。"""
 

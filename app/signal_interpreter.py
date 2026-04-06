@@ -183,6 +183,25 @@ class SignalInterpreter:
         if smart_money_context["active"] and message_variant == "alert":
             message_variant = smart_money_context["message_variant"]
 
+        downstream_followup_active = bool(event.metadata.get("downstream_followup_active"))
+        if downstream_followup_active:
+            message_variant = "downstream_followup"
+            object_label = str(event.metadata.get("downstream_object_label") or object_label or actor_label)
+            headline_label = str(event.metadata.get("downstream_followup_label") or headline_label)
+            fact_brief = (
+                f"{event.metadata.get('downstream_anchor_label') or '重点地址'} -> "
+                f"{event.metadata.get('downstream_object_label') or object_label}｜{self._trade_value_label(event, signal, continuous_count, abnormal_ratio, gate_metrics, lp_event)}"
+            )
+            explanation_brief = str(event.metadata.get("downstream_followup_detail") or explanation_brief)
+            evidence_brief = (
+                f"{event.metadata.get('downstream_followup_stage_label') or '观察开启'}｜"
+                f"anchor ${float(event.metadata.get('downstream_anchor_usd_value') or 0.0):,.0f}｜"
+                f"{confirmation_label}"
+            )
+            action_hint = str(event.metadata.get("downstream_followup_next_hint") or action_hint)
+            update_brief = str(event.metadata.get("downstream_followup_label") or update_brief)
+            path_text = str(event.metadata.get("downstream_followup_path_label") or path_text)
+
         if lp_event and liquidation_meta["active"]:
             semantic = "liquidation_execution" if liquidation_meta["stage"] == "execution" else "liquidation_risk"
             intent_label = "疑似清算执行" if liquidation_meta["stage"] == "execution" else "疑似清算风险"
@@ -304,6 +323,15 @@ class SignalInterpreter:
             "smart_money_evidence_brief": smart_money_context["evidence_brief"],
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
+            "downstream_followup_active": downstream_followup_active,
+            "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
+            "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
+            "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
+            "downstream_followup_detail": str(event.metadata.get("downstream_followup_detail") or ""),
+            "downstream_followup_reason": str(event.metadata.get("downstream_followup_reason") or ""),
+            "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
+            "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
+            "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
         }
 
         signal.metadata.setdefault("summary", {})
@@ -365,6 +393,15 @@ class SignalInterpreter:
             "smart_money_evidence_brief": smart_money_context["evidence_brief"],
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
+            "downstream_followup_active": downstream_followup_active,
+            "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
+            "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
+            "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
+            "downstream_followup_detail": str(event.metadata.get("downstream_followup_detail") or ""),
+            "downstream_followup_reason": str(event.metadata.get("downstream_followup_reason") or ""),
+            "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
+            "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
+            "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
         })
         if lp_event:
             signal.metadata["lp"] = {
@@ -1076,7 +1113,12 @@ class SignalInterpreter:
     def _is_exchange_followup_case(self, event: Event) -> bool:
         return str(event.metadata.get("case_family") or "") == "exchange_cross_token_followup"
 
+    def _is_downstream_followup_case(self, event: Event) -> bool:
+        return str(event.metadata.get("case_family") or "") == "downstream_counterparty_followup"
+
     def _message_variant(self, event: Event, signal: Signal, lp_event: bool, watch_meta: dict) -> str:
+        if self._is_downstream_followup_case(event):
+            return "downstream_followup"
         if str(event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}:
             return "liquidation"
         if bool(event.metadata.get("followup_confirmed")):

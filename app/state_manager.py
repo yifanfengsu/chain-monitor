@@ -1,8 +1,9 @@
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import math
+import time
 
-from models import Event
+from models import AdjacentWatchState, Event
 
 
 TIME_WINDOWS = {
@@ -24,6 +25,7 @@ SMART_MONEY_STRATEGY_ROLES = {
     "alpha_wallet",
     "celebrity_wallet",
 }
+_PRIMARY_STATE_MANAGER = None
 
 
 @dataclass
@@ -66,6 +68,7 @@ class StateManager:
     """
 
     def __init__(self, max_events_per_address: int = 300, max_events_per_token: int = 500) -> None:
+        global _PRIMARY_STATE_MANAGER
         self.max_events_per_address = max_events_per_address
         self.max_events_per_token = max_events_per_token
         self._address_states: dict[str, AddressState] = {}
@@ -77,6 +80,8 @@ class StateManager:
         self._address_interaction_stats: dict[str, dict[str, dict]] = {}
         self._open_cases_by_address: dict[str, set[str]] = defaultdict(set)
         self._open_cases_by_token: dict[str, set[str]] = defaultdict(set)
+        self._adjacent_watch_states: dict[str, AdjacentWatchState] = {}
+        _PRIMARY_STATE_MANAGER = self
 
     def apply_event(self, event: Event) -> None:
         self._apply_address_event(event)
@@ -231,6 +236,15 @@ class StateManager:
 
     def get_cooldown_key(self, event: Event, intent_type: str | None = None) -> str:
         """默认 cooldown key：address + intent + token + side。"""
+        case_family = str((event.metadata or {}).get("case_family") or "")
+        if case_family == "downstream_counterparty_followup" and event.case_id:
+            stage = str(
+                (event.metadata or {}).get("downstream_followup_stage")
+                or event.followup_stage
+                or "followup_opened"
+            )
+            chain = str(event.chain or "ethereum").lower()
+            return "|".join([chain, str(event.case_id), case_family, stage])
         address = (event.address or "").lower()
         intent = str(intent_type or event.intent_type or "unknown_intent").lower()
         token = (event.token or "native").lower()
@@ -257,6 +271,240 @@ class StateManager:
         if not key:
             return None
         return self._last_signal_ts_by_key.get(key)
+
+    def register_adjacent_watch(
+        self,
+        address: str,
+        anchor_watch_address: str,
+        anchor_label: str,
+        root_tx_hash: str,
+        token: str | None,
+        anchor_usd_value: float,
+        opened_at: int,
+        active_until: int,
+        cooling_until: int,
+        closing_until: int,
+        hop: int = 1,
+        reason: str = "",
+        strategy_hint: str = "",
+        runtime_label_hint: str = "",
+        metadata: dict | None = None,
+    ) -> dict | None:
+        addr = str(address or "").lower()
+        anchor_address = str(anchor_watch_address or "").lower()
+        if not addr or not anchor_address:
+            return None
+
+        now_ts = int(opened_at or time.time())
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        payload = dict(metadata or {})
+        existing = self._adjacent_watch_states.get(addr)
+        if existing is not None and int(existing.closing_until or 0) > now_ts:
+            existing.anchor_watch_address = existing.anchor_watch_address or anchor_address
+            existing.anchor_label = anchor_label or existing.anchor_label
+            existing.root_tx_hash = root_tx_hash or existing.root_tx_hash
+            existing.token = token or existing.token
+            existing.anchor_usd_value = max(float(existing.anchor_usd_value or 0.0), float(anchor_usd_value or 0.0))
+            existing.opened_at = min(int(existing.opened_at or now_ts), now_ts)
+            existing.active_until = max(int(existing.active_until or now_ts), int(active_until or now_ts))
+            existing.cooling_until = max(int(existing.cooling_until or now_ts), int(cooling_until or now_ts))
+            existing.closing_until = max(int(existing.closing_until or now_ts), int(closing_until or now_ts))
+            # hop 表示相对 anchor 的传播深度。未来扩展到 2-hop/多-hop 时，
+            # 运行态需要保留已知最深层级，不能在重复注册时被较浅 hop 覆盖回去。
+            existing.hop = max(max(int(existing.hop or 1), 1), max(int(hop or 1), 1))
+            existing.reason = reason or existing.reason
+            existing.strategy_hint = strategy_hint or existing.strategy_hint
+            existing.runtime_label_hint = runtime_label_hint or existing.runtime_label_hint
+            existing.last_seen_ts = max(int(existing.last_seen_ts or 0), now_ts)
+            if payload:
+                existing.metadata.update(payload)
+            return self._adjacent_watch_payload(existing)
+
+        state = AdjacentWatchState(
+            address=addr,
+            anchor_watch_address=anchor_address,
+            anchor_label=str(anchor_label or ""),
+            root_tx_hash=str(root_tx_hash or ""),
+            token=str(token).lower() if token else None,
+            anchor_usd_value=float(anchor_usd_value or 0.0),
+            opened_at=now_ts,
+            active_until=int(active_until or now_ts),
+            cooling_until=int(cooling_until or now_ts),
+            closing_until=int(closing_until or now_ts),
+            hop=max(int(hop or 1), 1),
+            reason=str(reason or ""),
+            strategy_hint=str(strategy_hint or ""),
+            emitted_notification_count=0,
+            observed_count=0,
+            last_seen_ts=now_ts,
+            last_event_type="opened",
+            runtime_label_hint=str(runtime_label_hint or ""),
+            metadata=payload,
+        )
+        self._adjacent_watch_states[addr] = state
+        return self._adjacent_watch_payload(state)
+
+    def touch_adjacent_watch(
+        self,
+        address: str,
+        ts: int | None = None,
+        event_type: str | None = None,
+    ) -> dict | None:
+        addr = str(address or "").lower()
+        if not addr:
+            return None
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return None
+        now_ts = int(ts or time.time())
+        if int(state.closing_until or 0) <= now_ts:
+            return None
+        state.observed_count = int(state.observed_count or 0) + 1
+        state.last_seen_ts = now_ts
+        if event_type:
+            state.last_event_type = str(event_type or state.last_event_type)
+        return self._adjacent_watch_payload(state)
+
+    def is_adjacent_watch_active(self, address: str, now_ts: int | None = None) -> bool:
+        addr = str(address or "").lower()
+        if not addr:
+            return False
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return False
+        reference_ts = int(now_ts or time.time())
+        return int(state.active_until or 0) > reference_ts
+
+    def get_adjacent_watch_context(self, address: str, now_ts: int | None = None) -> dict | None:
+        addr = str(address or "").lower()
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return None
+        return self._adjacent_watch_payload(state)
+
+    def maybe_get_adjacent_watch_meta(self, address: str, now_ts: int | None = None) -> dict:
+        state = self.get_adjacent_watch_context(address, now_ts=now_ts)
+        if not state:
+            return {}
+        metadata = dict(state.get("metadata") or {})
+        display_hint_label = str(metadata.get("display_hint_label") or state.get("reason") or "new_large_counterparty")
+        return {
+            "runtime_adjacent_watch": True,
+            "watch_meta_source": "runtime_adjacent_watch",
+            "anchor_watch_address": state.get("anchor_watch_address", ""),
+            "anchor_label": state.get("anchor_label", ""),
+            "root_tx_hash": state.get("root_tx_hash", ""),
+            "opened_at": int(state.get("opened_at") or 0),
+            "active_until": int(state.get("active_until") or 0),
+            "cooling_until": int(state.get("cooling_until") or 0),
+            "closing_until": int(state.get("closing_until") or 0),
+            "expire_at": int(state.get("active_until") or 0),
+            "hop": int(state.get("hop") or 1),
+            "strategy_hint": state.get("strategy_hint", ""),
+            "observed_count": int(state.get("observed_count") or 0),
+            "emitted_notification_count": int(state.get("emitted_notification_count") or 0),
+            "last_seen_ts": int(state.get("last_seen_ts") or 0),
+            "last_event_type": str(state.get("last_event_type") or ""),
+            "anchor_usd_value": float(state.get("anchor_usd_value") or 0.0),
+            "priority": int(metadata.get("priority") or 1),
+            "display_hint_label": display_hint_label,
+            "display_hint_reason": str(metadata.get("display_hint_reason") or state.get("reason") or ""),
+            "display_hint_anchor_label": state.get("anchor_label", ""),
+            "display_hint_anchor_address": state.get("anchor_watch_address", ""),
+            "display_hint_usd_value": float(state.get("anchor_usd_value") or 0.0),
+            "display_hint_token_symbol": str(metadata.get("token_symbol") or ""),
+            "anchor_strategy_role": str(metadata.get("anchor_strategy_role") or ""),
+            "downstream_case_id": str(metadata.get("case_id") or ""),
+            "runtime_label_hint": str(state.get("runtime_label_hint") or display_hint_label),
+            "runtime_state": self._adjacent_watch_phase(state, reference_ts=int(now_ts or time.time())),
+        }
+
+    def get_active_adjacent_watch_addresses(self, now_ts: int | None = None) -> set[str]:
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        reference_ts = int(now_ts or time.time())
+        return {
+            address
+            for address, state in self._adjacent_watch_states.items()
+            if int(state.active_until or 0) > reference_ts
+        }
+
+    def get_all_adjacent_watch_addresses(self, now_ts: int | None = None) -> set[str]:
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        return set(self._adjacent_watch_states.keys())
+
+    def get_adjacent_watch_phase(self, address: str, now_ts: int | None = None) -> str:
+        addr = str(address or "").lower()
+        self.expire_adjacent_watch(None, now_ts=now_ts)
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return "closed"
+        return self._adjacent_watch_phase(state, reference_ts=int(now_ts or time.time()))
+
+    def mark_adjacent_watch_notification(
+        self,
+        address: str,
+        ts: int | None = None,
+        stage: str | None = None,
+    ) -> dict | None:
+        addr = str(address or "").lower()
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return None
+        state.emitted_notification_count = int(state.emitted_notification_count or 0) + 1
+        state.last_seen_ts = int(ts or time.time())
+        if stage:
+            state.last_event_type = str(stage)
+        return self._adjacent_watch_payload(state)
+
+    def close_adjacent_watch(self, address: str, ts: int | None = None, reason: str = "closed") -> dict | None:
+        addr = str(address or "").lower()
+        state = self._adjacent_watch_states.get(addr)
+        if state is None:
+            return None
+        closed_ts = int(ts or time.time())
+        state.active_until = min(int(state.active_until or closed_ts), closed_ts)
+        state.cooling_until = min(int(state.cooling_until or closed_ts), closed_ts)
+        state.closing_until = min(int(state.closing_until or closed_ts), closed_ts)
+        state.last_seen_ts = closed_ts
+        state.last_event_type = str(reason or "closed")
+        payload = self._adjacent_watch_payload(state)
+        self._adjacent_watch_states.pop(addr, None)
+        return payload
+
+    def expire_adjacent_watch(self, address: str | None = None, now_ts: int | None = None) -> list[str]:
+        reference_ts = int(now_ts or time.time())
+        expired = []
+        if address:
+            addr = str(address or "").lower()
+            state = self._adjacent_watch_states.get(addr)
+            if state is not None and int(state.closing_until or 0) <= reference_ts:
+                self._adjacent_watch_states.pop(addr, None)
+                expired.append(addr)
+            return expired
+
+        for addr, state in list(self._adjacent_watch_states.items()):
+            if int(state.closing_until or 0) > reference_ts:
+                continue
+            self._adjacent_watch_states.pop(addr, None)
+            expired.append(addr)
+        return expired
+
+    def _adjacent_watch_payload(self, state: AdjacentWatchState) -> dict:
+        payload = asdict(state)
+        payload["token"] = str(payload.get("token") or "").lower() or None
+        payload["expire_at"] = int(payload.get("active_until") or 0)
+        return payload
+
+    def _adjacent_watch_phase(self, state: AdjacentWatchState, reference_ts: int) -> str:
+        if int(state.active_until or 0) > reference_ts:
+            return "active"
+        if int(state.cooling_until or 0) > reference_ts:
+            return "cooling"
+        if int(state.closing_until or 0) > reference_ts:
+            return "closing"
+        return "closed"
 
     def record_counterparty(
         self,
@@ -857,3 +1105,42 @@ class StateManager:
         if n % 2 == 1:
             return float(ordered[mid])
         return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def get_primary_state_manager():
+    return _PRIMARY_STATE_MANAGER
+
+
+def get_runtime_adjacent_watch_addresses(now_ts: int | None = None) -> set[str]:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return set()
+    return manager.get_active_adjacent_watch_addresses(now_ts=now_ts)
+
+
+def is_runtime_adjacent_watch_active(address: str, now_ts: int | None = None) -> bool:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return False
+    return manager.is_adjacent_watch_active(address, now_ts=now_ts)
+
+
+def maybe_get_runtime_adjacent_watch_meta(address: str, now_ts: int | None = None) -> dict:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return {}
+    return manager.maybe_get_adjacent_watch_meta(address, now_ts=now_ts)
+
+
+def get_runtime_adjacent_watch_phase(address: str, now_ts: int | None = None) -> str:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return "closed"
+    return manager.get_adjacent_watch_phase(address, now_ts=now_ts)
+
+
+def get_all_runtime_adjacent_watch_addresses(now_ts: int | None = None) -> set[str]:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return set()
+    return manager.get_all_adjacent_watch_addresses(now_ts=now_ts)

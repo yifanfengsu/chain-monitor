@@ -456,6 +456,43 @@ class StrategyEngine:
         market_maker_non_exec_intent = intent_type in {"pure_transfer", "unknown_intent", "internal_rebalance", "market_making_inventory_move"}
         market_maker_behavior = str(signal.behavior_type or signal.metadata.get("behavior_type") or "")
 
+        if case_family == "downstream_counterparty_followup":
+            if not bool(event.metadata.get("downstream_followup_anchor_event")) and not bool(event.metadata.get("downstream_followup_confirmed_event")) and case_stage == "followup_opened":
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "drop",
+                    "downstream_followup_dropped_as_small_noise",
+                    fact_type="downstream_followup",
+                )
+            if case_stage in {"swap_execution_confirmed", "exchange_arrival_confirmed"}:
+                if (
+                    confirmation_score >= 0.78
+                    and quality_score >= 0.80
+                    and is_real_execution
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "downstream_followup_primary",
+                        fact_type="downstream_followup",
+                    )
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "observe",
+                    "downstream_followup_observe",
+                    fact_type="downstream_followup",
+                )
+            return self._apply_delivery(
+                event,
+                signal,
+                "observe",
+                "downstream_followup_observe",
+                fact_type="downstream_followup",
+            )
+
         if followup_confirmed or case_stage == "followup_confirmed":
             if (
                 is_real_execution
@@ -768,6 +805,8 @@ class StrategyEngine:
         return delivery_class, reason
 
     def _delivery_fact_type(self, event: Event, signal: Signal) -> str:
+        if str(event.metadata.get("case_family") or "") == "downstream_counterparty_followup":
+            return "downstream_followup"
         if bool(event.metadata.get("followup_confirmed")):
             return "followup_confirmed"
         if str(event.metadata.get("liquidation_stage") or "") == "execution":

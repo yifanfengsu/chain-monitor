@@ -4,12 +4,9 @@ from telegram import Bot
 
 from config import (
     CHAT_ID,
-    DELIVERY_ALLOW_EXCHANGE_OBSERVE,
-    DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
-    DELIVERY_ALLOW_LP_OBSERVE,
-    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE,
     TELEGRAM_BOT_TOKEN,
 )
+from delivery_policy import can_emit_delivery_notification
 from filter import format_address_label, is_smart_money_strategy_role, strategy_role_group
 from models import Event, Signal
 
@@ -17,15 +14,17 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 DEFAULT_MESSAGE_TEMPLATE = os.getenv("WHALE_MESSAGE_TEMPLATE", "long").strip().lower()
 
 
-async def send(msg):
+async def send(msg) -> bool:
     """发送告警消息到 Telegram，失败时做短重试。"""
     for i in range(3):
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg)
-            return
+            return True
         except Exception as e:
             print(f"发送失败，第{i + 1}次重试:", e)
-            await asyncio.sleep(2)
+            if i < 2:
+                await asyncio.sleep(2)
+    return False
 
 
 def _format_path_line(prefix: str, from_addr: str | None, to_addr: str | None) -> str | None:
@@ -73,6 +72,8 @@ def _path_bundle(context: dict, raw: dict) -> tuple[str, str, str]:
 
 
 def _select_message_variant(signal: Signal, event: Event, context: dict) -> str:
+    if bool(context.get("downstream_followup_active")) or str(context.get("case_family") or "") == "downstream_counterparty_followup":
+        return "downstream_followup"
     if str(context.get("liquidation_stage") or event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}:
         return "liquidation"
     if bool(context.get("followup_confirmed")) or str(context.get("case_family") or "") == "exchange_cross_token_followup":
@@ -214,6 +215,13 @@ def _followup_explanation_prefix(signal: Signal, event: Event, context: dict) ->
 
 def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bool = False) -> str:
     notification_stage_label = str(context.get("notification_stage_label") or "").strip()
+    if variant == "downstream_followup":
+        stage_label = str(
+            context.get("downstream_followup_stage_label")
+            or notification_stage_label
+            or "观察开启"
+        ).strip()
+        return f"📡 下游地址后续观察 | {signal.tier} | {stage_label}"
     if variant == "followup":
         followup_label = str(context.get("followup_label") or context.get("intent_label") or "交易所方向流动").strip()
         stage_label = notification_stage_label or "观察升级"
@@ -263,6 +271,25 @@ def _followup_message(signal: Signal, event: Event, context: dict, raw: dict) ->
         f"当前解释：{_explanation_brief(context, event)}",
         f"证据：{_evidence_brief(context)}",
         f"下一步：{_action_hint(context)}",
+        _tx_line(signal),
+    ]
+    return _join_lines(lines)
+
+
+def _downstream_followup_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+    anchor_label = str(context.get("downstream_anchor_label") or "重点地址")
+    anchor_usd_value = float(signal.metadata.get("downstream_anchor_usd_value") or event.metadata.get("downstream_anchor_usd_value") or 0.0)
+    anchor_token = str(event.metadata.get("downstream_anchor_token") or event.metadata.get("token_symbol") or event.token or "资产")
+    lines = [
+        _header_for_variant(signal, context, "downstream_followup"),
+        f"对象：{context.get('downstream_object_label') or _object_label(signal, context)}",
+        f"来源锚点：{anchor_label}",
+        f"首次大额转移：{_usd_value_text(anchor_usd_value)} {anchor_token}",
+        f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
+        f"当前更像：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
+        f"证据：{context.get('evidence_brief') or _evidence_brief(context)}",
+        f"路径：{context.get('downstream_followup_path_label') or _path_line(context, raw)}",
+        f"继续看：{context.get('downstream_followup_next_hint') or _action_hint(context)}",
         _tx_line(signal),
     ]
     return _join_lines(lines)
@@ -362,6 +389,17 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
 
 def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     variant = _select_message_variant(signal, event, context)
+    if variant == "downstream_followup":
+        lines = [
+            _header_for_variant(signal, context, "downstream_followup", compact=True),
+            f"对象：{context.get('downstream_object_label') or _object_label(signal, context)}",
+            f"锚点：{context.get('downstream_anchor_label') or '重点地址'}",
+            f"动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
+            f"解释：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
+            f"证据：{context.get('evidence_brief') or _evidence_brief(context)}",
+            _tx_line(signal, compact=True),
+        ]
+        return _join_lines(lines)
     if variant == "followup":
         lines = [
             _header_for_variant(signal, context, "followup", compact=True),
@@ -436,6 +474,8 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
 
 def _long_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     variant = _select_message_variant(signal, event, context)
+    if variant == "downstream_followup":
+        return _downstream_followup_message(signal, event, context, raw)
     if variant == "followup":
         return _followup_message(signal, event, context, raw)
     if variant == "lp":
@@ -516,38 +556,12 @@ def _direction_display(event: Event, context: dict, raw: dict) -> str:
     return f"FLOW → {role_display}"
 
 
-async def send_signal(signal: Signal, event: Event) -> None:
-    delivery_class = str(signal.delivery_class or "")
-    role_group = strategy_role_group(event.strategy_role)
-    if delivery_class == "primary":
-        pass
-    elif delivery_class == "observe":
-        if role_group == "lp_pool" and DELIVERY_ALLOW_LP_OBSERVE:
-            pass
-        elif (
-            str(event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}
-            and DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE
-        ):
-            pass
-        elif role_group == "exchange" and DELIVERY_ALLOW_EXCHANGE_OBSERVE:
-            pass
-        elif (
-            role_group == "smart_money"
-            and DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE
-            and str(signal.delivery_reason or "") in {
-                "smart_money_transfer_observe",
-                "market_maker_execution_observe",
-                "market_maker_inventory_observe",
-                "market_maker_inventory_shift_observe",
-                "market_maker_non_execution_observe",
-                "smart_money_non_execution_observe",
-                "smart_money_execution_observe",
-            }
-        ):
-            pass
-        else:
-            return
-    else:
-        return
-    msg = format_signal_message(signal, event)
-    await send(msg)
+async def send_signal(signal: Signal, event: Event) -> bool:
+    if not can_emit_delivery_notification(event, signal):
+        return False
+    try:
+        msg = format_signal_message(signal, event)
+        return await send(msg)
+    except Exception as e:
+        print(f"信号发送失败: {e}")
+        return False
