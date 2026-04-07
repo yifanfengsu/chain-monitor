@@ -1,8 +1,13 @@
 from collections import defaultdict
 from dataclasses import asdict
+import json
+from pathlib import Path
 import time
 
 from models import AddressIntel, Event
+
+
+PERSISTED_EXCHANGE_ADJACENT_VERSION = 1
 
 
 class AddressIntelligenceManager:
@@ -21,12 +26,17 @@ class AddressIntelligenceManager:
         watch_addresses: set[str] | None = None,
         max_counterparties: int = 12,
         candidate_threshold: float = 28.0,
+        persist_interval_sec: int = 20,
     ) -> None:
         self.watch_addresses = {str(addr).lower() for addr in (watch_addresses or set()) if addr}
         self.max_counterparties = int(max_counterparties)
         self.candidate_threshold = float(candidate_threshold)
         self._intel_by_address: dict[str, AddressIntel] = {}
         self._display_hints_by_address: dict[str, dict] = {}
+        self._persist_interval_sec = max(int(persist_interval_sec or 20), 1)
+        self._persisted_exchange_adjacent_path: Path | None = None
+        self._last_persisted_exchange_adjacent_at = 0
+        self._last_persisted_exchange_adjacent_signature = ""
 
     def observe_event(
         self,
@@ -103,6 +113,8 @@ class AddressIntelligenceManager:
 
         if not updates:
             return None
+
+        self.maybe_persist_exchange_adjacent()
 
         return {
             "updated_addresses": updates,
@@ -202,6 +214,134 @@ class AddressIntelligenceManager:
         if not addr:
             return
         self._display_hints_by_address.pop(addr, None)
+
+    def is_persistable_exchange_adjacent(self, intel_or_address) -> bool:
+        if isinstance(intel_or_address, AddressIntel):
+            intel = intel_or_address
+        else:
+            intel = self._intel_by_address.get(str(intel_or_address or "").lower())
+        if intel is None:
+            return False
+        return (
+            str(intel.suspected_role or "") == "exchange_adjacent"
+            and int(intel.exchange_interactions or 0) >= 3
+            and str(intel.candidate_status or "") == "watch_adjacent"
+        )
+
+    def export_persistable_exchange_adjacent(self) -> list[dict]:
+        items = []
+        for address, intel in self._intel_by_address.items():
+            if not self.is_persistable_exchange_adjacent(intel):
+                continue
+            items.append({
+                "address": address,
+                "suspected_role": str(intel.suspected_role or ""),
+                "role_confidence": round(float(intel.role_confidence or 0.0), 3),
+                "candidate_score": round(float(intel.candidate_score or 0.0), 2),
+                "candidate_status": str(intel.candidate_status or ""),
+                "exchange_interactions": int(intel.exchange_interactions or 0),
+                "router_interactions": int(intel.router_interactions or 0),
+                "protocol_interactions": int(intel.protocol_interactions or 0),
+                "seen_count": int(intel.seen_count or 0),
+                "avg_usd": round(float(intel.avg_usd or 0.0), 4),
+                "max_usd": round(float(intel.max_usd or 0.0), 4),
+                "same_block_with_watch_count": int(intel.same_block_with_watch_count or 0),
+                "same_token_resonance_count": int(intel.same_token_resonance_count or 0),
+                "first_seen_ts": int(intel.first_seen_ts or 0),
+                "last_seen_ts": int(intel.last_seen_ts or 0),
+                "seen_tokens": sorted(
+                    str(token).lower()
+                    for token in (intel.seen_tokens or set())
+                    if token
+                ),
+                "top_counterparties": [
+                    [str(item["address"] or "").lower(), int(item["count"] or 0)]
+                    for item in self._sorted_counterparties(intel)
+                    if item.get("address")
+                ],
+            })
+        items.sort(
+            key=lambda item: (
+                -float(item.get("candidate_score") or 0.0),
+                -int(item.get("exchange_interactions") or 0),
+                item.get("address", ""),
+            )
+        )
+        return items
+
+    def export_persisted_exchange_adjacent_payload(self) -> dict:
+        return {
+            "version": PERSISTED_EXCHANGE_ADJACENT_VERSION,
+            "updated_at": int(time.time()),
+            "addresses": self.export_persistable_exchange_adjacent(),
+        }
+
+    def load_persisted_exchange_adjacent(self, path) -> list[dict]:
+        resolved_path = self._resolve_persist_path(path)
+        self._persisted_exchange_adjacent_path = resolved_path
+        if not resolved_path.exists():
+            self._last_persisted_exchange_adjacent_signature = self._persistable_exchange_adjacent_signature()
+            return []
+
+        try:
+            with resolved_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            print(f"persisted exchange_adjacent 加载失败: {e}")
+            return []
+
+        if not isinstance(payload, dict):
+            print("persisted exchange_adjacent 加载失败: payload 不是对象")
+            return []
+
+        loaded_addresses = []
+        for item in payload.get("addresses") or []:
+            try:
+                intel = self._intel_from_persisted_item(item)
+            except Exception as e:
+                print(f"persisted exchange_adjacent 条目恢复失败: {e}")
+                continue
+            if intel is None:
+                continue
+            self._intel_by_address[intel.address] = intel
+            loaded_addresses.append(self.get_intelligence(intel.address) or {"address": intel.address})
+
+        self._last_persisted_exchange_adjacent_signature = self._persistable_exchange_adjacent_signature()
+        self._last_persisted_exchange_adjacent_at = int(time.time())
+        return loaded_addresses
+
+    def save_persisted_exchange_adjacent(self, path=None) -> bool:
+        resolved_path = self._resolve_persist_path(path)
+        payload = self.export_persisted_exchange_adjacent_payload()
+        try:
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            with resolved_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+        except Exception as e:
+            print(f"persisted exchange_adjacent 保存失败: {e}")
+            return False
+
+        self._persisted_exchange_adjacent_path = resolved_path
+        self._last_persisted_exchange_adjacent_at = int(time.time())
+        self._last_persisted_exchange_adjacent_signature = self._persistable_exchange_adjacent_signature(
+            payload.get("addresses") or []
+        )
+        return True
+
+    def maybe_persist_exchange_adjacent(self, path=None, force: bool = False) -> bool:
+        resolved_path = self._resolve_persist_path(path, allow_empty=True)
+        if resolved_path is None:
+            return False
+
+        current_signature = self._persistable_exchange_adjacent_signature()
+        now_ts = int(time.time())
+        if not force:
+            if current_signature == self._last_persisted_exchange_adjacent_signature:
+                return False
+            if now_ts - int(self._last_persisted_exchange_adjacent_at or 0) < self._persist_interval_sec:
+                return False
+        return self.save_persisted_exchange_adjacent(resolved_path)
 
     def _expire_display_hints(self) -> None:
         now_ts = int(time.time())
@@ -334,6 +474,63 @@ class AddressIntelligenceManager:
             {"address": address, "count": int(count)}
             for address, count in ordered[: self.max_counterparties]
         ]
+
+    def _resolve_persist_path(self, path=None, allow_empty: bool = False) -> Path | None:
+        candidate = path or self._persisted_exchange_adjacent_path
+        if not candidate:
+            return None if allow_empty else Path("persisted_exchange_adjacent.json")
+        return Path(candidate)
+
+    def _persistable_exchange_adjacent_signature(self, items: list[dict] | None = None) -> str:
+        payload = items if items is not None else self.export_persistable_exchange_adjacent()
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def _intel_from_persisted_item(self, item: dict) -> AddressIntel | None:
+        if not isinstance(item, dict):
+            return None
+
+        address = str(item.get("address") or "").lower()
+        if not address:
+            return None
+
+        counterparties = defaultdict(int)
+        for entry in item.get("top_counterparties") or []:
+            if isinstance(entry, dict):
+                cp_address = str(entry.get("address") or "").lower()
+                count = int(entry.get("count") or 0)
+            elif isinstance(entry, (list, tuple)) and entry:
+                cp_address = str(entry[0] or "").lower()
+                count = int(entry[1] or 0) if len(entry) > 1 else 0
+            else:
+                continue
+            if cp_address:
+                counterparties[cp_address] = max(int(counterparties.get(cp_address) or 0), count)
+
+        intel = AddressIntel(
+            address=address,
+            first_seen_ts=int(item.get("first_seen_ts") or 0),
+            last_seen_ts=int(item.get("last_seen_ts") or 0),
+            seen_count=int(item.get("seen_count") or 0),
+            seen_tokens={
+                str(token).lower()
+                for token in (item.get("seen_tokens") or [])
+                if token
+            },
+            top_counterparties=counterparties,
+            suspected_role=str(item.get("suspected_role") or "unknown"),
+            role_confidence=float(item.get("role_confidence") or 0.0),
+            exchange_interactions=int(item.get("exchange_interactions") or 0),
+            router_interactions=int(item.get("router_interactions") or 0),
+            protocol_interactions=int(item.get("protocol_interactions") or 0),
+            avg_usd=float(item.get("avg_usd") or 0.0),
+            max_usd=float(item.get("max_usd") or 0.0),
+            same_block_with_watch_count=int(item.get("same_block_with_watch_count") or 0),
+            same_token_resonance_count=int(item.get("same_token_resonance_count") or 0),
+            candidate_score=float(item.get("candidate_score") or 0.0),
+            candidate_status=str(item.get("candidate_status") or "observed"),
+        )
+        self._trim_counterparties(intel)
+        return intel
 
     def _trim_counterparties(self, intel: AddressIntel) -> None:
         ordered = sorted(

@@ -326,7 +326,13 @@ class LPAnalyzer:
             and multi_pool_resonance <= 1
             and pool_volume_surge_ratio < 1.25
         ):
-            score -= 0.06
+            score -= 0.03
+            if (
+                action_intensity < 0.60
+                and reserve_skew < 0.18
+                and abnormal_ratio < 1.6
+            ):
+                score -= 0.03
         if event.pricing_status in {"unknown", "unavailable"}:
             score -= 0.08
 

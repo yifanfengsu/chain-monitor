@@ -11,6 +11,24 @@ from config import (
     LIQUIDATION_EXECUTION_MIN_SCORE,
     LIQUIDATION_PRIMARY_MIN_USD,
     LIQUIDATION_RISK_MIN_SCORE,
+    LP_FIRST_HIT_PRIMARY_ENABLE,
+    LP_FIRST_HIT_PRIMARY_MIN_ABNORMAL_RATIO,
+    LP_FIRST_HIT_PRIMARY_MIN_ACTION_INTENSITY,
+    LP_FIRST_HIT_PRIMARY_MIN_CONFIDENCE,
+    LP_FIRST_HIT_PRIMARY_MIN_PRICING_CONFIDENCE,
+    LP_FIRST_HIT_PRIMARY_MIN_QUALITY,
+    LP_FIRST_HIT_PRIMARY_MIN_RESERVE_SKEW,
+    LP_FIRST_HIT_PRIMARY_MIN_SURGE_RATIO,
+    LP_FIRST_HIT_PRIMARY_MIN_USD,
+    LP_FIRST_HIT_PRIMARY_DIRECT_ENABLE,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_ABNORMAL_RATIO,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_ACTION_INTENSITY,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_CONFIDENCE,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_PRICING_CONFIDENCE,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_QUALITY,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_RESERVE_SKEW,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_SURGE_RATIO,
+    LP_FIRST_HIT_PRIMARY_DIRECT_MIN_USD,
     LP_OBSERVE_MIN_CONFIDENCE,
     LP_OBSERVE_MIN_USD,
     LP_PRIMARY_MIN_CONFIDENCE,
@@ -127,6 +145,8 @@ class StrategyEngine:
         lp_multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or 0)
         lp_volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or 0.0)
         lp_action_intensity = float(gate_metrics.get("lp_action_intensity") or 0.0)
+        lp_reserve_skew = float(gate_metrics.get("lp_reserve_skew") or 0.0)
+        abnormal_ratio = float(gate_metrics.get("abnormal_ratio") or 0.0)
         lp_observe_exception_applied = bool(gate_metrics.get("lp_observe_exception_applied"))
         lp_observe_exception_reason = str(gate_metrics.get("lp_observe_exception_reason") or "")
         lp_observe_threshold_ratio = float(gate_metrics.get("lp_observe_threshold_ratio") or 0.0)
@@ -564,6 +584,42 @@ class StrategyEngine:
                     )
 
             if intent_type in PRIMARY_LP_INTENTS:
+                if self._allow_lp_first_hit_directional_primary_direct(
+                    event=event,
+                    confirmation_score=confirmation_score,
+                    quality_score=quality_score,
+                    pricing_confidence=pricing_confidence,
+                    lp_action_intensity=lp_action_intensity,
+                    lp_reserve_skew=lp_reserve_skew,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
+                    abnormal_ratio=abnormal_ratio,
+                    lp_same_pool_continuity=lp_same_pool_continuity,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "lp_first_hit_directional_primary_direct",
+                    )
+                if self._allow_lp_first_hit_directional_primary(
+                    event=event,
+                    confirmation_score=confirmation_score,
+                    quality_score=quality_score,
+                    pricing_confidence=pricing_confidence,
+                    lp_action_intensity=lp_action_intensity,
+                    lp_reserve_skew=lp_reserve_skew,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
+                    abnormal_ratio=abnormal_ratio,
+                    lp_same_pool_continuity=lp_same_pool_continuity,
+                    lp_observe_exception_applied=lp_observe_exception_applied,
+                    lp_observe_exception_reason=lp_observe_exception_reason,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "lp_first_hit_directional_primary",
+                    )
                 if lp_observe_exception_applied:
                     return self._apply_delivery(
                         event,
@@ -781,6 +837,84 @@ class StrategyEngine:
         if confirmation_score >= 0.60 or quality_score >= 0.80:
             return self._apply_delivery(event, signal, "observe", "directional_observe")
         return self._apply_delivery(event, signal, "drop", "low_trade_value_drop")
+
+    def _allow_lp_first_hit_directional_primary(
+        self,
+        event: Event,
+        confirmation_score: float,
+        quality_score: float,
+        pricing_confidence: float,
+        lp_action_intensity: float,
+        lp_reserve_skew: float,
+        lp_volume_surge_ratio: float,
+        abnormal_ratio: float,
+        lp_same_pool_continuity: int,
+        lp_observe_exception_applied: bool,
+        lp_observe_exception_reason: str,
+    ) -> bool:
+        if not bool(LP_FIRST_HIT_PRIMARY_ENABLE):
+            return False
+        if not lp_observe_exception_applied:
+            return False
+        if str(lp_observe_exception_reason or "") != "lp_first_hit_strong_directional_exception":
+            return False
+        if float(event.usd_value or 0.0) < LP_FIRST_HIT_PRIMARY_MIN_USD:
+            return False
+        if confirmation_score < LP_FIRST_HIT_PRIMARY_MIN_CONFIDENCE:
+            return False
+        if quality_score < LP_FIRST_HIT_PRIMARY_MIN_QUALITY:
+            return False
+        if pricing_confidence < LP_FIRST_HIT_PRIMARY_MIN_PRICING_CONFIDENCE:
+            return False
+        if lp_action_intensity < LP_FIRST_HIT_PRIMARY_MIN_ACTION_INTENSITY:
+            return False
+        if lp_reserve_skew < LP_FIRST_HIT_PRIMARY_MIN_RESERVE_SKEW:
+            return False
+        if lp_same_pool_continuity > 1:
+            return False
+        if (
+            lp_volume_surge_ratio < LP_FIRST_HIT_PRIMARY_MIN_SURGE_RATIO
+            and abnormal_ratio < LP_FIRST_HIT_PRIMARY_MIN_ABNORMAL_RATIO
+        ):
+            return False
+        return True
+
+    def _allow_lp_first_hit_directional_primary_direct(
+        self,
+        event: Event,
+        confirmation_score: float,
+        quality_score: float,
+        pricing_confidence: float,
+        lp_action_intensity: float,
+        lp_reserve_skew: float,
+        lp_volume_surge_ratio: float,
+        abnormal_ratio: float,
+        lp_same_pool_continuity: int,
+    ) -> bool:
+        if not bool(LP_FIRST_HIT_PRIMARY_DIRECT_ENABLE):
+            return False
+        if str(event.intent_type or "") not in PRIMARY_LP_INTENTS:
+            return False
+        if lp_same_pool_continuity > 1:
+            return False
+        if float(event.usd_value or 0.0) < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_USD:
+            return False
+        if confirmation_score < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_CONFIDENCE:
+            return False
+        if quality_score < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_QUALITY:
+            return False
+        if pricing_confidence < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_PRICING_CONFIDENCE:
+            return False
+        if lp_action_intensity < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_ACTION_INTENSITY:
+            return False
+        if lp_reserve_skew < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_RESERVE_SKEW:
+            return False
+        if (
+            lp_volume_surge_ratio < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_SURGE_RATIO
+            and abnormal_ratio < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_ABNORMAL_RATIO
+        ):
+            return False
+        return True
 
     def _apply_delivery(
         self,

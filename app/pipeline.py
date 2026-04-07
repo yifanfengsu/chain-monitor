@@ -2,9 +2,14 @@ import time
 import hashlib
 
 from analyzer import BehaviorAnalyzer
+from config import (
+    PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
+    PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
+)
 from constants import STABLE_TOKEN_CONTRACTS
 from delivery_policy import can_emit_delivery_notification
 from filter import (
+    WATCH_ADDRESSES,
     get_address_meta,
     get_flow_endpoints,
     get_primary_watch_meta,
@@ -96,6 +101,20 @@ class SignalPipeline:
         )
 
         pricing = await self._evaluate_pricing(parsed)
+        parsed["usd_value"] = float(
+            pricing.get("usd_value")
+            or parsed.get("usd_value")
+            or parsed.get("value")
+            or 0.0
+        )
+        parsed["pricing_confidence"] = float(pricing.get("pricing_confidence") or parsed.get("pricing_confidence") or 0.0)
+        if not self._allow_persisted_exchange_adjacent_flow(
+            parsed=parsed,
+            watch_context=watch_context,
+            watch_meta=watch_meta,
+        ):
+            return None
+
         event = self._to_event(parsed, watch_context=watch_context, watch_meta=watch_meta, pricing=pricing)
         event.archive_ts = archive_ts
         event.event_id = self._build_event_id(event)
@@ -555,6 +574,58 @@ class SignalPipeline:
         parsed["pool_candidate_weight"] = float(raw_item.get("pool_candidate_weight") or 0.0)
         parsed["replay_source"] = str(raw_item.get("replay_source") or "")
         return parsed
+
+    def _is_persisted_exchange_adjacent_runtime_watch(self, watch_meta: dict | None) -> bool:
+        watch_meta = watch_meta or {}
+        return (
+            bool(watch_meta.get("runtime_adjacent_watch"))
+            and str(watch_meta.get("watch_meta_source") or "") == "runtime_adjacent_watch"
+            and str(watch_meta.get("strategy_hint") or "") == "persisted_exchange_adjacent"
+        )
+
+    def _allow_persisted_exchange_adjacent_flow(
+        self,
+        parsed: dict | None,
+        watch_context: dict | None,
+        watch_meta: dict | None,
+    ) -> bool:
+        if not self._is_persisted_exchange_adjacent_runtime_watch(watch_meta):
+            return True
+
+        counterparty = str((watch_context or {}).get("counterparty") or "").lower()
+        if counterparty in WATCH_ADDRESSES:
+            return True
+        if counterparty and counterparty in self._restored_top_counterparty_addresses(watch_meta, limit=3):
+            return True
+        if self._allow_persisted_exchange_related_flow(parsed):
+            return True
+        return False
+
+    def _allow_persisted_exchange_related_flow(self, parsed: dict | None) -> bool:
+        parsed = parsed or {}
+        if not bool(parsed.get("is_exchange_related")):
+            return False
+        usd_value = float(parsed.get("usd_value") or parsed.get("value") or 0.0)
+        pricing_confidence = float(parsed.get("pricing_confidence") or 0.0)
+        return (
+            usd_value >= PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD
+            and pricing_confidence >= PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE
+        )
+
+    def _restored_top_counterparty_addresses(self, watch_meta: dict | None, limit: int = 3) -> set[str]:
+        watch_meta = watch_meta or {}
+        entries = list(watch_meta.get("restored_top_counterparties") or [])[: max(int(limit), 0)]
+        addresses = set()
+        for entry in entries:
+            if isinstance(entry, dict):
+                address = str(entry.get("address") or "").lower()
+            elif isinstance(entry, (list, tuple)) and entry:
+                address = str(entry[0] or "").lower()
+            else:
+                address = ""
+            if address:
+                addresses.add(address)
+        return addresses
 
     def _archive_raw_event(self, raw_item: dict, archive_status: dict, archive_ts: int) -> None:
         if self.archive_store is None:

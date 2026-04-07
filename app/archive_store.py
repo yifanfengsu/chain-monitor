@@ -109,9 +109,11 @@ class ArchiveStore:
         return bool(self._category_enabled.get(category, True))
 
     def _path_for(self, category: str, archive_ts: int) -> Path:
-        if category == "delivery_audit":
-            return self.base_dir / "delivery_audit.ndjson"
-        day = datetime.fromtimestamp(int(archive_ts), tz=timezone.utc).strftime("%Y-%m-%d")
+        day = (
+            datetime.fromtimestamp(int(archive_ts), tz=timezone.utc)
+            .astimezone(self._BJ_TZ)
+            .strftime("%Y-%m-%d")
+        )
         return self.base_dir / category / f"{day}.ndjson"
 
     def _lock_for_path(self, path: Path) -> threading.Lock:

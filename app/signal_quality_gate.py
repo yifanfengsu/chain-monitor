@@ -400,6 +400,7 @@ class SignalQualityGate:
                 abnormal_ratio=abnormal_ratio,
                 relative_address_size=relative_address_size,
                 action_intensity=action_intensity,
+                reserve_skew=reserve_skew,
                 same_pool_continuity=same_pool_continuity,
                 multi_pool_resonance=multi_pool_resonance,
                 pool_volume_surge_ratio=pool_volume_surge_ratio,
@@ -855,6 +856,7 @@ class SignalQualityGate:
         abnormal_ratio: float,
         relative_address_size: float,
         action_intensity: float,
+        reserve_skew: float,
         same_pool_continuity: int,
         multi_pool_resonance: int,
         pool_volume_surge_ratio: float,
@@ -879,6 +881,15 @@ class SignalQualityGate:
         if below_min_gap > self.lp_observe_max_usd_gap:
             return False, "lp_observe_usd_gap_too_wide"
 
+        if (
+            usd_value >= 25000
+            and action_intensity >= 0.62
+            and reserve_skew >= 0.18
+            and pricing_status not in {"unknown", "unavailable"}
+            and pricing_confidence >= 0.75
+            and (pool_volume_surge_ratio >= 1.25 or abnormal_ratio >= 1.6)
+        ):
+            return True, "lp_first_hit_strong_directional_exception"
         if same_pool_continuity >= 2 and pool_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO:
             return True, "lp_same_pool_continuity_and_volume_surge"
         if multi_pool_resonance >= 2:
