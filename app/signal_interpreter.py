@@ -219,7 +219,7 @@ class SignalInterpreter:
             upgrade_conditions = self._liquidation_upgrade_conditions(liquidation_meta)
             failure_conditions = self._liquidation_failure_conditions(liquidation_meta)
             conclusion_label = f"{directional_bias}｜{trade_value_label}｜{intent_label}"
-            message_variant = "liquidation"
+            message_variant = "liquidation_execution" if liquidation_meta["stage"] == "execution" else "liquidation_risk"
             headline_label = self._headline_label(directional_bias, trade_value_label, intent_label)
             fact_brief = self._fact_brief(event, fact_label)
             explanation_brief = self._explanation_brief(event, intent_detail, market_implication)
@@ -1116,15 +1116,25 @@ class SignalInterpreter:
     def _is_downstream_followup_case(self, event: Event) -> bool:
         return str(event.metadata.get("case_family") or "") == "downstream_counterparty_followup"
 
+    def _lp_message_variant(self, event: Event) -> str:
+        if str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"}:
+            return "lp_directional"
+        if str(event.intent_type or "") in {"liquidity_addition", "liquidity_removal", "pool_rebalance"}:
+            return "lp_liquidity"
+        return "alert"
+
     def _message_variant(self, event: Event, signal: Signal, lp_event: bool, watch_meta: dict) -> str:
         if self._is_downstream_followup_case(event):
             return "downstream_followup"
-        if str(event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}:
-            return "liquidation"
+        liquidation_stage = str(event.metadata.get("liquidation_stage") or "none")
+        if liquidation_stage == "execution":
+            return "liquidation_execution"
+        if liquidation_stage == "risk":
+            return "liquidation_risk"
         if bool(event.metadata.get("followup_confirmed")):
             return "followup"
         if lp_event:
-            return "lp"
+            return self._lp_message_variant(event)
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "")
         is_execution = str(event.intent_type or "") == "swap_execution" or bool(signal.metadata.get("is_real_execution"))
         if strategy_role == "market_maker_wallet" and str(signal.delivery_class or "") == "observe":

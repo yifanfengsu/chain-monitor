@@ -3,6 +3,10 @@ from dataclasses import asdict, dataclass, field
 import math
 import time
 
+from config import (
+    ADJACENT_WATCH_RUNTIME_PRIORITY,
+    ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
+)
 from models import AdjacentWatchState, Event
 
 
@@ -393,6 +397,9 @@ class StateManager:
         return {
             "runtime_adjacent_watch": True,
             "watch_meta_source": "runtime_adjacent_watch",
+            "role": str(metadata.get("role") or "user_watch"),
+            "strategy_role": str(metadata.get("strategy_role") or ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE or "adjacent_watch"),
+            "semantic_role": str(metadata.get("semantic_role") or "watched_wallet"),
             "anchor_watch_address": state.get("anchor_watch_address", ""),
             "anchor_label": state.get("anchor_label", ""),
             "root_tx_hash": state.get("root_tx_hash", ""),
@@ -408,7 +415,7 @@ class StateManager:
             "last_seen_ts": int(state.get("last_seen_ts") or 0),
             "last_event_type": str(state.get("last_event_type") or ""),
             "anchor_usd_value": float(state.get("anchor_usd_value") or 0.0),
-            "priority": int(metadata.get("priority") or 1),
+            "priority": int(metadata.get("priority") or ADJACENT_WATCH_RUNTIME_PRIORITY or 3),
             "display_hint_label": display_hint_label,
             "display_hint_reason": str(metadata.get("display_hint_reason") or state.get("reason") or ""),
             "display_hint_anchor_label": state.get("anchor_label", ""),

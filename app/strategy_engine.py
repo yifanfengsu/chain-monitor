@@ -644,6 +644,20 @@ class StrategyEngine:
                         "primary",
                         "lp_directional_pressure_primary",
                     )
+                if self._allow_lp_directional_early_observe(
+                    event=event,
+                    pricing_confidence=pricing_confidence,
+                    lp_action_intensity=lp_action_intensity,
+                    lp_reserve_skew=lp_reserve_skew,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
+                    abnormal_ratio=abnormal_ratio,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_directional_early_observe",
+                    )
                 if (
                     confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE
                     or lp_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO
@@ -657,6 +671,19 @@ class StrategyEngine:
             if intent_type in LP_INTENTS:
                 if intent_type == "pool_noise":
                     return self._apply_delivery(event, signal, "drop", "lp_noise_drop")
+                if self._allow_lp_non_directional_structured_observe(
+                    event=event,
+                    confirmation_score=confirmation_score,
+                    quality_score=quality_score,
+                    pricing_confidence=pricing_confidence,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_non_directional_structured_observe",
+                    )
                 if (
                     float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 1.10, 22_000.0)
                     or lp_same_pool_continuity >= 2
@@ -915,6 +942,51 @@ class StrategyEngine:
         ):
             return False
         return True
+
+    def _allow_lp_directional_early_observe(
+        self,
+        event: Event,
+        pricing_confidence: float,
+        lp_action_intensity: float,
+        lp_reserve_skew: float,
+        lp_volume_surge_ratio: float,
+        abnormal_ratio: float,
+    ) -> bool:
+        if str(event.intent_type or "") not in PRIMARY_LP_INTENTS:
+            return False
+        if float(event.usd_value or 0.0) < 18_000.0:
+            return False
+        if pricing_confidence < 0.75:
+            return False
+        matched_signals = sum(
+            1
+            for matched in (
+                lp_action_intensity >= 0.58,
+                lp_reserve_skew >= 0.16,
+                lp_volume_surge_ratio >= 1.25,
+                abnormal_ratio >= 1.60,
+            )
+            if matched
+        )
+        return matched_signals >= 2
+
+    def _allow_lp_non_directional_structured_observe(
+        self,
+        event: Event,
+        confirmation_score: float,
+        quality_score: float,
+        pricing_confidence: float,
+        lp_volume_surge_ratio: float,
+    ) -> bool:
+        if str(event.intent_type or "") not in {"liquidity_addition", "liquidity_removal", "pool_rebalance"}:
+            return False
+        if float(event.usd_value or 0.0) < 18_000.0:
+            return False
+        if pricing_confidence < 0.75:
+            return False
+        if quality_score < 0.72:
+            return False
+        return confirmation_score >= 0.58 or lp_volume_surge_ratio >= 1.35
 
     def _apply_delivery(
         self,

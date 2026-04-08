@@ -39,6 +39,7 @@ STRATEGY_ROLE_LABELS = {
     "smart_money_wallet": "聪明钱钱包",
     "market_maker_wallet": "做市钱包",
     "alpha_wallet": "Alpha 钱包",
+    "adjacent_watch": "下游观察地址",
     "exchange_hot_wallet": "交易所热钱包",
     "exchange_deposit_wallet": "交易所充值地址",
     "exchange_trading_wallet": "交易所交易席位",
@@ -119,6 +120,7 @@ STRATEGY_ROLE_THRESHOLDS = {
     "smart_money_wallet": {1: 100, 2: 200, 3: 300},
     "market_maker_wallet": {1: 120, 2: 220, 3: 320},
     "alpha_wallet": {1: 150, 2: 250, 3: 350},
+    "adjacent_watch": {1: 30000, 2: 50000, 3: 80000},
     "exchange_hot_wallet": {1: 1000, 2: 1000, 3: 1500},
     "exchange_deposit_wallet": {1: 1500, 2: 1500, 3: 2000},
     "exchange_trading_wallet": {1: 800, 2: 1000, 3: 1200},
@@ -575,6 +577,13 @@ def get_address_meta(address):
     runtime_patch = _runtime_adjacent_patch(address)
     result.update(intel_patch)
     result.update(runtime_patch)
+    result["role"] = str(result.get("role") or defaults["role"])
+    result["strategy_role"] = str(result.get("strategy_role") or defaults["strategy_role"])
+    result["semantic_role"] = str(result.get("semantic_role") or defaults["semantic_role"])
+    result["role_label"] = ROLE_LABELS.get(result["role"], result["role"])
+    result["strategy_role_label"] = STRATEGY_ROLE_LABELS.get(result["strategy_role"], result["strategy_role"])
+    result["semantic_role_label"] = SEMANTIC_ROLE_LABELS.get(result["semantic_role"], result["semantic_role"])
+    result["display_role_label"] = SEMANTIC_ROLE_LABELS.get(result["semantic_role"], result["semantic_role"])
     if not meta:
         result["priority"] = int(runtime_patch.get("priority") or result.get("priority", 3) or 3)
     result["display"] = _format_address_label_from_parts(

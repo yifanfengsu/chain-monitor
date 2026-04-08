@@ -3,6 +3,16 @@ import hashlib
 
 from analyzer import BehaviorAnalyzer
 from config import (
+    ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
+    ADJACENT_WATCH_NOTIFY_MIN_ABNORMAL_RATIO,
+    ADJACENT_WATCH_NOTIFY_MIN_CONFIRMATION,
+    ADJACENT_WATCH_NOTIFY_MIN_FOLLOWUP_COUNT,
+    ADJACENT_WATCH_NOTIFY_MIN_PRICING_CONFIDENCE,
+    ADJACENT_WATCH_NOTIFY_MIN_QUALITY,
+    ADJACENT_WATCH_NOTIFY_MIN_RESONANCE,
+    ADJACENT_WATCH_RUNTIME_MIN_USD,
+    ADJACENT_WATCH_RUNTIME_PRIORITY,
+    ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
@@ -113,6 +123,13 @@ class SignalPipeline:
             watch_context=watch_context,
             watch_meta=watch_meta,
         ):
+            self._archive_persisted_exchange_adjacent_prefilter_audit(
+                parsed=parsed,
+                watch_context=watch_context,
+                watch_meta=watch_meta,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
             return None
 
         event = self._to_event(parsed, watch_context=watch_context, watch_meta=watch_meta, pricing=pricing)
@@ -510,6 +527,54 @@ class SignalPipeline:
             )
             return None
 
+        downstream_impact_allowed, downstream_impact_reason = self._passes_downstream_impact_gate(
+            event=event,
+            signal=signal,
+            behavior_case=behavior_case,
+            gate_metrics=gate_decision.metrics,
+        )
+        if not downstream_impact_allowed:
+            event.delivery_class = "drop"
+            event.delivery_reason = "downstream_impact_gate_rejected"
+            signal.delivery_class = "drop"
+            signal.delivery_reason = "downstream_impact_gate_rejected"
+            rejection_payload = {
+                "case_notification_allowed": False,
+                "case_notification_suppressed": True,
+                "case_notification_reason": "downstream_impact_gate_rejected",
+                "pending_case_notification": False,
+                "pending_case_notification_stage": "",
+                "pending_case_notification_reason": "",
+                "pending_case_notification_case_id": "",
+                "pending_case_notification_case_family": "",
+                "downstream_impact_gate_reason": str(downstream_impact_reason or ""),
+                "downstream_observation_reason": str(downstream_impact_reason or ""),
+            }
+            event.metadata.update(rejection_payload)
+            signal.metadata.update(rejection_payload)
+            signal.context.update(rejection_payload)
+            self._archive_delivery_audit(
+                event=event,
+                signal=signal,
+                behavior=behavior,
+                gate_metrics=gate_decision.metrics,
+                stage="notifier",
+                gate_reason="downstream_impact_gate_rejected",
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+                audit_extras={
+                    "downstream_impact_gate_reason": str(downstream_impact_reason or ""),
+                },
+            )
+            self._archive_case_decision_followup(
+                behavior_case=behavior_case,
+                event=event,
+                signal=signal,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
+            return None
+
         if delivery_class == "primary" or self._is_downstream_followup_case(behavior_case):
             self._archive_signal(signal, event, archive_status, archive_ts)
         self._archive_delivery_audit(
@@ -611,6 +676,73 @@ class SignalPipeline:
             usd_value >= PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD
             and pricing_confidence >= PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE
         )
+
+    def _archive_persisted_exchange_adjacent_prefilter_audit(
+        self,
+        parsed: dict | None,
+        watch_context: dict | None,
+        watch_meta: dict | None,
+        archive_status: dict,
+        archive_ts: int,
+    ) -> None:
+        if self.archive_store is None:
+            return
+
+        parsed = parsed or {}
+        watch_context = watch_context or {}
+        watch_meta = watch_meta or {}
+        strategy_role = str(
+            watch_meta.get("strategy_role")
+            or parsed.get("strategy_role")
+            or "unknown"
+        )
+        tx_hash = str(parsed.get("tx_hash") or parsed.get("hash") or "")
+        watch_address = str(
+            parsed.get("watch_address")
+            or watch_context.get("watch_address")
+            or watch_meta.get("address")
+            or ""
+        ).lower()
+        counterparty = str(
+            watch_context.get("counterparty")
+            or parsed.get("counterparty")
+            or parsed.get("to")
+            or parsed.get("from")
+            or ""
+        ).lower()
+        event_id_seed = "|".join(
+            [
+                tx_hash,
+                watch_address or "runtime_adjacent_watch",
+                counterparty or "counterparty_unknown",
+                "persisted_exchange_adjacent_filtered",
+            ]
+        )
+        record = {
+            "event_id": f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}",
+            "tx_hash": tx_hash,
+            "watch_address": watch_address,
+            "strategy_role": strategy_role,
+            "role_group": str(strategy_role_group(strategy_role)),
+            "intent_type": str(parsed.get("intent_type") or ""),
+            "behavior_type": "unknown",
+            "gate_reason": "persisted_exchange_adjacent_filtered",
+            "delivery_class": "drop",
+            "stage": "prefilter",
+            "counterparty": counterparty,
+            "strategy_hint": str(watch_meta.get("strategy_hint") or ""),
+            "watch_meta_source": str(watch_meta.get("watch_meta_source") or ""),
+            "is_exchange_related": bool(parsed.get("is_exchange_related")),
+            "usd_value": round(float(parsed.get("usd_value") or parsed.get("value") or 0.0), 2),
+            "pricing_confidence": round(float(parsed.get("pricing_confidence") or 0.0), 3),
+            "archive_ts": int(archive_ts),
+        }
+        try:
+            archive_status["delivery_audit"] = bool(
+                self.archive_store.write_delivery_audit(record, archive_ts=archive_ts)
+            ) or bool(archive_status.get("delivery_audit"))
+        except Exception as e:
+            print(f"persisted exchange adjacent prefilter audit 归档失败: {e}")
 
     def _restored_top_counterparty_addresses(self, watch_meta: dict | None, limit: int = 3) -> set[str]:
         watch_meta = watch_meta or {}
@@ -1349,7 +1481,10 @@ class SignalPipeline:
                 strategy_hint="runtime_adjacent_watch",
                 runtime_label_hint="new_large_counterparty",
                 metadata={
-                    "priority": int((watch_meta or {}).get("priority", 1) or 1),
+                    "priority": int(ADJACENT_WATCH_RUNTIME_PRIORITY or 3),
+                    "strategy_role": str(ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE or "adjacent_watch"),
+                    "semantic_role": "watched_wallet",
+                    "role": "user_watch",
                     "token_symbol": str(event.metadata.get("token_symbol") or ""),
                     "anchor_strategy_role": str(metadata.get("anchor_strategy_role") or (watch_meta or {}).get("strategy_role") or event.strategy_role or "unknown"),
                     "display_hint_label": "new_large_counterparty",
@@ -1523,11 +1658,11 @@ class SignalPipeline:
         elif active_until and now_ts >= active_until:
             runtime_state = "cooling"
 
-        label = "超大额下游观察已开启"
+        label = "下游观察窗口已开启"
         detail = f"{anchor_label} 刚向 {downstream_label} 转出 {_usd_text(anchor_usd_value)} {anchor_symbol}，已开启短时下游观察窗口。"
         reason = "继续观察该下游地址是否进入交易所、DEX 执行或继续大额分发。"
         path_label = f"{anchor_label} -> {downstream_label}"
-        next_hint = "优先看是否转入交易所、命中路由/协议，或继续出现 >=25% anchor 的大额动作。"
+        next_hint = "优先看是否转入交易所、升级为真实执行，或继续出现更强的大额分发。"
 
         if stage == "exchange_arrival_confirmed":
             label = "下游资金进入交易场景"
@@ -1545,9 +1680,9 @@ class SignalPipeline:
             reason = "观察窗口内出现第二个高价值下游目的地，已超过单一去向噪声。"
             path_label = f"{anchor_label} -> {downstream_label} -> 多地址分发"
         elif stage == "downstream_seen":
-            label = "下游出现高价值后续动作"
-            detail = f"{downstream_label} 在观察窗口内再次出现高价值动作，当前先按后续延续观察处理。"
-            reason = "金额再次达到高价值阈值，但还需要继续确认是交易、分发还是回流。"
+            label = "下游继续观察中"
+            detail = f"{downstream_label} 在观察窗口内再次出现后续动作，但当前仍只作为 case 延续观察。"
+            reason = "已看到后续动作，但还不足以按强影响 follow-up 进入通知。"
             path_label = f"{anchor_label} -> {downstream_label} -> {last_counterparty_label or '后续去向'}"
 
         event.metadata["case"] = {
@@ -1597,7 +1732,7 @@ class SignalPipeline:
         event.metadata["downstream_runtime_state"] = runtime_state
         event.metadata["downstream_observation_reason"] = followup_reason
 
-        if stage in {"exchange_arrival_confirmed", "swap_execution_confirmed", "distribution_confirmed", "downstream_seen"} and not bool(event.metadata.get("downstream_followup_confirmation_applied")):
+        if stage in {"exchange_arrival_confirmed", "swap_execution_confirmed", "distribution_confirmed"} and not bool(event.metadata.get("downstream_followup_confirmation_applied")):
             boost = 0.12
             if stage == "swap_execution_confirmed":
                 boost = 0.20
@@ -1627,6 +1762,74 @@ class SignalPipeline:
             intent_meta["downstream_counterparty_followup"] = True
             event.metadata["intent"] = intent_meta
             event.metadata["downstream_followup_confirmation_applied"] = True
+
+    def _passes_downstream_impact_gate(
+        self,
+        event: Event,
+        signal,
+        behavior_case,
+        gate_metrics: dict | None,
+    ) -> tuple[bool, str]:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return True, "not_downstream_followup_case"
+
+        gate_metrics = gate_metrics or {}
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        allowed_stages = {str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item}
+        stage = str(
+            event.metadata.get("downstream_followup_stage")
+            or metadata.get("current_stage")
+            or getattr(behavior_case, "stage", "")
+            or ""
+        )
+        followup_events = list(metadata.get("followup_events") or [])
+        confirmation_score = float(
+            event.confirmation_score
+            or getattr(signal, "confirmation_score", 0.0)
+            or gate_metrics.get("confirmation_score")
+            or 0.0
+        )
+        quality_score = float(
+            gate_metrics.get("adjusted_quality_score")
+            or gate_metrics.get("quality_score")
+            or getattr(signal, "quality_score", 0.0)
+            or 0.0
+        )
+        pricing_confidence = float(
+            getattr(signal, "pricing_confidence", 0.0)
+            or gate_metrics.get("pricing_confidence")
+            or event.pricing_confidence
+            or 0.0
+        )
+        resonance_score = float(
+            gate_metrics.get("resonance_score")
+            or getattr(signal, "metadata", {}).get("resonance_score")
+            or 0.0
+        )
+        abnormal_ratio = float(
+            getattr(signal, "abnormal_ratio", 0.0)
+            or gate_metrics.get("abnormal_ratio")
+            or 0.0
+        )
+
+        if stage not in allowed_stages:
+            return False, "stage_not_allowed"
+        if len(followup_events) < max(int(ADJACENT_WATCH_NOTIFY_MIN_FOLLOWUP_COUNT or 1), 1):
+            return False, "followup_count_below_notify_min"
+        if float(event.usd_value or 0.0) < float(ADJACENT_WATCH_RUNTIME_MIN_USD or 0.0):
+            return False, "runtime_min_usd_not_met"
+        if confirmation_score < float(ADJACENT_WATCH_NOTIFY_MIN_CONFIRMATION or 0.0):
+            return False, "confirmation_below_notify_min"
+        if quality_score < float(ADJACENT_WATCH_NOTIFY_MIN_QUALITY or 0.0):
+            return False, "quality_below_notify_min"
+        if pricing_confidence < float(ADJACENT_WATCH_NOTIFY_MIN_PRICING_CONFIDENCE or 0.0):
+            return False, "pricing_confidence_below_notify_min"
+        if not (
+            resonance_score >= float(ADJACENT_WATCH_NOTIFY_MIN_RESONANCE or 0.0)
+            or abnormal_ratio >= float(ADJACENT_WATCH_NOTIFY_MIN_ABNORMAL_RATIO or 0.0)
+        ):
+            return False, "impact_signal_below_notify_min"
+        return True, "allowed"
 
     def _apply_smart_money_case_context(
         self,

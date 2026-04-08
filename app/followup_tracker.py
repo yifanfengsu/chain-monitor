@@ -16,7 +16,10 @@ from config import (
     ADJACENT_WATCH_MAJOR_ASSET_SUPER_LARGE_USD,
     ADJACENT_WATCH_MAX_HOPS,
     ADJACENT_WATCH_MAX_NOTIFICATIONS,
+    ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
+    ADJACENT_WATCH_NOTIFY_MIN_FOLLOWUP_COUNT,
     ADJACENT_WATCH_OTHER_ASSET_SUPER_LARGE_USD,
+    ADJACENT_WATCH_RUNTIME_MIN_USD,
     ADJACENT_WATCH_STABLE_SUPER_LARGE_USD,
     ADJACENT_WATCH_SUPER_LARGE_USD,
     ADJACENT_WATCH_WINDOW_SEC,
@@ -55,6 +58,12 @@ EXCHANGE_FOLLOWUP_INTENTS = {
 }
 DOWNSTREAM_STABLE_SYMBOLS = set(STABLE_TOKEN_SYMBOLS) | {"USD1"}
 DOWNSTREAM_MAJOR_SYMBOLS = set(MAJOR_FOLLOWUP_ASSET_SYMBOLS) | {"BTC", "ETH"}
+DOWNSTREAM_ALLOWED_STRATEGY_ROLES = {
+    "market_maker_wallet",
+    "smart_money_wallet",
+    "alpha_wallet",
+    "celebrity_wallet",
+}
 
 
 class FollowupTracker:
@@ -85,10 +94,20 @@ class FollowupTracker:
         self.downstream_followup_cooling_sec = int(ADJACENT_WATCH_COOLING_SEC)
         self.downstream_followup_closing_sec = int(ADJACENT_WATCH_CLOSING_SEC)
         self.downstream_followup_enabled = bool(ADJACENT_WATCH_ENABLE)
-        self.downstream_followup_allowed_roles = {str(item or "").strip() for item in ADJACENT_WATCH_ALLOWED_ROLE_GROUPS if item}
+        configured_roles = {str(item or "").strip() for item in ADJACENT_WATCH_ALLOWED_ROLE_GROUPS if item}
+        self.downstream_followup_allowed_roles = (
+            configured_roles & DOWNSTREAM_ALLOWED_STRATEGY_ROLES
+            if configured_roles
+            else set(DOWNSTREAM_ALLOWED_STRATEGY_ROLES)
+        )
         self.downstream_followup_max_hops = max(int(ADJACENT_WATCH_MAX_HOPS or 1), 1)
         self.downstream_followup_min_usd = float(ADJACENT_WATCH_FOLLOWUP_MIN_USD)
         self.downstream_followup_min_ratio = float(ADJACENT_WATCH_FOLLOWUP_MIN_RATIO)
+        self.downstream_runtime_min_usd = float(ADJACENT_WATCH_RUNTIME_MIN_USD)
+        self.downstream_notify_min_followup_count = max(int(ADJACENT_WATCH_NOTIFY_MIN_FOLLOWUP_COUNT or 1), 1)
+        self.downstream_notify_allowed_stages = {
+            str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item
+        }
         self.downstream_followup_max_notifications = max(int(ADJACENT_WATCH_MAX_NOTIFICATIONS or 1), 1)
         self._cases: dict[str, BehaviorCase] = {}
         self._open_case_ids_by_watch: dict[str, set[str]] = defaultdict(set)
@@ -555,21 +574,33 @@ class FollowupTracker:
         emitted = set(metadata.get("emitted_notification_stages") or [])
         if stage is None:
             return False, "downstream_case_stage_not_emittable"
-        if stage not in {
-            "followup_opened",
-            "downstream_seen",
-            "exchange_arrival_confirmed",
-            "swap_execution_confirmed",
-            "distribution_confirmed",
-        }:
+        if stage not in self.downstream_notify_allowed_stages:
             return False, "downstream_case_stage_not_emittable"
         if stage in emitted:
             return False, "downstream_case_already_emitted"
         if len(emitted) >= self.downstream_followup_max_notifications:
             return False, "downstream_case_notification_cap_reached"
-        if stage != "followup_opened" and not bool(metadata.get("current_event_is_followup")):
+        if not bool(metadata.get("current_event_is_followup")):
             return False, str(metadata.get("current_followup_reason") or "downstream_followup_not_confirmed")
+        followup_events = list(metadata.get("followup_events") or [])
+        if len(followup_events) < self.downstream_notify_min_followup_count:
+            return False, "downstream_followup_count_below_notify_min"
+        current_usd = float(metadata.get("last_followup_usd") or 0.0)
+        required_usd = self._downstream_notification_required_usd(metadata)
+        if current_usd < required_usd:
+            return False, "downstream_followup_value_below_notify_min"
+        if stage == "distribution_confirmed" and len(list(metadata.get("destinations_seen") or [])) < 2:
+            return False, "downstream_distribution_not_confirmed"
         return True, "allowed"
+
+    def _downstream_notification_required_usd(self, metadata: dict | None) -> float:
+        metadata = metadata or {}
+        anchor_usd = float(metadata.get("anchor_usd_value") or 0.0)
+        return max(
+            self.downstream_runtime_min_usd,
+            self.downstream_followup_min_usd,
+            anchor_usd * max(self.downstream_followup_min_ratio, 0.0),
+        )
 
     def _find_matching_case(self, event: Event, now_ts: int) -> BehaviorCase | None:
         watch_address = str(event.address or "").lower()
@@ -1959,6 +1990,16 @@ class FollowupTracker:
         except Exception:
             return 1000.0
 
+    def _is_downstream_allowed_strategy_role(self, strategy_role: str | None) -> bool:
+        role = str(strategy_role or "unknown").strip()
+        if not role:
+            return False
+        if role not in DOWNSTREAM_ALLOWED_STRATEGY_ROLES:
+            return False
+        if self.downstream_followup_allowed_roles and role not in self.downstream_followup_allowed_roles:
+            return False
+        return True
+
     def is_downstream_followup_anchor(self, event: Event, watch_meta: dict | None = None) -> bool:
         watch_meta = watch_meta or {}
         if not self.downstream_followup_enabled:
@@ -1969,7 +2010,7 @@ class FollowupTracker:
             return False
 
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
-        if self.downstream_followup_allowed_roles and strategy_role not in self.downstream_followup_allowed_roles:
+        if not self._is_downstream_allowed_strategy_role(strategy_role):
             return False
 
         raw = event.metadata.get("raw") or {}

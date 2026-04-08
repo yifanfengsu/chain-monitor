@@ -12,6 +12,18 @@ from models import Event, Signal
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 DEFAULT_MESSAGE_TEMPLATE = os.getenv("WHALE_MESSAGE_TEMPLATE", "long").strip().lower()
+MESSAGE_VARIANTS = {
+    "downstream_followup",
+    "followup",
+    "liquidation_risk",
+    "liquidation_execution",
+    "market_maker_observe",
+    "smart_money_primary",
+    "smart_money_observe",
+    "lp_directional",
+    "lp_liquidity",
+    "alert",
+}
 
 
 async def send(msg) -> bool:
@@ -72,14 +84,26 @@ def _path_bundle(context: dict, raw: dict) -> tuple[str, str, str]:
 
 
 def _select_message_variant(signal: Signal, event: Event, context: dict) -> str:
+    variant = str(
+        context.get("message_variant")
+        or signal.metadata.get("message_variant")
+        or ""
+    ).strip()
+    if variant in MESSAGE_VARIANTS:
+        return variant
     if bool(context.get("downstream_followup_active")) or str(context.get("case_family") or "") == "downstream_counterparty_followup":
         return "downstream_followup"
-    if str(context.get("liquidation_stage") or event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"}:
-        return "liquidation"
+    liquidation_stage = str(context.get("liquidation_stage") or event.metadata.get("liquidation_stage") or "none")
+    if liquidation_stage == "execution":
+        return "liquidation_execution"
+    if liquidation_stage == "risk":
+        return "liquidation_risk"
     if bool(context.get("followup_confirmed")) or str(context.get("case_family") or "") == "exchange_cross_token_followup":
         return "followup"
     if bool(context.get("lp_event")):
-        return "lp"
+        if str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"}:
+            return "lp_directional"
+        return "lp_liquidity"
     smart_money_variant = _smart_money_variant(signal, event, context)
     if smart_money_variant:
         return smart_money_variant
@@ -213,39 +237,46 @@ def _followup_explanation_prefix(signal: Signal, event: Event, context: dict) ->
     return "当前结构" if is_execution_confirmed else "当前解释"
 
 
-def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bool = False) -> str:
-    notification_stage_label = str(context.get("notification_stage_label") or "").strip()
-    if variant == "downstream_followup":
-        stage_label = str(
-            context.get("downstream_followup_stage_label")
-            or notification_stage_label
-            or "观察开启"
-        ).strip()
-        return f"📡 下游地址后续观察 | {signal.tier} | {stage_label}"
-    if variant == "followup":
-        followup_label = str(context.get("followup_label") or context.get("intent_label") or "交易所方向流动").strip()
-        stage_label = notification_stage_label or "观察升级"
-        return f"📡 {followup_label}｜{stage_label}"
-    if variant == "lp":
-        if str(signal.delivery_class or "") == "observe":
-            return f"📡 LP 观察级雷达 | {signal.tier}"
-        return f"📡 LP 行为雷达 | {signal.tier}"
-    if variant == "liquidation":
-        stage = str(context.get("liquidation_stage") or "risk")
-        if stage == "execution":
-            return "📡 疑似清算执行雷达"
-        return "📡 疑似清算风险雷达"
-    if variant == "smart_money_primary":
-        return f"📡 Smart Money 执行雷达 | {signal.tier}"
-    if variant == "smart_money_observe":
-        return f"📡 Smart Money 观察级雷达 | {signal.tier}"
-    if variant == "market_maker_observe":
-        return f"📡 Market Maker 观察级雷达 | {signal.tier}"
+def _lp_direction_field(signal: Signal, context: dict) -> str:
+    intent_type = str(getattr(signal, "intent_type", "") or "")
+    if intent_type == "pool_buy_pressure":
+        return str(context.get("lp_action_brief") or "池子买压｜稳定币流入、标的流出")
+    if intent_type == "pool_sell_pressure":
+        return str(context.get("lp_action_brief") or "池子卖压｜标的流入、稳定币流出")
+    return str(context.get("lp_action_brief") or context.get("action_label") or signal.type)
 
-    header = f"📡 重点地址行为雷达 | {signal.tier} | {_priority_text(context)}"
-    if notification_stage_label and not compact:
-        return f"{header} | {notification_stage_label}"
-    return header
+
+def _lp_liquidity_structure(context: dict) -> str:
+    continuity = str(context.get("same_pool_continuity_label") or "单池单笔")
+    resonance = str(context.get("multi_pool_resonance_label") or "无跨池共振")
+    return f"{continuity}｜{resonance}"
+
+
+def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bool = False) -> str:
+    if variant == "downstream_followup":
+        return "🛰️ 下游地址后续观察"
+    if variant == "followup":
+        return "🔁 Followup 观察升级"
+    if variant == "liquidation_risk":
+        return "⚠️ 疑似清算风险"
+    if variant == "liquidation_execution":
+        return "🚨 疑似清算执行"
+    if variant == "smart_money_primary":
+        return "🎯 Smart Money 执行"
+    if variant == "smart_money_observe":
+        return "🧠 Smart Money 观察"
+    if variant == "market_maker_observe":
+        return "🏦 Market Maker 库存观察"
+    if variant == "lp_directional":
+        intent_type = str(getattr(signal, "intent_type", "") or "")
+        if intent_type == "pool_buy_pressure":
+            return "🌊 LP 买压雷达"
+        if intent_type == "pool_sell_pressure":
+            return "🌊 LP 卖压雷达"
+        return "🌊 LP 买卖压力雷达"
+    if variant == "lp_liquidity":
+        return "🧱 LP 流动性雷达"
+    return "📡 重点地址行为雷达"
 
 
 def _alert_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
@@ -295,12 +326,12 @@ def _downstream_followup_message(signal: Signal, event: Event, context: dict, ra
     return _join_lines(lines)
 
 
-def _lp_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+def _lp_directional_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     observe = str(signal.delivery_class or "") == "observe"
     lines = [
-        _header_for_variant(signal, context, "lp"),
+        _header_for_variant(signal, context, "lp_directional"),
         f"池子：{_pool_label(signal, context)}",
-        f"动作：{context.get('lp_action_brief') or context.get('action_label') or context.get('fact_label') or signal.type}",
+        f"方向：{_lp_direction_field(signal, context)}",
         f"金额：{_usd_value_text(signal.usd_value)}",
         f"放量：{context.get('lp_volume_surge_label') or '无明显放量'}",
         f"连续：{context.get('same_pool_continuity_label') or '单池单笔'}",
@@ -313,14 +344,32 @@ def _lp_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     return _join_lines(lines)
 
 
+def _lp_liquidity_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+    observe = str(signal.delivery_class or "") == "observe"
+    lines = [
+        _header_for_variant(signal, context, "lp_liquidity"),
+        f"池子：{_pool_label(signal, context)}",
+        f"动作：{context.get('lp_action_brief') or context.get('action_label') or context.get('fact_label') or signal.type}",
+        f"金额：{_usd_value_text(signal.usd_value)}",
+        f"放量：{context.get('lp_volume_surge_label') or '无明显放量'}",
+        f"结构：{_lp_liquidity_structure(context)}",
+        f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
+        f"证据：{_evidence_brief(context)}",
+        f"继续看：{_action_hint(context) if observe else context.get('action_hint') or '观察是否继续结构放大'}",
+        _tx_line(signal),
+    ]
+    return _join_lines(lines)
+
+
 def _liquidation_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     protocols = "/".join(list(context.get("liquidation_protocols") or [])[:3]) or "未命中"
+    variant = _select_message_variant(signal, event, context)
     lines = [
-        _header_for_variant(signal, context, "liquidation"),
+        _header_for_variant(signal, context, variant),
         f"池子：{_pool_label(signal, context)}",
         f"动作：{context.get('lp_action_brief') or context.get('action_label') or _headline_label(context, event)}",
-        f"金额：{_usd_value_text(signal.usd_value)}",
         f"命中协议：{protocols}",
+        f"金额：{_usd_value_text(signal.usd_value)}",
         f"放量：{context.get('lp_volume_surge_label') or '无明显放量'}",
         f"连续：{context.get('same_pool_continuity_label') or '单池单笔'}",
         f"共振：{context.get('multi_pool_resonance_label') or '无跨池共振'}",
@@ -333,21 +382,17 @@ def _liquidation_message(signal: Signal, event: Event, context: dict, raw: dict)
 
 
 def _smart_money_primary_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
-    stage_label = str(context.get("notification_stage_label") or "").strip()
     header = _header_for_variant(signal, context, "smart_money_primary")
-    if stage_label:
-        header = f"{header} | {stage_label}"
-
     execution_brief = context.get("smart_money_fact_brief") or context.get("fact_brief") or f"真实执行｜{_usd_value_text(signal.usd_value)}"
     continuation = str(signal.metadata.get("smart_money_case_detail") or context.get("update_brief") or "").strip()
     lines = [
         header,
         f"对象：{_object_label(signal, context)}",
         f"执行：{execution_brief}",
-        f"方向：{context.get('directional_bias') or _headline_label(context, event)}",
-        f"当前解释：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
         f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
-        f"继续看：{continuation or context.get('smart_money_action_hint') or _action_hint(context)}",
+        f"下一步：{continuation or context.get('smart_money_action_hint') or _action_hint(context)}",
+        f"当前解释：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
+        f"方向：{context.get('directional_bias') or _headline_label(context, event)}",
         _tx_line(signal),
     ]
     return _join_lines(lines)
@@ -375,10 +420,10 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
         _header_for_variant(signal, context, "market_maker_observe"),
         f"对象：{_object_label(signal, context)}",
         f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
-        f"金额：{_usd_value_text(signal.usd_value)}",
-        f"路径：{_path_line(context, raw)}",
         f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
         f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
+        f"金额：{_usd_value_text(signal.usd_value)}",
+        f"路径：{_path_line(context, raw)}",
         f"共振/确认：{context.get('resonance_label') or '单地址孤立'}｜{context.get('confirmation_label') or '弱证据'}",
         f"为什么值得观察：{context.get('smart_money_observe_label') or '做市库存观察路径'}",
         f"继续看：{context.get('smart_money_action_hint') or _action_hint(context)}",
@@ -390,12 +435,15 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
 def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     variant = _select_message_variant(signal, event, context)
     if variant == "downstream_followup":
+        anchor_usd_value = float(signal.metadata.get("downstream_anchor_usd_value") or event.metadata.get("downstream_anchor_usd_value") or 0.0)
+        anchor_token = str(event.metadata.get("downstream_anchor_token") or event.metadata.get("token_symbol") or event.token or "资产")
         lines = [
             _header_for_variant(signal, context, "downstream_followup", compact=True),
             f"对象：{context.get('downstream_object_label') or _object_label(signal, context)}",
-            f"锚点：{context.get('downstream_anchor_label') or '重点地址'}",
-            f"动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
-            f"解释：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
+            f"来源锚点：{context.get('downstream_anchor_label') or '重点地址'}",
+            f"首次大额转移：{_usd_value_text(anchor_usd_value)} {anchor_token}",
+            f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
+            f"当前更像：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
             f"证据：{context.get('evidence_brief') or _evidence_brief(context)}",
             _tx_line(signal, compact=True),
         ]
@@ -412,22 +460,34 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             _tx_line(signal, compact=True),
         ]
         return _join_lines(lines)
-    if variant == "lp":
+    if variant == "lp_directional":
         lines = [
-            _header_for_variant(signal, context, "lp", compact=True),
+            _header_for_variant(signal, context, "lp_directional", compact=True),
             f"池子：{_pool_label(signal, context)}",
-            f"动作：{context.get('lp_action_brief') or signal.type}",
+            f"方向：{_lp_direction_field(signal, context)}",
             f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
             f"证据：{_evidence_brief(context)}",
             _tx_line(signal, compact=True),
         ]
         return _join_lines(lines)
-    if variant == "liquidation":
+    if variant == "lp_liquidity":
         lines = [
-            _header_for_variant(signal, context, "liquidation", compact=True),
+            _header_for_variant(signal, context, "lp_liquidity", compact=True),
+            f"池子：{_pool_label(signal, context)}",
+            f"动作：{context.get('lp_action_brief') or signal.type}",
+            f"结构：{_lp_liquidity_structure(context)}",
+            f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
+            f"证据：{_evidence_brief(context)}",
+            _tx_line(signal, compact=True),
+        ]
+        return _join_lines(lines)
+    if variant in {"liquidation_risk", "liquidation_execution"}:
+        lines = [
+            _header_for_variant(signal, context, variant, compact=True),
             f"池子：{_pool_label(signal, context)}",
             f"动作：{context.get('lp_action_brief') or _headline_label(context, event)}",
-            f"解释：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
+            f"命中协议：{'/'.join(list(context.get('liquidation_protocols') or [])[:2]) or '未命中'}",
+            f"当前解释：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
             f"证据：{_evidence_brief(context)}",
             _tx_line(signal, compact=True),
         ]
@@ -453,6 +513,7 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
     if variant == "market_maker_observe":
         lines = [
             _header_for_variant(signal, context, "market_maker_observe", compact=True),
+            f"对象：{_object_label(signal, context)}",
             f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
             f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
             f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
@@ -478,9 +539,11 @@ def _long_message(signal: Signal, event: Event, context: dict, raw: dict) -> str
         return _downstream_followup_message(signal, event, context, raw)
     if variant == "followup":
         return _followup_message(signal, event, context, raw)
-    if variant == "lp":
-        return _lp_message(signal, event, context, raw)
-    if variant == "liquidation":
+    if variant == "lp_directional":
+        return _lp_directional_message(signal, event, context, raw)
+    if variant == "lp_liquidity":
+        return _lp_liquidity_message(signal, event, context, raw)
+    if variant in {"liquidation_risk", "liquidation_execution"}:
         return _liquidation_message(signal, event, context, raw)
     if variant == "smart_money_primary":
         return _smart_money_primary_message(signal, event, context, raw)
