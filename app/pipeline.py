@@ -118,6 +118,15 @@ class SignalPipeline:
             or 0.0
         )
         parsed["pricing_confidence"] = float(pricing.get("pricing_confidence") or parsed.get("pricing_confidence") or 0.0)
+        if self._is_adjacent_watch_meta_missing(parsed=parsed, watch_meta=watch_meta):
+            self._archive_adjacent_watch_meta_missing_audit(
+                parsed=parsed,
+                watch_context=watch_context,
+                watch_meta=watch_meta,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
+            return None
         if not self._allow_persisted_exchange_adjacent_flow(
             parsed=parsed,
             watch_context=watch_context,
@@ -159,6 +168,13 @@ class SignalPipeline:
             "intelligence_status": watch_meta.get("intelligence_status", ""),
             "suspected_role": watch_meta.get("suspected_role", ""),
             "candidate_score": float(watch_meta.get("candidate_score") or 0.0),
+            "runtime_adjacent_watch": bool(watch_meta.get("runtime_adjacent_watch")),
+            "watch_meta_source": str(watch_meta.get("watch_meta_source") or ""),
+            "strategy_hint": str(watch_meta.get("strategy_hint") or ""),
+            "runtime_state": str(watch_meta.get("runtime_state") or ""),
+            "anchor_watch_address": str(watch_meta.get("anchor_watch_address") or ""),
+            "anchor_label": str(watch_meta.get("anchor_label") or ""),
+            "downstream_case_id": str(watch_meta.get("downstream_case_id") or ""),
         }
         event.metadata["intent"] = preliminary_intent
 
@@ -328,6 +344,27 @@ class SignalPipeline:
             base_token_score=float(token_score.get("score") or 0.0),
             gate_metrics=gate_decision.metrics,
         )
+        runtime_adjacent_allowed, runtime_adjacent_gate_result = self._passes_runtime_adjacent_execution_gate(
+            event=event,
+            watch_meta=watch_meta,
+            behavior_case=behavior_case,
+            gate_metrics=gate_decision.metrics,
+        )
+        if not runtime_adjacent_allowed:
+            event.delivery_class = "drop"
+            event.delivery_reason = "runtime_adjacent_execution_below_threshold"
+            self._archive_delivery_audit(
+                event=event,
+                signal=None,
+                behavior=behavior,
+                gate_metrics=gate_decision.metrics,
+                stage="adjacent_watch_gate",
+                gate_reason="runtime_adjacent_execution_below_threshold",
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+                audit_extras=runtime_adjacent_gate_result,
+            )
+            return None
 
         signal = self.strategy_engine.decide(
             event=event,
@@ -648,6 +685,13 @@ class SignalPipeline:
             and str(watch_meta.get("strategy_hint") or "") == "persisted_exchange_adjacent"
         )
 
+    def _is_adjacent_watch_meta_missing(self, parsed: dict | None, watch_meta: dict | None) -> bool:
+        parsed = parsed or {}
+        if str(parsed.get("monitor_type") or "") != "adjacent_watch":
+            return False
+        watch_meta = watch_meta or {}
+        return not watch_meta or str(watch_meta.get("watch_meta_source") or "") != "runtime_adjacent_watch"
+
     def _allow_persisted_exchange_adjacent_flow(
         self,
         parsed: dict | None,
@@ -677,13 +721,15 @@ class SignalPipeline:
             and pricing_confidence >= PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE
         )
 
-    def _archive_persisted_exchange_adjacent_prefilter_audit(
+    def _archive_prefilter_delivery_audit(
         self,
         parsed: dict | None,
         watch_context: dict | None,
         watch_meta: dict | None,
         archive_status: dict,
         archive_ts: int,
+        gate_reason: str,
+        audit_extras: dict | None = None,
     ) -> None:
         if self.archive_store is None:
             return
@@ -691,11 +737,6 @@ class SignalPipeline:
         parsed = parsed or {}
         watch_context = watch_context or {}
         watch_meta = watch_meta or {}
-        strategy_role = str(
-            watch_meta.get("strategy_role")
-            or parsed.get("strategy_role")
-            or "unknown"
-        )
         tx_hash = str(parsed.get("tx_hash") or parsed.get("hash") or "")
         watch_address = str(
             parsed.get("watch_address")
@@ -710,39 +751,94 @@ class SignalPipeline:
             or parsed.get("from")
             or ""
         ).lower()
+        strategy_role = str(
+            watch_meta.get("strategy_role")
+            or parsed.get("strategy_role")
+            or "unknown"
+        )
         event_id_seed = "|".join(
             [
                 tx_hash,
                 watch_address or "runtime_adjacent_watch",
                 counterparty or "counterparty_unknown",
-                "persisted_exchange_adjacent_filtered",
+                gate_reason,
             ]
         )
         record = {
             "event_id": f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}",
             "tx_hash": tx_hash,
             "watch_address": watch_address,
+            "monitor_type": str(parsed.get("monitor_type") or ""),
             "strategy_role": strategy_role,
             "role_group": str(strategy_role_group(strategy_role)),
             "intent_type": str(parsed.get("intent_type") or ""),
             "behavior_type": "unknown",
-            "gate_reason": "persisted_exchange_adjacent_filtered",
+            "gate_reason": gate_reason,
             "delivery_class": "drop",
             "stage": "prefilter",
             "counterparty": counterparty,
-            "strategy_hint": str(watch_meta.get("strategy_hint") or ""),
             "watch_meta_source": str(watch_meta.get("watch_meta_source") or ""),
-            "is_exchange_related": bool(parsed.get("is_exchange_related")),
+            "strategy_hint": str(watch_meta.get("strategy_hint") or ""),
+            "runtime_adjacent_watch": bool(watch_meta.get("runtime_adjacent_watch")),
+            "runtime_state": str(watch_meta.get("runtime_state") or ""),
+            "anchor_watch_address": str(watch_meta.get("anchor_watch_address") or ""),
+            "downstream_case_id": str(watch_meta.get("downstream_case_id") or ""),
             "usd_value": round(float(parsed.get("usd_value") or parsed.get("value") or 0.0), 2),
             "pricing_confidence": round(float(parsed.get("pricing_confidence") or 0.0), 3),
             "archive_ts": int(archive_ts),
         }
+        if audit_extras:
+            record.update(audit_extras)
         try:
             archive_status["delivery_audit"] = bool(
                 self.archive_store.write_delivery_audit(record, archive_ts=archive_ts)
             ) or bool(archive_status.get("delivery_audit"))
         except Exception as e:
-            print(f"persisted exchange adjacent prefilter audit 归档失败: {e}")
+            print(f"prefilter delivery audit 归档失败: {e}")
+
+    def _archive_adjacent_watch_meta_missing_audit(
+        self,
+        parsed: dict | None,
+        watch_context: dict | None,
+        watch_meta: dict | None,
+        archive_status: dict,
+        archive_ts: int,
+    ) -> None:
+        self._archive_prefilter_delivery_audit(
+            parsed=parsed,
+            watch_context=watch_context,
+            watch_meta=watch_meta,
+            archive_status=archive_status,
+            archive_ts=archive_ts,
+            gate_reason="adjacent_watch_meta_missing",
+            audit_extras={
+                "strategy_role": str(
+                    (watch_meta or {}).get("strategy_role")
+                    or (parsed or {}).get("strategy_role")
+                    or "unknown"
+                ),
+            },
+        )
+
+    def _archive_persisted_exchange_adjacent_prefilter_audit(
+        self,
+        parsed: dict | None,
+        watch_context: dict | None,
+        watch_meta: dict | None,
+        archive_status: dict,
+        archive_ts: int,
+    ) -> None:
+        self._archive_prefilter_delivery_audit(
+            parsed=parsed,
+            watch_context=watch_context,
+            watch_meta=watch_meta,
+            archive_status=archive_status,
+            archive_ts=archive_ts,
+            gate_reason="persisted_exchange_adjacent_filtered",
+            audit_extras={
+                "is_exchange_related": bool((parsed or {}).get("is_exchange_related")),
+            },
+        )
 
     def _restored_top_counterparty_addresses(self, watch_meta: dict | None, limit: int = 3) -> set[str]:
         watch_meta = watch_meta or {}
@@ -1214,6 +1310,21 @@ class SignalPipeline:
             "counterparty": counterparty,
             "counterparty_label": _text(event_metadata.get("counterparty_label"), raw.get("counterparty_label")),
             "monitor_type": _text(raw.get("monitor_type"), event_metadata.get("monitor_type")),
+            "watch_meta_source": _text(
+                signal_metadata.get("watch_meta_source"),
+                signal_context.get("watch_meta_source"),
+                watch_meta.get("watch_meta_source"),
+            ),
+            "strategy_hint": _text(
+                signal_metadata.get("strategy_hint"),
+                signal_context.get("strategy_hint"),
+                watch_meta.get("strategy_hint"),
+            ),
+            "runtime_adjacent_watch": _bool_value(
+                signal_metadata.get("runtime_adjacent_watch"),
+                signal_context.get("runtime_adjacent_watch"),
+                watch_meta.get("runtime_adjacent_watch"),
+            ),
             "source_kind": _text(raw.get("source_kind"), event_metadata.get("source_kind")),
             "raw_log_count": _int_value(raw.get("raw_log_count"), event_metadata.get("raw_log_count"), 0),
             "touched_watch_addresses_count": _int_value(len(raw.get("touched_watch_addresses") or event_metadata.get("touched_watch_addresses") or []), 0),
@@ -1344,10 +1455,22 @@ class SignalPipeline:
                 signal_metadata.get("delivered_notification_reason"),
             ),
             "anchor_tx_hash": _text(event_metadata.get("anchor_tx_hash")),
-            "anchor_watch_address": _text(event_metadata.get("anchor_watch_address"), event_metadata.get("downstream_anchor_address")),
+            "anchor_watch_address": _text(
+                event_metadata.get("anchor_watch_address"),
+                event_metadata.get("downstream_anchor_address"),
+                signal_metadata.get("anchor_watch_address"),
+                signal_context.get("anchor_watch_address"),
+                watch_meta.get("anchor_watch_address"),
+            ),
             "anchor_label": _text(event_metadata.get("anchor_label"), event_metadata.get("downstream_anchor_label")),
             "downstream_address": _text(event_metadata.get("downstream_address")),
             "downstream_label": _text(event_metadata.get("downstream_label"), event_metadata.get("downstream_object_label")),
+            "downstream_case_id": _text(
+                event_metadata.get("downstream_case_id"),
+                signal_metadata.get("downstream_case_id"),
+                signal_context.get("downstream_case_id"),
+                watch_meta.get("downstream_case_id"),
+            ),
             "downstream_followup_type": _text(event_metadata.get("downstream_followup_type")),
             "downstream_followup_label": _text(event_metadata.get("downstream_followup_label")),
             "downstream_followup_stage": _text(event_metadata.get("downstream_followup_stage")),
@@ -1361,7 +1484,12 @@ class SignalPipeline:
             "followup_type": _text(event_metadata.get("followup_type"), event_metadata.get("downstream_followup_type")),
             "hop": _int_value(event_metadata.get("hop")),
             "window_sec": _int_value(event_metadata.get("window_sec")),
-            "runtime_state": _text(event_metadata.get("downstream_runtime_state")),
+            "runtime_state": _text(
+                event_metadata.get("downstream_runtime_state"),
+                signal_metadata.get("downstream_runtime_state"),
+                signal_context.get("downstream_runtime_state"),
+                watch_meta.get("runtime_state"),
+            ),
             "execution_required_but_missing": _bool_value(gate_metrics.get("execution_required_but_missing"), event_metadata.get("execution_required_but_missing")),
             "stable_non_swap_filtered_flag": _bool_value(gate_metrics.get("stable_non_swap_filtered_flag"), gate_reason == "stable_non_swap_filtered"),
             "stable_non_swap_hard_filter_usd": _num(gate_metrics.get("stable_non_swap_hard_filter_usd"), digits=2),
@@ -1830,6 +1958,70 @@ class SignalPipeline:
         ):
             return False, "impact_signal_below_notify_min"
         return True, "allowed"
+
+    def _passes_runtime_adjacent_execution_gate(
+        self,
+        event: Event,
+        watch_meta: dict | None,
+        behavior_case,
+        gate_metrics: dict | None,
+    ) -> tuple[bool, dict]:
+        watch_meta = watch_meta or {}
+        gate_metrics = gate_metrics or {}
+        if str(watch_meta.get("watch_meta_source") or "") != "runtime_adjacent_watch":
+            return True, {}
+        if str((event.metadata or {}).get("monitor_type") or "") != "adjacent_watch":
+            return True, {}
+        if str(watch_meta.get("strategy_hint") or "") == "persisted_exchange_adjacent":
+            return True, {}
+        if self._is_downstream_confirmed_runtime_adjacent_event(event, behavior_case):
+            return True, {}
+        if event.kind not in {"swap", "token_transfer", "eth_transfer"}:
+            return True, {}
+
+        usd_value = float(event.usd_value or gate_metrics.get("usd_value") or 0.0)
+        pricing_confidence = float(
+            event.pricing_confidence
+            or gate_metrics.get("pricing_confidence")
+            or 0.0
+        )
+        quality_score = float(
+            gate_metrics.get("adjusted_quality_score")
+            or gate_metrics.get("quality_score")
+            or 0.0
+        )
+        confirmation_score = float(event.confirmation_score or gate_metrics.get("confirmation_score") or 0.0)
+        resonance_score = float(gate_metrics.get("resonance_score") or 0.0)
+
+        failures = []
+        if usd_value < float(ADJACENT_WATCH_RUNTIME_MIN_USD or 0.0):
+            failures.append("usd_value_below_min")
+        if pricing_confidence < float(ADJACENT_WATCH_NOTIFY_MIN_PRICING_CONFIDENCE or 0.0):
+            failures.append("pricing_confidence_below_min")
+        if quality_score < float(ADJACENT_WATCH_NOTIFY_MIN_QUALITY or 0.0):
+            failures.append("quality_score_below_min")
+        if not (
+            confirmation_score >= float(ADJACENT_WATCH_NOTIFY_MIN_CONFIRMATION or 0.0)
+            or resonance_score >= float(ADJACENT_WATCH_NOTIFY_MIN_RESONANCE or 0.0)
+        ):
+            failures.append("confirmation_or_resonance_below_min")
+
+        if failures:
+            return False, {
+                "runtime_adjacent_gate_failures": failures,
+            }
+        return True, {}
+
+    def _is_downstream_confirmed_runtime_adjacent_event(self, event: Event, behavior_case) -> bool:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return False
+        stage = str(
+            (event.metadata or {}).get("downstream_followup_stage")
+            or getattr(behavior_case, "stage", "")
+            or ""
+        )
+        allowed_stages = {str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item}
+        return stage in allowed_stages
 
     def _apply_smart_money_case_context(
         self,
