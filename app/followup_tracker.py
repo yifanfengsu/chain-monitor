@@ -23,6 +23,9 @@ from config import (
     ADJACENT_WATCH_STABLE_SUPER_LARGE_USD,
     ADJACENT_WATCH_SUPER_LARGE_USD,
     ADJACENT_WATCH_WINDOW_SEC,
+    DOWNSTREAM_EARLY_WARNING_ENABLE,
+    DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE,
+    DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD,
     LIQUIDATION_EXECUTION_MIN_SCORE,
     LIQUIDATION_RISK_MIN_SCORE,
     SMART_MONEY_CASE_WINDOW_SEC,
@@ -109,6 +112,9 @@ class FollowupTracker:
             str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item
         }
         self.downstream_followup_max_notifications = max(int(ADJACENT_WATCH_MAX_NOTIFICATIONS or 1), 1)
+        self.downstream_early_warning_enabled = bool(DOWNSTREAM_EARLY_WARNING_ENABLE)
+        self.downstream_early_warning_min_anchor_usd = float(DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD)
+        self.downstream_early_warning_max_per_case = max(int(DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE or 1), 1)
         self._cases: dict[str, BehaviorCase] = {}
         self._open_case_ids_by_watch: dict[str, set[str]] = defaultdict(set)
         self._open_case_ids_by_token: dict[str, set[str]] = defaultdict(set)
@@ -440,14 +446,25 @@ class FollowupTracker:
     ) -> BehaviorCase:
         if self._is_downstream_followup_case(behavior_case):
             metadata = self._ensure_downstream_case_metadata(behavior_case)
-            emitted = list(metadata.get("emitted_notification_stages") or [])
-            if stage not in emitted:
-                emitted.append(stage)
-            metadata["emitted_notification_stages"] = emitted[-self.downstream_followup_max_notifications:]
-            metadata["emitted_notification_count"] = len(metadata["emitted_notification_stages"])
             signal_id = ""
             if signal is not None:
                 signal_id = str(signal.signal_id or signal.event_id or signal.tx_hash or "")
+            # Downstream emitted history 以 emitted_notification_stages 为主真相源，
+            # early-warning 专属字段只做快捷判断和统计，不再单独维护一套平行历史。
+            emitted = list(metadata.get("emitted_notification_stages") or [])
+            if stage not in emitted:
+                emitted.append(stage)
+            metadata["emitted_notification_stages"] = emitted
+            metadata["emitted_notification_count"] = len(metadata["emitted_notification_stages"])
+            metadata["emitted_notification_history_version"] = 2
+            metadata["emitted_notification_stage_source"] = "unified_case_history"
+            metadata["downstream_early_warning_stage_recorded"] = "followup_opened" in metadata["emitted_notification_stages"]
+            if stage == "followup_opened":
+                metadata["downstream_early_warning_emitted"] = True
+                metadata["downstream_early_warning_emitted_count"] = int(
+                    metadata.get("downstream_early_warning_emitted_count") or 0
+                ) + 1
+                metadata["downstream_early_warning_signal_id"] = signal_id
             metadata["last_notification_signal_id"] = signal_id
             metadata["last_notification_stage"] = stage
             return behavior_case
@@ -574,11 +591,26 @@ class FollowupTracker:
         emitted = set(metadata.get("emitted_notification_stages") or [])
         if stage is None:
             return False, "downstream_case_stage_not_emittable"
+        # Downstream 主历史以 emitted_notification_stages 为准，early-warning 专属字段只做快捷判断和统计。
+        if stage == "followup_opened":
+            if not self.downstream_early_warning_enabled:
+                return False, "downstream_early_warning_disabled"
+            if not bool(metadata.get("current_event_is_anchor")):
+                return False, "downstream_early_warning_requires_anchor_event"
+            if float(metadata.get("anchor_usd_value") or 0.0) < self.downstream_early_warning_min_anchor_usd:
+                return False, "downstream_early_warning_anchor_below_min"
+            if bool(metadata.get("downstream_early_warning_emitted")) or "followup_opened" in emitted:
+                return False, "downstream_early_warning_already_emitted"
+            emitted_early_warning_count = int(metadata.get("downstream_early_warning_emitted_count") or 0)
+            if emitted_early_warning_count >= self.downstream_early_warning_max_per_case:
+                return False, "downstream_early_warning_case_cap_reached"
+            return True, "downstream_early_warning_case_allowed"
         if stage not in self.downstream_notify_allowed_stages:
             return False, "downstream_case_stage_not_emittable"
         if stage in emitted:
             return False, "downstream_case_already_emitted"
-        if len(emitted) >= self.downstream_followup_max_notifications:
+        regular_emitted_count = sum(1 for emitted_stage in emitted if emitted_stage != "followup_opened")
+        if regular_emitted_count >= self.downstream_followup_max_notifications:
             return False, "downstream_case_notification_cap_reached"
         if not bool(metadata.get("current_event_is_followup")):
             return False, str(metadata.get("current_followup_reason") or "downstream_followup_not_confirmed")
@@ -1161,7 +1193,13 @@ class FollowupTracker:
             "downstream_exchange_arrival": False,
             "downstream_distribution_detected": False,
             "downstream_return_confirmed": False,
+            "downstream_early_warning_emitted": False,
+            "downstream_early_warning_emitted_count": 0,
+            "downstream_early_warning_signal_id": "",
+            "downstream_early_warning_stage_recorded": False,
             "emitted_notification_stages": [],
+            "emitted_notification_history_version": 2,
+            "emitted_notification_stage_source": "unified_case_history",
             "followup_events": [],
             "destinations_seen": [],
             "current_event_is_anchor": True,
@@ -1892,7 +1930,13 @@ class FollowupTracker:
         metadata.setdefault("downstream_exchange_arrival", False)
         metadata.setdefault("downstream_distribution_detected", False)
         metadata.setdefault("downstream_return_confirmed", False)
+        metadata.setdefault("downstream_early_warning_emitted", False)
+        metadata.setdefault("downstream_early_warning_emitted_count", 0)
+        metadata.setdefault("downstream_early_warning_signal_id", "")
+        metadata.setdefault("downstream_early_warning_stage_recorded", False)
         metadata.setdefault("emitted_notification_stages", [])
+        metadata.setdefault("emitted_notification_history_version", 2)
+        metadata.setdefault("emitted_notification_stage_source", "unified_case_history")
         metadata.setdefault("followup_events", [])
         metadata.setdefault("destinations_seen", [])
         metadata.setdefault("current_event_is_anchor", False)

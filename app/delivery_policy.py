@@ -4,6 +4,14 @@ from config import (
     DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
     DELIVERY_ALLOW_LP_OBSERVE,
     DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE,
+    EXCHANGE_STRONG_OBSERVE_ALLOWED_REASONS,
+    EXCHANGE_STRONG_OBSERVE_ENABLE,
+    EXCHANGE_STRONG_OBSERVE_MIN_CONFIRMATION,
+    EXCHANGE_STRONG_OBSERVE_MIN_PRICING_CONFIDENCE,
+    EXCHANGE_STRONG_OBSERVE_MIN_QUALITY,
+    EXCHANGE_STRONG_OBSERVE_MIN_RESONANCE,
+    EXCHANGE_STRONG_OBSERVE_MIN_USD,
+    EXCHANGE_STRONG_OBSERVE_REQUIRE_CONFIRMED_INTENT,
 )
 from filter import strategy_role_group
 
@@ -17,6 +25,147 @@ SMART_MONEY_OBSERVE_REASONS = {
     "smart_money_non_execution_observe",
     "smart_money_execution_observe",
 }
+EXCHANGE_STRONG_OBSERVE_ALLOWED_INTENTS = {
+    "exchange_deposit_candidate",
+    "exchange_withdraw_candidate",
+    "possible_buy_preparation",
+    "possible_sell_preparation",
+    "swap_execution",
+}
+EXCHANGE_STRONG_OBSERVE_EXCLUDED_INTENTS = {
+    "pure_transfer",
+    "unknown_intent",
+    "internal_rebalance",
+    "market_making_inventory_move",
+}
+EXCHANGE_STRONG_OBSERVE_EXCLUDED_REASONS = {
+    "exchange_inventory_observe",
+    "exchange_transfer_observe",
+    "exchange_observe",
+}
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _exchange_strong_observe_thresholds() -> dict:
+    return {
+        "enabled": bool(EXCHANGE_STRONG_OBSERVE_ENABLE),
+        "allowed_reasons": sorted(str(item or "").strip() for item in EXCHANGE_STRONG_OBSERVE_ALLOWED_REASONS if item),
+        "allowed_intents": sorted(EXCHANGE_STRONG_OBSERVE_ALLOWED_INTENTS),
+        "min_usd": float(EXCHANGE_STRONG_OBSERVE_MIN_USD),
+        "min_confirmation": float(EXCHANGE_STRONG_OBSERVE_MIN_CONFIRMATION),
+        "min_quality": float(EXCHANGE_STRONG_OBSERVE_MIN_QUALITY),
+        "min_resonance": float(EXCHANGE_STRONG_OBSERVE_MIN_RESONANCE),
+        "min_pricing_confidence": float(EXCHANGE_STRONG_OBSERVE_MIN_PRICING_CONFIDENCE),
+        "require_confirmed_intent": bool(EXCHANGE_STRONG_OBSERVE_REQUIRE_CONFIRMED_INTENT),
+    }
+
+
+def _apply_exchange_strong_observe_metadata(event, signal, allowed: bool, reason: str) -> None:
+    payload = {
+        "exchange_strong_observe_allowed": bool(allowed),
+        "exchange_strong_observe_reason": str(reason or ""),
+        "exchange_strong_observe_thresholds": _exchange_strong_observe_thresholds(),
+    }
+    getattr(event, "metadata", {}).update(payload)
+    getattr(signal, "metadata", {}).update(payload)
+    getattr(signal, "context", {}).update(payload)
+
+
+def _allow_strong_exchange_observe(event, signal) -> bool:
+    delivery_class = str(
+        getattr(signal, "delivery_class", "")
+        or getattr(event, "delivery_class", "")
+        or ""
+    )
+    if delivery_class != "observe":
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_requires_observe_delivery")
+        return False
+
+    event_metadata = getattr(event, "metadata", {}) or {}
+    signal_metadata = getattr(signal, "metadata", {}) or {}
+    role_group = str(
+        signal_metadata.get("role_group")
+        or event_metadata.get("role_group")
+        or strategy_role_group(
+            getattr(event, "strategy_role", "")
+            or signal_metadata.get("strategy_role")
+            or ""
+        )
+        or ""
+    )
+    if role_group != "exchange":
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_requires_exchange_role_group")
+        return False
+    if not bool(EXCHANGE_STRONG_OBSERVE_ENABLE):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_disabled")
+        return False
+
+    delivery_reason = str(
+        getattr(signal, "delivery_reason", "")
+        or getattr(event, "delivery_reason", "")
+        or ""
+    )
+    allowed_reasons = {str(item or "").strip() for item in EXCHANGE_STRONG_OBSERVE_ALLOWED_REASONS if item}
+    if delivery_reason in EXCHANGE_STRONG_OBSERVE_EXCLUDED_REASONS:
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_reason_explicitly_excluded")
+        return False
+    if delivery_reason not in allowed_reasons:
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_reason_not_allowed")
+        return False
+
+    intent_type = str(getattr(event, "intent_type", "") or getattr(signal, "intent_type", "") or "")
+    if intent_type in EXCHANGE_STRONG_OBSERVE_EXCLUDED_INTENTS:
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_intent_explicitly_excluded")
+        return False
+    if intent_type not in EXCHANGE_STRONG_OBSERVE_ALLOWED_INTENTS:
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_intent_not_allowed")
+        return False
+
+    if bool(EXCHANGE_STRONG_OBSERVE_REQUIRE_CONFIRMED_INTENT):
+        intent_stage = str(getattr(event, "intent_stage", "") or getattr(signal, "intent_stage", "") or "")
+        if intent_stage != "confirmed":
+            _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_requires_confirmed_intent")
+            return False
+
+    usd_value = _safe_float(getattr(signal, "usd_value", None), _safe_float(getattr(event, "usd_value", None), 0.0))
+    if usd_value < float(EXCHANGE_STRONG_OBSERVE_MIN_USD):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_usd_below_min")
+        return False
+
+    confirmation_score = _safe_float(
+        getattr(signal, "confirmation_score", None),
+        _safe_float(getattr(event, "confirmation_score", None), 0.0),
+    )
+    if confirmation_score < float(EXCHANGE_STRONG_OBSERVE_MIN_CONFIRMATION):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_confirmation_below_min")
+        return False
+
+    quality_score = _safe_float(getattr(signal, "quality_score", None), 0.0)
+    if quality_score < float(EXCHANGE_STRONG_OBSERVE_MIN_QUALITY):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_quality_below_min")
+        return False
+
+    resonance_score = _safe_float(signal_metadata.get("resonance_score"), 0.0)
+    if resonance_score < float(EXCHANGE_STRONG_OBSERVE_MIN_RESONANCE):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_resonance_below_min")
+        return False
+
+    pricing_confidence = _safe_float(
+        getattr(signal, "pricing_confidence", None),
+        _safe_float(getattr(event, "pricing_confidence", None), 0.0),
+    )
+    if pricing_confidence < float(EXCHANGE_STRONG_OBSERVE_MIN_PRICING_CONFIDENCE):
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_pricing_below_min")
+        return False
+
+    _apply_exchange_strong_observe_metadata(event, signal, True, "strong_exchange_observe_allowed")
+    return True
 
 
 def can_emit_delivery_notification(event, signal) -> bool:
@@ -48,15 +197,22 @@ def can_emit_delivery_notification(event, signal) -> bool:
     if liquidation_stage in {"risk", "execution"}:
         return bool(DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE)
 
-    role_group = strategy_role_group(
-        getattr(event, "strategy_role", "")
-        or signal_metadata.get("strategy_role")
+    role_group = str(
+        signal_metadata.get("role_group")
+        or strategy_role_group(
+            getattr(event, "strategy_role", "")
+            or signal_metadata.get("strategy_role")
+            or ""
+        )
         or ""
     )
     if role_group == "lp_pool":
         return bool(DELIVERY_ALLOW_LP_OBSERVE)
     if role_group == "exchange":
-        return bool(DELIVERY_ALLOW_EXCHANGE_OBSERVE)
+        strong_allowed = _allow_strong_exchange_observe(event, signal)
+        if DELIVERY_ALLOW_EXCHANGE_OBSERVE:
+            return True
+        return strong_allowed
     if role_group != "smart_money":
         return False
     if not DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE:

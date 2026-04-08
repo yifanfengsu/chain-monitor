@@ -13,6 +13,15 @@ from config import (
     ADJACENT_WATCH_RUNTIME_MIN_USD,
     ADJACENT_WATCH_RUNTIME_PRIORITY,
     ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
+    DOWNSTREAM_EARLY_WARNING_ENABLE,
+    DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE,
+    DOWNSTREAM_EARLY_WARNING_MIN_ABNORMAL_RATIO,
+    DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD,
+    DOWNSTREAM_EARLY_WARNING_MIN_CONFIRMATION,
+    DOWNSTREAM_EARLY_WARNING_MIN_EVENT_USD,
+    DOWNSTREAM_EARLY_WARNING_MIN_PRICING_CONFIDENCE,
+    DOWNSTREAM_EARLY_WARNING_MIN_QUALITY,
+    DOWNSTREAM_EARLY_WARNING_MIN_RESONANCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
@@ -328,6 +337,14 @@ class SignalPipeline:
         if not gate_decision.passed:
             event.delivery_class = "drop"
             event.delivery_reason = gate_decision.reason
+            self._apply_silent_reason(
+                event=event,
+                stage="gate",
+                reason_code=gate_decision.reason,
+                reason_detail=gate_decision.reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=None,
@@ -353,6 +370,14 @@ class SignalPipeline:
         if not runtime_adjacent_allowed:
             event.delivery_class = "drop"
             event.delivery_reason = "runtime_adjacent_execution_below_threshold"
+            self._apply_silent_reason(
+                event=event,
+                stage="adjacent_watch_gate",
+                reason_code="runtime_adjacent_execution_below_threshold",
+                reason_detail="runtime_adjacent_execution_below_threshold",
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=None,
@@ -377,6 +402,14 @@ class SignalPipeline:
         if not signal:
             event.delivery_class = "drop"
             event.delivery_reason = "strategy_rejected"
+            self._apply_silent_reason(
+                event=event,
+                stage="strategy",
+                reason_code="strategy_rejected",
+                reason_detail="strategy_rejected",
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=None,
@@ -400,6 +433,22 @@ class SignalPipeline:
             event.delivery_reason = "cooldown_suppressed"
             signal.delivery_class = "drop"
             signal.delivery_reason = "cooldown_suppressed"
+            self._apply_cooldown_state(
+                event=event,
+                signal=signal,
+                allowed=False,
+                reason="cooldown_suppressed",
+            )
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="cooldown",
+                reason_code="cooldown_suppressed",
+                reason_detail="cooldown_suppressed",
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                cooldown_allowed=False,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
@@ -417,6 +466,12 @@ class SignalPipeline:
                 },
             )
             return None
+        self._apply_cooldown_state(
+            event=event,
+            signal=signal,
+            allowed=True,
+            reason="cooldown_allowed",
+        )
 
         signal.archive_ts = archive_ts
         signal.signal_id = self._build_signal_id(signal, event)
@@ -508,12 +563,22 @@ class SignalPipeline:
             event.delivery_reason = interpretation.reason
             signal.delivery_class = "drop"
             signal.delivery_reason = interpretation.reason
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="interpreter",
+                reason_code=interpretation.reason,
+                reason_detail=interpretation.reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                cooldown_allowed=True,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
                 behavior=behavior,
                 gate_metrics=gate_decision.metrics,
-                stage="strategy",
+                stage="interpreter",
                 gate_reason=interpretation.reason,
                 archive_status=archive_status,
                 archive_ts=archive_ts,
@@ -527,8 +592,17 @@ class SignalPipeline:
             gate_metrics=gate_decision.metrics,
             behavior_case=behavior_case,
         )
-        should_send = self._should_emit_delivery_notification(event, signal)
-        if delivery_class == "drop" or not should_send:
+        if delivery_class == "drop":
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="strategy",
+                reason_code=delivery_reason,
+                reason_detail=delivery_reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                cooldown_allowed=True,
+            )
             self._archive_non_primary_signal(
                 event=event,
                 signal=signal,
@@ -539,18 +613,64 @@ class SignalPipeline:
                 archive_ts=archive_ts,
             )
             return None
+        should_send = self._should_emit_delivery_notification(event, signal)
+        if not should_send:
+            delivery_policy_reason = str(
+                event.metadata.get("delivery_policy_reason")
+                or signal.metadata.get("delivery_policy_reason")
+                or delivery_reason
+                or "delivery_policy_blocked"
+            )
+            event.delivery_class = "drop"
+            event.delivery_reason = delivery_policy_reason
+            signal.delivery_class = "drop"
+            signal.delivery_reason = delivery_policy_reason
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="delivery_policy",
+                reason_code=delivery_policy_reason,
+                reason_detail=delivery_policy_reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                delivery_policy_allowed=False,
+                cooldown_allowed=True,
+                would_have_been_delivery_class=delivery_class,
+            )
+            self._archive_non_primary_signal(
+                event=event,
+                signal=signal,
+                reason=delivery_policy_reason,
+                gate_metrics=gate_decision.metrics,
+                behavior=behavior,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+                stage="delivery_policy",
+            )
+            return None
 
         if not self._apply_case_notification_control(event, signal, behavior_case):
             event.delivery_class = "drop"
             event.delivery_reason = str(event.metadata.get("case_notification_reason") or "case_notification_suppressed")
             signal.delivery_class = "drop"
             signal.delivery_reason = event.delivery_reason
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="case_notification",
+                reason_code=event.delivery_reason,
+                reason_detail=event.delivery_reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                delivery_policy_allowed=bool(event.metadata.get("delivery_policy_allowed")),
+                cooldown_allowed=True,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
                 behavior=behavior,
                 gate_metrics=gate_decision.metrics,
-                stage="notifier",
+                stage="case_notification",
                 gate_reason=event.delivery_reason,
                 archive_status=archive_status,
                 archive_ts=archive_ts,
@@ -570,37 +690,53 @@ class SignalPipeline:
             behavior_case=behavior_case,
             gate_metrics=gate_decision.metrics,
         )
+        self._apply_downstream_impact_gate_state(
+            event=event,
+            signal=signal,
+            allowed=bool(downstream_impact_allowed),
+            reason=str(downstream_impact_reason or ""),
+        )
         if not downstream_impact_allowed:
+            impact_reason = str(downstream_impact_reason or "downstream_impact_gate_rejected")
             event.delivery_class = "drop"
-            event.delivery_reason = "downstream_impact_gate_rejected"
+            event.delivery_reason = impact_reason
             signal.delivery_class = "drop"
-            signal.delivery_reason = "downstream_impact_gate_rejected"
+            signal.delivery_reason = impact_reason
             rejection_payload = {
-                "case_notification_allowed": False,
-                "case_notification_suppressed": True,
-                "case_notification_reason": "downstream_impact_gate_rejected",
                 "pending_case_notification": False,
                 "pending_case_notification_stage": "",
                 "pending_case_notification_reason": "",
                 "pending_case_notification_case_id": "",
                 "pending_case_notification_case_family": "",
-                "downstream_impact_gate_reason": str(downstream_impact_reason or ""),
-                "downstream_observation_reason": str(downstream_impact_reason or ""),
+                "downstream_impact_gate_reason": impact_reason,
+                "downstream_observation_reason": impact_reason,
             }
             event.metadata.update(rejection_payload)
             signal.metadata.update(rejection_payload)
             signal.context.update(rejection_payload)
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="impact_gate",
+                reason_code=impact_reason,
+                reason_detail=impact_reason,
+                behavior_case=behavior_case,
+                gate_metrics=gate_decision.metrics,
+                delivery_policy_allowed=bool(event.metadata.get("delivery_policy_allowed")),
+                impact_gate_allowed=False,
+                cooldown_allowed=True,
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
                 behavior=behavior,
                 gate_metrics=gate_decision.metrics,
-                stage="notifier",
-                gate_reason="downstream_impact_gate_rejected",
+                stage="impact_gate",
+                gate_reason=impact_reason,
                 archive_status=archive_status,
                 archive_ts=archive_ts,
                 audit_extras={
-                    "downstream_impact_gate_reason": str(downstream_impact_reason or ""),
+                    "downstream_impact_gate_reason": impact_reason,
                 },
             )
             self._archive_case_decision_followup(
@@ -787,6 +923,21 @@ class SignalPipeline:
             "pricing_confidence": round(float(parsed.get("pricing_confidence") or 0.0), 3),
             "archive_ts": int(archive_ts),
         }
+        silent_reason = self._build_silent_reason(
+            stage="prefilter",
+            reason_code=gate_reason,
+            reason_detail=gate_reason,
+            reason_bucket="prefilter_blocked",
+            parsed=parsed,
+            watch_meta=watch_meta,
+        )
+        record.update({
+            "silent_reason": silent_reason,
+            "silent_reason_bucket": str(silent_reason.get("reason_bucket") or "prefilter_blocked"),
+            "shadow_high_value_candidate": False,
+            "shadow_candidate_reason": "",
+            "shadow_candidate_class": "",
+        })
         if audit_extras:
             record.update(audit_extras)
         try:
@@ -1158,13 +1309,14 @@ class SignalPipeline:
         behavior: dict | None,
         archive_status: dict,
         archive_ts: int,
-    ) -> None:
+        stage: str = "strategy",
+        ) -> None:
         self._archive_delivery_audit(
             event=event,
             signal=signal,
             behavior=behavior,
             gate_metrics=gate_metrics,
-            stage="strategy",
+            stage=stage,
             gate_reason=reason,
             archive_status=archive_status,
             archive_ts=archive_ts,
@@ -1176,6 +1328,500 @@ class SignalPipeline:
             archive_status=archive_status,
             archive_ts=archive_ts,
         )
+
+    def _delivery_policy_reason(self, event: Event, signal, allowed: bool) -> str:
+        event_metadata = getattr(event, "metadata", {}) or {}
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        signal_context = getattr(signal, "context", {}) or {}
+        delivery_class = str(
+            getattr(signal, "delivery_class", "")
+            or getattr(event, "delivery_class", "")
+            or ""
+        ).strip()
+        if delivery_class == "primary":
+            return "delivery_policy_primary_allowed" if allowed else "delivery_policy_primary_blocked"
+        if delivery_class != "observe":
+            return "delivery_policy_non_emittable_delivery_class"
+
+        case_family = str(
+            event_metadata.get("case_family")
+            or signal_metadata.get("case_family")
+            or signal_context.get("case_family")
+            or ""
+        ).strip()
+        if case_family == "downstream_counterparty_followup":
+            return "delivery_policy_downstream_observe_allowed" if allowed else "delivery_policy_downstream_observe_disabled"
+
+        liquidation_stage = str(
+            event_metadata.get("liquidation_stage")
+            or signal_metadata.get("liquidation_stage")
+            or signal_context.get("liquidation_stage")
+            or ""
+        ).strip()
+        if liquidation_stage in {"risk", "execution"}:
+            return "delivery_policy_liquidation_observe_allowed" if allowed else "delivery_policy_liquidation_observe_disabled"
+
+        role_group = str(
+            signal_metadata.get("role_group")
+            or event_metadata.get("role_group")
+            or signal_context.get("role_group")
+            or strategy_role_group(
+                getattr(event, "strategy_role", "")
+                or signal_metadata.get("strategy_role")
+                or ""
+            )
+            or ""
+        ).strip()
+        if role_group == "lp_pool":
+            return "delivery_policy_lp_observe_allowed" if allowed else "delivery_policy_lp_observe_disabled"
+        if role_group == "exchange":
+            strong_allowed = bool(
+                event_metadata.get("exchange_strong_observe_allowed")
+                or signal_metadata.get("exchange_strong_observe_allowed")
+                or signal_context.get("exchange_strong_observe_allowed")
+            )
+            strong_reason = str(
+                event_metadata.get("exchange_strong_observe_reason")
+                or signal_metadata.get("exchange_strong_observe_reason")
+                or signal_context.get("exchange_strong_observe_reason")
+                or ""
+            ).strip()
+            if allowed and strong_allowed:
+                return strong_reason or "strong_exchange_observe_allowed"
+            if allowed:
+                return "delivery_policy_exchange_observe_allowed"
+            return strong_reason or "delivery_policy_exchange_observe_disabled"
+        if role_group == "smart_money":
+            return "delivery_policy_smart_money_observe_allowed" if allowed else "delivery_policy_smart_money_observe_blocked"
+        return "delivery_policy_observe_not_supported"
+
+    def _apply_delivery_policy_state(
+        self,
+        event: Event,
+        signal,
+        allowed: bool,
+        reason: str,
+        evaluated: bool = True,
+        evaluated_at_stage: str = "pipeline_pre_send",
+    ) -> dict:
+        payload = {
+            "delivery_policy_evaluated": bool(evaluated),
+            "delivery_policy_allowed": bool(allowed),
+            "delivery_policy_reason": str(reason or ""),
+            "delivery_policy_evaluated_at_stage": str(evaluated_at_stage or ""),
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
+
+    def _apply_cooldown_state(
+        self,
+        event: Event,
+        signal=None,
+        allowed: bool = True,
+        reason: str = "",
+    ) -> dict:
+        payload = {
+            "cooldown_allowed": bool(allowed),
+            "cooldown_reason": str(reason or ""),
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
+
+    def _apply_downstream_impact_gate_state(
+        self,
+        event: Event,
+        signal=None,
+        allowed: bool = True,
+        reason: str = "",
+    ) -> dict:
+        payload = {
+            "downstream_impact_gate_allowed": bool(allowed),
+            "downstream_impact_gate_reason": str(reason or ""),
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
+
+    def _apply_downstream_case_history_metadata(
+        self,
+        event: Event | None = None,
+        signal=None,
+        behavior_case=None,
+    ) -> dict:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return {}
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        emitted_stages = list(metadata.get("emitted_notification_stages") or [])
+        payload = {
+            "emitted_stages": emitted_stages,
+            "emitted_notification_stages": emitted_stages,
+            "emitted_notification_count": int(metadata.get("emitted_notification_count") or len(emitted_stages)),
+            "last_notification_stage": str(metadata.get("last_notification_stage") or ""),
+            "last_notification_signal_id": str(metadata.get("last_notification_signal_id") or ""),
+            "downstream_early_warning_emitted": bool(metadata.get("downstream_early_warning_emitted")),
+            "downstream_early_warning_emitted_count": int(metadata.get("downstream_early_warning_emitted_count") or 0),
+            "downstream_early_warning_signal_id": str(metadata.get("downstream_early_warning_signal_id") or ""),
+            "downstream_early_warning_stage_recorded": bool(
+                metadata.get("downstream_early_warning_stage_recorded")
+                or "followup_opened" in emitted_stages
+            ),
+            "emitted_notification_history_version": int(metadata.get("emitted_notification_history_version") or 2),
+            "emitted_notification_stage_source": str(metadata.get("emitted_notification_stage_source") or "unified_case_history"),
+        }
+        metadata.update({
+            "downstream_early_warning_stage_recorded": payload["downstream_early_warning_stage_recorded"],
+            "emitted_notification_count": payload["emitted_notification_count"],
+            "emitted_notification_history_version": payload["emitted_notification_history_version"],
+            "emitted_notification_stage_source": payload["emitted_notification_stage_source"],
+        })
+        if event is not None:
+            event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
+
+    def _silent_reason_bucket(self, stage: str, reason_code: str) -> str:
+        normalized_stage = str(stage or "").strip().lower()
+        normalized_reason = str(reason_code or "").strip().lower()
+        if normalized_stage == "prefilter" or normalized_reason in {
+            "adjacent_watch_meta_missing",
+            "persisted_exchange_adjacent_filtered",
+        }:
+            return "prefilter_blocked"
+        if normalized_stage == "gate":
+            return "quality_gate_blocked"
+        if normalized_stage in {"adjacent_watch_gate", "impact_gate"} or normalized_reason in {
+            "runtime_adjacent_execution_below_threshold",
+            "downstream_impact_gate_rejected",
+        }:
+            return "impact_gate_blocked"
+        if normalized_stage == "cooldown" or normalized_reason == "cooldown_suppressed":
+            return "cooldown_blocked"
+        if normalized_stage == "delivery_policy" or normalized_reason.startswith("delivery_policy_"):
+            return "delivery_policy_blocked"
+        if normalized_stage == "case_notification":
+            return "case_stage_blocked"
+        if normalized_stage == "notifier_delivery" or normalized_reason == "notifier_send_failed":
+            return "send_failed"
+        if normalized_stage in {"interpreter", "strategy"}:
+            if normalized_reason == "strategy_rejected":
+                return "strategy_blocked"
+            if (
+                normalized_reason.endswith("_drop")
+                or normalized_reason.startswith("low_")
+                or normalized_reason.startswith("weak_")
+                or normalized_reason.startswith("downstream_followup_dropped")
+            ):
+                return "no_chain_evidence"
+            return "strategy_blocked"
+        return "strategy_blocked"
+
+    def _chain_evidence_strength(
+        self,
+        event: Event | None = None,
+        signal=None,
+        gate_metrics: dict | None = None,
+        parsed: dict | None = None,
+    ) -> str:
+        gate_metrics = gate_metrics or {}
+        parsed = parsed or {}
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        confirmation_score = float(
+            (event.confirmation_score if event is not None else 0.0)
+            or getattr(signal, "confirmation_score", 0.0)
+            or gate_metrics.get("confirmation_score")
+            or parsed.get("confirmation_score")
+            or 0.0
+        )
+        quality_score = float(
+            getattr(signal, "quality_score", 0.0)
+            or gate_metrics.get("adjusted_quality_score")
+            or gate_metrics.get("quality_score")
+            or parsed.get("quality_score")
+            or 0.0
+        )
+        pricing_confidence = float(
+            getattr(signal, "pricing_confidence", 0.0)
+            or (event.pricing_confidence if event is not None else 0.0)
+            or gate_metrics.get("pricing_confidence")
+            or parsed.get("pricing_confidence")
+            or 0.0
+        )
+        resonance_score = float(
+            signal_metadata.get("resonance_score")
+            or gate_metrics.get("resonance_score")
+            or parsed.get("resonance_score")
+            or 0.0
+        )
+        abnormal_ratio = float(
+            getattr(signal, "abnormal_ratio", 0.0)
+            or gate_metrics.get("abnormal_ratio")
+            or parsed.get("abnormal_ratio")
+            or 0.0
+        )
+        strong_hits = sum(
+            1
+            for matched in (
+                confirmation_score >= 0.72,
+                quality_score >= 0.84,
+                pricing_confidence >= 0.80,
+                resonance_score >= 0.45 or abnormal_ratio >= 2.0,
+            )
+            if matched
+        )
+        medium_hits = sum(
+            1
+            for matched in (
+                confirmation_score >= 0.58,
+                quality_score >= 0.76,
+                pricing_confidence >= 0.72,
+                resonance_score >= 0.32 or abnormal_ratio >= 1.6,
+            )
+            if matched
+        )
+        if strong_hits >= 3 or (
+            confirmation_score >= 0.72
+            and quality_score >= 0.84
+            and pricing_confidence >= 0.80
+        ):
+            return "strong"
+        if medium_hits >= 2:
+            return "medium"
+        return "weak"
+
+    def _build_silent_reason(
+        self,
+        *,
+        stage: str,
+        reason_code: str,
+        reason_detail: str | None = None,
+        reason_bucket: str | None = None,
+        event: Event | None = None,
+        signal=None,
+        behavior_case=None,
+        gate_metrics: dict | None = None,
+        watch_meta: dict | None = None,
+        parsed: dict | None = None,
+        delivery_policy_allowed: bool | None = None,
+        impact_gate_allowed: bool | None = None,
+        cooldown_allowed: bool | None = None,
+        would_have_been_delivery_class: str | None = None,
+        would_have_been_message_variant: str | None = None,
+    ) -> dict:
+        gate_metrics = gate_metrics or {}
+        parsed = parsed or {}
+        event_metadata = getattr(event, "metadata", {}) or {}
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        signal_context = getattr(signal, "context", {}) or {}
+        watch_meta = watch_meta or event_metadata.get("watch_meta") or signal_metadata.get("watch_meta") or {}
+        case_metadata = getattr(behavior_case, "metadata", {}) or {}
+
+        def _first_non_none(*values):
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        bucket = str(reason_bucket or self._silent_reason_bucket(stage, reason_code))
+        case_family = str(
+            _first_non_none(
+                case_metadata.get("case_family"),
+                event_metadata.get("case_family"),
+                signal_metadata.get("case_family"),
+                watch_meta.get("case_family"),
+                "",
+            )
+            or ""
+        )
+        case_stage = str(
+            _first_non_none(
+                getattr(behavior_case, "stage", None),
+                event_metadata.get("downstream_followup_stage"),
+                event_metadata.get("case_notification_stage"),
+                signal_metadata.get("case_notification_stage"),
+                getattr(event, "followup_stage", None) if event is not None else None,
+                watch_meta.get("runtime_state"),
+                "",
+            )
+            or ""
+        )
+        resolved_delivery_policy_allowed = _first_non_none(
+            delivery_policy_allowed,
+            event_metadata.get("delivery_policy_allowed"),
+            signal_metadata.get("delivery_policy_allowed"),
+            signal_context.get("delivery_policy_allowed"),
+        )
+        resolved_impact_gate_allowed = _first_non_none(
+            impact_gate_allowed,
+            event_metadata.get("downstream_impact_gate_allowed"),
+            signal_metadata.get("downstream_impact_gate_allowed"),
+            signal_context.get("downstream_impact_gate_allowed"),
+        )
+        resolved_cooldown_allowed = _first_non_none(
+            cooldown_allowed,
+            event_metadata.get("cooldown_allowed"),
+            signal_metadata.get("cooldown_allowed"),
+            signal_context.get("cooldown_allowed"),
+        )
+        resolved_delivery_class = str(
+            would_have_been_delivery_class
+            or getattr(signal, "delivery_class", "")
+            or getattr(event, "delivery_class", "") if event is not None else ""
+        ).strip()
+        resolved_message_variant = str(
+            would_have_been_message_variant
+            or signal_context.get("message_variant")
+            or signal_metadata.get("message_variant")
+            or event_metadata.get("message_variant")
+            or ""
+        ).strip()
+        return {
+            "stage": str(stage or ""),
+            "reason_code": str(reason_code or ""),
+            "reason_detail": str(reason_detail or reason_code or ""),
+            "reason_bucket": bucket,
+            "would_have_been_delivery_class": resolved_delivery_class,
+            "would_have_been_message_variant": resolved_message_variant,
+            "chain_evidence_strength": self._chain_evidence_strength(
+                event=event,
+                signal=signal,
+                gate_metrics=gate_metrics,
+                parsed=parsed,
+            ),
+            "case_stage": case_stage,
+            "case_family": case_family,
+            "delivery_policy_allowed": resolved_delivery_policy_allowed,
+            "impact_gate_allowed": resolved_impact_gate_allowed,
+            "cooldown_allowed": resolved_cooldown_allowed,
+        }
+
+    def _is_shadow_high_value_candidate(
+        self,
+        silent_reason: dict,
+        event: Event | None = None,
+        signal=None,
+        gate_metrics: dict | None = None,
+    ) -> bool:
+        if str(silent_reason.get("reason_bucket") or "") not in {
+            "delivery_policy_blocked",
+            "case_stage_blocked",
+            "impact_gate_blocked",
+            "cooldown_blocked",
+        }:
+            return False
+        gate_metrics = gate_metrics or {}
+        usd_value = float(
+            getattr(signal, "usd_value", 0.0)
+            or gate_metrics.get("usd_value")
+            or (event.usd_value if event is not None else 0.0)
+            or 0.0
+        )
+        dynamic_min_usd = float(
+            gate_metrics.get("dynamic_min_usd")
+            or getattr(signal, "effective_threshold_usd", 0.0)
+            or getattr(signal, "metadata", {}).get("dynamic_min_usd", 0.0)
+            or 0.0
+        )
+        if usd_value < max(dynamic_min_usd * 3.0, 300_000.0):
+            return False
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        confirmation_score = float(
+            (event.confirmation_score if event is not None else 0.0)
+            or getattr(signal, "confirmation_score", 0.0)
+            or gate_metrics.get("confirmation_score")
+            or 0.0
+        )
+        quality_score = float(
+            getattr(signal, "quality_score", 0.0)
+            or gate_metrics.get("adjusted_quality_score")
+            or gate_metrics.get("quality_score")
+            or 0.0
+        )
+        pricing_confidence = float(
+            getattr(signal, "pricing_confidence", 0.0)
+            or (event.pricing_confidence if event is not None else 0.0)
+            or gate_metrics.get("pricing_confidence")
+            or 0.0
+        )
+        resonance_score = float(signal_metadata.get("resonance_score") or gate_metrics.get("resonance_score") or 0.0)
+        abnormal_ratio = float(getattr(signal, "abnormal_ratio", 0.0) or gate_metrics.get("abnormal_ratio") or 0.0)
+        strong_hits = sum(
+            1
+            for matched in (
+                confirmation_score >= 0.62,
+                quality_score >= 0.80,
+                pricing_confidence >= 0.78,
+                resonance_score >= 0.40 or abnormal_ratio >= 2.0,
+            )
+            if matched
+        )
+        return strong_hits >= 2 or str(silent_reason.get("chain_evidence_strength") or "") == "strong"
+
+    def _apply_silent_reason(
+        self,
+        *,
+        event: Event,
+        signal=None,
+        stage: str,
+        reason_code: str,
+        reason_detail: str | None = None,
+        reason_bucket: str | None = None,
+        behavior_case=None,
+        gate_metrics: dict | None = None,
+        delivery_policy_allowed: bool | None = None,
+        impact_gate_allowed: bool | None = None,
+        cooldown_allowed: bool | None = None,
+        would_have_been_delivery_class: str | None = None,
+        would_have_been_message_variant: str | None = None,
+    ) -> dict:
+        silent_reason = self._build_silent_reason(
+            stage=stage,
+            reason_code=reason_code,
+            reason_detail=reason_detail,
+            reason_bucket=reason_bucket,
+            event=event,
+            signal=signal,
+            behavior_case=behavior_case,
+            gate_metrics=gate_metrics,
+            delivery_policy_allowed=delivery_policy_allowed,
+            impact_gate_allowed=impact_gate_allowed,
+            cooldown_allowed=cooldown_allowed,
+            would_have_been_delivery_class=would_have_been_delivery_class,
+            would_have_been_message_variant=would_have_been_message_variant,
+        )
+        shadow_high_value_candidate = self._is_shadow_high_value_candidate(
+            silent_reason=silent_reason,
+            event=event,
+            signal=signal,
+            gate_metrics=gate_metrics,
+        )
+        payload = {
+            "silent_reason": silent_reason,
+            "silent_reason_bucket": str(silent_reason.get("reason_bucket") or ""),
+            "shadow_high_value_candidate": bool(shadow_high_value_candidate),
+            "shadow_candidate_reason": (
+                f"{silent_reason['reason_bucket']}:{silent_reason['reason_code']}"
+                if shadow_high_value_candidate else ""
+            ),
+            "shadow_candidate_class": (
+                str(silent_reason.get("would_have_been_delivery_class") or "unknown")
+                if shadow_high_value_candidate else ""
+            ),
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
 
     def _delivery_audit_record(
         self,
@@ -1237,6 +1883,12 @@ class SignalPipeline:
             value = _first_value(*values)
             if value is None:
                 return False
+            return bool(value)
+
+        def _bool_or_none(*values):
+            value = _first_value(*values)
+            if value is None or value == "":
+                return None
             return bool(value)
 
         usd_value = _num(
@@ -1301,6 +1953,26 @@ class SignalPipeline:
             "gate_reason": _text(gate_reason, getattr(signal, "delivery_reason", None), event.delivery_reason),
             "delivery_class": _text(getattr(signal, "delivery_class", None), event.delivery_class, "drop"),
             "delivery_reason": _text(getattr(signal, "delivery_reason", None), event.delivery_reason),
+            "delivery_policy_evaluated": _bool_value(
+                event_metadata.get("delivery_policy_evaluated"),
+                signal_metadata.get("delivery_policy_evaluated"),
+                signal_context.get("delivery_policy_evaluated"),
+            ),
+            "delivery_policy_allowed": _bool_or_none(
+                event_metadata.get("delivery_policy_allowed"),
+                signal_metadata.get("delivery_policy_allowed"),
+                signal_context.get("delivery_policy_allowed"),
+            ),
+            "delivery_policy_reason": _text(
+                event_metadata.get("delivery_policy_reason"),
+                signal_metadata.get("delivery_policy_reason"),
+                signal_context.get("delivery_policy_reason"),
+            ),
+            "delivery_policy_evaluated_at_stage": _text(
+                event_metadata.get("delivery_policy_evaluated_at_stage"),
+                signal_metadata.get("delivery_policy_evaluated_at_stage"),
+                signal_context.get("delivery_policy_evaluated_at_stage"),
+            ),
             "stage": _text(stage or "strategy"),
             "archive_ts": _int_value(archive_ts, event.archive_ts, time.time()),
             "chain": _text(event.chain, "ethereum"),
@@ -1416,6 +2088,21 @@ class SignalPipeline:
             "stablecoin_dominant": _bool_value(gate_metrics.get("stablecoin_dominant"), raw.get("is_stablecoin_flow")),
             "possible_internal_transfer": _bool_value(gate_metrics.get("possible_internal_transfer"), raw.get("possible_internal_transfer")),
             "exchange_noise_sensitive": _bool_value(gate_metrics.get("exchange_noise_sensitive")),
+            "exchange_strong_observe_allowed": _bool_value(
+                event_metadata.get("exchange_strong_observe_allowed"),
+                signal_metadata.get("exchange_strong_observe_allowed"),
+                signal_context.get("exchange_strong_observe_allowed"),
+            ),
+            "exchange_strong_observe_reason": _text(
+                event_metadata.get("exchange_strong_observe_reason"),
+                signal_metadata.get("exchange_strong_observe_reason"),
+                signal_context.get("exchange_strong_observe_reason"),
+            ),
+            "exchange_strong_observe_thresholds": _first_value(
+                event_metadata.get("exchange_strong_observe_thresholds"),
+                signal_metadata.get("exchange_strong_observe_thresholds"),
+                signal_context.get("exchange_strong_observe_thresholds"),
+            ) or {},
             "followup_strength": _text(gate_metrics.get("followup_strength"), event_metadata.get("followup_strength")),
             "followup_semantic": _text(gate_metrics.get("followup_semantic"), event_metadata.get("followup_semantic")),
             "followup_confirmed": _bool_value(gate_metrics.get("followup_confirmed"), event_metadata.get("followup_confirmed")),
@@ -1454,7 +2141,24 @@ class SignalPipeline:
                 event_metadata.get("delivered_notification_reason"),
                 signal_metadata.get("delivered_notification_reason"),
             ),
+            "cooldown_allowed": _bool_or_none(
+                event_metadata.get("cooldown_allowed"),
+                signal_metadata.get("cooldown_allowed"),
+                signal_context.get("cooldown_allowed"),
+            ),
+            "cooldown_reason": _text(
+                event_metadata.get("cooldown_reason"),
+                signal_metadata.get("cooldown_reason"),
+                signal_context.get("cooldown_reason"),
+            ),
             "anchor_tx_hash": _text(event_metadata.get("anchor_tx_hash")),
+            "anchor_usd_value": _num(
+                event_metadata.get("anchor_usd_value"),
+                event_metadata.get("downstream_anchor_usd_value"),
+                signal_metadata.get("anchor_usd_value"),
+                signal_context.get("anchor_usd_value"),
+                digits=2,
+            ),
             "anchor_watch_address": _text(
                 event_metadata.get("anchor_watch_address"),
                 event_metadata.get("downstream_anchor_address"),
@@ -1480,8 +2184,48 @@ class SignalPipeline:
                 event_metadata.get("case_notification_reason"),
                 gate_reason,
             ),
+            "downstream_early_warning_allowed": _bool_value(
+                event_metadata.get("downstream_early_warning_allowed"),
+                signal_metadata.get("downstream_early_warning_allowed"),
+                signal_context.get("downstream_early_warning_allowed"),
+            ),
+            "downstream_early_warning_reason": _text(
+                event_metadata.get("downstream_early_warning_reason"),
+                signal_metadata.get("downstream_early_warning_reason"),
+                signal_context.get("downstream_early_warning_reason"),
+            ),
+            "downstream_early_warning_thresholds": _first_value(
+                event_metadata.get("downstream_early_warning_thresholds"),
+                signal_metadata.get("downstream_early_warning_thresholds"),
+                signal_context.get("downstream_early_warning_thresholds"),
+            ) or {},
+            "downstream_early_warning_emitted": _bool_value(
+                event_metadata.get("downstream_early_warning_emitted"),
+                signal_metadata.get("downstream_early_warning_emitted"),
+                signal_context.get("downstream_early_warning_emitted"),
+            ),
+            "downstream_early_warning_emitted_count": _int_value(
+                event_metadata.get("downstream_early_warning_emitted_count"),
+                signal_metadata.get("downstream_early_warning_emitted_count"),
+                signal_context.get("downstream_early_warning_emitted_count"),
+            ),
+            "downstream_early_warning_signal_id": _text(
+                event_metadata.get("downstream_early_warning_signal_id"),
+                signal_metadata.get("downstream_early_warning_signal_id"),
+                signal_context.get("downstream_early_warning_signal_id"),
+            ),
+            "downstream_early_warning_stage_recorded": _bool_value(
+                event_metadata.get("downstream_early_warning_stage_recorded"),
+                signal_metadata.get("downstream_early_warning_stage_recorded"),
+                signal_context.get("downstream_early_warning_stage_recorded"),
+            ),
             "followup_stage": _text(event_metadata.get("followup_stage"), event_metadata.get("downstream_followup_stage")),
             "followup_type": _text(event_metadata.get("followup_type"), event_metadata.get("downstream_followup_type")),
+            "current_event_is_anchor": _bool_value(
+                event_metadata.get("current_event_is_anchor"),
+                signal_metadata.get("current_event_is_anchor"),
+                signal_context.get("current_event_is_anchor"),
+            ),
             "hop": _int_value(event_metadata.get("hop")),
             "window_sec": _int_value(event_metadata.get("window_sec")),
             "runtime_state": _text(
@@ -1491,6 +2235,51 @@ class SignalPipeline:
                 watch_meta.get("runtime_state"),
             ),
             "execution_required_but_missing": _bool_value(gate_metrics.get("execution_required_but_missing"), event_metadata.get("execution_required_but_missing")),
+            "downstream_impact_gate_allowed": _bool_or_none(
+                event_metadata.get("downstream_impact_gate_allowed"),
+                signal_metadata.get("downstream_impact_gate_allowed"),
+                signal_context.get("downstream_impact_gate_allowed"),
+            ),
+            "downstream_impact_gate_reason": _text(
+                event_metadata.get("downstream_impact_gate_reason"),
+                signal_metadata.get("downstream_impact_gate_reason"),
+                signal_context.get("downstream_impact_gate_reason"),
+            ),
+            "emitted_stages": list(
+                _first_value(
+                    event_metadata.get("emitted_stages"),
+                    signal_metadata.get("emitted_stages"),
+                    signal_context.get("emitted_stages"),
+                    event_metadata.get("emitted_notification_stages"),
+                    signal_metadata.get("emitted_notification_stages"),
+                )
+                or []
+            ),
+            "emitted_notification_count": _int_value(
+                event_metadata.get("emitted_notification_count"),
+                signal_metadata.get("emitted_notification_count"),
+                signal_context.get("emitted_notification_count"),
+            ),
+            "last_notification_stage": _text(
+                event_metadata.get("last_notification_stage"),
+                signal_metadata.get("last_notification_stage"),
+                signal_context.get("last_notification_stage"),
+            ),
+            "last_notification_signal_id": _text(
+                event_metadata.get("last_notification_signal_id"),
+                signal_metadata.get("last_notification_signal_id"),
+                signal_context.get("last_notification_signal_id"),
+            ),
+            "emitted_notification_history_version": _int_value(
+                event_metadata.get("emitted_notification_history_version"),
+                signal_metadata.get("emitted_notification_history_version"),
+                signal_context.get("emitted_notification_history_version"),
+            ),
+            "emitted_notification_stage_source": _text(
+                event_metadata.get("emitted_notification_stage_source"),
+                signal_metadata.get("emitted_notification_stage_source"),
+                signal_context.get("emitted_notification_stage_source"),
+            ),
             "stable_non_swap_filtered_flag": _bool_value(gate_metrics.get("stable_non_swap_filtered_flag"), gate_reason == "stable_non_swap_filtered"),
             "stable_non_swap_hard_filter_usd": _num(gate_metrics.get("stable_non_swap_hard_filter_usd"), digits=2),
             "stable_transfer_min_usd": _num(gate_metrics.get("stable_transfer_min_usd"), digits=2),
@@ -1520,6 +2309,31 @@ class SignalPipeline:
                 signal_context.get("headline_label"),
                 signal_context.get("fact_brief"),
                 event_metadata.get("followup_label"),
+            ),
+            "silent_reason": _first_value(
+                event_metadata.get("silent_reason"),
+                signal_metadata.get("silent_reason"),
+                signal_context.get("silent_reason"),
+            ) or {},
+            "silent_reason_bucket": _text(
+                event_metadata.get("silent_reason_bucket"),
+                signal_metadata.get("silent_reason_bucket"),
+                signal_context.get("silent_reason_bucket"),
+            ),
+            "shadow_high_value_candidate": _bool_value(
+                event_metadata.get("shadow_high_value_candidate"),
+                signal_metadata.get("shadow_high_value_candidate"),
+                signal_context.get("shadow_high_value_candidate"),
+            ),
+            "shadow_candidate_reason": _text(
+                event_metadata.get("shadow_candidate_reason"),
+                signal_metadata.get("shadow_candidate_reason"),
+                signal_context.get("shadow_candidate_reason"),
+            ),
+            "shadow_candidate_class": _text(
+                event_metadata.get("shadow_candidate_class"),
+                signal_metadata.get("shadow_candidate_class"),
+                signal_context.get("shadow_candidate_class"),
             ),
         }
         if audit_extras:
@@ -1786,11 +2600,11 @@ class SignalPipeline:
         elif active_until and now_ts >= active_until:
             runtime_state = "cooling"
 
-        label = "下游观察窗口已开启"
+        label = "超大额下游观察已开启"
         detail = f"{anchor_label} 刚向 {downstream_label} 转出 {_usd_text(anchor_usd_value)} {anchor_symbol}，已开启短时下游观察窗口。"
-        reason = "继续观察该下游地址是否进入交易所、DEX 执行或继续大额分发。"
+        reason = "当前更像重点地址刚把大额资金送往下游地址，优先看是否继续进入交易所、命中执行或出现分发。"
         path_label = f"{anchor_label} -> {downstream_label}"
-        next_hint = "优先看是否转入交易所、升级为真实执行，或继续出现更强的大额分发。"
+        next_hint = "进入交易所 / 命中 swap_execution / 出现分发"
 
         if stage == "exchange_arrival_confirmed":
             label = "下游资金进入交易场景"
@@ -1859,6 +2673,17 @@ class SignalPipeline:
         event.metadata["closing_until"] = closing_until
         event.metadata["downstream_runtime_state"] = runtime_state
         event.metadata["downstream_observation_reason"] = followup_reason
+        event.metadata["anchor_usd_value"] = anchor_usd_value
+        event.metadata["current_event_is_anchor"] = event_is_anchor
+        event.metadata["downstream_case_id"] = behavior_case.case_id
+        self._apply_downstream_early_warning_state(
+            event=event,
+            behavior_case=behavior_case,
+        )
+        self._apply_downstream_case_history_metadata(
+            event=event,
+            behavior_case=behavior_case,
+        )
 
         if stage in {"exchange_arrival_confirmed", "swap_execution_confirmed", "distribution_confirmed"} and not bool(event.metadata.get("downstream_followup_confirmation_applied")):
             boost = 0.12
@@ -1890,6 +2715,76 @@ class SignalPipeline:
             intent_meta["downstream_counterparty_followup"] = True
             event.metadata["intent"] = intent_meta
             event.metadata["downstream_followup_confirmation_applied"] = True
+
+    def _downstream_early_warning_thresholds(self) -> dict:
+        return {
+            "enabled": bool(DOWNSTREAM_EARLY_WARNING_ENABLE),
+            "min_anchor_usd": float(DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD),
+            "min_event_usd": float(DOWNSTREAM_EARLY_WARNING_MIN_EVENT_USD),
+            "min_confirmation": float(DOWNSTREAM_EARLY_WARNING_MIN_CONFIRMATION),
+            "min_quality": float(DOWNSTREAM_EARLY_WARNING_MIN_QUALITY),
+            "min_pricing_confidence": float(DOWNSTREAM_EARLY_WARNING_MIN_PRICING_CONFIDENCE),
+            "min_resonance": float(DOWNSTREAM_EARLY_WARNING_MIN_RESONANCE),
+            "min_abnormal_ratio": float(DOWNSTREAM_EARLY_WARNING_MIN_ABNORMAL_RATIO),
+            "max_per_case": int(DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE),
+        }
+
+    def _apply_downstream_early_warning_state(
+        self,
+        event: Event,
+        signal=None,
+        behavior_case=None,
+        allowed: bool | None = None,
+        reason: str | None = None,
+        emitted: bool | None = None,
+    ) -> dict:
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        existing = event.metadata or {}
+        emitted_stages = list(metadata.get("emitted_notification_stages") or [])
+        anchor_usd_value = float(
+            existing.get("anchor_usd_value")
+            or existing.get("downstream_anchor_usd_value")
+            or metadata.get("anchor_usd_value")
+            or 0.0
+        )
+        current_event_is_anchor = bool(
+            existing.get("current_event_is_anchor")
+            or metadata.get("current_event_is_anchor")
+        )
+        payload = {
+            "downstream_early_warning_allowed": bool(existing.get("downstream_early_warning_allowed")) if allowed is None else bool(allowed),
+            "downstream_early_warning_reason": (
+                str(existing.get("downstream_early_warning_reason") or "")
+                if reason is None else str(reason or "")
+            ),
+            "downstream_early_warning_thresholds": self._downstream_early_warning_thresholds(),
+            "downstream_early_warning_emitted": (
+                bool(existing.get("downstream_early_warning_emitted") or metadata.get("downstream_early_warning_emitted"))
+                if emitted is None else bool(emitted)
+            ),
+            "downstream_early_warning_emitted_count": int(
+                existing.get("downstream_early_warning_emitted_count")
+                or metadata.get("downstream_early_warning_emitted_count")
+                or 0
+            ),
+            "downstream_early_warning_signal_id": str(
+                existing.get("downstream_early_warning_signal_id")
+                or metadata.get("downstream_early_warning_signal_id")
+                or ""
+            ),
+            "downstream_early_warning_stage_recorded": bool(
+                existing.get("downstream_early_warning_stage_recorded")
+                or metadata.get("downstream_early_warning_stage_recorded")
+                or "followup_opened" in emitted_stages
+            ),
+            "anchor_usd_value": anchor_usd_value,
+            "current_event_is_anchor": current_event_is_anchor,
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
 
     def _passes_downstream_impact_gate(
         self,
@@ -1939,6 +2834,58 @@ class SignalPipeline:
             or gate_metrics.get("abnormal_ratio")
             or 0.0
         )
+        anchor_usd_value = float(
+            event.metadata.get("anchor_usd_value")
+            or event.metadata.get("downstream_anchor_usd_value")
+            or metadata.get("anchor_usd_value")
+            or 0.0
+        )
+        current_event_is_anchor = bool(
+            event.metadata.get("current_event_is_anchor")
+            or metadata.get("current_event_is_anchor")
+        )
+
+        if stage == "followup_opened":
+            allowed = True
+            reason = "downstream_early_warning_allowed"
+            if not bool(DOWNSTREAM_EARLY_WARNING_ENABLE):
+                allowed = False
+                reason = "downstream_early_warning_disabled"
+            elif not current_event_is_anchor:
+                allowed = False
+                reason = "downstream_early_warning_requires_anchor_event"
+            elif float(event.usd_value or 0.0) < float(DOWNSTREAM_EARLY_WARNING_MIN_EVENT_USD or 0.0):
+                allowed = False
+                reason = "downstream_early_warning_event_usd_below_min"
+            elif anchor_usd_value < float(DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD or 0.0):
+                allowed = False
+                reason = "downstream_early_warning_anchor_usd_below_min"
+            elif confirmation_score < float(DOWNSTREAM_EARLY_WARNING_MIN_CONFIRMATION or 0.0):
+                allowed = False
+                reason = "downstream_early_warning_confirmation_below_min"
+            elif quality_score < float(DOWNSTREAM_EARLY_WARNING_MIN_QUALITY or 0.0):
+                allowed = False
+                reason = "downstream_early_warning_quality_below_min"
+            elif pricing_confidence < float(DOWNSTREAM_EARLY_WARNING_MIN_PRICING_CONFIDENCE or 0.0):
+                allowed = False
+                reason = "downstream_early_warning_pricing_below_min"
+            elif not (
+                resonance_score >= float(DOWNSTREAM_EARLY_WARNING_MIN_RESONANCE or 0.0)
+                or abnormal_ratio >= float(DOWNSTREAM_EARLY_WARNING_MIN_ABNORMAL_RATIO or 0.0)
+            ):
+                allowed = False
+                reason = "downstream_early_warning_impact_signal_below_min"
+            event.metadata["downstream_observation_reason"] = str(reason or "")
+            signal.metadata["downstream_observation_reason"] = str(reason or "")
+            signal.context["downstream_observation_reason"] = str(reason or "")
+            self._apply_downstream_early_warning_state(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+                allowed=allowed,
+                reason=reason,
+            )
+            return allowed, reason
 
         if stage not in allowed_stages:
             return False, "stage_not_allowed"
@@ -2197,6 +3144,7 @@ class SignalPipeline:
             "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
             "downstream_anchor_address": str(event.metadata.get("downstream_anchor_address") or ""),
             "downstream_anchor_usd_value": float(event.metadata.get("downstream_anchor_usd_value") or 0.0),
+            "anchor_usd_value": float(event.metadata.get("anchor_usd_value") or event.metadata.get("downstream_anchor_usd_value") or 0.0),
             "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
             "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
             "downstream_followup_detail": str(event.metadata.get("downstream_followup_detail") or ""),
@@ -2205,15 +3153,29 @@ class SignalPipeline:
             "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
             "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
             "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
+            "downstream_early_warning_allowed": bool(event.metadata.get("downstream_early_warning_allowed")),
+            "downstream_early_warning_reason": str(event.metadata.get("downstream_early_warning_reason") or ""),
+            "downstream_early_warning_thresholds": dict(event.metadata.get("downstream_early_warning_thresholds") or {}),
+            "downstream_early_warning_emitted": bool(event.metadata.get("downstream_early_warning_emitted")),
+            "downstream_early_warning_emitted_count": int(event.metadata.get("downstream_early_warning_emitted_count") or 0),
+            "downstream_early_warning_signal_id": str(event.metadata.get("downstream_early_warning_signal_id") or ""),
+            "downstream_early_warning_stage_recorded": bool(event.metadata.get("downstream_early_warning_stage_recorded")),
             "downstream_address": str(event.metadata.get("downstream_address") or ""),
             "downstream_label": str(event.metadata.get("downstream_label") or event.metadata.get("downstream_object_label") or ""),
             "anchor_watch_address": str(event.metadata.get("anchor_watch_address") or event.metadata.get("downstream_anchor_address") or ""),
             "anchor_label": str(event.metadata.get("anchor_label") or event.metadata.get("downstream_anchor_label") or ""),
             "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
+            "current_event_is_anchor": bool(event.metadata.get("current_event_is_anchor")),
             "hop": int(event.metadata.get("hop") or 1),
             "window_sec": int(event.metadata.get("window_sec") or 0),
             "downstream_runtime_state": str(event.metadata.get("downstream_runtime_state") or ""),
             "notification_stage_label": str(event.metadata.get("notification_stage_label") or ""),
+            "emitted_stages": list(event.metadata.get("emitted_stages") or event.metadata.get("emitted_notification_stages") or []),
+            "emitted_notification_count": int(event.metadata.get("emitted_notification_count") or 0),
+            "last_notification_stage": str(event.metadata.get("last_notification_stage") or ""),
+            "last_notification_signal_id": str(event.metadata.get("last_notification_signal_id") or ""),
+            "emitted_notification_history_version": int(event.metadata.get("emitted_notification_history_version") or 2),
+            "emitted_notification_stage_source": str(event.metadata.get("emitted_notification_stage_source") or "unified_case_history"),
         }
         signal.metadata.update(payload)
         signal.context.update(payload)
@@ -2383,6 +3345,11 @@ class SignalPipeline:
         metadata = behavior_case.metadata if behavior_case is not None else {}
         case_id = str(getattr(behavior_case, "case_id", "") or "")
         case_family = str(metadata.get("case_family") or event.metadata.get("case_family") or "")
+        case_history_payload = self._apply_downstream_case_history_metadata(
+            event=event,
+            signal=signal,
+            behavior_case=behavior_case,
+        )
         payload = {
             "case_notification_stage": stage,
             "case_notification_allowed": bool(allowed),
@@ -2406,8 +3373,51 @@ class SignalPipeline:
             "liquidation_case_label": event.metadata.get("liquidation_case_label", ""),
             "liquidation_case_detail": event.metadata.get("liquidation_case_detail", ""),
             "notification_stage_label": self._notification_stage_label(stage),
+            "emitted_stages": list(case_history_payload.get("emitted_stages") or metadata.get("emitted_notification_stages") or []),
+            "last_notification_stage": str(case_history_payload.get("last_notification_stage") or metadata.get("last_notification_stage") or ""),
+            "last_notification_signal_id": str(case_history_payload.get("last_notification_signal_id") or metadata.get("last_notification_signal_id") or ""),
+            "downstream_early_warning_emitted": bool(
+                case_history_payload.get("downstream_early_warning_emitted")
+                or metadata.get("downstream_early_warning_emitted")
+            ),
+            "downstream_early_warning_emitted_count": int(
+                case_history_payload.get("downstream_early_warning_emitted_count")
+                or metadata.get("downstream_early_warning_emitted_count")
+                or 0
+            ),
+            "downstream_early_warning_signal_id": str(
+                case_history_payload.get("downstream_early_warning_signal_id")
+                or metadata.get("downstream_early_warning_signal_id")
+                or ""
+            ),
+            "downstream_early_warning_stage_recorded": bool(
+                case_history_payload.get("downstream_early_warning_stage_recorded")
+                or metadata.get("downstream_early_warning_stage_recorded")
+            ),
+            "emitted_notification_history_version": int(
+                case_history_payload.get("emitted_notification_history_version")
+                or metadata.get("emitted_notification_history_version")
+                or 2
+            ),
+            "emitted_notification_stage_source": str(
+                case_history_payload.get("emitted_notification_stage_source")
+                or metadata.get("emitted_notification_stage_source")
+                or "unified_case_history"
+            ),
         }
         event.metadata.update(payload)
+        if self._is_downstream_followup_case(behavior_case):
+            if stage == "followup_opened":
+                event.metadata["downstream_observation_reason"] = str(reason or "")
+                signal.metadata["downstream_observation_reason"] = str(reason or "")
+                signal.context["downstream_observation_reason"] = str(reason or "")
+            self._apply_downstream_early_warning_state(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+                allowed=bool(allowed) if stage == "followup_opened" else None,
+                reason=reason if stage == "followup_opened" else None,
+            )
         signal.context.update(payload)
         signal.metadata.update(payload)
         decision = {
@@ -2415,7 +3425,15 @@ class SignalPipeline:
             "allowed": bool(allowed),
             "reason": reason,
             "signal_id": str(getattr(signal, "signal_id", "") or getattr(signal, "event_id", "") or ""),
-            "emitted_stages": list(metadata.get("emitted_notification_stages") or []),
+            "emitted_stages": list(payload.get("emitted_stages") or []),
+            "last_notification_stage": str(payload.get("last_notification_stage") or ""),
+            "last_notification_signal_id": str(payload.get("last_notification_signal_id") or ""),
+            "downstream_early_warning_emitted": bool(payload.get("downstream_early_warning_emitted")),
+            "downstream_early_warning_emitted_count": int(payload.get("downstream_early_warning_emitted_count") or 0),
+            "downstream_early_warning_signal_id": str(payload.get("downstream_early_warning_signal_id") or ""),
+            "downstream_early_warning_stage_recorded": bool(payload.get("downstream_early_warning_stage_recorded")),
+            "emitted_notification_history_version": int(payload.get("emitted_notification_history_version") or 2),
+            "emitted_notification_stage_source": str(payload.get("emitted_notification_stage_source") or "unified_case_history"),
         }
         if behavior_case is not None:
             behavior_case.metadata["last_notification_decision"] = decision
@@ -2444,7 +3462,7 @@ class SignalPipeline:
 
     def _notification_stage_label(self, stage: str | None) -> str:
         if stage == "followup_opened":
-            return "观察开启"
+            return "首条预警"
         if stage == "downstream_seen":
             return "后续动作"
         if stage == "exchange_arrival_confirmed":
@@ -2476,7 +3494,17 @@ class SignalPipeline:
         return ""
 
     def _should_emit_delivery_notification(self, event: Event, signal) -> bool:
-        return can_emit_delivery_notification(event, signal)
+        allowed = bool(can_emit_delivery_notification(event, signal))
+        reason = self._delivery_policy_reason(event, signal, allowed)
+        self._apply_delivery_policy_state(
+            event=event,
+            signal=signal,
+            allowed=allowed,
+            reason=reason,
+            evaluated=True,
+            evaluated_at_stage="pipeline_pre_send",
+        )
+        return allowed
 
     def _resolve_behavior_case_for_signal(self, signal):
         if self.followup_tracker is None:
@@ -2508,7 +3536,32 @@ class SignalPipeline:
                 or ""
             ) or None
             self._mark_case_signal_emitted(behavior_case, stage, signal)
+            if self._is_downstream_followup_case(behavior_case) and stage == "followup_opened":
+                self._apply_downstream_early_warning_state(
+                    event=event,
+                    signal=signal,
+                    behavior_case=behavior_case,
+                    emitted=True,
+                )
+            self._apply_downstream_case_history_metadata(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+            )
             self.quality_gate.mark_emitted(event)
+        else:
+            self._apply_silent_reason(
+                event=event,
+                signal=signal,
+                stage="notifier_delivery",
+                reason_code="notifier_send_failed",
+                reason_detail="notifier_send_failed",
+                behavior_case=behavior_case,
+                gate_metrics=gate_metrics,
+                delivery_policy_allowed=bool(event.metadata.get("delivery_policy_allowed")),
+                impact_gate_allowed=event.metadata.get("downstream_impact_gate_allowed"),
+                cooldown_allowed=event.metadata.get("cooldown_allowed"),
+            )
 
         self._archive_delivery_audit(
             event=event,

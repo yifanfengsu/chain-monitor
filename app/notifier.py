@@ -6,7 +6,6 @@ from config import (
     CHAT_ID,
     TELEGRAM_BOT_TOKEN,
 )
-from delivery_policy import can_emit_delivery_notification
 from filter import format_address_label, is_smart_money_strategy_role, strategy_role_group
 from models import Event, Signal
 
@@ -252,8 +251,25 @@ def _lp_liquidity_structure(context: dict) -> str:
     return f"{continuity}｜{resonance}"
 
 
+def _is_downstream_early_warning(context: dict) -> bool:
+    stage = str(
+        context.get("case_notification_stage")
+        or context.get("downstream_followup_stage")
+        or ""
+    ).strip()
+    if stage == "followup_opened":
+        return True
+    return bool(
+        context.get("downstream_early_warning_allowed")
+        or context.get("downstream_early_warning_emitted")
+        or context.get("downstream_early_warning_candidate")
+    )
+
+
 def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bool = False) -> str:
     if variant == "downstream_followup":
+        if _is_downstream_early_warning(context):
+            return f"📡 下游地址后续观察 | {str(signal.tier or 'Tier 3')} | 首条预警"
         return "🛰️ 下游地址后续观察"
     if variant == "followup":
         return "🔁 Followup 观察升级"
@@ -308,6 +324,7 @@ def _followup_message(signal: Signal, event: Event, context: dict, raw: dict) ->
 
 
 def _downstream_followup_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+    early_warning = _is_downstream_early_warning(context)
     anchor_label = str(context.get("downstream_anchor_label") or "重点地址")
     anchor_usd_value = float(signal.metadata.get("downstream_anchor_usd_value") or event.metadata.get("downstream_anchor_usd_value") or 0.0)
     anchor_token = str(event.metadata.get("downstream_anchor_token") or event.metadata.get("token_symbol") or event.token or "资产")
@@ -316,11 +333,11 @@ def _downstream_followup_message(signal: Signal, event: Event, context: dict, ra
         f"对象：{context.get('downstream_object_label') or _object_label(signal, context)}",
         f"来源锚点：{anchor_label}",
         f"首次大额转移：{_usd_value_text(anchor_usd_value)} {anchor_token}",
-        f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
+        f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or ('超大额下游观察已开启' if early_warning else '观察窗口已开启')}",
         f"当前更像：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
         f"证据：{context.get('evidence_brief') or _evidence_brief(context)}",
         f"路径：{context.get('downstream_followup_path_label') or _path_line(context, raw)}",
-        f"继续看：{context.get('downstream_followup_next_hint') or _action_hint(context)}",
+        f"继续看：{context.get('downstream_followup_next_hint') or ('进入交易所 / 命中 swap_execution / 出现分发' if early_warning else _action_hint(context))}",
         _tx_line(signal),
     ]
     return _join_lines(lines)
@@ -435,6 +452,7 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
 def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     variant = _select_message_variant(signal, event, context)
     if variant == "downstream_followup":
+        early_warning = _is_downstream_early_warning(context)
         anchor_usd_value = float(signal.metadata.get("downstream_anchor_usd_value") or event.metadata.get("downstream_anchor_usd_value") or 0.0)
         anchor_token = str(event.metadata.get("downstream_anchor_token") or event.metadata.get("token_symbol") or event.token or "资产")
         lines = [
@@ -442,7 +460,7 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             f"对象：{context.get('downstream_object_label') or _object_label(signal, context)}",
             f"来源锚点：{context.get('downstream_anchor_label') or '重点地址'}",
             f"首次大额转移：{_usd_value_text(anchor_usd_value)} {anchor_token}",
-            f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or '观察窗口已开启'}",
+            f"后续动作：{context.get('downstream_followup_label') or context.get('update_brief') or ('超大额下游观察已开启' if early_warning else '观察窗口已开启')}",
             f"当前更像：{context.get('downstream_followup_detail') or _explanation_brief(context, event)}",
             f"证据：{context.get('evidence_brief') or _evidence_brief(context)}",
             _tx_line(signal, compact=True),
@@ -620,7 +638,19 @@ def _direction_display(event: Event, context: dict, raw: dict) -> str:
 
 
 async def send_signal(signal: Signal, event: Event) -> bool:
-    if not can_emit_delivery_notification(event, signal):
+    delivery_class = str(signal.delivery_class or event.delivery_class or "")
+    if delivery_class == "drop":
+        return False
+    pending_case_notification = bool(
+        signal.metadata.get("pending_case_notification")
+        or signal.context.get("pending_case_notification")
+        or event.metadata.get("pending_case_notification")
+    )
+    if (
+        str(signal.metadata.get("case_family") or event.metadata.get("case_family") or "").strip()
+        and signal.metadata.get("case_notification_allowed") is False
+        and not pending_case_notification
+    ):
         return False
     try:
         msg = format_signal_message(signal, event)

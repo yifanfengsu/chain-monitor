@@ -184,22 +184,40 @@ class SignalInterpreter:
             message_variant = smart_money_context["message_variant"]
 
         downstream_followup_active = bool(event.metadata.get("downstream_followup_active"))
+        downstream_followup_stage = str(event.metadata.get("downstream_followup_stage") or "")
+        downstream_anchor_usd_value = float(
+            event.metadata.get("anchor_usd_value")
+            or event.metadata.get("downstream_anchor_usd_value")
+            or 0.0
+        )
+        current_event_is_anchor = bool(event.metadata.get("current_event_is_anchor"))
+        downstream_early_warning_candidate = downstream_followup_stage == "followup_opened" and current_event_is_anchor
         if downstream_followup_active:
             message_variant = "downstream_followup"
             object_label = str(event.metadata.get("downstream_object_label") or object_label or actor_label)
             headline_label = str(event.metadata.get("downstream_followup_label") or headline_label)
-            fact_brief = (
-                f"{event.metadata.get('downstream_anchor_label') or '重点地址'} -> "
-                f"{event.metadata.get('downstream_object_label') or object_label}｜{self._trade_value_label(event, signal, continuous_count, abnormal_ratio, gate_metrics, lp_event)}"
-            )
+            if downstream_early_warning_candidate:
+                fact_brief = (
+                    f"观察开启｜{event.metadata.get('downstream_anchor_label') or '重点地址'} -> "
+                    f"{event.metadata.get('downstream_object_label') or object_label}｜"
+                    f"{self._trade_value_label(event, signal, continuous_count, abnormal_ratio, gate_metrics, lp_event)}"
+                )
+            else:
+                fact_brief = (
+                    f"{event.metadata.get('downstream_anchor_label') or '重点地址'} -> "
+                    f"{event.metadata.get('downstream_object_label') or object_label}｜{self._trade_value_label(event, signal, continuous_count, abnormal_ratio, gate_metrics, lp_event)}"
+                )
             explanation_brief = str(event.metadata.get("downstream_followup_detail") or explanation_brief)
             evidence_brief = (
-                f"{event.metadata.get('downstream_followup_stage_label') or '观察开启'}｜"
-                f"anchor ${float(event.metadata.get('downstream_anchor_usd_value') or 0.0):,.0f}｜"
-                f"{confirmation_label}"
+                f"{event.metadata.get('downstream_followup_stage_label') or ('首条预警' if downstream_early_warning_candidate else '观察开启')}｜"
+                f"anchor ${downstream_anchor_usd_value:,.0f}｜"
+                f"{'已有一定确认' if downstream_early_warning_candidate else confirmation_label}"
             )
             action_hint = str(event.metadata.get("downstream_followup_next_hint") or action_hint)
-            update_brief = str(event.metadata.get("downstream_followup_label") or update_brief)
+            update_brief = str(
+                event.metadata.get("downstream_followup_label")
+                or ("超大额下游观察已开启" if downstream_early_warning_candidate else update_brief)
+            )
             path_text = str(event.metadata.get("downstream_followup_path_label") or path_text)
 
         if lp_event and liquidation_meta["active"]:
@@ -324,6 +342,7 @@ class SignalInterpreter:
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
             "downstream_followup_active": downstream_followup_active,
+            "downstream_followup_stage": downstream_followup_stage,
             "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
             "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
             "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
@@ -332,6 +351,13 @@ class SignalInterpreter:
             "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
             "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
             "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
+            "downstream_early_warning_candidate": downstream_early_warning_candidate,
+            "downstream_early_warning_allowed": bool(event.metadata.get("downstream_early_warning_allowed")),
+            "downstream_early_warning_reason": str(event.metadata.get("downstream_early_warning_reason") or ""),
+            "downstream_early_warning_thresholds": dict(event.metadata.get("downstream_early_warning_thresholds") or {}),
+            "downstream_early_warning_emitted": bool(event.metadata.get("downstream_early_warning_emitted")),
+            "anchor_usd_value": downstream_anchor_usd_value,
+            "current_event_is_anchor": current_event_is_anchor,
         }
 
         signal.metadata.setdefault("summary", {})
@@ -394,6 +420,7 @@ class SignalInterpreter:
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
             "downstream_followup_active": downstream_followup_active,
+            "downstream_followup_stage": downstream_followup_stage,
             "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
             "downstream_object_label": str(event.metadata.get("downstream_object_label") or ""),
             "downstream_followup_label": str(event.metadata.get("downstream_followup_label") or ""),
@@ -402,6 +429,13 @@ class SignalInterpreter:
             "downstream_followup_stage_label": str(event.metadata.get("downstream_followup_stage_label") or ""),
             "downstream_followup_path_label": str(event.metadata.get("downstream_followup_path_label") or ""),
             "downstream_followup_next_hint": str(event.metadata.get("downstream_followup_next_hint") or ""),
+            "downstream_early_warning_candidate": downstream_early_warning_candidate,
+            "downstream_early_warning_allowed": bool(event.metadata.get("downstream_early_warning_allowed")),
+            "downstream_early_warning_reason": str(event.metadata.get("downstream_early_warning_reason") or ""),
+            "downstream_early_warning_thresholds": dict(event.metadata.get("downstream_early_warning_thresholds") or {}),
+            "downstream_early_warning_emitted": bool(event.metadata.get("downstream_early_warning_emitted")),
+            "anchor_usd_value": downstream_anchor_usd_value,
+            "current_event_is_anchor": current_event_is_anchor,
         })
         if lp_event:
             signal.metadata["lp"] = {
