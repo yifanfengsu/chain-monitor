@@ -9,6 +9,13 @@ import time
 from web3 import Web3
 
 from config import (
+    LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN,
+    LISTENER_SELECTIVE_TX_FETCH_MAX_COUNT,
+    LISTENER_TOPIC_CHUNK_SIZE,
+    LOW_CU_MODE,
+    LP_SECONDARY_SCAN_ENABLE,
+    LP_SECONDARY_SCAN_INTERVAL_SEC,
+    PRODUCER_POLL_INTERVAL_SEC,
     RPC_URL,
     SPILL_REPLAY_INTERVAL_SEC,
     SPILL_REPLAY_MAX_BATCH,
@@ -23,6 +30,8 @@ from lp_noise_rules import (
     lp_adjacent_noise_core_decision,
 )
 from lp_registry import ACTIVE_LP_POOL_ADDRESSES
+from processor import get_token_metadata_stats_snapshot
+from rpc_resilience import get_rpc_stats_snapshot, rpc_call_with_backoff
 from state_manager import get_runtime_adjacent_watch_addresses
 
 # 使用 HTTPProvider 做新区块轮询。
@@ -45,18 +54,133 @@ QUEUE_STATS = {
     "lp_adjacent_noise_listener_reason_counts": {},
     "lp_adjacent_noise_listener_confidence_buckets": {},
     "lp_adjacent_noise_listener_source_signal_counts": {},
+    "listener_rpc_mode": "low_cu" if LOW_CU_MODE else "standard",
+    "listener_block_fetch_mode": "",
+    "listener_block_fetch_reason": "",
+    "listener_block_get_logs_request_count": 0,
+    "listener_block_topic_chunk_count": 0,
+    "listener_block_monitored_address_count": 0,
+    "listener_block_lp_secondary_scan_used": False,
+    "low_cu_mode_enabled": bool(LOW_CU_MODE),
+    "low_cu_mode_lp_secondary_only": bool(
+        LOW_CU_MODE
+        and not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
+        and LP_SECONDARY_SCAN_ENABLE
+    ),
+    "low_cu_mode_poll_interval_sec": float(
+        max(float(PRODUCER_POLL_INTERVAL_SEC or 1.0), 2.0) if LOW_CU_MODE else float(PRODUCER_POLL_INTERVAL_SEC or 1.0)
+    ),
+    **get_rpc_stats_snapshot(),
+    **get_token_metadata_stats_snapshot(),
 }
 
 # get_logs 的 topic OR 数量不宜过大，按批次分片查询。
-TOPIC_CHUNK_SIZE = 25
+TOPIC_CHUNK_SIZE = max(int(LISTENER_TOPIC_CHUNK_SIZE or 25), 1)
 
 
 def get_monitored_watch_addresses() -> set[str]:
     return WATCH_ADDRESSES | get_runtime_adjacent_watch_addresses()
 
 
-def get_monitored_transfer_addresses() -> set[str]:
-    return get_monitored_watch_addresses() | ACTIVE_LP_POOL_ADDRESSES
+def get_core_monitored_addresses() -> set[str]:
+    return set(get_monitored_watch_addresses())
+
+
+def get_lp_monitored_addresses() -> set[str]:
+    return set(ACTIVE_LP_POOL_ADDRESSES)
+
+
+def get_monitored_transfer_addresses(
+    *,
+    include_active_lp_pools: bool | None = None,
+) -> set[str]:
+    monitored = set(get_core_monitored_addresses())
+    include_lp = (
+        bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN)
+        if include_active_lp_pools is None
+        else bool(include_active_lp_pools)
+    )
+    if include_lp:
+        monitored |= get_lp_monitored_addresses()
+    return monitored
+
+
+def _effective_poll_interval_sec() -> float:
+    base_interval = max(float(PRODUCER_POLL_INTERVAL_SEC or 1.0), 0.2)
+    if LOW_CU_MODE:
+        return max(base_interval, 2.0)
+    return base_interval
+
+
+def _effective_lp_secondary_interval_sec() -> float:
+    base_interval = max(float(LP_SECONDARY_SCAN_INTERVAL_SEC or 2.0), 0.5)
+    if LOW_CU_MODE:
+        return max(base_interval, 18.0)
+    return base_interval
+
+
+def _listener_runtime_defaults() -> dict:
+    return {
+        "listener_rpc_mode": "low_cu" if LOW_CU_MODE else "standard",
+        "listener_block_fetch_mode": "",
+        "listener_block_fetch_reason": "",
+        "listener_block_get_logs_request_count": 0,
+        "listener_block_topic_chunk_count": 0,
+        "listener_block_monitored_address_count": 0,
+        "listener_block_lp_secondary_scan_used": False,
+        "low_cu_mode_enabled": bool(LOW_CU_MODE),
+        "low_cu_mode_lp_secondary_only": bool(
+            LOW_CU_MODE
+            and not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
+            and LP_SECONDARY_SCAN_ENABLE
+        ),
+        "low_cu_mode_poll_interval_sec": _effective_poll_interval_sec(),
+    }
+
+
+def _listener_runtime_metadata(block_context: dict | None = None) -> dict:
+    payload = _listener_runtime_defaults()
+    if block_context:
+        payload.update(
+            {
+                "listener_rpc_mode": str(
+                    block_context.get("listener_rpc_mode") or payload["listener_rpc_mode"]
+                ),
+                "listener_block_fetch_mode": str(
+                    block_context.get("listener_block_fetch_mode") or ""
+                ),
+                "listener_block_fetch_reason": str(
+                    block_context.get("listener_block_fetch_reason") or ""
+                ),
+                "listener_block_get_logs_request_count": int(
+                    block_context.get("listener_block_get_logs_request_count") or 0
+                ),
+                "listener_block_topic_chunk_count": int(
+                    block_context.get("listener_block_topic_chunk_count") or 0
+                ),
+                "listener_block_monitored_address_count": int(
+                    block_context.get("listener_block_monitored_address_count") or 0
+                ),
+                "listener_block_lp_secondary_scan_used": bool(
+                    block_context.get("listener_block_lp_secondary_scan_used")
+                ),
+                "low_cu_mode_enabled": bool(
+                    block_context.get("low_cu_mode_enabled")
+                    if "low_cu_mode_enabled" in block_context
+                    else payload["low_cu_mode_enabled"]
+                ),
+                "low_cu_mode_lp_secondary_only": bool(
+                    block_context.get("low_cu_mode_lp_secondary_only")
+                    if "low_cu_mode_lp_secondary_only" in block_context
+                    else payload["low_cu_mode_lp_secondary_only"]
+                ),
+                "low_cu_mode_poll_interval_sec": float(
+                    block_context.get("low_cu_mode_poll_interval_sec")
+                    or payload["low_cu_mode_poll_interval_sec"]
+                ),
+            }
+        )
+    return payload
 
 
 def set_listener_archive_store(archive_store) -> None:
@@ -193,7 +317,7 @@ def _pool_candidate_weight(raw_log_count: int, touched_lp_pools: list[str], pool
 
 
 def _build_eth_candidate(tx, block_num: int, touched_watch_addresses: list[str]) -> dict:
-    return {
+    payload = {
         "hash": tx.get("hash"),
         "from": tx["from"].lower(),
         "to": tx["to"].lower() if tx.get("to") else None,
@@ -224,6 +348,8 @@ def _build_eth_candidate(tx, block_num: int, touched_watch_addresses: list[str])
         "lp_adjacent_noise_downstream_context_present": False,
         "replay_source": "",
     }
+    payload.update(_listener_runtime_defaults())
+    return payload
 
 
 def _build_token_flow_candidate(
@@ -241,7 +367,7 @@ def _build_token_flow_candidate(
         address for address in participant_addresses
         if address not in touched_targets
     ]
-    return {
+    payload = {
         "kind": "token_flow_candidate",
         "tx_hash": tx_hash,
         "logs": logs,
@@ -273,6 +399,8 @@ def _build_token_flow_candidate(
         "lp_adjacent_noise_downstream_context_present": False,
         "replay_source": "",
     }
+    payload.update(_listener_runtime_defaults())
+    return payload
 
 
 def _listener_lp_adjacent_skip_audit_record(
@@ -327,6 +455,28 @@ def _listener_lp_adjacent_skip_audit_record(
         "runtime_state": str(watch_meta.get("runtime_state") or ""),
         "anchor_watch_address": str(watch_meta.get("anchor_watch_address") or ""),
         "downstream_case_id": str(watch_meta.get("downstream_case_id") or ""),
+        "listener_rpc_mode": str(candidate.get("listener_rpc_mode") or ""),
+        "listener_block_fetch_mode": str(candidate.get("listener_block_fetch_mode") or ""),
+        "listener_block_fetch_reason": str(candidate.get("listener_block_fetch_reason") or ""),
+        "listener_block_get_logs_request_count": int(
+            candidate.get("listener_block_get_logs_request_count") or 0
+        ),
+        "listener_block_topic_chunk_count": int(
+            candidate.get("listener_block_topic_chunk_count") or 0
+        ),
+        "listener_block_monitored_address_count": int(
+            candidate.get("listener_block_monitored_address_count") or 0
+        ),
+        "listener_block_lp_secondary_scan_used": bool(
+            candidate.get("listener_block_lp_secondary_scan_used")
+        ),
+        "low_cu_mode_enabled": bool(candidate.get("low_cu_mode_enabled")),
+        "low_cu_mode_lp_secondary_only": bool(
+            candidate.get("low_cu_mode_lp_secondary_only")
+        ),
+        "low_cu_mode_poll_interval_sec": round(
+            float(candidate.get("low_cu_mode_poll_interval_sec") or 0.0), 3
+        ),
         "touched_watch_addresses": list(candidate.get("touched_watch_addresses") or []),
         "touched_lp_pools": list(candidate.get("touched_lp_pools") or []),
         "touched_lp_pool_count": int(candidate.get("touched_lp_pool_count") or 0),
@@ -463,21 +613,61 @@ def _lp_adjacent_noise_listener_decision(
 
 
 async def _fetch_transfer_logs_for_block(block_num: int):
-    """
-    在单区块内抓取与监控地址相关的 ERC20 Transfer 日志。
-    规则：
-    - from 在监控地址内
-    - 或 to 在监控地址内
-    """
-    monitored_addresses = get_monitored_transfer_addresses()
-    if not monitored_addresses:
-        return {}
+    return await _fetch_transfer_logs_for_block_for_addresses(
+        block_num,
+        get_monitored_transfer_addresses(),
+        scan_label="core",
+    )
 
-    watch_topics = [_topic_for_address(addr) for addr in monitored_addresses]
-    grouped = defaultdict(list)
+
+def _rpc_get_block_number() -> int | None:
+    return rpc_call_with_backoff(
+        "listener.block_number",
+        lambda: w3.eth.block_number,
+        return_none_on_failure=True,
+    )
+
+
+def _rpc_get_block(block_num: int, *, full_transactions: bool):
+    return rpc_call_with_backoff(
+        f"listener.get_block.{ 'full' if full_transactions else 'header' }",
+        lambda: w3.eth.get_block(block_num, full_transactions=full_transactions),
+        return_none_on_failure=True,
+    )
+
+
+def _rpc_get_transaction(tx_hash: str):
+    return rpc_call_with_backoff(
+        "listener.get_transaction",
+        lambda: w3.eth.get_transaction(tx_hash),
+        return_none_on_failure=True,
+    )
+
+
+async def _fetch_transfer_logs_for_block_for_addresses(
+    block_num: int,
+    monitored_addresses: set[str],
+    *,
+    scan_label: str,
+) -> tuple[dict[str, list[dict]], dict]:
+    if not monitored_addresses:
+        return {}, {
+            "request_count": 0,
+            "topic_chunk_count": 0,
+            "monitored_address_count": 0,
+            "failure_count": 0,
+            "scan_label": str(scan_label or ""),
+        }
+
+    watch_topics = [_topic_for_address(addr) for addr in sorted(monitored_addresses)]
+    grouped: dict[str, list[dict]] = defaultdict(list)
     seen = set()
+    request_count = 0
+    topic_chunk_count = 0
+    failure_count = 0
 
     for topic_chunk in _chunked(watch_topics, TOPIC_CHUNK_SIZE):
+        topic_chunk_count += 1
         filters = [
             {
                 "fromBlock": block_num,
@@ -492,10 +682,15 @@ async def _fetch_transfer_logs_for_block(block_num: int):
         ]
 
         for query_filter in filters:
-            try:
-                logs = w3.eth.get_logs(query_filter)
-            except Exception as e:
-                print(f"❌ get_logs 失败: block={block_num}, error={e}")
+            request_count += 1
+            logs = await asyncio.to_thread(
+                rpc_call_with_backoff,
+                f"listener.get_logs.{scan_label}",
+                lambda query_filter=query_filter: w3.eth.get_logs(query_filter),
+                return_none_on_failure=True,
+            )
+            if logs is None:
+                failure_count += 1
                 continue
 
             for log in logs:
@@ -510,7 +705,43 @@ async def _fetch_transfer_logs_for_block(block_num: int):
     for tx_hash in grouped:
         grouped[tx_hash].sort(key=lambda item: item["logIndex"])
 
-    return grouped
+    return dict(grouped), {
+        "request_count": request_count,
+        "topic_chunk_count": topic_chunk_count,
+        "monitored_address_count": len(monitored_addresses),
+        "failure_count": failure_count,
+        "scan_label": str(scan_label or ""),
+    }
+
+
+def _merge_grouped_logs(*groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    merged: dict[str, list[dict]] = defaultdict(list)
+    seen = set()
+    for group in groups:
+        for tx_hash, logs in dict(group or {}).items():
+            for log in logs or []:
+                log_index = int(log.get("logIndex", 0)) if log.get("logIndex") is not None else 0
+                dedup_key = (str(tx_hash or "").lower(), log_index)
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                merged[str(tx_hash or "").lower()].append(dict(log))
+    for tx_hash in merged:
+        merged[tx_hash].sort(key=lambda item: item["logIndex"])
+    return dict(merged)
+
+
+def _should_run_lp_secondary_scan(last_lp_secondary_scan_ts: float) -> tuple[bool, str]:
+    if not bool(LP_SECONDARY_SCAN_ENABLE):
+        return False, "lp_secondary_disabled"
+    if bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN):
+        return False, "lp_included_in_main_scan"
+    if LOW_CU_MODE and tx_queue.qsize() >= int(SPILL_REPLAY_QUEUE_WATERMARK or 0):
+        return False, "low_cu_queue_pressure"
+    now_ts = time.time()
+    if now_ts - float(last_lp_secondary_scan_ts or 0.0) < _effective_lp_secondary_interval_sec():
+        return False, "lp_secondary_interval_throttled"
+    return True, "lp_secondary_scheduled"
 
 
 def _spill_to_disk(item):
@@ -641,31 +872,160 @@ async def replay_spill_worker(
         await asyncio.sleep(max(int(interval_sec), 1))
 
 
+def _update_listener_runtime_stats(block_context: dict) -> None:
+    QUEUE_STATS.update(_listener_runtime_metadata(block_context))
+    QUEUE_STATS.update(get_rpc_stats_snapshot())
+    QUEUE_STATS.update(get_token_metadata_stats_snapshot())
+
+
 async def producer():
     """生产者：拉取新区块并把候选交易放入队列。"""
     print("🚀 启动 Listener...")
-    last_block = w3.eth.block_number
+    effective_poll_interval = _effective_poll_interval_sec()
+    last_block = await asyncio.to_thread(_rpc_get_block_number)
+    while last_block is None:
+        QUEUE_STATS.update(get_rpc_stats_snapshot())
+        await asyncio.sleep(effective_poll_interval)
+        last_block = await asyncio.to_thread(_rpc_get_block_number)
+
+    last_lp_secondary_scan_ts = 0.0
 
     while True:
         try:
-            latest_block = w3.eth.block_number
+            latest_block = await asyncio.to_thread(_rpc_get_block_number)
+            QUEUE_STATS.update(get_rpc_stats_snapshot())
+            if latest_block is None:
+                await asyncio.sleep(effective_poll_interval)
+                continue
+
+            processed_until = last_block
 
             for block_num in range(last_block + 1, latest_block + 1):
-                block = w3.eth.get_block(block_num, full_transactions=True)
-                print(f"新区块: {block_num}, 交易数: {len(block.transactions)}")
                 monitored_watch_addresses = get_monitored_watch_addresses()
+                core_monitored_addresses = get_monitored_transfer_addresses(
+                    include_active_lp_pools=LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN,
+                )
+                block_transactions = []
+                block_tx_hashes = []
+                if LOW_CU_MODE:
+                    header_block = await asyncio.to_thread(
+                        _rpc_get_block,
+                        block_num,
+                        full_transactions=False,
+                    )
+                    if header_block is None:
+                        break
+                    block_tx_hashes = [
+                        _to_hex(tx_hash).lower()
+                        for tx_hash in list(header_block.transactions or [])
+                    ]
+                else:
+                    full_block = await asyncio.to_thread(
+                        _rpc_get_block,
+                        block_num,
+                        full_transactions=True,
+                    )
+                    if full_block is None:
+                        break
+                    block_transactions = list(full_block.transactions or [])
+                    block_tx_hashes = [
+                        _to_hex(tx.get("hash")).lower()
+                        for tx in block_transactions
+                    ]
 
-                # 先抓 token flow 候选（不依赖 Router，可覆盖聚合器/代理/多跳）。
-                tx_transfer_logs = await _fetch_transfer_logs_for_block(block_num)
+                core_logs, core_scan_stats = await _fetch_transfer_logs_for_block_for_addresses(
+                    block_num,
+                    core_monitored_addresses,
+                    scan_label="core",
+                )
+                if int(core_scan_stats.get("failure_count") or 0) > 0:
+                    break
+
+                lp_logs = {}
+                lp_scan_stats = {
+                    "request_count": 0,
+                    "topic_chunk_count": 0,
+                    "monitored_address_count": 0,
+                    "failure_count": 0,
+                    "scan_label": "lp_secondary",
+                }
+                lp_secondary_scan_used = False
+                lp_secondary_reason = "lp_secondary_not_requested"
+                should_scan_lp_secondary, lp_secondary_reason = _should_run_lp_secondary_scan(
+                    last_lp_secondary_scan_ts
+                )
+                if should_scan_lp_secondary:
+                    lp_logs, lp_scan_stats = await _fetch_transfer_logs_for_block_for_addresses(
+                        block_num,
+                        get_lp_monitored_addresses(),
+                        scan_label="lp_secondary",
+                    )
+                    last_lp_secondary_scan_ts = time.time()
+                    lp_secondary_scan_used = bool(lp_scan_stats.get("request_count"))
+
+                tx_transfer_logs = _merge_grouped_logs(core_logs, lp_logs)
                 token_flow_tx_hashes = set(tx_transfer_logs.keys())
 
-                # ETH 原生转账候选。
-                for tx in block.transactions:
-                    from_addr = tx["from"].lower()
-                    to_addr = tx["to"].lower() if tx["to"] else None
-                    tx_hash_hex = _to_hex(tx.get("hash")).lower()
+                block_fetch_mode = "full_transactions_block_fetch"
+                block_fetch_reason = "standard_mode_native_eth_full_scan"
+                if LOW_CU_MODE:
+                    block_fetch_mode = "header_only_then_selective_tx_fetch"
+                    selective_tx_hashes = [
+                        tx_hash
+                        for tx_hash in block_tx_hashes
+                        if tx_hash and tx_hash not in token_flow_tx_hashes
+                    ]
+                    if not selective_tx_hashes:
+                        block_fetch_reason = "low_cu_skip_native_eth_scan_token_flow_only"
+                    elif len(selective_tx_hashes) <= max(int(LISTENER_SELECTIVE_TX_FETCH_MAX_COUNT or 0), 1):
+                        block_fetch_reason = "low_cu_selective_native_eth_scan"
+                        for tx_hash in selective_tx_hashes:
+                            tx = await asyncio.to_thread(_rpc_get_transaction, tx_hash)
+                            if tx is not None:
+                                block_transactions.append(tx)
+                    else:
+                        block_fetch_reason = "low_cu_skip_native_eth_scan_high_tx_count"
 
-                    # 同一 tx 如果已命中 token flow 候选，后续主要走 token 资金流解析。
+                block_context = _listener_runtime_metadata(
+                    {
+                        "listener_rpc_mode": "low_cu" if LOW_CU_MODE else "standard",
+                        "listener_block_fetch_mode": block_fetch_mode,
+                        "listener_block_fetch_reason": block_fetch_reason,
+                        "listener_block_get_logs_request_count": int(
+                            core_scan_stats.get("request_count") or 0
+                        ) + int(lp_scan_stats.get("request_count") or 0),
+                        "listener_block_topic_chunk_count": int(
+                            core_scan_stats.get("topic_chunk_count") or 0
+                        ) + int(lp_scan_stats.get("topic_chunk_count") or 0),
+                        "listener_block_monitored_address_count": int(
+                            core_scan_stats.get("monitored_address_count") or 0
+                        ) + int(lp_scan_stats.get("monitored_address_count") or 0),
+                        "listener_block_lp_secondary_scan_used": lp_secondary_scan_used,
+                        "low_cu_mode_enabled": bool(LOW_CU_MODE),
+                        "low_cu_mode_lp_secondary_only": bool(
+                            not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
+                            and LP_SECONDARY_SCAN_ENABLE
+                        ),
+                        "low_cu_mode_poll_interval_sec": _effective_poll_interval_sec(),
+                    }
+                )
+                _update_listener_runtime_stats(block_context)
+                print(
+                    "新区块: "
+                    f"{block_num} tx={len(block_tx_hashes)} "
+                    f"rpc_mode={block_context['listener_rpc_mode']} "
+                    f"fetch_mode={block_context['listener_block_fetch_mode']} "
+                    f"fetch_reason={block_context['listener_block_fetch_reason']} "
+                    f"get_logs_req={block_context['listener_block_get_logs_request_count']} "
+                    f"topic_chunks={block_context['listener_block_topic_chunk_count']} "
+                    f"monitored={block_context['listener_block_monitored_address_count']} "
+                    f"lp_secondary={int(block_context['listener_block_lp_secondary_scan_used'])}"
+                )
+
+                for tx in block_transactions:
+                    from_addr = str(tx["from"]).lower()
+                    to_addr = str(tx["to"]).lower() if tx.get("to") else None
+                    tx_hash_hex = _to_hex(tx.get("hash")).lower()
                     if tx_hash_hex in token_flow_tx_hashes:
                         continue
 
@@ -677,11 +1037,19 @@ async def producer():
                             addr for addr in [from_addr, to_addr]
                             if addr and addr in monitored_watch_addresses
                         ]
-                        await _enqueue(_build_eth_candidate(tx, block_num, touched_watch_addresses))
+                        candidate = _build_eth_candidate(
+                            tx,
+                            block_num,
+                            touched_watch_addresses,
+                        )
+                        candidate.update(block_context)
+                        await _enqueue(candidate)
 
-                # 为每个触达地址单独生成候选，方便后续行为建模按地址归因。
                 for tx_hash, logs in tx_transfer_logs.items():
-                    touched_watch_addresses = _extract_touched_watch_addresses(logs, monitored_watch_addresses)
+                    touched_watch_addresses = _extract_touched_watch_addresses(
+                        logs,
+                        monitored_watch_addresses,
+                    )
                     touched_lp_pools = _extract_touched_lp_pools(logs)
                     if not touched_watch_addresses and not touched_lp_pools:
                         continue
@@ -693,6 +1061,8 @@ async def producer():
                         touched_watch_addresses=sorted(touched_watch_addresses),
                         touched_lp_pools=sorted(touched_lp_pools),
                     )
+                    candidate.update(block_context)
+
                     for watch_address in touched_watch_addresses:
                         listener_skip_decision = _lp_adjacent_noise_listener_decision(
                             watch_address=watch_address,
@@ -708,7 +1078,9 @@ async def producer():
                             continue
                         enriched = dict(candidate)
                         enriched["watch_address"] = watch_address
-                        enriched["monitor_type"] = "watch_address" if watch_address in WATCH_ADDRESSES else "adjacent_watch"
+                        enriched["monitor_type"] = (
+                            "watch_address" if watch_address in WATCH_ADDRESSES else "adjacent_watch"
+                        )
                         enriched["lp_adjacent_noise_skipped_in_listener"] = False
                         enriched["lp_adjacent_noise_listener_reason"] = ""
                         enriched["lp_adjacent_noise_listener_confidence"] = 0.0
@@ -742,14 +1114,17 @@ async def producer():
                         enriched["lp_adjacent_noise_downstream_context_present"] = False
                         await _enqueue(enriched)
 
-            last_block = latest_block
+                processed_until = block_num
+
+            last_block = processed_until
 
         except Exception as e:
+            QUEUE_STATS.update(get_rpc_stats_snapshot())
             print("❌ 获取区块失败:", e)
-            await asyncio.sleep(2)
+            await asyncio.sleep(max(effective_poll_interval, 2.0))
 
         # 轮询间隔，避免对 RPC 过载。
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(effective_poll_interval)
 
 
 async def worker(handle_tx):

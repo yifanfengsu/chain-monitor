@@ -529,6 +529,28 @@ class SignalPipeline:
             "intent_evidence": list(event.intent_evidence or []),
         }
         signal.metadata.update({
+            "listener_rpc_mode": str(event.metadata.get("listener_rpc_mode") or ""),
+            "listener_block_fetch_mode": str(event.metadata.get("listener_block_fetch_mode") or ""),
+            "listener_block_fetch_reason": str(event.metadata.get("listener_block_fetch_reason") or ""),
+            "listener_block_get_logs_request_count": int(
+                event.metadata.get("listener_block_get_logs_request_count") or 0
+            ),
+            "listener_block_topic_chunk_count": int(
+                event.metadata.get("listener_block_topic_chunk_count") or 0
+            ),
+            "listener_block_monitored_address_count": int(
+                event.metadata.get("listener_block_monitored_address_count") or 0
+            ),
+            "listener_block_lp_secondary_scan_used": bool(
+                event.metadata.get("listener_block_lp_secondary_scan_used")
+            ),
+            "low_cu_mode_enabled": bool(event.metadata.get("low_cu_mode_enabled")),
+            "low_cu_mode_lp_secondary_only": bool(
+                event.metadata.get("low_cu_mode_lp_secondary_only")
+            ),
+            "low_cu_mode_poll_interval_sec": float(
+                event.metadata.get("low_cu_mode_poll_interval_sec") or 0.0
+            ),
             "lp_adjacent_noise_skipped_in_listener": bool(event.metadata.get("lp_adjacent_noise_skipped_in_listener")),
             "lp_adjacent_noise_listener_reason": str(event.metadata.get("lp_adjacent_noise_listener_reason") or ""),
             "lp_adjacent_noise_listener_confidence": float(event.metadata.get("lp_adjacent_noise_listener_confidence") or 0.0),
@@ -866,6 +888,28 @@ class SignalPipeline:
         parsed["pool_transfer_count_by_pool"] = dict(raw_item.get("pool_transfer_count_by_pool") or {})
         parsed["pool_candidate_weight"] = float(raw_item.get("pool_candidate_weight") or 0.0)
         parsed["replay_source"] = str(raw_item.get("replay_source") or "")
+        parsed["listener_rpc_mode"] = str(raw_item.get("listener_rpc_mode") or "")
+        parsed["listener_block_fetch_mode"] = str(raw_item.get("listener_block_fetch_mode") or "")
+        parsed["listener_block_fetch_reason"] = str(raw_item.get("listener_block_fetch_reason") or "")
+        parsed["listener_block_get_logs_request_count"] = int(
+            raw_item.get("listener_block_get_logs_request_count") or 0
+        )
+        parsed["listener_block_topic_chunk_count"] = int(
+            raw_item.get("listener_block_topic_chunk_count") or 0
+        )
+        parsed["listener_block_monitored_address_count"] = int(
+            raw_item.get("listener_block_monitored_address_count") or 0
+        )
+        parsed["listener_block_lp_secondary_scan_used"] = bool(
+            raw_item.get("listener_block_lp_secondary_scan_used")
+        )
+        parsed["low_cu_mode_enabled"] = bool(raw_item.get("low_cu_mode_enabled"))
+        parsed["low_cu_mode_lp_secondary_only"] = bool(
+            raw_item.get("low_cu_mode_lp_secondary_only")
+        )
+        parsed["low_cu_mode_poll_interval_sec"] = float(
+            raw_item.get("low_cu_mode_poll_interval_sec") or 0.0
+        )
         parsed["lp_adjacent_noise_skipped_in_listener"] = bool(raw_item.get("lp_adjacent_noise_skipped_in_listener"))
         parsed["lp_adjacent_noise_listener_reason"] = str(raw_item.get("lp_adjacent_noise_listener_reason") or "")
         parsed["lp_adjacent_noise_listener_confidence"] = float(raw_item.get("lp_adjacent_noise_listener_confidence") or 0.0)
@@ -1224,6 +1268,28 @@ class SignalPipeline:
             "pool_transfer_count_by_pool": dict(parsed.get("pool_transfer_count_by_pool") or {}),
             "pool_candidate_weight": round(float(parsed.get("pool_candidate_weight") or 0.0), 3),
             "participant_addresses": list(parsed.get("participant_addresses") or []),
+            "listener_rpc_mode": str(parsed.get("listener_rpc_mode") or ""),
+            "listener_block_fetch_mode": str(parsed.get("listener_block_fetch_mode") or ""),
+            "listener_block_fetch_reason": str(parsed.get("listener_block_fetch_reason") or ""),
+            "listener_block_get_logs_request_count": int(
+                parsed.get("listener_block_get_logs_request_count") or 0
+            ),
+            "listener_block_topic_chunk_count": int(
+                parsed.get("listener_block_topic_chunk_count") or 0
+            ),
+            "listener_block_monitored_address_count": int(
+                parsed.get("listener_block_monitored_address_count") or 0
+            ),
+            "listener_block_lp_secondary_scan_used": bool(
+                parsed.get("listener_block_lp_secondary_scan_used")
+            ),
+            "low_cu_mode_enabled": bool(parsed.get("low_cu_mode_enabled")),
+            "low_cu_mode_lp_secondary_only": bool(
+                parsed.get("low_cu_mode_lp_secondary_only")
+            ),
+            "low_cu_mode_poll_interval_sec": round(
+                float(parsed.get("low_cu_mode_poll_interval_sec") or 0.0), 3
+            ),
             "lp_adjacent_noise_skipped_in_listener": bool(parsed.get("lp_adjacent_noise_skipped_in_listener")),
             "lp_adjacent_noise_listener_reason": str(parsed.get("lp_adjacent_noise_listener_reason") or ""),
             "lp_adjacent_noise_listener_confidence": round(float(parsed.get("lp_adjacent_noise_listener_confidence") or 0.0), 3),
@@ -2551,6 +2617,66 @@ class SignalPipeline:
                 signal_metadata.get("runtime_adjacent_watch"),
                 signal_context.get("runtime_adjacent_watch"),
                 watch_meta.get("runtime_adjacent_watch"),
+            ),
+            "listener_rpc_mode": _text(
+                event_metadata.get("listener_rpc_mode"),
+                signal_metadata.get("listener_rpc_mode"),
+                signal_context.get("listener_rpc_mode"),
+                raw.get("listener_rpc_mode"),
+            ),
+            "listener_block_fetch_mode": _text(
+                event_metadata.get("listener_block_fetch_mode"),
+                signal_metadata.get("listener_block_fetch_mode"),
+                signal_context.get("listener_block_fetch_mode"),
+                raw.get("listener_block_fetch_mode"),
+            ),
+            "listener_block_fetch_reason": _text(
+                event_metadata.get("listener_block_fetch_reason"),
+                signal_metadata.get("listener_block_fetch_reason"),
+                signal_context.get("listener_block_fetch_reason"),
+                raw.get("listener_block_fetch_reason"),
+            ),
+            "listener_block_get_logs_request_count": _int_value(
+                event_metadata.get("listener_block_get_logs_request_count"),
+                signal_metadata.get("listener_block_get_logs_request_count"),
+                signal_context.get("listener_block_get_logs_request_count"),
+                raw.get("listener_block_get_logs_request_count"),
+            ),
+            "listener_block_topic_chunk_count": _int_value(
+                event_metadata.get("listener_block_topic_chunk_count"),
+                signal_metadata.get("listener_block_topic_chunk_count"),
+                signal_context.get("listener_block_topic_chunk_count"),
+                raw.get("listener_block_topic_chunk_count"),
+            ),
+            "listener_block_monitored_address_count": _int_value(
+                event_metadata.get("listener_block_monitored_address_count"),
+                signal_metadata.get("listener_block_monitored_address_count"),
+                signal_context.get("listener_block_monitored_address_count"),
+                raw.get("listener_block_monitored_address_count"),
+            ),
+            "listener_block_lp_secondary_scan_used": _bool_value(
+                event_metadata.get("listener_block_lp_secondary_scan_used"),
+                signal_metadata.get("listener_block_lp_secondary_scan_used"),
+                signal_context.get("listener_block_lp_secondary_scan_used"),
+                raw.get("listener_block_lp_secondary_scan_used"),
+            ),
+            "low_cu_mode_enabled": _bool_value(
+                event_metadata.get("low_cu_mode_enabled"),
+                signal_metadata.get("low_cu_mode_enabled"),
+                signal_context.get("low_cu_mode_enabled"),
+                raw.get("low_cu_mode_enabled"),
+            ),
+            "low_cu_mode_lp_secondary_only": _bool_value(
+                event_metadata.get("low_cu_mode_lp_secondary_only"),
+                signal_metadata.get("low_cu_mode_lp_secondary_only"),
+                signal_context.get("low_cu_mode_lp_secondary_only"),
+                raw.get("low_cu_mode_lp_secondary_only"),
+            ),
+            "low_cu_mode_poll_interval_sec": _num(
+                event_metadata.get("low_cu_mode_poll_interval_sec"),
+                signal_metadata.get("low_cu_mode_poll_interval_sec"),
+                signal_context.get("low_cu_mode_poll_interval_sec"),
+                raw.get("low_cu_mode_poll_interval_sec"),
             ),
             "source_kind": _text(raw.get("source_kind"), event_metadata.get("source_kind")),
             "raw_log_count": _int_value(raw.get("raw_log_count"), event_metadata.get("raw_log_count"), 0),
@@ -5475,6 +5601,28 @@ class SignalPipeline:
                 "pool_transfer_count_by_pool": dict(parsed.get("pool_transfer_count_by_pool") or {}),
                 "pool_candidate_weight": float(parsed.get("pool_candidate_weight") or 0.0),
                 "replay_source": str(parsed.get("replay_source") or ""),
+                "listener_rpc_mode": str(parsed.get("listener_rpc_mode") or ""),
+                "listener_block_fetch_mode": str(parsed.get("listener_block_fetch_mode") or ""),
+                "listener_block_fetch_reason": str(parsed.get("listener_block_fetch_reason") or ""),
+                "listener_block_get_logs_request_count": int(
+                    parsed.get("listener_block_get_logs_request_count") or 0
+                ),
+                "listener_block_topic_chunk_count": int(
+                    parsed.get("listener_block_topic_chunk_count") or 0
+                ),
+                "listener_block_monitored_address_count": int(
+                    parsed.get("listener_block_monitored_address_count") or 0
+                ),
+                "listener_block_lp_secondary_scan_used": bool(
+                    parsed.get("listener_block_lp_secondary_scan_used")
+                ),
+                "low_cu_mode_enabled": bool(parsed.get("low_cu_mode_enabled")),
+                "low_cu_mode_lp_secondary_only": bool(
+                    parsed.get("low_cu_mode_lp_secondary_only")
+                ),
+                "low_cu_mode_poll_interval_sec": float(
+                    parsed.get("low_cu_mode_poll_interval_sec") or 0.0
+                ),
                 "lp_adjacent_noise_skipped_in_listener": bool(parsed.get("lp_adjacent_noise_skipped_in_listener")),
                 "lp_adjacent_noise_listener_reason": str(parsed.get("lp_adjacent_noise_listener_reason") or ""),
                 "lp_adjacent_noise_listener_confidence": float(parsed.get("lp_adjacent_noise_listener_confidence") or 0.0),

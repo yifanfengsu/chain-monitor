@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+import threading
+
 from web3 import Web3
 
 from constants import (
@@ -10,11 +14,17 @@ from constants import (
     STABLE_TOKEN_CONTRACTS,
     STABLE_TOKEN_METADATA,
 )
-from config import RPC_URL
+from config import (
+    LOW_CU_MODE,
+    RPC_URL,
+    TOKEN_METADATA_CACHE_ENABLE,
+    TOKEN_METADATA_CACHE_PATH,
+)
 from filter import ALL_WATCH_ADDRESSES, get_address_meta
 from liquidation_registry import scan_liquidation_context
 from lp_analyzer import LPAnalyzer
 from lp_registry import get_lp_pool, is_lp_pool
+from rpc_resilience import rpc_call_with_backoff
 
 # ERC20 常见方法签名（函数 selector）。
 ERC20_TRANSFER_SIG = "0xa9059cbb"
@@ -53,6 +63,93 @@ TOKEN_SYMBOLS = {
 TOKEN_DECIMALS.update({token: 18 for token in ETH_EQUIVALENT_CONTRACTS})
 TOKEN_SYMBOLS.update({token: "WETH" for token in ETH_EQUIVALENT_CONTRACTS})
 LP_EVENT_ANALYZER = LPAnalyzer()
+TOKEN_METADATA_CACHE_FILE = Path(TOKEN_METADATA_CACHE_PATH)
+TOKEN_METADATA_CACHE_LOCK = threading.Lock()
+TOKEN_METADATA_STATS = {
+    "token_metadata_cache_hit": 0,
+    "token_metadata_chain_lookup": 0,
+    "token_metadata_cache_persisted": 0,
+}
+
+
+def _build_token_metadata_cache_payload() -> dict[str, dict]:
+    payload = {}
+    for token, symbol in TOKEN_SYMBOLS.items():
+        decimals = TOKEN_DECIMALS.get(token)
+        if decimals is None:
+            continue
+        payload[str(token).lower()] = {
+            "symbol": str(symbol or ""),
+            "decimals": int(decimals),
+        }
+    return payload
+
+
+def _load_token_metadata_cache() -> None:
+    if not bool(TOKEN_METADATA_CACHE_ENABLE or LOW_CU_MODE):
+        return
+    try:
+        if not TOKEN_METADATA_CACHE_FILE.exists():
+            return
+        with TOKEN_METADATA_CACHE_FILE.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        if not isinstance(payload, dict):
+            return
+        for token, meta in payload.items():
+            token_address = str(token or "").lower()
+            if not token_address or not isinstance(meta, dict):
+                continue
+            symbol = str(meta.get("symbol") or "").strip()
+            decimals = meta.get("decimals")
+            if symbol:
+                TOKEN_SYMBOLS[token_address] = symbol
+            if decimals is not None:
+                try:
+                    TOKEN_DECIMALS[token_address] = int(decimals)
+                except (TypeError, ValueError):
+                    continue
+    except Exception as exc:
+        print(f"⚠️ token metadata cache 加载失败: {exc}")
+
+
+def _persist_token_metadata_cache_snapshot() -> None:
+    if not bool(TOKEN_METADATA_CACHE_ENABLE or LOW_CU_MODE):
+        return
+    try:
+        payload = _build_token_metadata_cache_payload()
+        TOKEN_METADATA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = TOKEN_METADATA_CACHE_FILE.with_suffix(".tmp")
+        with tmp_path.open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, sort_keys=True)
+        tmp_path.replace(TOKEN_METADATA_CACHE_FILE)
+        with TOKEN_METADATA_CACHE_LOCK:
+            TOKEN_METADATA_STATS["token_metadata_cache_persisted"] = int(
+                TOKEN_METADATA_STATS.get("token_metadata_cache_persisted") or 0
+            ) + 1
+    except Exception as exc:
+        print(f"⚠️ token metadata cache 落盘失败: {exc}")
+
+
+def _schedule_token_metadata_cache_persist() -> None:
+    if not bool(TOKEN_METADATA_CACHE_ENABLE or LOW_CU_MODE):
+        return
+    try:
+        thread = threading.Thread(
+            target=_persist_token_metadata_cache_snapshot,
+            name="token-metadata-cache-persist",
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:
+        print(f"⚠️ token metadata cache 异步落盘失败: {exc}")
+
+
+def get_token_metadata_stats_snapshot() -> dict[str, int]:
+    with TOKEN_METADATA_CACHE_LOCK:
+        return dict(TOKEN_METADATA_STATS)
+
+
+_load_token_metadata_cache()
 
 
 def to_hex(input_data):
@@ -77,7 +174,16 @@ def get_token_metadata(token):
     decimals = TOKEN_DECIMALS.get(token)
 
     if symbol and decimals is not None:
+        with TOKEN_METADATA_CACHE_LOCK:
+            TOKEN_METADATA_STATS["token_metadata_cache_hit"] = int(
+                TOKEN_METADATA_STATS.get("token_metadata_cache_hit") or 0
+            ) + 1
         return {"symbol": symbol, "decimals": decimals}
+
+    with TOKEN_METADATA_CACHE_LOCK:
+        TOKEN_METADATA_STATS["token_metadata_chain_lookup"] = int(
+            TOKEN_METADATA_STATS.get("token_metadata_chain_lookup") or 0
+        ) + 1
 
     try:
         contract = w3.eth.contract(
@@ -86,12 +192,20 @@ def get_token_metadata(token):
         )
 
         if symbol is None:
-            symbol = contract.functions.symbol().call()
+            symbol = rpc_call_with_backoff(
+                "processor.token_metadata.symbol",
+                lambda: contract.functions.symbol().call(),
+            )
             if isinstance(symbol, bytes):
                 symbol = symbol.decode(errors="ignore").rstrip("\x00")
 
         if decimals is None:
-            decimals = int(contract.functions.decimals().call())
+            decimals = int(
+                rpc_call_with_backoff(
+                    "processor.token_metadata.decimals",
+                    lambda: contract.functions.decimals().call(),
+                )
+            )
 
     except Exception:
         symbol = symbol or token[:10]
@@ -99,6 +213,7 @@ def get_token_metadata(token):
 
     TOKEN_SYMBOLS[token] = symbol
     TOKEN_DECIMALS[token] = decimals
+    _schedule_token_metadata_cache_persist()
     return {"symbol": symbol, "decimals": decimals}
 
 
