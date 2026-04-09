@@ -88,6 +88,9 @@ def _select_message_variant(signal: Signal, event: Event, context: dict) -> str:
         or signal.metadata.get("message_variant")
         or ""
     ).strip()
+    smart_money_variant = _smart_money_variant(signal, event, context)
+    if variant in {"smart_money_primary", "smart_money_observe", "market_maker_observe"}:
+        return smart_money_variant or "alert"
     if variant in MESSAGE_VARIANTS:
         return variant
     if bool(context.get("downstream_followup_active")) or str(context.get("case_family") or "") == "downstream_counterparty_followup":
@@ -103,7 +106,6 @@ def _select_message_variant(signal: Signal, event: Event, context: dict) -> str:
         if str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"}:
             return "lp_directional"
         return "lp_liquidity"
-    smart_money_variant = _smart_money_variant(signal, event, context)
     if smart_money_variant:
         return smart_money_variant
     return "alert"
@@ -131,26 +133,21 @@ def _smart_money_variant(signal: Signal, event: Event, context: dict) -> str:
 
     delivery_reason = str(signal.delivery_reason or event.delivery_reason or "")
     smart_money_reasons = {
-        "smart_money_transfer_observe",
         "market_maker_execution_observe",
-        "market_maker_inventory_observe",
-        "market_maker_inventory_shift_observe",
-        "market_maker_non_execution_observe",
-        "smart_money_non_execution_observe",
+        "market_maker_execution_primary",
         "smart_money_execution_observe",
         "smart_money_execution_primary",
         "smart_money_continuous_execution_primary",
-        "market_maker_execution_primary",
     }
-    if not (
-        delivery_reason in smart_money_reasons
-        or bool(signal.metadata.get("smart_money_case"))
-        or is_smart_money_strategy_role(event.strategy_role)
-    ):
+    is_execution = (
+        bool(signal.metadata.get("is_real_execution"))
+        or event.kind == "swap"
+        or str(event.intent_type or "") == "swap_execution"
+    )
+    if delivery_reason not in smart_money_reasons or not is_execution:
         return ""
 
     style_variant = str(context.get("smart_money_style_variant") or signal.metadata.get("smart_money_style_variant") or "").strip()
-    is_execution = bool(signal.metadata.get("is_real_execution")) or str(event.intent_type or "") == "swap_execution"
     if delivery_class == "primary" and is_execution:
         return "smart_money_primary"
     if style_variant == "market_maker":
@@ -213,6 +210,43 @@ def _action_hint(context: dict) -> str:
 
 def _update_brief(context: dict) -> str:
     return str(context.get("update_brief") or context.get("followup_detail") or context.get("followup_label") or "出现新的后续确认")
+
+
+def _lp_burst_summary(context: dict) -> str:
+    return str(context.get("lp_burst_summary") or "").strip()
+
+
+def _lp_burst_line(signal: Signal, context: dict) -> str:
+    burst_applied = bool(
+        context.get("lp_burst_fastlane_applied")
+        or signal.metadata.get("lp_burst_fastlane_applied")
+        or str(signal.delivery_reason or "").startswith("lp_burst_directional_")
+    )
+    if not burst_applied:
+        return ""
+    summary = _lp_burst_summary(context)
+    if summary:
+        return f"Burst：{summary}"
+    label = str(context.get("lp_burst_label") or "同池同向 burst").strip()
+    window_label = str(context.get("lp_burst_window_label") or "").strip()
+    return f"Burst：{label}{('｜' + window_label) if window_label else ''}"
+
+
+def _lp_route_semantics_line(signal: Signal, context: dict) -> str:
+    semantics = str(
+        context.get("lp_route_semantics")
+        or signal.metadata.get("lp_route_semantics")
+        or ""
+    ).strip()
+    if semantics == "burst_main_entry":
+        return "入口：LP burst 主入口｜短窗口连续爆发"
+    if semantics == "single_shot_fallback":
+        return "入口：LP 首击兜底｜单笔/首击型稀有样本"
+    if semantics == "directional_exception_entry":
+        return "入口：LP directional 例外入口｜结构强但单笔略低"
+    if semantics == "directional_standard_entry":
+        return "入口：LP directional 常规入口"
+    return ""
 
 
 def _path_line(context: dict, raw: dict) -> str:
@@ -280,9 +314,9 @@ def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bo
     if variant == "smart_money_primary":
         return "🎯 Smart Money 执行"
     if variant == "smart_money_observe":
-        return "🧠 Smart Money 观察"
+        return "🧠 Smart Money 执行观察"
     if variant == "market_maker_observe":
-        return "🏦 Market Maker 库存观察"
+        return "🏦 Market Maker 执行观察"
     if variant == "lp_directional":
         intent_type = str(getattr(signal, "intent_type", "") or "")
         if intent_type == "pool_buy_pressure":
@@ -350,6 +384,8 @@ def _lp_directional_message(signal: Signal, event: Event, context: dict, raw: di
         f"池子：{_pool_label(signal, context)}",
         f"方向：{_lp_direction_field(signal, context)}",
         f"金额：{_usd_value_text(signal.usd_value)}",
+        _lp_burst_line(signal, context),
+        _lp_route_semantics_line(signal, context),
         f"放量：{context.get('lp_volume_surge_label') or '无明显放量'}",
         f"连续：{context.get('same_pool_continuity_label') or '单池单笔'}",
         f"共振：{context.get('multi_pool_resonance_label') or '无跨池共振'}",
@@ -419,13 +455,13 @@ def _smart_money_observe_message(signal: Signal, event: Event, context: dict, ra
     lines = [
         _header_for_variant(signal, context, "smart_money_observe"),
         f"对象：{_object_label(signal, context)}",
-        f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
+        f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
         f"金额：{_usd_value_text(signal.usd_value)}",
         f"路径：{_path_line(context, raw)}",
         f"当前解释：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
         f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
         f"连续/共振：{context.get('continuous_label') or '单笔'}｜{context.get('resonance_label') or '单地址孤立'}",
-        f"为什么值得观察：{context.get('smart_money_observe_label') or '聪明钱观察路径'}",
+        f"为什么值得观察：{context.get('smart_money_observe_label') or '聪明钱执行观察路径'}",
         f"继续看：{context.get('smart_money_action_hint') or _action_hint(context)}",
         _tx_line(signal),
     ]
@@ -436,13 +472,13 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
     lines = [
         _header_for_variant(signal, context, "market_maker_observe"),
         f"对象：{_object_label(signal, context)}",
-        f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
+        f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
         f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
         f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
         f"金额：{_usd_value_text(signal.usd_value)}",
         f"路径：{_path_line(context, raw)}",
         f"共振/确认：{context.get('resonance_label') or '单地址孤立'}｜{context.get('confirmation_label') or '弱证据'}",
-        f"为什么值得观察：{context.get('smart_money_observe_label') or '做市库存观察路径'}",
+        f"为什么值得观察：{context.get('smart_money_observe_label') or '做市执行观察路径'}",
         f"继续看：{context.get('smart_money_action_hint') or _action_hint(context)}",
         _tx_line(signal),
     ]
@@ -483,6 +519,7 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             _header_for_variant(signal, context, "lp_directional", compact=True),
             f"池子：{_pool_label(signal, context)}",
             f"方向：{_lp_direction_field(signal, context)}",
+            _lp_burst_line(signal, context),
             f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
             f"证据：{_evidence_brief(context)}",
             _tx_line(signal, compact=True),
@@ -522,7 +559,7 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
     if variant == "smart_money_observe":
         lines = [
             _header_for_variant(signal, context, "smart_money_observe", compact=True),
-            f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
+            f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
             f"解释：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
             f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
             _tx_line(signal, compact=True),
@@ -532,7 +569,7 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
         lines = [
             _header_for_variant(signal, context, "market_maker_observe", compact=True),
             f"对象：{_object_label(signal, context)}",
-            f"动作：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
+            f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
             f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
             f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
             _tx_line(signal, compact=True),

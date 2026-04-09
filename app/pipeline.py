@@ -38,6 +38,10 @@ from filter import (
     strategy_role_group,
 )
 from lp_analyzer import LP_ALL_INTENTS, LPAnalyzer
+from lp_noise_rules import (
+    LP_ADJACENT_NOISE_STAGE_PIPELINE,
+    lp_adjacent_noise_core_decision,
+)
 from liquidation_detector import LiquidationDetector
 from models import Event
 from price_service import PriceService
@@ -54,7 +58,6 @@ class SignalPipeline:
     """
     主处理管道：
     Data -> Parsing -> Pricing -> Intent -> State -> Intelligence -> Strategy -> Output
-
     本阶段增强：
     - 先给出初步意图
     - 再基于短时序列与 token 共振做确认/降级
@@ -103,6 +106,14 @@ class SignalPipeline:
         archive_ts = int(time.time())
         self._archive_raw_event(raw_item, archive_status, archive_ts)
 
+        if self._is_lp_adjacent_noise_candidate(raw_item=raw_item):
+            self._archive_lp_adjacent_noise_audit(
+                raw_item=raw_item,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
+            return None
+
         parsed = parse_tx(raw_item)
         if not parsed:
             self._archive_parse_failure(raw_item, archive_status, archive_ts)
@@ -118,6 +129,20 @@ class SignalPipeline:
             or watch_context.get("watch_meta")
             or get_address_meta(parsed.get("watch_address"))
         )
+        lp_adjacent_decision = self._lp_adjacent_noise_fallback_decision(
+            parsed=parsed,
+            watch_meta=watch_meta,
+        )
+        parsed.update(self._lp_adjacent_noise_metadata_from_decision(lp_adjacent_decision))
+        if lp_adjacent_decision.get("is_noise"):
+            self._archive_lp_adjacent_noise_audit(
+                raw_item=raw_item,
+                parsed=parsed,
+                watch_meta=watch_meta,
+                archive_status=archive_status,
+                archive_ts=archive_ts,
+            )
+            return None
 
         pricing = await self._evaluate_pricing(parsed)
         parsed["usd_value"] = float(
@@ -220,6 +245,7 @@ class SignalPipeline:
             preliminary_intent=preliminary_intent,
         )
         self._apply_confirmed_intent(event, confirmed_intent)
+        self._apply_lp_burst_state(event)
         self._apply_liquidation_overlay(
             event=event,
             parsed=parsed,
@@ -334,6 +360,10 @@ class SignalPipeline:
             address_snapshot=address_snapshot,
             token_snapshot=token_snapshot,
         )
+        self._apply_lp_gate_runtime_metadata(
+            event=event,
+            gate_metrics=gate_decision.metrics,
+        )
         if not gate_decision.passed:
             event.delivery_class = "drop"
             event.delivery_reason = gate_decision.reason
@@ -426,8 +456,9 @@ class SignalPipeline:
             gate_decision.metrics.get("cooldown_key")
             or self.state_manager.get_cooldown_key(event, intent_type=event.intent_type)
         )
+        cooldown_sec = int(gate_decision.metrics.get("cooldown_sec") or self.quality_gate.cooldown_sec)
         now_ts = int(event.ts)
-        if not self.state_manager.can_emit_signal_by_key(cooldown_key, now_ts, self.quality_gate.cooldown_sec):
+        if not self.state_manager.can_emit_signal_by_key(cooldown_key, now_ts, cooldown_sec):
             last_signal_ts = self.state_manager.get_last_signal_ts_by_key(cooldown_key)
             event.delivery_class = "drop"
             event.delivery_reason = "cooldown_suppressed"
@@ -462,7 +493,7 @@ class SignalPipeline:
                     "cooldown_key": cooldown_key,
                     "now_ts": now_ts,
                     "last_signal_ts": int(last_signal_ts) if last_signal_ts is not None else None,
-                    "cooldown_sec": int(self.quality_gate.cooldown_sec),
+                    "cooldown_sec": cooldown_sec,
                 },
             )
             return None
@@ -497,6 +528,30 @@ class SignalPipeline:
             "confirmation_score": float(event.confirmation_score or 0.0),
             "intent_evidence": list(event.intent_evidence or []),
         }
+        signal.metadata.update({
+            "lp_adjacent_noise_skipped_in_listener": bool(event.metadata.get("lp_adjacent_noise_skipped_in_listener")),
+            "lp_adjacent_noise_listener_reason": str(event.metadata.get("lp_adjacent_noise_listener_reason") or ""),
+            "lp_adjacent_noise_listener_confidence": float(event.metadata.get("lp_adjacent_noise_listener_confidence") or 0.0),
+            "lp_adjacent_noise_listener_source_signals": list(event.metadata.get("lp_adjacent_noise_listener_source_signals") or []),
+            "lp_adjacent_noise_rule_version": str(event.metadata.get("lp_adjacent_noise_rule_version") or ""),
+            "lp_adjacent_noise_decision_stage": str(event.metadata.get("lp_adjacent_noise_decision_stage") or ""),
+            "lp_adjacent_noise_filtered": bool(event.metadata.get("lp_adjacent_noise_filtered")),
+            "lp_adjacent_noise_reason": str(event.metadata.get("lp_adjacent_noise_reason") or ""),
+            "lp_adjacent_noise_confidence": float(event.metadata.get("lp_adjacent_noise_confidence") or 0.0),
+            "lp_adjacent_noise_source_signals": list(event.metadata.get("lp_adjacent_noise_source_signals") or []),
+            "lp_adjacent_noise_context_used": list(event.metadata.get("lp_adjacent_noise_context_used") or []),
+            "lp_adjacent_noise_runtime_context_present": bool(
+                event.metadata.get("lp_adjacent_noise_runtime_context_present")
+            ),
+            "lp_adjacent_noise_downstream_context_present": bool(
+                event.metadata.get("lp_adjacent_noise_downstream_context_present")
+            ),
+        })
+        self._apply_lp_gate_runtime_metadata(
+            event=event,
+            signal=signal,
+            gate_metrics=gate_decision.metrics,
+        )
         if behavior_case is not None:
             updated_case = self._attach_signal_to_case(behavior_case, signal)
             if updated_case is not None:
@@ -811,7 +866,250 @@ class SignalPipeline:
         parsed["pool_transfer_count_by_pool"] = dict(raw_item.get("pool_transfer_count_by_pool") or {})
         parsed["pool_candidate_weight"] = float(raw_item.get("pool_candidate_weight") or 0.0)
         parsed["replay_source"] = str(raw_item.get("replay_source") or "")
+        parsed["lp_adjacent_noise_skipped_in_listener"] = bool(raw_item.get("lp_adjacent_noise_skipped_in_listener"))
+        parsed["lp_adjacent_noise_listener_reason"] = str(raw_item.get("lp_adjacent_noise_listener_reason") or "")
+        parsed["lp_adjacent_noise_listener_confidence"] = float(raw_item.get("lp_adjacent_noise_listener_confidence") or 0.0)
+        parsed["lp_adjacent_noise_listener_source_signals"] = list(raw_item.get("lp_adjacent_noise_listener_source_signals") or [])
+        parsed["lp_adjacent_noise_rule_version"] = str(raw_item.get("lp_adjacent_noise_rule_version") or "")
+        parsed["lp_adjacent_noise_decision_stage"] = str(raw_item.get("lp_adjacent_noise_decision_stage") or "")
+        parsed["lp_adjacent_noise_filtered"] = bool(raw_item.get("lp_adjacent_noise_filtered"))
+        parsed["lp_adjacent_noise_reason"] = str(raw_item.get("lp_adjacent_noise_reason") or "")
+        parsed["lp_adjacent_noise_confidence"] = float(raw_item.get("lp_adjacent_noise_confidence") or 0.0)
+        parsed["lp_adjacent_noise_source_signals"] = list(raw_item.get("lp_adjacent_noise_source_signals") or [])
+        parsed["lp_adjacent_noise_context_used"] = list(raw_item.get("lp_adjacent_noise_context_used") or [])
+        parsed["lp_adjacent_noise_runtime_context_present"] = bool(
+            raw_item.get("lp_adjacent_noise_runtime_context_present")
+        )
+        parsed["lp_adjacent_noise_downstream_context_present"] = bool(
+            raw_item.get("lp_adjacent_noise_downstream_context_present")
+        )
         return parsed
+
+    def _lp_adjacent_noise_fallback_decision(
+        self,
+        *,
+        raw_item: dict | None = None,
+        parsed: dict | None = None,
+        watch_meta: dict | None = None,
+    ) -> dict:
+        payload = dict(parsed or raw_item or {})
+        watch_address = str(payload.get("watch_address") or "").lower()
+        resolved_meta = watch_meta or get_address_meta(watch_address)
+        payload["watch_address"] = watch_address
+        payload["strategy_role"] = str(
+            (resolved_meta or {}).get("strategy_role") or payload.get("strategy_role") or ""
+        )
+        payload["watch_meta_source"] = str(
+            (resolved_meta or {}).get("watch_meta_source")
+            or payload.get("watch_meta_source")
+            or ""
+        )
+        payload["strategy_hint"] = str(
+            (resolved_meta or {}).get("strategy_hint")
+            or payload.get("strategy_hint")
+            or ""
+        )
+        payload["runtime_adjacent_watch"] = bool(
+            (resolved_meta or {}).get("runtime_adjacent_watch")
+            or payload.get("runtime_adjacent_watch")
+        )
+        payload["runtime_state"] = str(
+            (resolved_meta or {}).get("runtime_state")
+            or payload.get("runtime_state")
+            or ""
+        )
+        payload["anchor_watch_address"] = str(
+            (resolved_meta or {}).get("anchor_watch_address")
+            or payload.get("anchor_watch_address")
+            or ""
+        )
+        payload["downstream_case_id"] = str(
+            (resolved_meta or {}).get("downstream_case_id")
+            or payload.get("downstream_case_id")
+            or ""
+        )
+        decision = lp_adjacent_noise_core_decision(
+            payload,
+            stage=LP_ADJACENT_NOISE_STAGE_PIPELINE,
+            watch_addresses=WATCH_ADDRESSES,
+        )
+        if raw_item is not None and parsed is None and watch_meta is None and decision.get("is_noise"):
+            early_strong_reasons = {
+                "adjacent_watch_overlaps_active_lp_pool",
+                "adjacent_watch_watch_meta_lp_pool",
+                "adjacent_watch_listener_high_confidence_lp_noise",
+            }
+            if str(decision.get("reason") or "") not in early_strong_reasons:
+                decision["is_noise"] = False
+        return decision
+
+    def _lp_adjacent_noise_metadata_from_decision(self, decision: dict) -> dict:
+        return {
+            "lp_adjacent_noise_rule_version": str(decision.get("rule_version") or ""),
+            "lp_adjacent_noise_decision_stage": str(decision.get("decision_stage") or ""),
+            "lp_adjacent_noise_filtered": bool(decision.get("is_noise")),
+            "lp_adjacent_noise_reason": str(decision.get("reason") or ""),
+            "lp_adjacent_noise_confidence": round(float(decision.get("confidence") or 0.0), 3),
+            "lp_adjacent_noise_source_signals": list(decision.get("source_signals") or []),
+            "lp_adjacent_noise_context_used": list(decision.get("context_used") or []),
+            "lp_adjacent_noise_runtime_context_present": bool(
+                decision.get("runtime_context_present")
+            ),
+            "lp_adjacent_noise_downstream_context_present": bool(
+                decision.get("downstream_context_present")
+            ),
+        }
+
+    def _is_lp_adjacent_noise_candidate(
+        self,
+        raw_item: dict | None = None,
+        parsed: dict | None = None,
+        watch_meta: dict | None = None,
+    ) -> bool:
+        decision = self._lp_adjacent_noise_fallback_decision(
+            raw_item=raw_item,
+            parsed=parsed,
+            watch_meta=watch_meta,
+        )
+        return bool(decision.get("is_noise"))
+
+    def _archive_lp_adjacent_noise_audit(
+        self,
+        raw_item: dict | None = None,
+        parsed: dict | None = None,
+        watch_meta: dict | None = None,
+        archive_status: dict | None = None,
+        archive_ts: int | None = None,
+    ) -> None:
+        archive_status = archive_status or {}
+        payload = dict(parsed or raw_item or {})
+        watch_address = str(payload.get("watch_address") or "").lower()
+        resolved_meta = watch_meta or get_address_meta(watch_address)
+        decision = self._lp_adjacent_noise_fallback_decision(
+            raw_item=raw_item,
+            parsed=parsed,
+            watch_meta=resolved_meta,
+        )
+        decision_metadata = self._lp_adjacent_noise_metadata_from_decision(decision)
+        self._archive_prefilter_delivery_audit(
+            parsed=payload,
+            watch_context=None,
+            watch_meta=resolved_meta,
+            archive_status=archive_status,
+            archive_ts=int(archive_ts or time.time()),
+            gate_reason="lp_adjacent_noise_filtered",
+            audit_extras={
+                **decision_metadata,
+                "lp_adjacent_noise_filtered": True,
+                "lp_adjacent_noise_reason": str(
+                    decision.get("reason") or "lp_adjacent_noise_filtered"
+                ),
+                "lp_adjacent_noise_skipped_in_listener": bool(payload.get("lp_adjacent_noise_skipped_in_listener")),
+                "lp_adjacent_noise_listener_reason": str(payload.get("lp_adjacent_noise_listener_reason") or ""),
+                "lp_adjacent_noise_listener_confidence": float(payload.get("lp_adjacent_noise_listener_confidence") or 0.0),
+                "lp_adjacent_noise_listener_source_signals": list(payload.get("lp_adjacent_noise_listener_source_signals") or []),
+                "monitor_type": str(payload.get("monitor_type") or "adjacent_watch"),
+                "strategy_role": str((resolved_meta or {}).get("strategy_role") or "lp_pool"),
+                "role_group": str(strategy_role_group((resolved_meta or {}).get("strategy_role") or "lp_pool")),
+                "watch_address": watch_address,
+            },
+        )
+
+    def _lp_burst_direction(self, event: Event) -> str:
+        if str(event.strategy_role or "") != "lp_pool":
+            return ""
+        intent_type = str(event.intent_type or "")
+        if intent_type == "pool_buy_pressure":
+            return "buy_pressure"
+        if intent_type == "pool_sell_pressure":
+            return "sell_pressure"
+        return ""
+
+    def _apply_lp_burst_state(self, event: Event) -> dict:
+        direction = self._lp_burst_direction(event)
+        if not direction:
+            return {}
+
+        burst_state = self.state_manager.get_lp_burst_snapshot(
+            pool_address=str(event.address or "").lower(),
+            direction=direction,
+            now_ts=int(event.ts or time.time()),
+        )
+        payload = {
+            **burst_state,
+            "lp_burst_fastlane_applied": bool(event.metadata.get("lp_burst_fastlane_applied")),
+            "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or ""),
+            "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or ""),
+        }
+        event.metadata["lp_burst"] = dict(burst_state)
+        event.metadata.update(payload)
+        return payload
+
+    def _apply_lp_gate_runtime_metadata(
+        self,
+        event: Event,
+        signal=None,
+        gate_metrics: dict | None = None,
+    ) -> dict:
+        gate_metrics = gate_metrics or {}
+        if not self._is_lp_event(event=event):
+            return {}
+
+        existing = event.metadata or {}
+
+        def _first_value(*values):
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        payload = {
+            "lp_observe_exception_applied": bool(_first_value(gate_metrics.get("lp_observe_exception_applied"), existing.get("lp_observe_exception_applied"), False)),
+            "lp_observe_exception_reason": str(_first_value(gate_metrics.get("lp_observe_exception_reason"), existing.get("lp_observe_exception_reason"), "") or ""),
+            "lp_observe_threshold_ratio": float(_first_value(gate_metrics.get("lp_observe_threshold_ratio"), existing.get("lp_observe_threshold_ratio"), 0.0) or 0.0),
+            "lp_observe_below_min_gap": float(_first_value(gate_metrics.get("lp_observe_below_min_gap"), existing.get("lp_observe_below_min_gap"), 0.0) or 0.0),
+            "lp_fast_exception_applied": bool(_first_value(gate_metrics.get("lp_fast_exception_applied"), existing.get("lp_fast_exception_applied"), False)),
+            "lp_fast_exception_reason": str(_first_value(gate_metrics.get("lp_fast_exception_reason"), existing.get("lp_fast_exception_reason"), "") or ""),
+            "lp_fast_exception_threshold_ratio": float(_first_value(gate_metrics.get("lp_fast_exception_threshold_ratio"), existing.get("lp_fast_exception_threshold_ratio"), 0.0) or 0.0),
+            "lp_fast_exception_usd_gap": float(_first_value(gate_metrics.get("lp_fast_exception_usd_gap"), existing.get("lp_fast_exception_usd_gap"), 0.0) or 0.0),
+            "lp_fast_exception_structure_score": float(_first_value(gate_metrics.get("lp_fast_exception_structure_score"), existing.get("lp_fast_exception_structure_score"), 0.0) or 0.0),
+            "lp_fast_exception_gate_version": str(_first_value(gate_metrics.get("lp_fast_exception_gate_version"), existing.get("lp_fast_exception_gate_version"), "") or ""),
+            "lp_burst_fastlane_applied": bool(_first_value(gate_metrics.get("lp_burst_fastlane_applied"), existing.get("lp_burst_fastlane_applied"), False)),
+            "lp_burst_fastlane_reason": str(_first_value(gate_metrics.get("lp_burst_fastlane_reason"), existing.get("lp_burst_fastlane_reason"), "") or ""),
+            "lp_burst_window_sec": int(_first_value(gate_metrics.get("lp_burst_window_sec"), existing.get("lp_burst_window_sec"), 0) or 0),
+            "lp_burst_event_count": int(_first_value(gate_metrics.get("lp_burst_event_count"), existing.get("lp_burst_event_count"), 0) or 0),
+            "lp_burst_total_usd": float(_first_value(gate_metrics.get("lp_burst_total_usd"), existing.get("lp_burst_total_usd"), 0.0) or 0.0),
+            "lp_burst_max_single_usd": float(_first_value(gate_metrics.get("lp_burst_max_single_usd"), existing.get("lp_burst_max_single_usd"), 0.0) or 0.0),
+            "lp_burst_same_pool_continuity": int(_first_value(gate_metrics.get("lp_burst_same_pool_continuity"), existing.get("lp_burst_same_pool_continuity"), 0) or 0),
+            "lp_burst_volume_surge_ratio": float(_first_value(gate_metrics.get("lp_burst_volume_surge_ratio"), existing.get("lp_burst_volume_surge_ratio"), 0.0) or 0.0),
+            "lp_burst_action_intensity": float(_first_value(gate_metrics.get("lp_burst_action_intensity"), existing.get("lp_burst_action_intensity"), 0.0) or 0.0),
+            "lp_burst_reserve_skew": float(_first_value(gate_metrics.get("lp_burst_reserve_skew"), existing.get("lp_burst_reserve_skew"), 0.0) or 0.0),
+            "lp_burst_first_ts": int(_first_value(gate_metrics.get("lp_burst_first_ts"), existing.get("lp_burst_first_ts"), 0) or 0),
+            "lp_burst_last_ts": int(_first_value(gate_metrics.get("lp_burst_last_ts"), existing.get("lp_burst_last_ts"), 0) or 0),
+            "lp_burst_delivery_class": str(_first_value(gate_metrics.get("lp_burst_delivery_class"), existing.get("lp_burst_delivery_class"), "") or ""),
+            "lp_directional_cooldown_key": str(_first_value(gate_metrics.get("lp_directional_cooldown_key"), existing.get("lp_directional_cooldown_key"), "") or ""),
+            "lp_directional_cooldown_sec": int(_first_value(gate_metrics.get("lp_directional_cooldown_sec"), existing.get("lp_directional_cooldown_sec"), 0) or 0),
+            "lp_directional_cooldown_allowed": bool(_first_value(gate_metrics.get("lp_directional_cooldown_allowed"), existing.get("lp_directional_cooldown_allowed"), False)),
+        }
+        event.metadata["lp_burst"] = {
+            "lp_burst_window_sec": payload["lp_burst_window_sec"],
+            "lp_burst_pool_address": str(event.address or "").lower(),
+            "lp_burst_direction": self._lp_burst_direction(event),
+            "lp_burst_event_count": payload["lp_burst_event_count"],
+            "lp_burst_total_usd": payload["lp_burst_total_usd"],
+            "lp_burst_max_single_usd": payload["lp_burst_max_single_usd"],
+            "lp_burst_same_pool_continuity": payload["lp_burst_same_pool_continuity"],
+            "lp_burst_volume_surge_ratio": payload["lp_burst_volume_surge_ratio"],
+            "lp_burst_action_intensity": payload["lp_burst_action_intensity"],
+            "lp_burst_reserve_skew": payload["lp_burst_reserve_skew"],
+            "lp_burst_first_ts": payload["lp_burst_first_ts"],
+            "lp_burst_last_ts": payload["lp_burst_last_ts"],
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
 
     def _is_persisted_exchange_adjacent_runtime_watch(self, watch_meta: dict | None) -> bool:
         watch_meta = watch_meta or {}
@@ -919,6 +1217,30 @@ class SignalPipeline:
             "runtime_state": str(watch_meta.get("runtime_state") or ""),
             "anchor_watch_address": str(watch_meta.get("anchor_watch_address") or ""),
             "downstream_case_id": str(watch_meta.get("downstream_case_id") or ""),
+            "touched_watch_addresses": list(parsed.get("touched_watch_addresses") or []),
+            "touched_lp_pools": list(parsed.get("touched_lp_pools") or []),
+            "touched_lp_pool_count": int(parsed.get("touched_lp_pool_count") or 0),
+            "tx_pool_hit_count": int(parsed.get("tx_pool_hit_count") or 0),
+            "pool_transfer_count_by_pool": dict(parsed.get("pool_transfer_count_by_pool") or {}),
+            "pool_candidate_weight": round(float(parsed.get("pool_candidate_weight") or 0.0), 3),
+            "participant_addresses": list(parsed.get("participant_addresses") or []),
+            "lp_adjacent_noise_skipped_in_listener": bool(parsed.get("lp_adjacent_noise_skipped_in_listener")),
+            "lp_adjacent_noise_listener_reason": str(parsed.get("lp_adjacent_noise_listener_reason") or ""),
+            "lp_adjacent_noise_listener_confidence": round(float(parsed.get("lp_adjacent_noise_listener_confidence") or 0.0), 3),
+            "lp_adjacent_noise_listener_source_signals": list(parsed.get("lp_adjacent_noise_listener_source_signals") or []),
+            "lp_adjacent_noise_rule_version": str(parsed.get("lp_adjacent_noise_rule_version") or ""),
+            "lp_adjacent_noise_decision_stage": str(parsed.get("lp_adjacent_noise_decision_stage") or ""),
+            "lp_adjacent_noise_filtered": bool(parsed.get("lp_adjacent_noise_filtered")),
+            "lp_adjacent_noise_reason": str(parsed.get("lp_adjacent_noise_reason") or ""),
+            "lp_adjacent_noise_confidence": round(float(parsed.get("lp_adjacent_noise_confidence") or 0.0), 3),
+            "lp_adjacent_noise_source_signals": list(parsed.get("lp_adjacent_noise_source_signals") or []),
+            "lp_adjacent_noise_context_used": list(parsed.get("lp_adjacent_noise_context_used") or []),
+            "lp_adjacent_noise_runtime_context_present": bool(
+                parsed.get("lp_adjacent_noise_runtime_context_present")
+            ),
+            "lp_adjacent_noise_downstream_context_present": bool(
+                parsed.get("lp_adjacent_noise_downstream_context_present")
+            ),
             "usd_value": round(float(parsed.get("usd_value") or parsed.get("value") or 0.0), 2),
             "pricing_confidence": round(float(parsed.get("pricing_confidence") or 0.0), 3),
             "archive_ts": int(archive_ts),
@@ -1333,16 +1655,6 @@ class SignalPipeline:
         event_metadata = getattr(event, "metadata", {}) or {}
         signal_metadata = getattr(signal, "metadata", {}) or {}
         signal_context = getattr(signal, "context", {}) or {}
-        delivery_class = str(
-            getattr(signal, "delivery_class", "")
-            or getattr(event, "delivery_class", "")
-            or ""
-        ).strip()
-        if delivery_class == "primary":
-            return "delivery_policy_primary_allowed" if allowed else "delivery_policy_primary_blocked"
-        if delivery_class != "observe":
-            return "delivery_policy_non_emittable_delivery_class"
-
         case_family = str(
             event_metadata.get("case_family")
             or signal_metadata.get("case_family")
@@ -1372,6 +1684,23 @@ class SignalPipeline:
             )
             or ""
         ).strip()
+        if role_group == "smart_money":
+            return str(
+                event_metadata.get("smart_money_delivery_policy_reason")
+                or signal_metadata.get("smart_money_delivery_policy_reason")
+                or signal_context.get("smart_money_delivery_policy_reason")
+                or ("smart_money_execution_only_allowed" if allowed else "smart_money_execution_only_blocked")
+            )
+
+        delivery_class = str(
+            getattr(signal, "delivery_class", "")
+            or getattr(event, "delivery_class", "")
+            or ""
+        ).strip()
+        if delivery_class == "primary":
+            return "delivery_policy_primary_allowed" if allowed else "delivery_policy_primary_blocked"
+        if delivery_class != "observe":
+            return "delivery_policy_non_emittable_delivery_class"
         if role_group == "lp_pool":
             return "delivery_policy_lp_observe_allowed" if allowed else "delivery_policy_lp_observe_disabled"
         if role_group == "exchange":
@@ -1391,8 +1720,6 @@ class SignalPipeline:
             if allowed:
                 return "delivery_policy_exchange_observe_allowed"
             return strong_reason or "delivery_policy_exchange_observe_disabled"
-        if role_group == "smart_money":
-            return "delivery_policy_smart_money_observe_allowed" if allowed else "delivery_policy_smart_money_observe_blocked"
         return "delivery_policy_observe_not_supported"
 
     def _apply_delivery_policy_state(
@@ -1427,6 +1754,21 @@ class SignalPipeline:
             "cooldown_allowed": bool(allowed),
             "cooldown_reason": str(reason or ""),
         }
+        if str(event.strategy_role or "") == "lp_pool" and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"}:
+            existing = event.metadata or {}
+            payload.update({
+                "lp_directional_cooldown_key": str(
+                    existing.get("lp_directional_cooldown_key")
+                    or getattr(signal, "metadata", {}).get("lp_directional_cooldown_key")
+                    or ""
+                ),
+                "lp_directional_cooldown_sec": int(
+                    existing.get("lp_directional_cooldown_sec")
+                    or getattr(signal, "metadata", {}).get("lp_directional_cooldown_sec")
+                    or 0
+                ),
+                "lp_directional_cooldown_allowed": bool(allowed),
+            })
         event.metadata.update(payload)
         if signal is not None:
             signal.metadata.update(payload)
@@ -1489,9 +1831,200 @@ class SignalPipeline:
             signal.context.update(payload)
         return payload
 
+    def _normalize_downstream_current_event_state(
+        self,
+        state: dict | None,
+        *,
+        fallback_stage: str = "",
+    ) -> dict:
+        state = state or {}
+        current_event_is_anchor = bool(state.get("current_event_is_anchor"))
+        current_event_is_followup = bool(state.get("current_event_is_followup"))
+        state_missing = bool(state.get("downstream_current_event_state_missing"))
+        semantics = str(state.get("downstream_current_event_state_semantics") or "")
+        if not semantics:
+            if state_missing:
+                semantics = "missing_fail_closed"
+            elif current_event_is_anchor:
+                semantics = "explicit_anchor"
+            elif current_event_is_followup:
+                semantics = "explicit_followup"
+            else:
+                semantics = "explicit_non_anchor_non_followup"
+        state_missing = bool(state_missing or semantics == "missing_fail_closed")
+        state_known = bool(
+            state.get("downstream_current_event_state_known")
+            if "downstream_current_event_state_known" in state
+            else semantics != "missing_fail_closed"
+        )
+        compat_bool_source = str(
+            state.get("downstream_current_event_state_compat_bool_source")
+            or ("semantic_overlay" if semantics == "missing_fail_closed" else "legacy_bool_fields")
+        )
+        effective_label = str(
+            state.get("downstream_current_event_state_effective_label")
+            or (
+                "unknown_fail_closed"
+                if semantics == "missing_fail_closed"
+                else "anchor"
+                if semantics == "explicit_anchor"
+                else "followup"
+                if semantics == "explicit_followup"
+                else "non_anchor_non_followup"
+            )
+        )
+        effective_bool_safe = state.get("downstream_current_event_state_effective_bool_safe")
+        if effective_bool_safe in (None, ""):
+            effective_bool_safe = "unknown" if semantics == "missing_fail_closed" else bool(
+                current_event_is_anchor or current_event_is_followup
+            )
+        return {
+            "current_event_is_anchor": current_event_is_anchor,
+            "current_event_is_followup": current_event_is_followup,
+            "current_followup_type": str(state.get("current_followup_type") or ""),
+            "current_followup_reason": str(state.get("current_followup_reason") or ""),
+            "current_stage": str(state.get("current_stage") or fallback_stage or ""),
+            "downstream_current_event_state_semantics": semantics,
+            "downstream_current_event_state_known": state_known,
+            "downstream_current_event_state_missing": state_missing,
+            "downstream_current_event_state_fail_closed": bool(
+                state.get("downstream_current_event_state_fail_closed")
+                or semantics == "missing_fail_closed"
+            ),
+            "downstream_current_event_state_reason": str(
+                state.get("downstream_current_event_state_reason")
+                or state.get("current_followup_reason")
+                or ""
+            ),
+            "downstream_current_event_state_compat_bool_source": compat_bool_source,
+            "downstream_current_event_state_effective_label": effective_label,
+            "downstream_current_event_state_effective_bool_safe": effective_bool_safe,
+        }
+
+    def _apply_downstream_current_event_state_metadata(
+        self,
+        event: Event,
+        signal=None,
+        behavior_case=None,
+        case_result: dict | None = None,
+    ) -> dict:
+        if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
+            return {}
+
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        fallback_stage = str(metadata.get("current_stage") or getattr(behavior_case, "stage", "") or "")
+        case_state = self._normalize_downstream_current_event_state(
+            metadata,
+            fallback_stage=fallback_stage,
+        )
+        for key in (
+            "downstream_current_event_state_semantics",
+            "downstream_current_event_state_known",
+            "downstream_current_event_state_missing",
+            "downstream_current_event_state_fail_closed",
+            "downstream_current_event_state_reason",
+            "downstream_current_event_state_compat_bool_source",
+            "downstream_current_event_state_effective_label",
+            "downstream_current_event_state_effective_bool_safe",
+        ):
+            if metadata.get(key) != case_state.get(key):
+                metadata[key] = case_state.get(key)
+        matched_state_raw = (case_result or {}).get("downstream_event_state")
+        matched_state = None
+        state_source = str(metadata.get("downstream_current_event_state_source") or "case_metadata")
+        if matched_state_raw:
+            matched_state = self._normalize_downstream_current_event_state(
+                matched_state_raw,
+                fallback_stage=fallback_stage,
+            )
+            if matched_state != case_state:
+                metadata.update(matched_state)
+                metadata["downstream_current_event_state_source"] = "pipeline_synced_case_state"
+                metadata["downstream_current_event_state_missing"] = False
+                metadata["downstream_current_event_state_fail_closed"] = False
+                metadata["downstream_current_event_state_reason"] = str(
+                    matched_state.get("current_followup_reason") or "pipeline_synced_case_state"
+                )
+                case_state = self._normalize_downstream_current_event_state(
+                    metadata,
+                    fallback_stage=fallback_stage,
+                )
+                state_source = "pipeline_synced_case_state"
+
+        event_anchor_flag = bool(case_state.get("current_event_is_anchor"))
+        event_followup_flag = bool(case_state.get("current_event_is_followup"))
+        payload = {
+            "current_event_is_anchor": event_anchor_flag,
+            "current_event_is_followup": event_followup_flag,
+            "current_followup_type": str(case_state.get("current_followup_type") or ""),
+            "current_followup_reason": str(case_state.get("current_followup_reason") or ""),
+            "current_stage": str(case_state.get("current_stage") or fallback_stage or ""),
+            "downstream_current_event_state_source": state_source,
+            "downstream_current_event_state_semantics": str(case_state.get("downstream_current_event_state_semantics") or ""),
+            "downstream_current_event_state_known": bool(case_state.get("downstream_current_event_state_known")),
+            "downstream_current_event_state_missing": bool(case_state.get("downstream_current_event_state_missing")),
+            "downstream_current_event_state_fail_closed": bool(case_state.get("downstream_current_event_state_fail_closed")),
+            "downstream_current_event_state_reason": str(case_state.get("downstream_current_event_state_reason") or ""),
+            "downstream_current_event_state_compat_bool_source": str(
+                case_state.get("downstream_current_event_state_compat_bool_source") or ""
+            ),
+            "downstream_current_event_state_effective_label": str(
+                case_state.get("downstream_current_event_state_effective_label") or ""
+            ),
+            "downstream_current_event_state_effective_bool_safe": case_state.get(
+                "downstream_current_event_state_effective_bool_safe"
+            ),
+            "downstream_case_anchor_flag": bool(case_state.get("current_event_is_anchor")),
+            "downstream_event_anchor_flag": event_anchor_flag,
+            "downstream_case_followup_flag": bool(case_state.get("current_event_is_followup")),
+            "downstream_event_followup_flag": event_followup_flag,
+            "downstream_case_state_consistent": (
+                event_anchor_flag == bool(case_state.get("current_event_is_anchor"))
+                and event_followup_flag == bool(case_state.get("current_event_is_followup"))
+            ),
+        }
+        event.metadata.update(payload)
+        if signal is not None:
+            signal.metadata.update(payload)
+            signal.context.update(payload)
+        return payload
+
+    def _resolve_runtime_adjacent_anchor_state(
+        self,
+        behavior_case,
+        case_result: dict | None = None,
+    ) -> dict:
+        metadata = getattr(behavior_case, "metadata", {}) or {}
+        case_anchor_flag = None
+        if "current_event_is_anchor" in metadata:
+            case_anchor_flag = bool(metadata.get("current_event_is_anchor"))
+        elif "downstream_case_anchor_flag" in metadata:
+            case_anchor_flag = bool(metadata.get("downstream_case_anchor_flag"))
+
+        source = "case_metadata"
+        anchor_flag = bool(case_anchor_flag) if case_anchor_flag is not None else False
+        if case_anchor_flag is None and "downstream_followup_anchor" in (case_result or {}):
+            anchor_flag = bool((case_result or {}).get("downstream_followup_anchor"))
+            source = "case_result_fallback"
+
+        return {
+            "runtime_adjacent_anchor_source": source,
+            "runtime_adjacent_anchor_flag": bool(anchor_flag),
+            "runtime_adjacent_watch_consistent": (
+                bool(anchor_flag) == bool(case_anchor_flag)
+                if case_anchor_flag is not None else False
+            ),
+            "runtime_adjacent_case_id": str(getattr(behavior_case, "case_id", "") or ""),
+        }
+
     def _silent_reason_bucket(self, stage: str, reason_code: str) -> str:
         normalized_stage = str(stage or "").strip().lower()
         normalized_reason = str(reason_code or "").strip().lower()
+        if normalized_reason in {
+            "smart_money_wait_execution_only",
+            "market_maker_wait_execution_only",
+        }:
+            return "no_chain_evidence"
         if normalized_stage == "prefilter" or normalized_reason in {
             "adjacent_watch_meta_missing",
             "persisted_exchange_adjacent_filtered",
@@ -1519,11 +2052,30 @@ class SignalPipeline:
                 normalized_reason.endswith("_drop")
                 or normalized_reason.startswith("low_")
                 or normalized_reason.startswith("weak_")
+                or normalized_reason.endswith("_wait_execution_only")
                 or normalized_reason.startswith("downstream_followup_dropped")
             ):
                 return "no_chain_evidence"
             return "strategy_blocked"
         return "strategy_blocked"
+
+    def _default_silent_reason_detail(self, reason_code: str) -> str:
+        details = {
+            "smart_money_wait_execution_only": "smart money 已识别为非执行事件，execution_only 模式下仅归档，不发送 Telegram。",
+            "market_maker_wait_execution_only": "market maker 已识别为非执行事件，execution_only 模式下仅归档，不发送 Telegram。",
+            "smart_money_execution_only_requires_execution": "delivery policy 识别到 smart money 缺少真实执行证据，execution_only 模式下不发送。",
+            "market_maker_execution_only_requires_execution": "delivery policy 识别到 market maker 缺少真实执行证据，execution_only 模式下不发送。",
+            "smart_money_execution_only_reason_not_allowed": "delivery policy 仅允许 smart money / market maker 的真实执行类 reason 进入发送。",
+            "market_maker_execution_only_reason_not_allowed": "delivery policy 仅允许 market maker 的真实执行类 reason 进入发送。",
+            "smart_money_execution_whitelist_reason_not_allowed": "delivery policy 最终只允许 smart money 执行白名单 reason 进入发送。",
+            "market_maker_execution_whitelist_reason_not_allowed": "delivery policy 最终只允许 market maker 执行白名单 reason 进入发送。",
+            "smart_money_execution_whitelist_non_emittable_delivery_class": "smart money 已命中执行白名单 reason，但当前 delivery_class 不可发送，因此拦截。",
+            "market_maker_execution_whitelist_non_emittable_delivery_class": "market maker 已命中执行白名单 reason，但当前 delivery_class 不可发送，因此拦截。",
+            "smart_money_execution_whitelist_requires_execution": "delivery policy 已命中 smart money reason 白名单，但事件缺少真实执行证据，因此不发送。",
+            "market_maker_execution_whitelist_requires_execution": "delivery policy 已命中 market maker reason 白名单，但事件缺少真实执行证据，因此不发送。",
+            "downstream_event_state_missing": "downstream 当前事件态缺失，本次事件按 fail-closed 处理，不沿用旧的 anchor/followup 状态。",
+        }
+        return details.get(str(reason_code or ""), str(reason_code or ""))
 
     def _chain_evidence_strength(
         self,
@@ -1684,10 +2236,13 @@ class SignalPipeline:
             or event_metadata.get("message_variant")
             or ""
         ).strip()
+        resolved_reason_detail = str(reason_detail or reason_code or "")
+        if resolved_reason_detail == str(reason_code or ""):
+            resolved_reason_detail = self._default_silent_reason_detail(str(reason_code or ""))
         return {
             "stage": str(stage or ""),
             "reason_code": str(reason_code or ""),
-            "reason_detail": str(reason_detail or reason_code or ""),
+            "reason_detail": resolved_reason_detail,
             "reason_bucket": bucket,
             "would_have_been_delivery_class": resolved_delivery_class,
             "would_have_been_message_variant": resolved_message_variant,
@@ -2048,6 +2603,180 @@ class SignalPipeline:
             "lp_observe_exception_reason": _text(gate_metrics.get("lp_observe_exception_reason")),
             "lp_observe_threshold_ratio": _num(gate_metrics.get("lp_observe_threshold_ratio")),
             "lp_observe_below_min_gap": _num(gate_metrics.get("lp_observe_below_min_gap"), digits=2),
+            "lp_fast_exception_applied": _bool_value(
+                gate_metrics.get("lp_fast_exception_applied"),
+                event_metadata.get("lp_fast_exception_applied"),
+                signal_metadata.get("lp_fast_exception_applied"),
+                signal_context.get("lp_fast_exception_applied"),
+            ),
+            "lp_fast_exception_reason": _text(
+                gate_metrics.get("lp_fast_exception_reason"),
+                event_metadata.get("lp_fast_exception_reason"),
+                signal_metadata.get("lp_fast_exception_reason"),
+                signal_context.get("lp_fast_exception_reason"),
+            ),
+            "lp_fast_exception_threshold_ratio": _num(
+                gate_metrics.get("lp_fast_exception_threshold_ratio"),
+                event_metadata.get("lp_fast_exception_threshold_ratio"),
+                signal_metadata.get("lp_fast_exception_threshold_ratio"),
+            ),
+            "lp_fast_exception_usd_gap": _num(
+                gate_metrics.get("lp_fast_exception_usd_gap"),
+                event_metadata.get("lp_fast_exception_usd_gap"),
+                signal_metadata.get("lp_fast_exception_usd_gap"),
+                digits=2,
+            ),
+            "lp_fast_exception_structure_score": _num(
+                gate_metrics.get("lp_fast_exception_structure_score"),
+                event_metadata.get("lp_fast_exception_structure_score"),
+                signal_metadata.get("lp_fast_exception_structure_score"),
+            ),
+            "lp_fast_exception_gate_version": _text(
+                gate_metrics.get("lp_fast_exception_gate_version"),
+                event_metadata.get("lp_fast_exception_gate_version"),
+                signal_metadata.get("lp_fast_exception_gate_version"),
+                signal_context.get("lp_fast_exception_gate_version"),
+            ),
+            "lp_burst_fastlane_applied": _bool_value(
+                event_metadata.get("lp_burst_fastlane_applied"),
+                signal_metadata.get("lp_burst_fastlane_applied"),
+                signal_context.get("lp_burst_fastlane_applied"),
+                gate_metrics.get("lp_burst_fastlane_applied"),
+            ),
+            "lp_burst_fastlane_reason": _text(
+                event_metadata.get("lp_burst_fastlane_reason"),
+                signal_metadata.get("lp_burst_fastlane_reason"),
+                signal_context.get("lp_burst_fastlane_reason"),
+                gate_metrics.get("lp_burst_fastlane_reason"),
+            ),
+            "lp_burst_window_sec": _int_value(
+                event_metadata.get("lp_burst_window_sec"),
+                signal_metadata.get("lp_burst_window_sec"),
+                signal_context.get("lp_burst_window_sec"),
+                gate_metrics.get("lp_burst_window_sec"),
+            ),
+            "lp_burst_event_count": _int_value(
+                event_metadata.get("lp_burst_event_count"),
+                signal_metadata.get("lp_burst_event_count"),
+                signal_context.get("lp_burst_event_count"),
+                gate_metrics.get("lp_burst_event_count"),
+            ),
+            "lp_burst_total_usd": _num(
+                event_metadata.get("lp_burst_total_usd"),
+                signal_metadata.get("lp_burst_total_usd"),
+                signal_context.get("lp_burst_total_usd"),
+                gate_metrics.get("lp_burst_total_usd"),
+                digits=2,
+            ),
+            "lp_burst_max_single_usd": _num(
+                event_metadata.get("lp_burst_max_single_usd"),
+                signal_metadata.get("lp_burst_max_single_usd"),
+                signal_context.get("lp_burst_max_single_usd"),
+                gate_metrics.get("lp_burst_max_single_usd"),
+                digits=2,
+            ),
+            "lp_burst_delivery_class": _text(
+                event_metadata.get("lp_burst_delivery_class"),
+                signal_metadata.get("lp_burst_delivery_class"),
+                signal_context.get("lp_burst_delivery_class"),
+                gate_metrics.get("lp_burst_delivery_class"),
+            ),
+            "lp_directional_cooldown_key": _text(
+                event_metadata.get("lp_directional_cooldown_key"),
+                signal_metadata.get("lp_directional_cooldown_key"),
+                signal_context.get("lp_directional_cooldown_key"),
+                gate_metrics.get("lp_directional_cooldown_key"),
+            ),
+            "lp_directional_cooldown_sec": _int_value(
+                event_metadata.get("lp_directional_cooldown_sec"),
+                signal_metadata.get("lp_directional_cooldown_sec"),
+                signal_context.get("lp_directional_cooldown_sec"),
+                gate_metrics.get("lp_directional_cooldown_sec"),
+            ),
+            "lp_directional_cooldown_allowed": _bool_or_none(
+                event_metadata.get("lp_directional_cooldown_allowed"),
+                signal_metadata.get("lp_directional_cooldown_allowed"),
+                signal_context.get("lp_directional_cooldown_allowed"),
+                gate_metrics.get("lp_directional_cooldown_allowed"),
+            ),
+            "lp_route_family": _text(
+                event_metadata.get("lp_route_family"),
+                signal_metadata.get("lp_route_family"),
+                signal_context.get("lp_route_family"),
+            ),
+            "lp_route_priority_source": _text(
+                event_metadata.get("lp_route_priority_source"),
+                signal_metadata.get("lp_route_priority_source"),
+                signal_context.get("lp_route_priority_source"),
+            ),
+            "lp_route_semantics": _text(
+                event_metadata.get("lp_route_semantics"),
+                signal_metadata.get("lp_route_semantics"),
+                signal_context.get("lp_route_semantics"),
+            ),
+            "lp_adjacent_noise_decision_stage": _text(
+                event_metadata.get("lp_adjacent_noise_decision_stage"),
+                signal_metadata.get("lp_adjacent_noise_decision_stage"),
+                signal_context.get("lp_adjacent_noise_decision_stage"),
+            ),
+            "lp_adjacent_noise_rule_version": _text(
+                event_metadata.get("lp_adjacent_noise_rule_version"),
+                signal_metadata.get("lp_adjacent_noise_rule_version"),
+                signal_context.get("lp_adjacent_noise_rule_version"),
+            ),
+            "lp_adjacent_noise_filtered": _bool_value(
+                event_metadata.get("lp_adjacent_noise_filtered"),
+                signal_metadata.get("lp_adjacent_noise_filtered"),
+                signal_context.get("lp_adjacent_noise_filtered"),
+            ),
+            "lp_adjacent_noise_reason": _text(
+                event_metadata.get("lp_adjacent_noise_reason"),
+                signal_metadata.get("lp_adjacent_noise_reason"),
+                signal_context.get("lp_adjacent_noise_reason"),
+            ),
+            "lp_adjacent_noise_confidence": _num(
+                event_metadata.get("lp_adjacent_noise_confidence"),
+                signal_metadata.get("lp_adjacent_noise_confidence"),
+                signal_context.get("lp_adjacent_noise_confidence"),
+                digits=3,
+            ),
+            "lp_adjacent_noise_source_signals": _first_value(
+                event_metadata.get("lp_adjacent_noise_source_signals"),
+                signal_metadata.get("lp_adjacent_noise_source_signals"),
+                signal_context.get("lp_adjacent_noise_source_signals"),
+            ) or [],
+            "lp_adjacent_noise_context_used": _first_value(
+                event_metadata.get("lp_adjacent_noise_context_used"),
+                signal_metadata.get("lp_adjacent_noise_context_used"),
+                signal_context.get("lp_adjacent_noise_context_used"),
+            ) or [],
+            "lp_adjacent_noise_runtime_context_present": _bool_value(
+                event_metadata.get("lp_adjacent_noise_runtime_context_present"),
+                signal_metadata.get("lp_adjacent_noise_runtime_context_present"),
+                signal_context.get("lp_adjacent_noise_runtime_context_present"),
+            ),
+            "lp_adjacent_noise_downstream_context_present": _bool_value(
+                event_metadata.get("lp_adjacent_noise_downstream_context_present"),
+                signal_metadata.get("lp_adjacent_noise_downstream_context_present"),
+                signal_context.get("lp_adjacent_noise_downstream_context_present"),
+            ),
+            "lp_adjacent_noise_skipped_in_listener": _bool_value(
+                event_metadata.get("lp_adjacent_noise_skipped_in_listener"),
+                signal_metadata.get("lp_adjacent_noise_skipped_in_listener"),
+            ),
+            "lp_adjacent_noise_listener_reason": _text(
+                event_metadata.get("lp_adjacent_noise_listener_reason"),
+                signal_metadata.get("lp_adjacent_noise_listener_reason"),
+            ),
+            "lp_adjacent_noise_listener_confidence": _num(
+                event_metadata.get("lp_adjacent_noise_listener_confidence"),
+                signal_metadata.get("lp_adjacent_noise_listener_confidence"),
+                digits=3,
+            ),
+            "lp_adjacent_noise_listener_source_signals": _first_value(
+                event_metadata.get("lp_adjacent_noise_listener_source_signals"),
+                signal_metadata.get("lp_adjacent_noise_listener_source_signals"),
+            ) or [],
             "value_weight_multiplier": _num(gate_metrics.get("value_weight_multiplier")),
             "role_group_value_bonus": _num(gate_metrics.get("role_group_value_bonus")),
             "smart_money_value_bonus": _num(gate_metrics.get("smart_money_value_bonus")),
@@ -2056,6 +2785,41 @@ class SignalPipeline:
             "smart_money_non_exec_threshold_ratio": _num(gate_metrics.get("smart_money_non_exec_threshold_ratio")),
             "smart_money_non_exec_quality_gap": _num(gate_metrics.get("smart_money_non_exec_quality_gap")),
             "smart_money_non_exec_value_bonus": _num(gate_metrics.get("smart_money_non_exec_value_bonus")),
+            "smart_money_execution_only_mode": _bool_value(
+                event_metadata.get("smart_money_execution_only_mode"),
+                signal_metadata.get("smart_money_execution_only_mode"),
+                signal_context.get("smart_money_execution_only_mode"),
+            ),
+            "smart_money_legacy_non_exec_branch_disabled": _bool_value(
+                event_metadata.get("smart_money_legacy_non_exec_branch_disabled"),
+                signal_metadata.get("smart_money_legacy_non_exec_branch_disabled"),
+                signal_context.get("smart_money_legacy_non_exec_branch_disabled"),
+            ),
+            "execution_only_archive_reason": _text(
+                event_metadata.get("execution_only_archive_reason"),
+                signal_metadata.get("execution_only_archive_reason"),
+                signal_context.get("execution_only_archive_reason"),
+            ),
+            "smart_money_delivery_policy_mode": _text(
+                event_metadata.get("smart_money_delivery_policy_mode"),
+                signal_metadata.get("smart_money_delivery_policy_mode"),
+                signal_context.get("smart_money_delivery_policy_mode"),
+            ),
+            "smart_money_delivery_policy_hard_whitelist_applied": _bool_value(
+                event_metadata.get("smart_money_delivery_policy_hard_whitelist_applied"),
+                signal_metadata.get("smart_money_delivery_policy_hard_whitelist_applied"),
+                signal_context.get("smart_money_delivery_policy_hard_whitelist_applied"),
+            ),
+            "smart_money_allowed_reason_whitelist": _first_value(
+                event_metadata.get("smart_money_allowed_reason_whitelist"),
+                signal_metadata.get("smart_money_allowed_reason_whitelist"),
+                signal_context.get("smart_money_allowed_reason_whitelist"),
+            ) or [],
+            "market_maker_execution_only_mode": _bool_value(
+                event_metadata.get("market_maker_execution_only_mode"),
+                signal_metadata.get("market_maker_execution_only_mode"),
+                signal_context.get("market_maker_execution_only_mode"),
+            ),
             "market_maker_observe_exception_applied": _bool_value(
                 gate_metrics.get("market_maker_observe_exception_applied"),
                 signal_metadata.get("market_maker_observe_exception_applied"),
@@ -2225,6 +2989,105 @@ class SignalPipeline:
                 event_metadata.get("current_event_is_anchor"),
                 signal_metadata.get("current_event_is_anchor"),
                 signal_context.get("current_event_is_anchor"),
+            ),
+            "current_event_is_followup": _bool_value(
+                event_metadata.get("current_event_is_followup"),
+                signal_metadata.get("current_event_is_followup"),
+                signal_context.get("current_event_is_followup"),
+            ),
+            "downstream_current_event_state_source": _text(
+                event_metadata.get("downstream_current_event_state_source"),
+                signal_metadata.get("downstream_current_event_state_source"),
+                signal_context.get("downstream_current_event_state_source"),
+            ),
+            "downstream_current_event_state_semantics": _text(
+                event_metadata.get("downstream_current_event_state_semantics"),
+                signal_metadata.get("downstream_current_event_state_semantics"),
+                signal_context.get("downstream_current_event_state_semantics"),
+            ),
+            "downstream_current_event_state_compat_bool_source": _text(
+                event_metadata.get("downstream_current_event_state_compat_bool_source"),
+                signal_metadata.get("downstream_current_event_state_compat_bool_source"),
+                signal_context.get("downstream_current_event_state_compat_bool_source"),
+            ),
+            "downstream_current_event_state_effective_label": _text(
+                event_metadata.get("downstream_current_event_state_effective_label"),
+                signal_metadata.get("downstream_current_event_state_effective_label"),
+                signal_context.get("downstream_current_event_state_effective_label"),
+            ),
+            "downstream_current_event_state_effective_bool_safe": _first_value(
+                event_metadata.get("downstream_current_event_state_effective_bool_safe"),
+                signal_metadata.get("downstream_current_event_state_effective_bool_safe"),
+                signal_context.get("downstream_current_event_state_effective_bool_safe"),
+            ),
+            "downstream_current_event_state_known": _bool_value(
+                event_metadata.get("downstream_current_event_state_known"),
+                signal_metadata.get("downstream_current_event_state_known"),
+                signal_context.get("downstream_current_event_state_known"),
+            ),
+            "downstream_current_event_state_missing": _bool_value(
+                event_metadata.get("downstream_current_event_state_missing"),
+                signal_metadata.get("downstream_current_event_state_missing"),
+                signal_context.get("downstream_current_event_state_missing"),
+            ),
+            "downstream_current_event_state_fail_closed": _bool_value(
+                event_metadata.get("downstream_current_event_state_fail_closed"),
+                signal_metadata.get("downstream_current_event_state_fail_closed"),
+                signal_context.get("downstream_current_event_state_fail_closed"),
+            ),
+            "downstream_current_event_state_reason": _text(
+                event_metadata.get("downstream_current_event_state_reason"),
+                signal_metadata.get("downstream_current_event_state_reason"),
+                signal_context.get("downstream_current_event_state_reason"),
+            ),
+            "downstream_case_state_consistent": _bool_value(
+                event_metadata.get("downstream_case_state_consistent"),
+                signal_metadata.get("downstream_case_state_consistent"),
+                signal_context.get("downstream_case_state_consistent"),
+            ),
+            "downstream_case_anchor_flag": _bool_value(
+                event_metadata.get("downstream_case_anchor_flag"),
+                signal_metadata.get("downstream_case_anchor_flag"),
+                signal_context.get("downstream_case_anchor_flag"),
+                event_metadata.get("current_event_is_anchor"),
+            ),
+            "downstream_event_anchor_flag": _bool_value(
+                event_metadata.get("downstream_event_anchor_flag"),
+                signal_metadata.get("downstream_event_anchor_flag"),
+                signal_context.get("downstream_event_anchor_flag"),
+                event_metadata.get("current_event_is_anchor"),
+            ),
+            "downstream_case_followup_flag": _bool_value(
+                event_metadata.get("downstream_case_followup_flag"),
+                signal_metadata.get("downstream_case_followup_flag"),
+                signal_context.get("downstream_case_followup_flag"),
+                event_metadata.get("current_event_is_followup"),
+            ),
+            "downstream_event_followup_flag": _bool_value(
+                event_metadata.get("downstream_event_followup_flag"),
+                signal_metadata.get("downstream_event_followup_flag"),
+                signal_context.get("downstream_event_followup_flag"),
+                event_metadata.get("current_event_is_followup"),
+            ),
+            "runtime_adjacent_anchor_source": _text(
+                event_metadata.get("runtime_adjacent_anchor_source"),
+                signal_metadata.get("runtime_adjacent_anchor_source"),
+                signal_context.get("runtime_adjacent_anchor_source"),
+            ),
+            "runtime_adjacent_anchor_flag": _bool_value(
+                event_metadata.get("runtime_adjacent_anchor_flag"),
+                signal_metadata.get("runtime_adjacent_anchor_flag"),
+                signal_context.get("runtime_adjacent_anchor_flag"),
+            ),
+            "runtime_adjacent_watch_consistent": _bool_value(
+                event_metadata.get("runtime_adjacent_watch_consistent"),
+                signal_metadata.get("runtime_adjacent_watch_consistent"),
+                signal_context.get("runtime_adjacent_watch_consistent"),
+            ),
+            "runtime_adjacent_case_id": _text(
+                event_metadata.get("runtime_adjacent_case_id"),
+                signal_metadata.get("runtime_adjacent_case_id"),
+                signal_context.get("runtime_adjacent_case_id"),
             ),
             "hop": _int_value(event_metadata.get("hop")),
             "window_sec": _int_value(event_metadata.get("window_sec")),
@@ -2402,7 +3265,12 @@ class SignalPipeline:
         if not self._is_downstream_followup_case(behavior_case):
             return
         metadata = getattr(behavior_case, "metadata", {}) or {}
-        if not bool((case_result or {}).get("downstream_followup_anchor")):
+        runtime_adjacent_state = self._resolve_runtime_adjacent_anchor_state(
+            behavior_case=behavior_case,
+            case_result=case_result,
+        )
+        event.metadata.update(runtime_adjacent_state)
+        if not bool(runtime_adjacent_state.get("runtime_adjacent_anchor_flag")):
             return
         if int(metadata.get("hop") or 1) > 1:
             return
@@ -2433,6 +3301,9 @@ class SignalPipeline:
                     "display_hint_reason": "anchor_super_large_outflow",
                     "case_id": str(behavior_case.case_id or ""),
                     "window_sec": int(metadata.get("window_sec") or 0),
+                    "runtime_adjacent_anchor_source": str(runtime_adjacent_state.get("runtime_adjacent_anchor_source") or ""),
+                    "runtime_adjacent_anchor_flag": bool(runtime_adjacent_state.get("runtime_adjacent_anchor_flag")),
+                    "runtime_adjacent_watch_consistent": bool(runtime_adjacent_state.get("runtime_adjacent_watch_consistent")),
                 },
             )
             if registered and self.address_intelligence is not None:
@@ -2576,8 +3447,17 @@ class SignalPipeline:
 
         watch_meta = watch_meta or {}
         metadata = getattr(behavior_case, "metadata", {}) or {}
-        stage = str(metadata.get("current_stage") or behavior_case.stage or "followup_opened")
-        followup_type = str(metadata.get("current_followup_type") or metadata.get("last_followup_type") or "")
+        state_payload = self._apply_downstream_current_event_state_metadata(
+            event=event,
+            behavior_case=behavior_case,
+            case_result=case_result,
+        )
+        runtime_adjacent_state = self._resolve_runtime_adjacent_anchor_state(
+            behavior_case=behavior_case,
+            case_result=case_result,
+        )
+        stage = str(state_payload.get("current_stage") or metadata.get("current_stage") or behavior_case.stage or "followup_opened")
+        followup_type = str(state_payload.get("current_followup_type") or metadata.get("last_followup_type") or "")
         downstream_address = str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower()
         downstream_label = str(metadata.get("downstream_label") or get_address_meta(downstream_address).get("display") or downstream_address)
         anchor_label = str(metadata.get("anchor_label") or watch_meta.get("label") or metadata.get("anchor_watch_address") or "")
@@ -2587,10 +3467,10 @@ class SignalPipeline:
         cooling_until = int(metadata.get("cooling_until") or 0)
         closing_until = int(metadata.get("closing_until") or 0)
         last_counterparty_label = str(metadata.get("last_counterparty_label") or event.metadata.get("counterparty_label") or "")
-        notification_stage = str((case_result or {}).get("downstream_followup_stage") or stage or "")
-        event_is_anchor = bool((case_result or {}).get("downstream_followup_anchor"))
-        followup_active = bool(metadata.get("followup_confirmed"))
-        followup_reason = str(metadata.get("current_followup_reason") or metadata.get("lifecycle_reason") or "")
+        notification_stage = stage
+        event_is_anchor = bool(state_payload.get("current_event_is_anchor"))
+        event_is_followup = bool(state_payload.get("current_event_is_followup"))
+        followup_reason = str(state_payload.get("current_followup_reason") or metadata.get("lifecycle_reason") or "")
         runtime_state = "active"
         now_ts = int(event.ts or time.time())
         if closing_until and now_ts >= closing_until:
@@ -2644,7 +3524,7 @@ class SignalPipeline:
         event.metadata["downstream_followup"] = True
         event.metadata["downstream_followup_active"] = True
         event.metadata["downstream_followup_anchor_event"] = event_is_anchor
-        event.metadata["downstream_followup_confirmed_event"] = bool(followup_active and not event_is_anchor)
+        event.metadata["downstream_followup_confirmed_event"] = event_is_followup
         event.metadata["downstream_followup_type"] = followup_type
         event.metadata["downstream_followup_stage"] = stage
         event.metadata["followup_stage"] = stage
@@ -2674,8 +3554,9 @@ class SignalPipeline:
         event.metadata["downstream_runtime_state"] = runtime_state
         event.metadata["downstream_observation_reason"] = followup_reason
         event.metadata["anchor_usd_value"] = anchor_usd_value
-        event.metadata["current_event_is_anchor"] = event_is_anchor
+        event.metadata["current_event_is_followup"] = event_is_followup
         event.metadata["downstream_case_id"] = behavior_case.case_id
+        event.metadata.update(runtime_adjacent_state)
         self._apply_downstream_early_warning_state(
             event=event,
             behavior_case=behavior_case,
@@ -2739,6 +3620,13 @@ class SignalPipeline:
         emitted: bool | None = None,
     ) -> dict:
         metadata = getattr(behavior_case, "metadata", {}) or {}
+        state_payload = {}
+        if behavior_case is not None and self._is_downstream_followup_case(behavior_case):
+            state_payload = self._apply_downstream_current_event_state_metadata(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+            )
         existing = event.metadata or {}
         emitted_stages = list(metadata.get("emitted_notification_stages") or [])
         anchor_usd_value = float(
@@ -2747,9 +3635,15 @@ class SignalPipeline:
             or metadata.get("anchor_usd_value")
             or 0.0
         )
-        current_event_is_anchor = bool(
-            existing.get("current_event_is_anchor")
-            or metadata.get("current_event_is_anchor")
+        current_event_is_anchor = (
+            bool(state_payload.get("current_event_is_anchor"))
+            if state_payload else
+            (bool(existing.get("current_event_is_anchor")) if "current_event_is_anchor" in existing else bool(metadata.get("current_event_is_anchor")))
+        )
+        current_event_is_followup = (
+            bool(state_payload.get("current_event_is_followup"))
+            if state_payload else
+            (bool(existing.get("current_event_is_followup")) if "current_event_is_followup" in existing else bool(metadata.get("current_event_is_followup")))
         )
         payload = {
             "downstream_early_warning_allowed": bool(existing.get("downstream_early_warning_allowed")) if allowed is None else bool(allowed),
@@ -2779,6 +3673,77 @@ class SignalPipeline:
             ),
             "anchor_usd_value": anchor_usd_value,
             "current_event_is_anchor": current_event_is_anchor,
+            "current_event_is_followup": current_event_is_followup,
+            "downstream_current_event_state_source": str(
+                existing.get("downstream_current_event_state_source")
+                or state_payload.get("downstream_current_event_state_source")
+                or "case_metadata"
+            ),
+            "downstream_current_event_state_semantics": str(
+                existing.get("downstream_current_event_state_semantics")
+                or state_payload.get("downstream_current_event_state_semantics")
+                or ""
+            ),
+            "downstream_current_event_state_compat_bool_source": str(
+                existing.get("downstream_current_event_state_compat_bool_source")
+                or state_payload.get("downstream_current_event_state_compat_bool_source")
+                or ""
+            ),
+            "downstream_current_event_state_known": bool(
+                existing.get("downstream_current_event_state_known")
+                if "downstream_current_event_state_known" in existing
+                else state_payload.get("downstream_current_event_state_known", True)
+            ),
+            "downstream_current_event_state_missing": bool(
+                existing.get("downstream_current_event_state_missing")
+                if "downstream_current_event_state_missing" in existing
+                else state_payload.get("downstream_current_event_state_missing", False)
+            ),
+            "downstream_current_event_state_fail_closed": bool(
+                existing.get("downstream_current_event_state_fail_closed")
+                if "downstream_current_event_state_fail_closed" in existing
+                else state_payload.get("downstream_current_event_state_fail_closed", False)
+            ),
+            "downstream_current_event_state_reason": str(
+                existing.get("downstream_current_event_state_reason")
+                or state_payload.get("downstream_current_event_state_reason")
+                or ""
+            ),
+            "downstream_current_event_state_effective_label": str(
+                existing.get("downstream_current_event_state_effective_label")
+                or state_payload.get("downstream_current_event_state_effective_label")
+                or ""
+            ),
+            "downstream_current_event_state_effective_bool_safe": (
+                existing.get("downstream_current_event_state_effective_bool_safe")
+                if "downstream_current_event_state_effective_bool_safe" in existing
+                else state_payload.get("downstream_current_event_state_effective_bool_safe")
+            ),
+            "downstream_case_state_consistent": bool(
+                existing.get("downstream_case_state_consistent")
+                if "downstream_case_state_consistent" in existing
+                else state_payload.get("downstream_case_state_consistent", True)
+            ),
+            "downstream_case_anchor_flag": bool(
+                existing.get("downstream_case_anchor_flag")
+                if "downstream_case_anchor_flag" in existing
+                else state_payload.get("downstream_case_anchor_flag", current_event_is_anchor)
+            ),
+            "downstream_event_anchor_flag": bool(
+                existing.get("downstream_event_anchor_flag")
+                if "downstream_event_anchor_flag" in existing
+                else current_event_is_anchor
+            ),
+            "downstream_case_followup_flag": bool(
+                existing.get("downstream_case_followup_flag")
+                if "downstream_case_followup_flag" in existing
+                else state_payload.get("downstream_case_followup_flag", current_event_is_followup)
+            ),
+            "downstream_event_followup_flag": bool(
+                existing.get("downstream_event_followup_flag")
+                if "downstream_event_followup_flag" in existing
+                else current_event_is_followup
+            ),
         }
         event.metadata.update(payload)
         if signal is not None:
@@ -2798,6 +3763,13 @@ class SignalPipeline:
 
         gate_metrics = gate_metrics or {}
         metadata = getattr(behavior_case, "metadata", {}) or {}
+        state_payload = {}
+        if behavior_case is not None and self._is_downstream_followup_case(behavior_case):
+            state_payload = self._apply_downstream_current_event_state_metadata(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+            )
         allowed_stages = {str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item}
         stage = str(
             event.metadata.get("downstream_followup_stage")
@@ -2840,7 +3812,7 @@ class SignalPipeline:
             or metadata.get("anchor_usd_value")
             or 0.0
         )
-        current_event_is_anchor = bool(
+        current_event_is_anchor = bool(state_payload.get("current_event_is_anchor")) if state_payload else bool(
             event.metadata.get("current_event_is_anchor")
             or metadata.get("current_event_is_anchor")
         )
@@ -3131,6 +4103,11 @@ class SignalPipeline:
         if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
             return
 
+        self._apply_downstream_current_event_state_metadata(
+            event=event,
+            signal=signal,
+            behavior_case=behavior_case,
+        )
         payload = {
             "case_family": str(event.metadata.get("case_family") or ""),
             "downstream_followup": bool(event.metadata.get("downstream_followup")),
@@ -3166,6 +4143,31 @@ class SignalPipeline:
             "anchor_label": str(event.metadata.get("anchor_label") or event.metadata.get("downstream_anchor_label") or ""),
             "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
             "current_event_is_anchor": bool(event.metadata.get("current_event_is_anchor")),
+            "current_event_is_followup": bool(event.metadata.get("current_event_is_followup")),
+            "current_followup_type": str(event.metadata.get("current_followup_type") or ""),
+            "current_followup_reason": str(event.metadata.get("current_followup_reason") or ""),
+            "downstream_current_event_state_source": str(event.metadata.get("downstream_current_event_state_source") or ""),
+            "downstream_current_event_state_semantics": str(event.metadata.get("downstream_current_event_state_semantics") or ""),
+            "downstream_current_event_state_compat_bool_source": str(event.metadata.get("downstream_current_event_state_compat_bool_source") or ""),
+            "downstream_current_event_state_effective_label": str(
+                event.metadata.get("downstream_current_event_state_effective_label") or ""
+            ),
+            "downstream_current_event_state_effective_bool_safe": event.metadata.get(
+                "downstream_current_event_state_effective_bool_safe"
+            ),
+            "downstream_current_event_state_known": bool(event.metadata.get("downstream_current_event_state_known")),
+            "downstream_current_event_state_missing": bool(event.metadata.get("downstream_current_event_state_missing")),
+            "downstream_current_event_state_fail_closed": bool(event.metadata.get("downstream_current_event_state_fail_closed")),
+            "downstream_current_event_state_reason": str(event.metadata.get("downstream_current_event_state_reason") or ""),
+            "downstream_case_state_consistent": bool(event.metadata.get("downstream_case_state_consistent")),
+            "downstream_case_anchor_flag": bool(event.metadata.get("downstream_case_anchor_flag")),
+            "downstream_event_anchor_flag": bool(event.metadata.get("downstream_event_anchor_flag")),
+            "downstream_case_followup_flag": bool(event.metadata.get("downstream_case_followup_flag")),
+            "downstream_event_followup_flag": bool(event.metadata.get("downstream_event_followup_flag")),
+            "runtime_adjacent_anchor_source": str(event.metadata.get("runtime_adjacent_anchor_source") or ""),
+            "runtime_adjacent_anchor_flag": bool(event.metadata.get("runtime_adjacent_anchor_flag")),
+            "runtime_adjacent_watch_consistent": bool(event.metadata.get("runtime_adjacent_watch_consistent")),
+            "runtime_adjacent_case_id": str(event.metadata.get("runtime_adjacent_case_id") or ""),
             "hop": int(event.metadata.get("hop") or 1),
             "window_sec": int(event.metadata.get("window_sec") or 0),
             "downstream_runtime_state": str(event.metadata.get("downstream_runtime_state") or ""),
@@ -3345,6 +4347,12 @@ class SignalPipeline:
         metadata = behavior_case.metadata if behavior_case is not None else {}
         case_id = str(getattr(behavior_case, "case_id", "") or "")
         case_family = str(metadata.get("case_family") or event.metadata.get("case_family") or "")
+        if self._is_downstream_followup_case(behavior_case):
+            self._apply_downstream_current_event_state_metadata(
+                event=event,
+                signal=signal,
+                behavior_case=behavior_case,
+            )
         case_history_payload = self._apply_downstream_case_history_metadata(
             event=event,
             signal=signal,
@@ -4467,6 +5475,23 @@ class SignalPipeline:
                 "pool_transfer_count_by_pool": dict(parsed.get("pool_transfer_count_by_pool") or {}),
                 "pool_candidate_weight": float(parsed.get("pool_candidate_weight") or 0.0),
                 "replay_source": str(parsed.get("replay_source") or ""),
+                "lp_adjacent_noise_skipped_in_listener": bool(parsed.get("lp_adjacent_noise_skipped_in_listener")),
+                "lp_adjacent_noise_listener_reason": str(parsed.get("lp_adjacent_noise_listener_reason") or ""),
+                "lp_adjacent_noise_listener_confidence": float(parsed.get("lp_adjacent_noise_listener_confidence") or 0.0),
+                "lp_adjacent_noise_listener_source_signals": list(parsed.get("lp_adjacent_noise_listener_source_signals") or []),
+                "lp_adjacent_noise_rule_version": str(parsed.get("lp_adjacent_noise_rule_version") or ""),
+                "lp_adjacent_noise_decision_stage": str(parsed.get("lp_adjacent_noise_decision_stage") or ""),
+                "lp_adjacent_noise_filtered": bool(parsed.get("lp_adjacent_noise_filtered")),
+                "lp_adjacent_noise_reason": str(parsed.get("lp_adjacent_noise_reason") or ""),
+                "lp_adjacent_noise_confidence": float(parsed.get("lp_adjacent_noise_confidence") or 0.0),
+                "lp_adjacent_noise_source_signals": list(parsed.get("lp_adjacent_noise_source_signals") or []),
+                "lp_adjacent_noise_context_used": list(parsed.get("lp_adjacent_noise_context_used") or []),
+                "lp_adjacent_noise_runtime_context_present": bool(
+                    parsed.get("lp_adjacent_noise_runtime_context_present")
+                ),
+                "lp_adjacent_noise_downstream_context_present": bool(
+                    parsed.get("lp_adjacent_noise_downstream_context_present")
+                ),
                 "pricing": pricing,
                 "raw": parsed,
             },

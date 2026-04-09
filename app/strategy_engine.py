@@ -5,12 +5,11 @@ from config import (
     DELIVERY_ALLOW_LIQUIDATION_EXECUTION_PRIMARY,
     DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
     DELIVERY_LP_WEAK_SIGNAL_ARCHIVE_ONLY,
-    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE,
-    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_PRIMARY,
     DELIVERY_SMART_MONEY_EXECUTION_PRIMARY,
     LIQUIDATION_EXECUTION_MIN_SCORE,
     LIQUIDATION_PRIMARY_MIN_USD,
     LIQUIDATION_RISK_MIN_SCORE,
+    MARKET_MAKER_NOTIFY_EXECUTION_ONLY,
     LP_FIRST_HIT_PRIMARY_ENABLE,
     LP_FIRST_HIT_PRIMARY_MIN_ABNORMAL_RATIO,
     LP_FIRST_HIT_PRIMARY_MIN_ACTION_INTENSITY,
@@ -29,6 +28,12 @@ from config import (
     LP_FIRST_HIT_PRIMARY_DIRECT_MIN_RESERVE_SKEW,
     LP_FIRST_HIT_PRIMARY_DIRECT_MIN_SURGE_RATIO,
     LP_FIRST_HIT_PRIMARY_DIRECT_MIN_USD,
+    LP_BURST_PRIMARY_MIN_ACTION_INTENSITY,
+    LP_BURST_PRIMARY_MIN_CONFIRMATION,
+    LP_BURST_PRIMARY_MIN_EVENT_COUNT,
+    LP_BURST_PRIMARY_MIN_QUALITY,
+    LP_BURST_PRIMARY_MIN_TOTAL_USD,
+    LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO,
     LP_OBSERVE_MIN_CONFIDENCE,
     LP_OBSERVE_MIN_USD,
     LP_PRIMARY_MIN_CONFIDENCE,
@@ -43,6 +48,7 @@ from config import (
     MIN_CONFIDENCE,
     MIN_SIGNAL_USD,
     MIN_TOKEN_SCORE,
+    SMART_MONEY_NOTIFY_EXECUTION_ONLY,
     STRATEGY_REQUIRE_NON_NORMAL_BEHAVIOR,
 )
 from filter import (
@@ -75,8 +81,15 @@ PRIMARY_LP_INTENTS = {
     "pool_buy_pressure",
     "pool_sell_pressure",
 }
-
-
+SMART_MONEY_ALLOWED_REASON_WHITELIST = sorted(
+    [
+        "market_maker_execution_observe",
+        "market_maker_execution_primary",
+        "smart_money_execution_observe",
+        "smart_money_execution_primary",
+        "smart_money_continuous_execution_primary",
+    ]
+)
 class StrategyEngine:
     """
     Strategy Layer：
@@ -151,6 +164,22 @@ class StrategyEngine:
         lp_observe_exception_reason = str(gate_metrics.get("lp_observe_exception_reason") or "")
         lp_observe_threshold_ratio = float(gate_metrics.get("lp_observe_threshold_ratio") or 0.0)
         lp_observe_below_min_gap = float(gate_metrics.get("lp_observe_below_min_gap") or 0.0)
+        lp_fast_exception_applied = bool(gate_metrics.get("lp_fast_exception_applied"))
+        lp_fast_exception_reason = str(gate_metrics.get("lp_fast_exception_reason") or "")
+        lp_fast_exception_threshold_ratio = float(gate_metrics.get("lp_fast_exception_threshold_ratio") or 0.0)
+        lp_fast_exception_usd_gap = float(gate_metrics.get("lp_fast_exception_usd_gap") or 0.0)
+        lp_fast_exception_structure_score = float(gate_metrics.get("lp_fast_exception_structure_score") or 0.0)
+        lp_fast_exception_gate_version = str(gate_metrics.get("lp_fast_exception_gate_version") or "")
+        lp_burst_fastlane_ready = bool(gate_metrics.get("lp_burst_fastlane_ready"))
+        lp_burst_fastlane_reason = str(gate_metrics.get("lp_burst_fastlane_reason") or "")
+        lp_burst_window_sec = int(gate_metrics.get("lp_burst_window_sec") or 0)
+        lp_burst_event_count = int(gate_metrics.get("lp_burst_event_count") or 0)
+        lp_burst_total_usd = float(gate_metrics.get("lp_burst_total_usd") or 0.0)
+        lp_burst_max_single_usd = float(gate_metrics.get("lp_burst_max_single_usd") or 0.0)
+        lp_burst_same_pool_continuity = int(gate_metrics.get("lp_burst_same_pool_continuity") or 0)
+        lp_burst_volume_surge_ratio = float(gate_metrics.get("lp_burst_volume_surge_ratio") or 0.0)
+        lp_burst_action_intensity = float(gate_metrics.get("lp_burst_action_intensity") or 0.0)
+        lp_burst_reserve_skew = float(gate_metrics.get("lp_burst_reserve_skew") or 0.0)
         smart_money_non_exec_exception_applied = bool(gate_metrics.get("smart_money_non_exec_exception_applied"))
         smart_money_non_exec_exception_reason = str(gate_metrics.get("smart_money_non_exec_exception_reason") or "")
         market_maker_observe_exception_applied = bool(gate_metrics.get("market_maker_observe_exception_applied"))
@@ -384,6 +413,22 @@ class StrategyEngine:
                 "lp_observe_threshold_ratio": round(lp_observe_threshold_ratio, 3),
                 "lp_observe_below_min_gap": round(lp_observe_below_min_gap, 2),
                 "lp_observe_delivery_cap": "observe_only" if is_lp_directional_exception_candidate else "",
+                "lp_fast_exception_applied": lp_fast_exception_applied,
+                "lp_fast_exception_reason": lp_fast_exception_reason,
+                "lp_fast_exception_threshold_ratio": round(lp_fast_exception_threshold_ratio, 3),
+                "lp_fast_exception_usd_gap": round(lp_fast_exception_usd_gap, 2),
+                "lp_fast_exception_structure_score": round(lp_fast_exception_structure_score, 3),
+                "lp_fast_exception_gate_version": lp_fast_exception_gate_version,
+                "lp_burst_fastlane_ready": lp_burst_fastlane_ready,
+                "lp_burst_fastlane_reason": lp_burst_fastlane_reason,
+                "lp_burst_window_sec": lp_burst_window_sec,
+                "lp_burst_event_count": lp_burst_event_count,
+                "lp_burst_total_usd": round(lp_burst_total_usd, 2),
+                "lp_burst_max_single_usd": round(lp_burst_max_single_usd, 2),
+                "lp_burst_same_pool_continuity": lp_burst_same_pool_continuity,
+                "lp_burst_volume_surge_ratio": round(lp_burst_volume_surge_ratio, 3),
+                "lp_burst_action_intensity": round(lp_burst_action_intensity, 3),
+                "lp_burst_reserve_skew": round(lp_burst_reserve_skew, 3),
                 "smart_money_non_exec_exception_applied": smart_money_non_exec_exception_applied,
                 "smart_money_non_exec_exception_reason": smart_money_non_exec_exception_reason,
                 "smart_money_non_exec_delivery_cap": "observe_only" if smart_money_non_exec_exception_applied else "",
@@ -437,6 +482,58 @@ class StrategyEngine:
             signal.metadata.get("lp_observe_exception_applied")
             or gate_metrics.get("lp_observe_exception_applied")
         )
+        lp_observe_exception_reason = str(
+            signal.metadata.get("lp_observe_exception_reason")
+            or gate_metrics.get("lp_observe_exception_reason")
+            or ""
+        )
+        lp_burst_fastlane_ready = bool(
+            gate_metrics.get("lp_burst_fastlane_ready")
+            or signal.metadata.get("lp_burst_fastlane_ready")
+            or event.metadata.get("lp_burst_fastlane_ready")
+        )
+        lp_burst_event_count = int(
+            gate_metrics.get("lp_burst_event_count")
+            or signal.metadata.get("lp_burst_event_count")
+            or event.metadata.get("lp_burst_event_count")
+            or 0
+        )
+        lp_burst_total_usd = float(
+            gate_metrics.get("lp_burst_total_usd")
+            or signal.metadata.get("lp_burst_total_usd")
+            or event.metadata.get("lp_burst_total_usd")
+            or 0.0
+        )
+        lp_burst_max_single_usd = float(
+            gate_metrics.get("lp_burst_max_single_usd")
+            or signal.metadata.get("lp_burst_max_single_usd")
+            or event.metadata.get("lp_burst_max_single_usd")
+            or 0.0
+        )
+        lp_burst_same_pool_continuity = int(
+            gate_metrics.get("lp_burst_same_pool_continuity")
+            or signal.metadata.get("lp_burst_same_pool_continuity")
+            or event.metadata.get("lp_burst_same_pool_continuity")
+            or 0
+        )
+        lp_burst_volume_surge_ratio = float(
+            gate_metrics.get("lp_burst_volume_surge_ratio")
+            or signal.metadata.get("lp_burst_volume_surge_ratio")
+            or event.metadata.get("lp_burst_volume_surge_ratio")
+            or 0.0
+        )
+        lp_burst_action_intensity = float(
+            gate_metrics.get("lp_burst_action_intensity")
+            or signal.metadata.get("lp_burst_action_intensity")
+            or event.metadata.get("lp_burst_action_intensity")
+            or 0.0
+        )
+        lp_burst_reserve_skew = float(
+            gate_metrics.get("lp_burst_reserve_skew")
+            or signal.metadata.get("lp_burst_reserve_skew")
+            or event.metadata.get("lp_burst_reserve_skew")
+            or 0.0
+        )
         liquidation_stage = str(event.metadata.get("liquidation_stage") or signal.metadata.get("liquidation_stage") or "none")
         liquidation_score = float(event.metadata.get("liquidation_score") or signal.metadata.get("liquidation_score") or 0.0)
         liquidation_protocols = list(event.metadata.get("liquidation_protocols") or signal.metadata.get("liquidation_protocols") or [])
@@ -451,31 +548,6 @@ class StrategyEngine:
         )
         possible_keeper_executor = bool(gate_metrics.get("possible_keeper_executor"))
         possible_vault_or_auction = bool(gate_metrics.get("possible_vault_or_auction"))
-        smart_money_non_exec_exception_applied = bool(
-            gate_metrics.get("smart_money_non_exec_exception_applied")
-            or signal.metadata.get("smart_money_non_exec_exception_applied")
-        )
-        market_maker_observe_exception_applied = bool(
-            gate_metrics.get("market_maker_observe_exception_applied")
-            or signal.metadata.get("market_maker_observe_exception_applied")
-        )
-        market_maker_observe_exception_reason = str(
-            gate_metrics.get("market_maker_observe_exception_reason")
-            or signal.metadata.get("market_maker_observe_exception_reason")
-            or ""
-        )
-        threshold_ratio = float(
-            gate_metrics.get("market_maker_threshold_ratio")
-            or gate_metrics.get("smart_money_non_exec_threshold_ratio")
-            or (
-                (float(event.usd_value or 0.0) / float(gate_metrics.get("dynamic_min_usd") or 1.0))
-                if float(gate_metrics.get("dynamic_min_usd") or 0.0) > 0
-                else 0.0
-            )
-        )
-        market_maker_non_exec_intent = intent_type in {"pure_transfer", "unknown_intent", "internal_rebalance", "market_making_inventory_move"}
-        market_maker_behavior = str(signal.behavior_type or signal.metadata.get("behavior_type") or "")
-
         if case_family == "downstream_counterparty_followup":
             if not bool(event.metadata.get("downstream_followup_anchor_event")) and not bool(event.metadata.get("downstream_followup_confirmed_event")) and case_stage == "followup_opened":
                 return self._apply_delivery(
@@ -584,6 +656,28 @@ class StrategyEngine:
                     )
 
             if intent_type in PRIMARY_LP_INTENTS:
+                if lp_burst_fastlane_ready and self._allow_lp_burst_directional_primary(
+                    confirmation_score=confirmation_score,
+                    quality_score=quality_score,
+                    lp_burst_event_count=lp_burst_event_count,
+                    lp_burst_total_usd=lp_burst_total_usd,
+                    lp_burst_volume_surge_ratio=lp_burst_volume_surge_ratio,
+                    lp_burst_action_intensity=lp_burst_action_intensity,
+                    lp_burst_reserve_skew=lp_burst_reserve_skew,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "lp_burst_directional_primary",
+                    )
+                if lp_burst_fastlane_ready:
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_burst_directional_observe",
+                    )
                 if self._allow_lp_first_hit_directional_primary_direct(
                     event=event,
                     confirmation_score=confirmation_score,
@@ -788,68 +882,17 @@ class StrategyEngine:
                 ):
                     return self._apply_delivery(event, signal, "primary", "smart_money_execution_primary")
                 return self._apply_delivery(event, signal, "observe", "smart_money_execution_observe")
-
-            if market_maker_non_exec_intent:
-                if market_maker and market_maker_observe_exception_applied:
-                    signal.metadata["smart_money_non_exec_exception_applied"] = True
-                    signal.metadata["smart_money_non_exec_delivery_cap"] = "observe_only"
-                    signal.metadata["market_maker_observe_exception_applied"] = True
-                    signal.metadata["market_maker_observe_exception_reason"] = market_maker_observe_exception_reason
-                    signal.metadata["market_maker_delivery_cap"] = "observe_only"
-                    event.metadata["smart_money_non_exec_exception_applied"] = True
-                    event.metadata["smart_money_non_exec_delivery_cap"] = "observe_only"
-                    event.metadata["market_maker_observe_exception_applied"] = True
-                    event.metadata["market_maker_observe_exception_reason"] = market_maker_observe_exception_reason
-                    event.metadata["market_maker_delivery_cap"] = "observe_only"
-                    if market_maker_behavior == "inventory_shift":
-                        return self._apply_delivery(event, signal, "observe", "market_maker_inventory_shift_observe")
-                    if market_maker_behavior in {"inventory_management", "inventory_expansion", "inventory_distribution"} or intent_type == "market_making_inventory_move":
-                        return self._apply_delivery(event, signal, "observe", "market_maker_inventory_observe")
-                    return self._apply_delivery(event, signal, "observe", "market_maker_non_execution_observe")
-                if smart_money_non_exec_exception_applied:
-                    signal.metadata["smart_money_non_exec_exception_applied"] = True
-                    signal.metadata["smart_money_non_exec_delivery_cap"] = "observe_only"
-                    event.metadata["smart_money_non_exec_exception_applied"] = True
-                    event.metadata["smart_money_non_exec_delivery_cap"] = "observe_only"
-                    if DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE and (
-                        quality_score >= 0.60
-                        or confirmation_score >= 0.42
-                        or resonance_score >= 0.30
-                        or float(event.usd_value or 0.0) >= float(gate_metrics.get("dynamic_min_usd") or 0.0) * 2.0
-                    ):
-                        return self._apply_delivery(event, signal, "observe", "smart_money_non_execution_observe")
-                    return self._apply_delivery(event, signal, "drop", "smart_money_non_execution_exception_drop")
-                if (
-                    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_PRIMARY
-                    and confirmation_score >= 0.86
-                    and resonance_score >= 0.72
-                    and not market_maker
-                ):
-                    return self._apply_delivery(event, signal, "primary", "smart_money_transfer_exception_primary")
-                if market_maker and DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE and (
-                    confirmation_score >= MARKET_MAKER_OBSERVE_MIN_CONFIRMATION
-                    or resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE
-                    or quality_score >= max(MARKET_MAKER_OBSERVE_GATE_FLOOR + 0.08, 0.67)
-                    or raw_quality_score >= 0.62
-                    or threshold_ratio >= 2.0
-                ):
-                    if market_maker_behavior == "inventory_shift":
-                        return self._apply_delivery(event, signal, "observe", "market_maker_inventory_shift_observe")
-                    if market_maker_behavior in {"inventory_management", "inventory_expansion", "inventory_distribution"} or intent_type == "market_making_inventory_move":
-                        return self._apply_delivery(event, signal, "observe", "market_maker_inventory_observe")
-                    return self._apply_delivery(event, signal, "observe", "market_maker_non_execution_observe")
-                if DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE and (
-                    quality_score >= 0.74 or confirmation_score >= 0.44
-                ):
-                    reason = "market_maker_non_execution_observe" if market_maker else "smart_money_transfer_observe"
-                    return self._apply_delivery(event, signal, "observe", reason)
-                return self._apply_delivery(event, signal, "drop", "smart_money_transfer_drop")
-
-            if not market_maker and confirmation_score >= 0.80 and (
-                multi_address_resonance or same_side_smart_money_addresses >= 2 or resonance_score >= 0.60
-            ):
-                return self._apply_delivery(event, signal, "primary", "smart_money_directional_resonance_primary")
-            return self._apply_delivery(event, signal, "observe", "smart_money_non_execution_observe")
+            archive_reason = (
+                "market_maker_non_execution_archived"
+                if market_maker else
+                "smart_money_non_execution_archived"
+            )
+            return self._drop_smart_money_non_execution(
+                event,
+                signal,
+                market_maker=market_maker,
+                reason=archive_reason,
+            )
 
         if is_real_execution:
             if confirmation_score >= 0.78 and (
@@ -883,7 +926,11 @@ class StrategyEngine:
             return False
         if not lp_observe_exception_applied:
             return False
-        if str(lp_observe_exception_reason or "") != "lp_first_hit_strong_directional_exception":
+        if str(lp_observe_exception_reason or "") not in {
+            "",
+            "lp_fast_exception_structured_directional",
+            "lp_first_hit_strong_directional_exception",
+        }:
             return False
         if float(event.usd_value or 0.0) < LP_FIRST_HIT_PRIMARY_MIN_USD:
             return False
@@ -940,6 +987,33 @@ class StrategyEngine:
             lp_volume_surge_ratio < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_SURGE_RATIO
             and abnormal_ratio < LP_FIRST_HIT_PRIMARY_DIRECT_MIN_ABNORMAL_RATIO
         ):
+            return False
+        return True
+
+    def _allow_lp_burst_directional_primary(
+        self,
+        *,
+        confirmation_score: float,
+        quality_score: float,
+        lp_burst_event_count: int,
+        lp_burst_total_usd: float,
+        lp_burst_volume_surge_ratio: float,
+        lp_burst_action_intensity: float,
+        lp_burst_reserve_skew: float,
+    ) -> bool:
+        if lp_burst_event_count < LP_BURST_PRIMARY_MIN_EVENT_COUNT:
+            return False
+        if lp_burst_total_usd < LP_BURST_PRIMARY_MIN_TOTAL_USD:
+            return False
+        if confirmation_score < LP_BURST_PRIMARY_MIN_CONFIRMATION:
+            return False
+        if quality_score < LP_BURST_PRIMARY_MIN_QUALITY:
+            return False
+        if lp_burst_volume_surge_ratio < LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO:
+            return False
+        if lp_burst_action_intensity < LP_BURST_PRIMARY_MIN_ACTION_INTENSITY:
+            return False
+        if lp_burst_reserve_skew < 0.99:
             return False
         return True
 
@@ -1005,10 +1079,121 @@ class StrategyEngine:
             "delivery_reason": reason,
             "delivery_fact_type": fact_type or self._delivery_fact_type(event, signal),
         }
+        message_variant = self._message_variant_for_delivery(
+            event=event,
+            signal=signal,
+            delivery_class=delivery_class,
+            reason=reason,
+        )
+        if message_variant:
+            payload["message_variant"] = message_variant
+        lp_route_family, lp_route_priority_source, lp_route_semantics = self._lp_route_metadata(
+            event=event,
+            reason=reason,
+        )
+        if lp_route_family or lp_route_priority_source or lp_route_semantics:
+            payload.update({
+                "lp_route_family": lp_route_family,
+                "lp_route_priority_source": lp_route_priority_source,
+                "lp_route_semantics": lp_route_semantics,
+            })
+        if strategy_role_group(event.strategy_role) == "smart_money":
+            payload["smart_money_legacy_non_exec_branch_disabled"] = True
+        if reason.startswith("lp_burst_directional_"):
+            payload.update({
+                "lp_burst_fastlane_applied": True,
+                "lp_burst_fastlane_reason": reason,
+                "lp_burst_delivery_class": delivery_class,
+            })
         event.metadata.update(payload)
         signal.metadata.update(payload)
         signal.context.update(payload)
         return delivery_class, reason
+
+    def _lp_route_metadata(
+        self,
+        *,
+        event: Event,
+        reason: str,
+    ) -> tuple[str, str, str]:
+        if str(event.strategy_role or "") != "lp_pool":
+            return "", "", ""
+        normalized_reason = str(reason or "")
+        if normalized_reason.startswith("lp_burst_directional_"):
+            return "burst_fastlane", "burst_preferred", "burst_main_entry"
+        if normalized_reason in {
+            "lp_first_hit_directional_primary",
+            "lp_first_hit_directional_primary_direct",
+        }:
+            return "first_hit_strict", "first_hit_fallback", "single_shot_fallback"
+        if normalized_reason == "lp_observe_exception_capped":
+            return "directional_exception", "legacy_route", "directional_exception_entry"
+        if normalized_reason in {
+            "lp_directional_early_observe",
+            "lp_directional_pressure_primary",
+            "lp_directional_pressure_observe",
+            "lp_directional_pressure_drop",
+        }:
+            return "directional_standard", "legacy_route", "directional_standard_entry"
+        return "", "", ""
+
+    def _apply_execution_only_archive_metadata(
+        self,
+        event: Event,
+        signal: Signal,
+        *,
+        market_maker: bool,
+        reason: str,
+    ) -> None:
+        payload = {
+            "smart_money_execution_only_mode": bool(SMART_MONEY_NOTIFY_EXECUTION_ONLY),
+            "market_maker_execution_only_mode": bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY),
+            "execution_required_but_missing": True,
+            "execution_only_archive_reason": str(reason or ""),
+            "smart_money_legacy_non_exec_branch_disabled": True,
+            "smart_money_delivery_policy_mode": "execution_whitelist_only",
+            "smart_money_delivery_policy_hard_whitelist_applied": True,
+            "smart_money_allowed_reason_whitelist": list(SMART_MONEY_ALLOWED_REASON_WHITELIST),
+        }
+        event.metadata.update(payload)
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+
+    def _drop_smart_money_non_execution(
+        self,
+        event: Event,
+        signal: Signal,
+        *,
+        market_maker: bool,
+        reason: str,
+    ) -> tuple[str, str]:
+        self._apply_execution_only_archive_metadata(
+            event,
+            signal,
+            market_maker=market_maker,
+            reason=reason,
+        )
+        return self._apply_delivery(event, signal, "drop", reason)
+
+    def _message_variant_for_delivery(
+        self,
+        event: Event,
+        signal: Signal,
+        delivery_class: str,
+        reason: str,
+    ) -> str:
+        del event
+        if reason in {
+            "smart_money_execution_primary",
+            "smart_money_continuous_execution_primary",
+            "market_maker_execution_primary",
+        }:
+            return "smart_money_primary"
+        if reason == "market_maker_execution_observe" and delivery_class == "observe":
+            return "market_maker_observe"
+        if reason == "smart_money_execution_observe" and delivery_class == "observe":
+            return "smart_money_observe"
+        return ""
 
     def _delivery_fact_type(self, event: Event, signal: Signal) -> str:
         if str(event.metadata.get("case_family") or "") == "downstream_counterparty_followup":

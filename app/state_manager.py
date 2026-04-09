@@ -6,6 +6,7 @@ import time
 from config import (
     ADJACENT_WATCH_RUNTIME_PRIORITY,
     ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
+    LP_BURST_WINDOW_SEC,
 )
 from models import AdjacentWatchState, Event
 
@@ -218,6 +219,28 @@ class StateManager:
         recent = self._filter_events_by_window(recent_all, reference_now, window_sec)
         return self._pool_summary(pool_key, recent, window_sec)
 
+    def get_lp_burst_snapshot(
+        self,
+        pool_address: str,
+        direction: str,
+        window_sec: int = LP_BURST_WINDOW_SEC,
+        now_ts: int | None = None,
+    ) -> dict:
+        pool_key = str(pool_address or "").lower()
+        direction_key = str(direction or "").strip().lower()
+        state = self._pool_states.get(pool_key)
+        if state is None:
+            return self._empty_lp_burst_snapshot(pool_key, direction_key, window_sec)
+
+        reference_now = int(now_ts or state.last_seen_ts or 0)
+        recent_all = list(state.recent_events)
+        recent = self._filter_events_by_window(recent_all, reference_now, window_sec)
+        directional_events = [
+            evt for evt in recent
+            if self._lp_directional_bucket(evt) == direction_key
+        ]
+        return self._lp_burst_summary(pool_key, direction_key, directional_events, window_sec)
+
     def can_emit_signal(self, address: str, now_ts: int, cooldown_sec: int) -> bool:
         addr = (address or "").lower()
         if not addr:
@@ -249,6 +272,11 @@ class StateManager:
             )
             chain = str(event.chain or "ethereum").lower()
             return "|".join([chain, str(event.case_id), case_family, stage])
+        lp_direction = self._lp_directional_bucket(event, intent_type=intent_type)
+        if str(event.strategy_role or "") == "lp_pool" and lp_direction:
+            pool_address = str(event.address or "").lower()
+            if pool_address:
+                return f"lp:{pool_address}:{lp_direction}"
         address = (event.address or "").lower()
         intent = str(intent_type or event.intent_type or "unknown_intent").lower()
         token = (event.token or "native").lower()
@@ -815,6 +843,22 @@ class StateManager:
         summary["recent"] = []
         return summary
 
+    def _empty_lp_burst_snapshot(self, pool_address: str, direction: str, window_sec: int) -> dict:
+        return {
+            "lp_burst_window_sec": int(window_sec),
+            "lp_burst_pool_address": str(pool_address or "").lower(),
+            "lp_burst_direction": str(direction or ""),
+            "lp_burst_event_count": 0,
+            "lp_burst_total_usd": 0.0,
+            "lp_burst_max_single_usd": 0.0,
+            "lp_burst_same_pool_continuity": 0,
+            "lp_burst_volume_surge_ratio": 0.0,
+            "lp_burst_action_intensity": 0.0,
+            "lp_burst_reserve_skew": 0.0,
+            "lp_burst_first_ts": 0,
+            "lp_burst_last_ts": 0,
+        }
+
     def _address_summary(self, events: list[Event], window_sec: int) -> dict:
         buy_events = [evt for evt in events if evt.kind == "swap" and evt.side == "买入"]
         sell_events = [evt for evt in events if evt.kind == "swap" and evt.side == "卖出"]
@@ -912,6 +956,47 @@ class StateManager:
             "liquidity_remove_count": int(liquidity_remove_count),
             "unique_counterparties": len(counterparties),
             "same_direction_streak": self._pool_same_direction_streak(events),
+        }
+
+    def _lp_burst_summary(
+        self,
+        pool_address: str,
+        direction: str,
+        events: list[Event],
+        window_sec: int,
+    ) -> dict:
+        if not events:
+            return self._empty_lp_burst_snapshot(pool_address, direction, window_sec)
+
+        total_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in events)
+        max_single_usd = max(abs(float(evt.usd_value or 0.0)) for evt in events)
+        continuity_values = []
+        volume_surge_values = []
+        action_intensity_values = []
+        reserve_skew_values = []
+        first_ts = min(int(evt.ts or 0) for evt in events)
+        last_ts = max(int(evt.ts or 0) for evt in events)
+
+        for evt in events:
+            lp_analysis = getattr(evt, "metadata", {}).get("lp_analysis") or {}
+            continuity_values.append(int(lp_analysis.get("same_pool_continuity") or 0) + 1)
+            volume_surge_values.append(float(lp_analysis.get("pool_volume_surge_ratio") or 0.0))
+            action_intensity_values.append(float(lp_analysis.get("action_intensity") or 0.0))
+            reserve_skew_values.append(float(lp_analysis.get("reserve_skew") or 0.0))
+
+        return {
+            "lp_burst_window_sec": int(window_sec),
+            "lp_burst_pool_address": str(pool_address or "").lower(),
+            "lp_burst_direction": str(direction or ""),
+            "lp_burst_event_count": len(events),
+            "lp_burst_total_usd": round(float(total_usd), 2),
+            "lp_burst_max_single_usd": round(float(max_single_usd), 2),
+            "lp_burst_same_pool_continuity": max(max(continuity_values or [0]), len(events)),
+            "lp_burst_volume_surge_ratio": round(float(max(volume_surge_values or [0.0])), 3),
+            "lp_burst_action_intensity": round(float(max(action_intensity_values or [0.0])), 3),
+            "lp_burst_reserve_skew": round(float(max(reserve_skew_values or [0.0])), 3),
+            "lp_burst_first_ts": int(first_ts),
+            "lp_burst_last_ts": int(last_ts),
         }
 
     def _resonance_summary(self, participant_events: list[dict]) -> dict:
@@ -1078,6 +1163,19 @@ class StateManager:
         if normalized in {"卖出", "流出"}:
             return "sell"
         return "other"
+
+    def _lp_directional_bucket(self, event: Event, intent_type: str | None = None) -> str:
+        normalized_intent = str(intent_type or event.intent_type or "").lower()
+        if normalized_intent == "pool_buy_pressure":
+            return "buy_pressure"
+        if normalized_intent == "pool_sell_pressure":
+            return "sell_pressure"
+        normalized_side = str(event.side or "")
+        if normalized_side == "买入":
+            return "buy_pressure"
+        if normalized_side == "卖出":
+            return "sell_pressure"
+        return ""
 
     def _pool_same_direction_streak(self, events: list[Event]) -> int:
         streak = 0

@@ -139,6 +139,7 @@ class FollowupTracker:
             "downstream_followup_anchor": False,
             "downstream_followup_type": "",
             "downstream_followup_stage": "",
+            "downstream_event_state": None,
         }
         if self.downstream_followup_enabled:
             downstream_result = self._match_downstream_followup_case(
@@ -203,7 +204,14 @@ class FollowupTracker:
             if matched is None:
                 matched = self._open_case(event, watch_meta=watch_meta)
 
-        self.update_case_with_event(matched, event, watch_meta=watch_meta, behavior=behavior)
+        self.update_case_with_event(
+            matched,
+            event,
+            watch_meta=watch_meta,
+            behavior=behavior,
+            case_result=downstream_result,
+            downstream_event_state=(downstream_result or {}).get("downstream_event_state"),
+        )
         return {
             "case": matched,
             "created": created,
@@ -213,6 +221,7 @@ class FollowupTracker:
             "downstream_followup_anchor": bool(downstream_result.get("downstream_followup_anchor")),
             "downstream_followup_type": str(downstream_result.get("downstream_followup_type") or ""),
             "downstream_followup_stage": str(downstream_result.get("downstream_followup_stage") or ""),
+            "downstream_event_state": dict(downstream_result.get("downstream_event_state") or {}),
             "used_exchange_case": used_exchange_case,
             "exchange_followup_anchor": bool(exchange_result.get("exchange_followup_anchor")),
             "exchange_followup_confirmed": bool(exchange_result.get("exchange_followup_confirmed")),
@@ -232,6 +241,8 @@ class FollowupTracker:
         event: Event,
         watch_meta: dict | None = None,
         behavior: dict | None = None,
+        case_result: dict | None = None,
+        downstream_event_state: dict | None = None,
     ) -> BehaviorCase:
         behavior = behavior or {}
         if event.event_id and event.event_id not in behavior_case.event_ids:
@@ -253,7 +264,17 @@ class FollowupTracker:
         if self._is_liquidation_case(behavior_case):
             self._update_liquidation_case_metadata(behavior_case, event, watch_meta or {})
         if self._is_downstream_followup_case(behavior_case):
-            self._update_downstream_case_metadata(behavior_case, event, watch_meta or {})
+            resolved_downstream_event_state = (
+                downstream_event_state
+                if downstream_event_state is not None
+                else (case_result or {}).get("downstream_event_state")
+            )
+            self._update_downstream_case_metadata(
+                behavior_case,
+                event,
+                watch_meta or {},
+                downstream_event_state=resolved_downstream_event_state,
+            )
 
         behavior_case.summary = self._case_summary(behavior_case, event, watch_meta or {})
         behavior_case.followup_steps = self._followup_steps(behavior_case, event)
@@ -595,6 +616,8 @@ class FollowupTracker:
         if stage == "followup_opened":
             if not self.downstream_early_warning_enabled:
                 return False, "downstream_early_warning_disabled"
+            if bool(metadata.get("downstream_current_event_state_missing")) or bool(metadata.get("downstream_current_event_state_fail_closed")):
+                return False, str(metadata.get("downstream_current_event_state_reason") or "downstream_current_event_state_missing")
             if not bool(metadata.get("current_event_is_anchor")):
                 return False, "downstream_early_warning_requires_anchor_event"
             if float(metadata.get("anchor_usd_value") or 0.0) < self.downstream_early_warning_min_anchor_usd:
@@ -609,6 +632,8 @@ class FollowupTracker:
             return False, "downstream_case_stage_not_emittable"
         if stage in emitted:
             return False, "downstream_case_already_emitted"
+        if bool(metadata.get("downstream_current_event_state_missing")) or bool(metadata.get("downstream_current_event_state_fail_closed")):
+            return False, str(metadata.get("downstream_current_event_state_reason") or "downstream_current_event_state_missing")
         regular_emitted_count = sum(1 for emitted_stage in emitted if emitted_stage != "followup_opened")
         if regular_emitted_count >= self.downstream_followup_max_notifications:
             return False, "downstream_case_notification_cap_reached"
@@ -828,15 +853,24 @@ class FollowupTracker:
                 "downstream_followup_anchor": False,
                 "downstream_followup_type": "",
                 "downstream_followup_stage": "",
+                "downstream_event_state": None,
             }
         if existing is not None and not (is_anchor or followup.get("matched")):
             metadata = self._ensure_downstream_case_metadata(existing)
             if str(event.address or "").lower() == str(metadata.get("downstream_address") or existing.watch_address or "").lower():
-                metadata["current_event_is_anchor"] = False
-                metadata["current_event_is_followup"] = False
-                metadata["current_followup_type"] = str(followup.get("followup_type") or "")
-                metadata["current_followup_reason"] = str(followup.get("reason") or "downstream_followup_not_confirmed")
-                metadata["current_stage"] = str(existing.stage or "followup_opened")
+                downstream_event_state = self._build_downstream_event_state(
+                    is_anchor=False,
+                    is_followup=False,
+                    followup_type=str(followup.get("followup_type") or ""),
+                    followup_reason=str(followup.get("reason") or "downstream_followup_not_confirmed"),
+                    stage=str(existing.stage or "followup_opened"),
+                )
+                self._apply_downstream_current_event_state(
+                    existing,
+                    metadata,
+                    downstream_event_state,
+                    source="matched_case_result",
+                )
                 metadata["last_observed_usd"] = round(float(event.usd_value or 0.0), 2)
                 metadata["last_observed_tx_hash"] = str(event.tx_hash or "")
                 return {
@@ -846,6 +880,7 @@ class FollowupTracker:
                     "downstream_followup_anchor": False,
                     "downstream_followup_type": str(followup.get("followup_type") or ""),
                     "downstream_followup_stage": str(existing.stage or "followup_opened"),
+                    "downstream_event_state": downstream_event_state,
                 }
             return {
                 "case": None,
@@ -854,6 +889,7 @@ class FollowupTracker:
                 "downstream_followup_anchor": False,
                 "downstream_followup_type": "",
                 "downstream_followup_stage": "",
+                "downstream_event_state": None,
             }
 
         if existing is None and is_anchor:
@@ -867,11 +903,21 @@ class FollowupTracker:
 
         if existing is not None:
             metadata = self._ensure_downstream_case_metadata(existing)
-            metadata["current_event_is_anchor"] = bool(is_anchor)
-            metadata["current_event_is_followup"] = bool(followup.get("matched"))
-            metadata["current_followup_type"] = str(followup.get("followup_type") or metadata.get("current_followup_type") or "")
-            metadata["current_followup_reason"] = str(followup.get("reason") or metadata.get("current_followup_reason") or "")
-            metadata["current_stage"] = str(followup.get("stage") or existing.stage or "")
+            downstream_event_state = self._build_downstream_event_state(
+                is_anchor=bool(is_anchor),
+                is_followup=bool(followup.get("matched")),
+                followup_type=str(followup.get("followup_type") or metadata.get("current_followup_type") or ""),
+                followup_reason=str(followup.get("reason") or metadata.get("current_followup_reason") or ""),
+                stage=str(followup.get("stage") or existing.stage or ""),
+            )
+            self._apply_downstream_current_event_state(
+                existing,
+                metadata,
+                downstream_event_state,
+                source="matched_case_result",
+            )
+        else:
+            downstream_event_state = None
 
         return {
             "case": existing,
@@ -880,6 +926,7 @@ class FollowupTracker:
             "downstream_followup_anchor": bool(is_anchor),
             "downstream_followup_type": str(followup.get("followup_type") or ""),
             "downstream_followup_stage": str(followup.get("stage") or (existing.stage if existing is not None else "")),
+            "downstream_event_state": downstream_event_state,
         }
 
     def match_downstream_followup_case(
@@ -1207,6 +1254,15 @@ class FollowupTracker:
             "current_followup_type": "",
             "current_followup_reason": "downstream_anchor_opened",
             "current_stage": "followup_opened",
+            "downstream_current_event_state_source": "matched_case_result",
+            "downstream_current_event_state_semantics": "explicit_anchor",
+            "downstream_current_event_state_compat_bool_source": "legacy_bool_fields",
+            "downstream_current_event_state_effective_label": "anchor",
+            "downstream_current_event_state_effective_bool_safe": True,
+            "downstream_current_event_state_known": True,
+            "downstream_current_event_state_missing": False,
+            "downstream_current_event_state_fail_closed": False,
+            "downstream_current_event_state_reason": "downstream_anchor_opened",
         }
         behavior_case.summary = self._case_summary(behavior_case, event, watch_meta)
         behavior_case.followup_steps = self._followup_steps(behavior_case, event)
@@ -1236,7 +1292,19 @@ class FollowupTracker:
         metadata["expire_at"] = int(metadata.get("active_until") or reference_ts + self.downstream_followup_window_sec)
         metadata["deadline_ts"] = int(metadata.get("active_until") or reference_ts + self.downstream_followup_window_sec)
         metadata["current_event_is_anchor"] = True
+        metadata["current_event_is_followup"] = False
+        metadata["current_followup_type"] = ""
         metadata["current_followup_reason"] = "downstream_anchor_refreshed"
+        metadata["current_stage"] = "followup_opened"
+        metadata["downstream_current_event_state_source"] = "matched_case_result"
+        metadata["downstream_current_event_state_semantics"] = "explicit_anchor"
+        metadata["downstream_current_event_state_compat_bool_source"] = "legacy_bool_fields"
+        metadata["downstream_current_event_state_effective_label"] = "anchor"
+        metadata["downstream_current_event_state_effective_bool_safe"] = True
+        metadata["downstream_current_event_state_known"] = True
+        metadata["downstream_current_event_state_missing"] = False
+        metadata["downstream_current_event_state_fail_closed"] = False
+        metadata["downstream_current_event_state_reason"] = "downstream_anchor_refreshed"
 
     def _open_smart_money_execution_case(self, event: Event, watch_meta: dict | None = None) -> BehaviorCase:
         watch_meta = watch_meta or {}
@@ -1944,6 +2012,32 @@ class FollowupTracker:
         metadata.setdefault("current_followup_type", "")
         metadata.setdefault("current_followup_reason", "")
         metadata.setdefault("current_stage", behavior_case.stage or "")
+        metadata.setdefault("downstream_current_event_state_source", "case_metadata")
+        metadata.setdefault("downstream_current_event_state_semantics", "explicit_non_anchor_non_followup")
+        metadata.setdefault("downstream_current_event_state_compat_bool_source", "legacy_bool_fields")
+        metadata.setdefault("downstream_current_event_state_known", True)
+        metadata.setdefault("downstream_current_event_state_missing", False)
+        metadata.setdefault("downstream_current_event_state_fail_closed", False)
+        metadata.setdefault("downstream_current_event_state_reason", "")
+        semantics_overlay = self._downstream_state_semantics(
+            is_anchor=bool(metadata.get("current_event_is_anchor")),
+            is_followup=bool(metadata.get("current_event_is_followup")),
+            missing=bool(metadata.get("downstream_current_event_state_missing")),
+            source=str(metadata.get("downstream_current_event_state_source") or "case_metadata"),
+            reason=str(
+                metadata.get("downstream_current_event_state_reason")
+                or metadata.get("current_followup_reason")
+                or ""
+            ),
+        )
+        if "downstream_current_event_state_effective_label" not in metadata:
+            metadata["downstream_current_event_state_effective_label"] = semantics_overlay[
+                "downstream_current_event_state_effective_label"
+            ]
+        if "downstream_current_event_state_effective_bool_safe" not in metadata:
+            metadata["downstream_current_event_state_effective_bool_safe"] = semantics_overlay[
+                "downstream_current_event_state_effective_bool_safe"
+            ]
         metadata.setdefault("last_followup_type", "")
         metadata.setdefault("last_followup_stage", "")
         metadata.setdefault("last_followup_tx_hash", "")
@@ -2176,22 +2270,165 @@ class FollowupTracker:
         behavior_case: BehaviorCase,
         event: Event,
         watch_meta: dict,
+        downstream_event_state: dict | None = None,
     ) -> None:
         metadata = self._ensure_downstream_case_metadata(behavior_case)
-        metadata["current_event_is_anchor"] = False
-        metadata["current_event_is_followup"] = False
-        metadata["current_stage"] = behavior_case.stage
         metadata["expire_at"] = int(metadata.get("active_until") or metadata.get("expire_at") or 0)
         metadata["deadline_ts"] = int(metadata.get("active_until") or metadata.get("deadline_ts") or 0)
         metadata["anchor_label"] = str(metadata.get("anchor_label") or watch_meta.get("anchor_label") or metadata.get("anchor_label") or "")
         metadata["downstream_label"] = str(metadata.get("downstream_label") or self._downstream_label(metadata.get("downstream_address"), None))
         metadata["last_seen_ts"] = int(event.ts or time.time())
+        if downstream_event_state is not None:
+            self._apply_downstream_current_event_state(
+                behavior_case,
+                metadata,
+                downstream_event_state,
+                source="synced_from_case_result",
+            )
+        else:
+            self._reset_downstream_current_event_state(
+                behavior_case,
+                metadata,
+                source="missing_explicit_reset",
+                reason="downstream_event_state_missing",
+            )
 
     def _downstream_case_address(self, event: Event) -> str:
         event_address = str(event.address or "").lower()
         if event_address and not self.is_downstream_followup_anchor(event, watch_meta={"strategy_role": event.strategy_role}):
             return event_address
         return self._downstream_counterparty_address(event)
+
+    def _build_downstream_event_state(
+        self,
+        *,
+        is_anchor: bool,
+        is_followup: bool,
+        followup_type: str,
+        followup_reason: str,
+        stage: str,
+    ) -> dict:
+        return {
+            "current_event_is_anchor": bool(is_anchor),
+            "current_event_is_followup": bool(is_followup),
+            "current_followup_type": str(followup_type or ""),
+            "current_followup_reason": str(followup_reason or ""),
+            "current_stage": str(stage or ""),
+        }
+
+    def _apply_downstream_current_event_state(
+        self,
+        behavior_case: BehaviorCase,
+        metadata: dict,
+        downstream_event_state: dict | None,
+        source: str,
+    ) -> dict:
+        state = self._build_downstream_event_state(
+            is_anchor=bool((downstream_event_state or {}).get("current_event_is_anchor")),
+            is_followup=bool((downstream_event_state or {}).get("current_event_is_followup")),
+            followup_type=str((downstream_event_state or {}).get("current_followup_type") or ""),
+            followup_reason=str((downstream_event_state or {}).get("current_followup_reason") or ""),
+            stage=str((downstream_event_state or {}).get("current_stage") or behavior_case.stage or ""),
+        )
+        metadata["current_event_is_anchor"] = state["current_event_is_anchor"]
+        metadata["current_event_is_followup"] = state["current_event_is_followup"]
+        metadata["current_followup_type"] = state["current_followup_type"]
+        metadata["current_followup_reason"] = state["current_followup_reason"]
+        metadata["current_stage"] = state["current_stage"]
+        overlay = self._downstream_state_semantics(
+            is_anchor=state["current_event_is_anchor"],
+            is_followup=state["current_event_is_followup"],
+            missing=False,
+            source=str(source or "case_metadata"),
+            reason=str(state["current_followup_reason"] or source or ""),
+        )
+        metadata.update(overlay)
+        return state
+
+    def _reset_downstream_current_event_state(
+        self,
+        behavior_case: BehaviorCase,
+        metadata: dict,
+        *,
+        source: str,
+        reason: str,
+    ) -> dict:
+        state = self._build_downstream_event_state(
+            is_anchor=False,
+            is_followup=False,
+            followup_type="",
+            followup_reason=str(reason or "downstream_event_state_missing"),
+            stage=str(behavior_case.stage or metadata.get("current_stage") or ""),
+        )
+        metadata["current_event_is_anchor"] = False
+        metadata["current_event_is_followup"] = False
+        metadata["current_followup_type"] = ""
+        metadata["current_followup_reason"] = str(reason or "downstream_event_state_missing")
+        metadata["current_stage"] = state["current_stage"]
+        metadata.update(
+            self._downstream_state_semantics(
+                is_anchor=False,
+                is_followup=False,
+                missing=True,
+                source=str(source or "missing_explicit_reset"),
+                reason=str(reason or "downstream_event_state_missing"),
+            )
+        )
+        return state
+
+    def _downstream_current_event_state_semantics(
+        self,
+        *,
+        is_anchor: bool,
+        is_followup: bool,
+        missing: bool,
+    ) -> str:
+        if missing:
+            return "missing_fail_closed"
+        if is_anchor:
+            return "explicit_anchor"
+        if is_followup:
+            return "explicit_followup"
+        return "explicit_non_anchor_non_followup"
+
+    def _downstream_state_semantics(
+        self,
+        *,
+        is_anchor: bool,
+        is_followup: bool,
+        missing: bool,
+        source: str,
+        reason: str,
+    ) -> dict:
+        semantics = self._downstream_current_event_state_semantics(
+            is_anchor=is_anchor,
+            is_followup=is_followup,
+            missing=missing,
+        )
+        effective_label = "unknown_fail_closed"
+        effective_bool_safe: bool | str = "unknown"
+        if semantics == "explicit_anchor":
+            effective_label = "anchor"
+            effective_bool_safe = True
+        elif semantics == "explicit_followup":
+            effective_label = "followup"
+            effective_bool_safe = True
+        elif semantics == "explicit_non_anchor_non_followup":
+            effective_label = "non_anchor_non_followup"
+            effective_bool_safe = False
+        return {
+            "downstream_current_event_state_source": str(source or "case_metadata"),
+            "downstream_current_event_state_semantics": semantics,
+            "downstream_current_event_state_compat_bool_source": (
+                "semantic_overlay" if semantics == "missing_fail_closed" else "legacy_bool_fields"
+            ),
+            "downstream_current_event_state_effective_label": effective_label,
+            "downstream_current_event_state_effective_bool_safe": effective_bool_safe,
+            "downstream_current_event_state_known": semantics != "missing_fail_closed",
+            "downstream_current_event_state_missing": bool(missing),
+            "downstream_current_event_state_fail_closed": bool(missing),
+            "downstream_current_event_state_reason": str(reason or source or ""),
+        }
 
     def _downstream_counterparty_address(self, event: Event) -> str:
         raw = event.metadata.get("raw") or {}

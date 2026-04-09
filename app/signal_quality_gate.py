@@ -15,6 +15,20 @@ from config import (
     MARKET_MAKER_OBSERVE_MIN_RESONANCE,
     MARKET_MAKER_OBSERVE_VALUE_BONUS_MAX,
     LP_VALUE_BONUS_MAX,
+    LP_BURST_FASTLANE_ENABLE,
+    LP_BURST_MIN_ACTION_INTENSITY,
+    LP_BURST_MIN_EVENT_COUNT,
+    LP_BURST_MIN_MAX_SINGLE_USD,
+    LP_BURST_MIN_PRICING_CONFIDENCE,
+    LP_BURST_MIN_RESERVE_SKEW,
+    LP_BURST_MIN_TOTAL_USD,
+    LP_BURST_MIN_VOLUME_SURGE_RATIO,
+    LP_DIRECTIONAL_COOLDOWN_SEC,
+    LP_FAST_EXCEPTION_MIN_ACTION_INTENSITY,
+    LP_FAST_EXCEPTION_MIN_PRICING_CONFIDENCE,
+    LP_FAST_EXCEPTION_MIN_RESERVE_SKEW,
+    LP_FAST_EXCEPTION_MIN_SAME_POOL_CONTINUITY,
+    LP_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO,
     LP_OBSERVE_MIN_CONFIDENCE,
     LP_OBSERVE_MAX_USD_GAP,
     LP_OBSERVE_MIN_USD,
@@ -58,6 +72,7 @@ EXCHANGE_STRICT_ROLES = {
     "exchange_deposit_wallet",
     "exchange_trading_wallet",
 }
+LP_FAST_EXCEPTION_GATE_VERSION = "lp_directional_structural_v2"
 
 
 @dataclass
@@ -107,6 +122,7 @@ class SignalQualityGate:
         self.min_relative_address_size = float(min_relative_address_size)
         self.min_token_volume_ratio = float(min_token_volume_ratio)
         self.cooldown_sec = int(cooldown_sec)
+        self.lp_directional_cooldown_sec = int(LP_DIRECTIONAL_COOLDOWN_SEC)
         self.require_non_normal_behavior = bool(require_non_normal_behavior)
         self.score_threshold = float(score_threshold)
         self.tier1_threshold = float(tier1_threshold)
@@ -116,6 +132,19 @@ class SignalQualityGate:
         self.token_resonance_window_sec = int(token_resonance_window_sec)
         self.lp_observe_threshold_ratio_floor = float(LP_OBSERVE_THRESHOLD_RATIO_FLOOR)
         self.lp_observe_max_usd_gap = float(LP_OBSERVE_MAX_USD_GAP)
+        self.lp_fast_exception_min_same_pool_continuity = int(LP_FAST_EXCEPTION_MIN_SAME_POOL_CONTINUITY)
+        self.lp_fast_exception_min_volume_surge_ratio = float(LP_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO)
+        self.lp_fast_exception_min_action_intensity = float(LP_FAST_EXCEPTION_MIN_ACTION_INTENSITY)
+        self.lp_fast_exception_min_reserve_skew = float(LP_FAST_EXCEPTION_MIN_RESERVE_SKEW)
+        self.lp_fast_exception_min_pricing_confidence = float(LP_FAST_EXCEPTION_MIN_PRICING_CONFIDENCE)
+        self.lp_burst_fastlane_enable = bool(LP_BURST_FASTLANE_ENABLE)
+        self.lp_burst_min_event_count = int(LP_BURST_MIN_EVENT_COUNT)
+        self.lp_burst_min_total_usd = float(LP_BURST_MIN_TOTAL_USD)
+        self.lp_burst_min_max_single_usd = float(LP_BURST_MIN_MAX_SINGLE_USD)
+        self.lp_burst_min_volume_surge_ratio = float(LP_BURST_MIN_VOLUME_SURGE_RATIO)
+        self.lp_burst_min_action_intensity = float(LP_BURST_MIN_ACTION_INTENSITY)
+        self.lp_burst_min_reserve_skew = float(LP_BURST_MIN_RESERVE_SKEW)
+        self.lp_burst_min_pricing_confidence = float(LP_BURST_MIN_PRICING_CONFIDENCE)
         self.liquidation_min_usd = float(LIQUIDATION_MIN_USD)
         self.liquidation_primary_min_usd = float(LIQUIDATION_PRIMARY_MIN_USD)
         self.liquidation_risk_min_score = float(LIQUIDATION_RISK_MIN_SCORE)
@@ -151,6 +180,7 @@ class SignalQualityGate:
         pricing_status = str(event.pricing_status or "unknown")
         pricing_confidence = float(event.pricing_confidence or 0.0)
         cooldown_key = self.state_manager.get_cooldown_key(event, intent_type=event.intent_type)
+        cooldown_sec = self._cooldown_sec(event)
         base_threshold_usd = float(get_threshold(watch_meta))
         dynamic_min_usd = self._dynamic_min_usd(event=event, watch_meta=watch_meta)
         lp_event = self._is_lp_event(event=event, watch_meta=watch_meta)
@@ -167,6 +197,17 @@ class SignalQualityGate:
         pool_volume_surge_ratio = float(lp_analysis.get("pool_volume_surge_ratio") or 0.0)
         pool_window_trade_count = int(lp_analysis.get("pool_window_trade_count") or 0)
         pool_window_usd_total = float(lp_analysis.get("pool_window_usd_total") or 0.0)
+        burst_state = event.metadata.get("lp_burst") or {}
+        lp_burst_event_count = int(burst_state.get("lp_burst_event_count") or 0)
+        lp_burst_total_usd = float(burst_state.get("lp_burst_total_usd") or 0.0)
+        lp_burst_max_single_usd = float(burst_state.get("lp_burst_max_single_usd") or 0.0)
+        lp_burst_same_pool_continuity = int(burst_state.get("lp_burst_same_pool_continuity") or 0)
+        lp_burst_volume_surge_ratio = float(burst_state.get("lp_burst_volume_surge_ratio") or 0.0)
+        lp_burst_action_intensity = float(burst_state.get("lp_burst_action_intensity") or 0.0)
+        lp_burst_reserve_skew = float(burst_state.get("lp_burst_reserve_skew") or 0.0)
+        lp_burst_first_ts = int(burst_state.get("lp_burst_first_ts") or 0)
+        lp_burst_last_ts = int(burst_state.get("lp_burst_last_ts") or 0)
+        lp_burst_window_sec = int(burst_state.get("lp_burst_window_sec") or 0)
 
         address_avg_usd = float(
             address_snapshot.get("windows", {}).get("24h", {}).get("avg_usd")
@@ -256,6 +297,7 @@ class SignalQualityGate:
             "usd_value_available": bool(event.usd_value_available),
             "usd_value_estimated": bool(event.usd_value_estimated),
             "cooldown_key": cooldown_key,
+            "cooldown_sec": cooldown_sec,
             "intent_type": event.intent_type,
             "intent_confidence": float(event.intent_confidence or 0.0),
             "intent_stage": str(event.intent_stage or "preliminary"),
@@ -326,6 +368,28 @@ class SignalQualityGate:
             "stable_non_swap_filtered_flag": False,
             "lp_observe_exception_applied": False,
             "lp_observe_exception_reason": "",
+            "lp_fast_exception_applied": False,
+            "lp_fast_exception_reason": "",
+            "lp_fast_exception_threshold_ratio": round(threshold_ratio, 3),
+            "lp_fast_exception_usd_gap": round(max(dynamic_min_usd - usd_value, 0.0), 2),
+            "lp_fast_exception_structure_score": 0.0,
+            "lp_fast_exception_gate_version": LP_FAST_EXCEPTION_GATE_VERSION,
+            "lp_burst_fastlane_applied": False,
+            "lp_burst_fastlane_reason": "",
+            "lp_burst_window_sec": lp_burst_window_sec,
+            "lp_burst_event_count": lp_burst_event_count,
+            "lp_burst_total_usd": round(lp_burst_total_usd, 2),
+            "lp_burst_max_single_usd": round(lp_burst_max_single_usd, 2),
+            "lp_burst_same_pool_continuity": lp_burst_same_pool_continuity,
+            "lp_burst_volume_surge_ratio": round(lp_burst_volume_surge_ratio, 3),
+            "lp_burst_action_intensity": round(lp_burst_action_intensity, 3),
+            "lp_burst_reserve_skew": round(lp_burst_reserve_skew, 3),
+            "lp_burst_first_ts": lp_burst_first_ts,
+            "lp_burst_last_ts": lp_burst_last_ts,
+            "lp_burst_delivery_class": "",
+            "lp_directional_cooldown_key": cooldown_key if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else "",
+            "lp_directional_cooldown_sec": cooldown_sec if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else 0,
+            "lp_directional_cooldown_allowed": True if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else None,
             "liquidation_observe_exception_applied": False,
             "liquidation_observe_exception_reason": "",
             "value_weight_multiplier": 1.0,
@@ -346,6 +410,14 @@ class SignalQualityGate:
             "lp_observe_threshold_ratio": round(threshold_ratio, 3),
             "lp_observe_below_min_gap": round(max(dynamic_min_usd - usd_value, 0.0), 2),
         }
+        lp_burst_fastlane_ready, lp_burst_fastlane_reason = self._allow_lp_burst_fastlane_exception(
+            event=event,
+            lp_event=lp_event,
+            pricing_confidence=pricing_confidence,
+        )
+        metrics["lp_burst_fastlane_ready"] = bool(lp_burst_fastlane_ready)
+        if lp_burst_fastlane_reason:
+            metrics["lp_burst_fastlane_reason"] = str(lp_burst_fastlane_reason)
 
         if lp_event and event.intent_type == "pool_noise":
             return GateDecision(False, "lp_noise_filtered", 0.0, "DROP", self.score_threshold, metrics)
@@ -388,7 +460,7 @@ class SignalQualityGate:
             return GateDecision(False, "pricing_low_confidence_non_swap", 0.0, "DROP", self.score_threshold, metrics)
 
         if usd_value < dynamic_min_usd:
-            allow_lp_observe_exception, lp_exception_reason = self._allow_lp_directional_observe_exception(
+            allow_lp_observe_exception, lp_exception_reason, lp_exception_structure_score = self._allow_lp_directional_observe_exception(
                 event=event,
                 lp_event=lp_event,
                 usd_value=usd_value,
@@ -405,31 +477,36 @@ class SignalQualityGate:
                 multi_pool_resonance=multi_pool_resonance,
                 pool_volume_surge_ratio=pool_volume_surge_ratio,
             )
+            metrics["lp_fast_exception_structure_score"] = round(lp_exception_structure_score, 3)
+            metrics["lp_fast_exception_reason"] = str(lp_exception_reason or "")
             if allow_lp_observe_exception:
                 metrics["lp_observe_exception_applied"] = True
                 metrics["lp_observe_exception_reason"] = lp_exception_reason
+                metrics["lp_fast_exception_applied"] = True
+                metrics["lp_fast_exception_reason"] = lp_exception_reason
             else:
-                allow_liq, liq_reason = self._allow_liquidation_observe_exception(
-                    event=event,
-                    usd_value=usd_value,
-                    pricing_status=pricing_status,
-                    pricing_confidence=pricing_confidence,
-                    confirmation_score=float(event.confirmation_score or 0.0),
-                    quality_score_hint=0.0,
-                    liquidation_stage=liquidation_stage,
-                    liquidation_score=liquidation_score,
-                    is_liquidation_protocol_related=is_liquidation_protocol_related,
-                    possible_keeper_executor=possible_keeper_executor,
-                    possible_vault_or_auction=possible_vault_or_auction,
-                    same_pool_continuity=same_pool_continuity,
-                    multi_pool_resonance=multi_pool_resonance,
-                    pool_volume_surge_ratio=pool_volume_surge_ratio,
-                )
-                if allow_liq:
-                    metrics["liquidation_observe_exception_applied"] = True
-                    metrics["liquidation_observe_exception_reason"] = liq_reason
-                else:
-                    return GateDecision(False, "below_min_usd", 0.0, "DROP", self.score_threshold, metrics)
+                if not lp_burst_fastlane_ready:
+                    allow_liq, liq_reason = self._allow_liquidation_observe_exception(
+                        event=event,
+                        usd_value=usd_value,
+                        pricing_status=pricing_status,
+                        pricing_confidence=pricing_confidence,
+                        confirmation_score=float(event.confirmation_score or 0.0),
+                        quality_score_hint=0.0,
+                        liquidation_stage=liquidation_stage,
+                        liquidation_score=liquidation_score,
+                        is_liquidation_protocol_related=is_liquidation_protocol_related,
+                        possible_keeper_executor=possible_keeper_executor,
+                        possible_vault_or_auction=possible_vault_or_auction,
+                        same_pool_continuity=same_pool_continuity,
+                        multi_pool_resonance=multi_pool_resonance,
+                        pool_volume_surge_ratio=pool_volume_surge_ratio,
+                    )
+                    if allow_liq:
+                        metrics["liquidation_observe_exception_applied"] = True
+                        metrics["liquidation_observe_exception_reason"] = liq_reason
+                    else:
+                        return GateDecision(False, "below_min_usd", 0.0, "DROP", self.score_threshold, metrics)
 
         if lp_event and event.intent_type in {"pool_buy_pressure", "pool_sell_pressure"}:
             if (
@@ -603,10 +680,12 @@ class SignalQualityGate:
             "smart_money_non_exec_value_bonus": round(smart_money_value_bonus, 3),
         })
 
-        if not self.state_manager.can_emit_signal_by_key(cooldown_key, int(event.ts), self.cooldown_sec):
-            metrics["cooldown_sec"] = self.cooldown_sec
+        if not self.state_manager.can_emit_signal_by_key(cooldown_key, int(event.ts), cooldown_sec):
+            metrics["cooldown_sec"] = cooldown_sec
+            metrics["lp_directional_cooldown_allowed"] = False if metrics.get("lp_directional_cooldown_key") else None
             metrics["last_signal_ts"] = getattr(self.state_manager, "get_last_signal_ts_by_key", lambda key: None)(cooldown_key)
             return GateDecision(False, "cooldown_active", adjusted_quality_score, "DROP", quality_threshold, metrics)
+        metrics["lp_directional_cooldown_allowed"] = True if metrics.get("lp_directional_cooldown_key") else None
 
         exception_applied = False
         exception_reason = ""
@@ -705,6 +784,11 @@ class SignalQualityGate:
     def mark_emitted(self, event: Event) -> None:
         cooldown_key = self.state_manager.get_cooldown_key(event, intent_type=event.intent_type)
         self.state_manager.mark_signal_emitted_by_key(cooldown_key, int(event.ts))
+
+    def _cooldown_sec(self, event: Event) -> int:
+        if self._is_lp_event(event=event) and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"}:
+            return self.lp_directional_cooldown_sec
+        return self.cooldown_sec
 
     def _dynamic_min_usd(self, event: Event, watch_meta: dict) -> float:
         category_floor = {
@@ -860,55 +944,96 @@ class SignalQualityGate:
         same_pool_continuity: int,
         multi_pool_resonance: int,
         pool_volume_surge_ratio: float,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, float]:
         if not lp_event:
-            return False, "not_lp_event"
+            return False, "", 0.0
         if str(event.intent_type or "") not in {"pool_buy_pressure", "pool_sell_pressure"}:
-            return False, "not_lp_directional"
+            return False, "", 0.0
         if str(event.intent_type or "") in {"pool_noise", "liquidity_addition", "liquidity_removal", "pool_rebalance"}:
-            return False, "not_directional_lp_pressure"
+            return False, "not_directional_lp_pressure", 0.0
         if pricing_status in {"unknown", "unavailable"}:
-            return False, "pricing_unavailable_for_lp_observe_exception"
-        if pricing_confidence < 0.55:
-            return False, "pricing_confidence_too_low_for_lp_observe_exception"
+            return False, "pricing_unavailable_for_lp_fast_exception", 0.0
+        if pricing_confidence < self.lp_fast_exception_min_pricing_confidence:
+            return False, "lp_fast_exception_pricing_confidence_too_low", self._lp_fast_exception_structure_score(
+                pricing_confidence=pricing_confidence,
+                same_pool_continuity=same_pool_continuity,
+                pool_volume_surge_ratio=pool_volume_surge_ratio,
+                action_intensity=action_intensity,
+                reserve_skew=reserve_skew,
+            )
         if dynamic_min_usd <= 0:
-            return False, "invalid_dynamic_min_usd"
+            return False, "invalid_dynamic_min_usd", 0.0
 
         threshold_ratio = usd_value / dynamic_min_usd if dynamic_min_usd > 0 else 0.0
         below_min_gap = max(dynamic_min_usd - usd_value, 0.0)
+        structure_score = self._lp_fast_exception_structure_score(
+            pricing_confidence=pricing_confidence,
+            same_pool_continuity=same_pool_continuity,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            action_intensity=action_intensity,
+            reserve_skew=reserve_skew,
+        )
         if threshold_ratio < self.lp_observe_threshold_ratio_floor:
-            return False, "lp_observe_threshold_ratio_too_low"
+            return False, "lp_fast_exception_threshold_ratio_too_low", structure_score
         if below_min_gap > self.lp_observe_max_usd_gap:
-            return False, "lp_observe_usd_gap_too_wide"
+            return False, "lp_fast_exception_usd_gap_too_wide", structure_score
+        if same_pool_continuity < self.lp_fast_exception_min_same_pool_continuity:
+            return False, "lp_fast_exception_same_pool_continuity_too_low", structure_score
+        if pool_volume_surge_ratio < self.lp_fast_exception_min_volume_surge_ratio:
+            return False, "lp_fast_exception_volume_surge_too_low", structure_score
+        if action_intensity < self.lp_fast_exception_min_action_intensity:
+            return False, "lp_fast_exception_action_intensity_too_low", structure_score
+        if reserve_skew < self.lp_fast_exception_min_reserve_skew:
+            return False, "lp_fast_exception_reserve_skew_too_low", structure_score
 
-        if (
-            usd_value >= 25000
-            and action_intensity >= 0.62
-            and reserve_skew >= 0.18
-            and pricing_status not in {"unknown", "unavailable"}
-            and pricing_confidence >= 0.75
-            and (pool_volume_surge_ratio >= 1.25 or abnormal_ratio >= 1.6)
-        ):
-            return True, "lp_first_hit_strong_directional_exception"
-        if same_pool_continuity >= 2 and pool_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO:
-            return True, "lp_same_pool_continuity_and_volume_surge"
-        if multi_pool_resonance >= 2:
-            return True, "lp_multi_pool_resonance"
-        if confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE and pool_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO:
-            return True, "lp_confirmation_and_volume_surge"
-        if usd_value >= LP_OBSERVE_MIN_USD and action_intensity >= 0.58:
-            return True, "lp_usd_and_action_intensity"
+        del confirmation_score, resonance_score, abnormal_ratio, relative_address_size, multi_pool_resonance
+        return True, "lp_fast_exception_structured_directional", structure_score
 
-        medium_high_hits = 0
-        if resonance_score >= 0.36:
-            medium_high_hits += 1
-        if abnormal_ratio >= 1.45:
-            medium_high_hits += 1
-        if relative_address_size >= 1.20:
-            medium_high_hits += 1
-        if medium_high_hits >= 2:
-            return True, "lp_multi_factor_structure_strength"
-        return False, "lp_structure_not_strong_enough"
+    def _lp_fast_exception_structure_score(
+        self,
+        *,
+        pricing_confidence: float,
+        same_pool_continuity: int,
+        pool_volume_surge_ratio: float,
+        action_intensity: float,
+        reserve_skew: float,
+    ) -> float:
+        checks = (
+            same_pool_continuity >= self.lp_fast_exception_min_same_pool_continuity,
+            pool_volume_surge_ratio >= self.lp_fast_exception_min_volume_surge_ratio,
+            action_intensity >= self.lp_fast_exception_min_action_intensity,
+            reserve_skew >= self.lp_fast_exception_min_reserve_skew,
+            pricing_confidence >= self.lp_fast_exception_min_pricing_confidence,
+        )
+        return round(sum(1 for matched in checks if matched) / len(checks), 3)
+
+    def _allow_lp_burst_fastlane_exception(
+        self,
+        event: Event,
+        lp_event: bool,
+        pricing_confidence: float,
+    ) -> tuple[bool, str]:
+        if not lp_event or str(event.intent_type or "") not in {"pool_buy_pressure", "pool_sell_pressure"}:
+            return False, ""
+        if not self.lp_burst_fastlane_enable:
+            return False, "lp_burst_fastlane_disabled"
+
+        burst_state = event.metadata.get("lp_burst") or {}
+        if int(burst_state.get("lp_burst_event_count") or 0) < self.lp_burst_min_event_count:
+            return False, "lp_burst_event_count_too_low"
+        if float(burst_state.get("lp_burst_total_usd") or 0.0) < self.lp_burst_min_total_usd:
+            return False, "lp_burst_total_usd_too_low"
+        if float(burst_state.get("lp_burst_max_single_usd") or 0.0) < self.lp_burst_min_max_single_usd:
+            return False, "lp_burst_max_single_usd_too_low"
+        if float(burst_state.get("lp_burst_volume_surge_ratio") or 0.0) < self.lp_burst_min_volume_surge_ratio:
+            return False, "lp_burst_volume_surge_too_low"
+        if float(burst_state.get("lp_burst_action_intensity") or 0.0) < self.lp_burst_min_action_intensity:
+            return False, "lp_burst_action_intensity_too_low"
+        if float(burst_state.get("lp_burst_reserve_skew") or 0.0) < self.lp_burst_min_reserve_skew:
+            return False, "lp_burst_reserve_skew_too_low"
+        if pricing_confidence < self.lp_burst_min_pricing_confidence:
+            return False, "lp_burst_pricing_confidence_too_low"
+        return True, "lp_burst_fastlane_ready"
 
     def _allow_liquidation_observe_exception(
         self,

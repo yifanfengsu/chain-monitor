@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict
+import hashlib
 from itertools import islice
 import json
 from pathlib import Path
@@ -14,7 +15,13 @@ from config import (
     SPILL_REPLAY_QUEUE_WATERMARK,
 )
 from constants import ERC20_TRANSFER_EVENT_SIG
-from filter import WATCH_ADDRESSES
+from filter import WATCH_ADDRESSES, get_address_meta, strategy_role_group
+from lp_noise_rules import (
+    LP_ADJACENT_NOISE_RULE_VERSION,
+    LP_ADJACENT_NOISE_STAGE_LISTENER,
+    lp_adjacent_noise_confidence_bucket,
+    lp_adjacent_noise_core_decision,
+)
 from lp_registry import ACTIVE_LP_POOL_ADDRESSES
 from state_manager import get_runtime_adjacent_watch_addresses
 
@@ -24,11 +31,20 @@ w3 = Web3(Web3.HTTPProvider(RPC_URL))
 # 生产者/消费者缓冲队列。
 tx_queue = asyncio.Queue(maxsize=5000)
 SPILL_FILE = Path("/tmp/whale_tx_queue_spill.ndjson")
+_listener_archive_store = None
 QUEUE_STATS = {
     "spill_count": 0,
     "replay_count": 0,
     "replay_skipped_count": 0,
     "replay_error_count": 0,
+    "lp_adjacent_noise_skipped_in_listener": 0,
+    "lp_adjacent_noise_listener_reason": "",
+    "lp_adjacent_noise_listener_confidence": 0.0,
+    "lp_adjacent_noise_listener_source_signals": [],
+    "lp_adjacent_noise_rule_version": LP_ADJACENT_NOISE_RULE_VERSION,
+    "lp_adjacent_noise_listener_reason_counts": {},
+    "lp_adjacent_noise_listener_confidence_buckets": {},
+    "lp_adjacent_noise_listener_source_signal_counts": {},
 }
 
 # get_logs 的 topic OR 数量不宜过大，按批次分片查询。
@@ -41,6 +57,11 @@ def get_monitored_watch_addresses() -> set[str]:
 
 def get_monitored_transfer_addresses() -> set[str]:
     return get_monitored_watch_addresses() | ACTIVE_LP_POOL_ADDRESSES
+
+
+def set_listener_archive_store(archive_store) -> None:
+    global _listener_archive_store
+    _listener_archive_store = archive_store
 
 
 def _to_hex(value):
@@ -188,6 +209,19 @@ def _build_eth_candidate(tx, block_num: int, touched_watch_addresses: list[str])
             if addr
         ],
         "next_hop_addresses": [tx["to"].lower()] if tx.get("to") else [],
+        "lp_adjacent_noise_skipped_in_listener": False,
+        "lp_adjacent_noise_listener_reason": "",
+        "lp_adjacent_noise_listener_confidence": 0.0,
+        "lp_adjacent_noise_listener_source_signals": [],
+        "lp_adjacent_noise_rule_version": "",
+        "lp_adjacent_noise_decision_stage": "",
+        "lp_adjacent_noise_filtered": False,
+        "lp_adjacent_noise_reason": "",
+        "lp_adjacent_noise_confidence": 0.0,
+        "lp_adjacent_noise_source_signals": [],
+        "lp_adjacent_noise_context_used": [],
+        "lp_adjacent_noise_runtime_context_present": False,
+        "lp_adjacent_noise_downstream_context_present": False,
         "replay_source": "",
     }
 
@@ -224,8 +258,208 @@ def _build_token_flow_candidate(
         "token_addresses": _extract_token_addresses(logs),
         "pool_transfer_count_by_pool": pool_transfer_counts,
         "pool_candidate_weight": pool_candidate_weight,
+        "lp_adjacent_noise_skipped_in_listener": False,
+        "lp_adjacent_noise_listener_reason": "",
+        "lp_adjacent_noise_listener_confidence": 0.0,
+        "lp_adjacent_noise_listener_source_signals": [],
+        "lp_adjacent_noise_rule_version": "",
+        "lp_adjacent_noise_decision_stage": "",
+        "lp_adjacent_noise_filtered": False,
+        "lp_adjacent_noise_reason": "",
+        "lp_adjacent_noise_confidence": 0.0,
+        "lp_adjacent_noise_source_signals": [],
+        "lp_adjacent_noise_context_used": [],
+        "lp_adjacent_noise_runtime_context_present": False,
+        "lp_adjacent_noise_downstream_context_present": False,
         "replay_source": "",
     }
+
+
+def _listener_lp_adjacent_skip_audit_record(
+    *,
+    candidate: dict,
+    watch_address: str,
+    decision: dict,
+) -> dict:
+    watch_address = str(watch_address or "").lower()
+    watch_meta = get_address_meta(watch_address)
+    strategy_role = str(
+        watch_meta.get("strategy_role")
+        or candidate.get("strategy_role")
+        or "unknown"
+    )
+    tx_hash = str(candidate.get("tx_hash") or candidate.get("hash") or "").lower()
+    counterparty_candidates = [
+        str(address or "").lower()
+        for address in (candidate.get("participant_addresses") or [])
+        if address and str(address or "").lower() != watch_address
+    ]
+    counterparty = counterparty_candidates[0] if counterparty_candidates else ""
+    event_id_seed = "|".join(
+        [
+            tx_hash,
+            watch_address or "adjacent_watch",
+            "lp_adjacent_noise_skipped_in_listener",
+        ]
+    )
+    silent_reason = {
+        "stage": "listener_prefilter",
+        "reason_code": "lp_adjacent_noise_skipped_in_listener",
+        "reason_detail": str(decision.get("reason") or "lp_adjacent_noise_skipped_in_listener"),
+        "reason_bucket": "prefilter_blocked",
+    }
+    return {
+        "event_id": f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}",
+        "tx_hash": tx_hash,
+        "watch_address": watch_address,
+        "monitor_type": "adjacent_watch",
+        "strategy_role": strategy_role,
+        "role_group": str(strategy_role_group(strategy_role)),
+        "intent_type": str(candidate.get("intent_type") or ""),
+        "behavior_type": "unknown",
+        "gate_reason": "lp_adjacent_noise_skipped_in_listener",
+        "delivery_class": "drop",
+        "stage": "listener_prefilter",
+        "counterparty": counterparty,
+        "watch_meta_source": str(watch_meta.get("watch_meta_source") or ""),
+        "strategy_hint": str(watch_meta.get("strategy_hint") or ""),
+        "runtime_adjacent_watch": bool(watch_meta.get("runtime_adjacent_watch")),
+        "runtime_state": str(watch_meta.get("runtime_state") or ""),
+        "anchor_watch_address": str(watch_meta.get("anchor_watch_address") or ""),
+        "downstream_case_id": str(watch_meta.get("downstream_case_id") or ""),
+        "touched_watch_addresses": list(candidate.get("touched_watch_addresses") or []),
+        "touched_lp_pools": list(candidate.get("touched_lp_pools") or []),
+        "touched_lp_pool_count": int(candidate.get("touched_lp_pool_count") or 0),
+        "tx_pool_hit_count": int(candidate.get("tx_pool_hit_count") or 0),
+        "pool_transfer_count_by_pool": dict(candidate.get("pool_transfer_count_by_pool") or {}),
+        "pool_candidate_weight": round(float(candidate.get("pool_candidate_weight") or 0.0), 3),
+        "participant_addresses": list(candidate.get("participant_addresses") or []),
+        "lp_adjacent_noise_skipped_in_listener": True,
+        "lp_adjacent_noise_listener_reason": str(decision.get("reason") or ""),
+        "lp_adjacent_noise_listener_confidence": round(float(decision.get("confidence") or 0.0), 3),
+        "lp_adjacent_noise_listener_source_signals": list(decision.get("source_signals") or []),
+        "lp_adjacent_noise_rule_version": str(
+            decision.get("rule_version") or LP_ADJACENT_NOISE_RULE_VERSION
+        ),
+        "lp_adjacent_noise_decision_stage": str(
+            decision.get("decision_stage") or LP_ADJACENT_NOISE_STAGE_LISTENER
+        ),
+        "lp_adjacent_noise_filtered": True,
+        "lp_adjacent_noise_reason": str(
+            decision.get("reason") or "lp_adjacent_noise_skipped_in_listener"
+        ),
+        "lp_adjacent_noise_confidence": round(float(decision.get("confidence") or 0.0), 3),
+        "lp_adjacent_noise_source_signals": list(decision.get("source_signals") or []),
+        "lp_adjacent_noise_context_used": list(decision.get("context_used") or []),
+        "lp_adjacent_noise_runtime_context_present": bool(
+            decision.get("runtime_context_present")
+        ),
+        "lp_adjacent_noise_downstream_context_present": bool(
+            decision.get("downstream_context_present")
+        ),
+        "silent_reason": silent_reason,
+        "silent_reason_bucket": "prefilter_blocked",
+        "usd_value": round(float(candidate.get("usd_value") or candidate.get("value") or 0.0), 2),
+        "pricing_confidence": round(float(candidate.get("pricing_confidence") or 0.0), 3),
+        "ingest_ts": int(candidate.get("ingest_ts") or time.time()),
+    }
+
+
+def _archive_listener_lp_adjacent_skip(
+    *,
+    candidate: dict,
+    watch_address: str,
+    decision: dict,
+) -> None:
+    if _listener_archive_store is None:
+        return
+    try:
+        record = _listener_lp_adjacent_skip_audit_record(
+            candidate=candidate,
+            watch_address=watch_address,
+            decision=dict(decision or {}),
+        )
+        _listener_archive_store.write_delivery_audit(
+            record,
+            archive_ts=int(candidate.get("ingest_ts") or time.time()),
+        )
+    except Exception as e:
+        print(f"listener lp_adjacent_noise audit 归档失败: {e}")
+
+
+def _schedule_listener_lp_adjacent_skip_audit(
+    *,
+    candidate: dict,
+    watch_address: str,
+    decision: dict,
+) -> None:
+    if _listener_archive_store is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            asyncio.to_thread(
+                _archive_listener_lp_adjacent_skip,
+                candidate=dict(candidate),
+                watch_address=str(watch_address or "").lower(),
+                decision=dict(decision or {}),
+            )
+        )
+    except RuntimeError:
+        _archive_listener_lp_adjacent_skip(
+            candidate=dict(candidate),
+            watch_address=str(watch_address or "").lower(),
+            decision=dict(decision or {}),
+        )
+
+
+def _update_lp_adjacent_noise_listener_stats(decision: dict) -> None:
+    reason = str(decision.get("reason") or "")
+    confidence = float(decision.get("confidence") or 0.0)
+    source_signals = list(decision.get("source_signals") or [])
+    reason_counts = dict(QUEUE_STATS.get("lp_adjacent_noise_listener_reason_counts") or {})
+    confidence_buckets = dict(QUEUE_STATS.get("lp_adjacent_noise_listener_confidence_buckets") or {})
+    source_signal_counts = dict(QUEUE_STATS.get("lp_adjacent_noise_listener_source_signal_counts") or {})
+    bucket = lp_adjacent_noise_confidence_bucket(confidence)
+
+    QUEUE_STATS["lp_adjacent_noise_skipped_in_listener"] = int(
+        QUEUE_STATS.get("lp_adjacent_noise_skipped_in_listener") or 0
+    ) + 1
+    QUEUE_STATS["lp_adjacent_noise_listener_reason"] = reason
+    QUEUE_STATS["lp_adjacent_noise_listener_confidence"] = round(confidence, 3)
+    QUEUE_STATS["lp_adjacent_noise_listener_source_signals"] = list(source_signals)
+    QUEUE_STATS["lp_adjacent_noise_rule_version"] = str(
+        decision.get("rule_version") or LP_ADJACENT_NOISE_RULE_VERSION
+    )
+
+    if reason:
+        reason_counts[reason] = int(reason_counts.get(reason) or 0) + 1
+    confidence_buckets[bucket] = int(confidence_buckets.get(bucket) or 0) + 1
+    for signal in source_signals:
+        text = str(signal or "").strip()
+        if not text:
+            continue
+        signal_key = text.split("=", 1)[0]
+        source_signal_counts[signal_key] = int(source_signal_counts.get(signal_key) or 0) + 1
+
+    QUEUE_STATS["lp_adjacent_noise_listener_reason_counts"] = reason_counts
+    QUEUE_STATS["lp_adjacent_noise_listener_confidence_buckets"] = confidence_buckets
+    QUEUE_STATS["lp_adjacent_noise_listener_source_signal_counts"] = source_signal_counts
+
+
+def _lp_adjacent_noise_listener_decision(
+    *,
+    watch_address: str,
+    candidate: dict | None = None,
+) -> dict:
+    candidate = dict(candidate or {})
+    candidate["watch_address"] = str(watch_address or "").lower()
+    candidate["monitor_type"] = str(candidate.get("monitor_type") or "adjacent_watch")
+    return lp_adjacent_noise_core_decision(
+        candidate,
+        stage=LP_ADJACENT_NOISE_STAGE_LISTENER,
+        watch_addresses=WATCH_ADDRESSES,
+    )
 
 
 async def _fetch_transfer_logs_for_block(block_num: int):
@@ -460,14 +694,52 @@ async def producer():
                         touched_lp_pools=sorted(touched_lp_pools),
                     )
                     for watch_address in touched_watch_addresses:
+                        listener_skip_decision = _lp_adjacent_noise_listener_decision(
+                            watch_address=watch_address,
+                            candidate=candidate,
+                        )
+                        if listener_skip_decision.get("is_noise"):
+                            _update_lp_adjacent_noise_listener_stats(listener_skip_decision)
+                            _schedule_listener_lp_adjacent_skip_audit(
+                                candidate=candidate,
+                                watch_address=watch_address,
+                                decision=listener_skip_decision,
+                            )
+                            continue
                         enriched = dict(candidate)
                         enriched["watch_address"] = watch_address
                         enriched["monitor_type"] = "watch_address" if watch_address in WATCH_ADDRESSES else "adjacent_watch"
+                        enriched["lp_adjacent_noise_skipped_in_listener"] = False
+                        enriched["lp_adjacent_noise_listener_reason"] = ""
+                        enriched["lp_adjacent_noise_listener_confidence"] = 0.0
+                        enriched["lp_adjacent_noise_listener_source_signals"] = []
+                        enriched["lp_adjacent_noise_rule_version"] = ""
+                        enriched["lp_adjacent_noise_decision_stage"] = ""
+                        enriched["lp_adjacent_noise_filtered"] = False
+                        enriched["lp_adjacent_noise_reason"] = ""
+                        enriched["lp_adjacent_noise_confidence"] = 0.0
+                        enriched["lp_adjacent_noise_source_signals"] = []
+                        enriched["lp_adjacent_noise_context_used"] = []
+                        enriched["lp_adjacent_noise_runtime_context_present"] = False
+                        enriched["lp_adjacent_noise_downstream_context_present"] = False
                         await _enqueue(enriched)
                     for pool_address in touched_lp_pools:
                         enriched = dict(candidate)
                         enriched["watch_address"] = pool_address
                         enriched["monitor_type"] = "lp_pool"
+                        enriched["lp_adjacent_noise_skipped_in_listener"] = False
+                        enriched["lp_adjacent_noise_listener_reason"] = ""
+                        enriched["lp_adjacent_noise_listener_confidence"] = 0.0
+                        enriched["lp_adjacent_noise_listener_source_signals"] = []
+                        enriched["lp_adjacent_noise_rule_version"] = ""
+                        enriched["lp_adjacent_noise_decision_stage"] = ""
+                        enriched["lp_adjacent_noise_filtered"] = False
+                        enriched["lp_adjacent_noise_reason"] = ""
+                        enriched["lp_adjacent_noise_confidence"] = 0.0
+                        enriched["lp_adjacent_noise_source_signals"] = []
+                        enriched["lp_adjacent_noise_context_used"] = []
+                        enriched["lp_adjacent_noise_runtime_context_present"] = False
+                        enriched["lp_adjacent_noise_downstream_context_present"] = False
                         await _enqueue(enriched)
 
             last_block = latest_block

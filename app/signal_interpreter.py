@@ -168,6 +168,9 @@ class SignalInterpreter:
         lp_volume_surge_label = self._lp_volume_surge_label(event)
         same_pool_continuity_label = self._same_pool_continuity_label(event)
         multi_pool_resonance_label = self._multi_pool_resonance_label(event)
+        lp_burst_label = self._lp_burst_label(event, signal)
+        lp_burst_summary = self._lp_burst_summary(event, signal)
+        lp_burst_window_label = self._lp_burst_window_label(event, signal)
         observe_or_primary_label = "主推送" if str(signal.delivery_class or "") == "primary" else "观察级"
         liquidation_meta = self._liquidation_meta(event)
         smart_money_context = self._smart_money_context(
@@ -329,6 +332,12 @@ class SignalInterpreter:
             "lp_volume_surge_label": lp_volume_surge_label,
             "same_pool_continuity_label": same_pool_continuity_label,
             "multi_pool_resonance_label": multi_pool_resonance_label,
+            "lp_burst_label": lp_burst_label,
+            "lp_burst_summary": lp_burst_summary,
+            "lp_burst_window_label": lp_burst_window_label,
+            "lp_burst_fastlane_applied": bool(event.metadata.get("lp_burst_fastlane_applied") or signal.metadata.get("lp_burst_fastlane_applied")),
+            "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
+            "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
             "observe_or_primary_label": observe_or_primary_label,
             "liquidation_stage": liquidation_meta["stage"],
             "liquidation_score": liquidation_meta["score"],
@@ -412,6 +421,12 @@ class SignalInterpreter:
             "lp_volume_surge_label": lp_volume_surge_label,
             "same_pool_continuity_label": same_pool_continuity_label,
             "multi_pool_resonance_label": multi_pool_resonance_label,
+            "lp_burst_label": lp_burst_label,
+            "lp_burst_summary": lp_burst_summary,
+            "lp_burst_window_label": lp_burst_window_label,
+            "lp_burst_fastlane_applied": bool(event.metadata.get("lp_burst_fastlane_applied") or signal.metadata.get("lp_burst_fastlane_applied")),
+            "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
+            "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
             "observe_or_primary_label": observe_or_primary_label,
             "smart_money_observe_label": smart_money_context["observe_label"],
             "smart_money_fact_brief": smart_money_context["fact_brief"],
@@ -441,6 +456,7 @@ class SignalInterpreter:
             signal.metadata["lp"] = {
                 "context": dict(raw.get("lp_context") or {}),
                 "analysis": dict(event.metadata.get("lp_analysis") or {}),
+                "burst": dict(event.metadata.get("lp_burst") or {}),
             }
         return InterpretationDecision(should_notify=True, reason="interpreted")
 
@@ -1170,11 +1186,19 @@ class SignalInterpreter:
         if lp_event:
             return self._lp_message_variant(event)
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "")
-        is_execution = str(event.intent_type or "") == "swap_execution" or bool(signal.metadata.get("is_real_execution"))
-        if strategy_role == "market_maker_wallet" and str(signal.delivery_class or "") == "observe":
-            return "market_maker_observe"
+        is_execution = (
+            bool(signal.metadata.get("is_real_execution"))
+            or event.kind == "swap"
+            or str(event.intent_type or "") == "swap_execution"
+        )
         if strategy_role in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
-            if str(signal.delivery_class or "") == "primary" and is_execution:
+            if not is_execution:
+                return "alert"
+            if strategy_role == "market_maker_wallet":
+                if str(signal.delivery_class or "") == "primary":
+                    return "smart_money_primary"
+                return "market_maker_observe"
+            if str(signal.delivery_class or "") == "primary":
                 return "smart_money_primary"
             return "smart_money_observe"
         return "alert"
@@ -1191,6 +1215,7 @@ class SignalInterpreter:
         action_hint: str,
     ) -> dict:
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
+        style_variant = "market_maker" if strategy_role == "market_maker_wallet" else "smart_money"
         if strategy_role not in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
             return {
                 "active": False,
@@ -1204,9 +1229,23 @@ class SignalInterpreter:
             }
 
         delivery_class = str(signal.delivery_class or "")
-        delivery_reason = str(signal.delivery_reason or event.delivery_reason or "")
-        is_execution = str(event.intent_type or "") == "swap_execution" or bool(signal.metadata.get("is_real_execution"))
-        style_variant = "market_maker" if strategy_role == "market_maker_wallet" else "smart_money"
+        is_execution = (
+            bool(signal.metadata.get("is_real_execution"))
+            or event.kind == "swap"
+            or str(event.intent_type or "") == "swap_execution"
+        )
+        if not is_execution:
+            return {
+                "active": False,
+                "message_variant": "alert",
+                "observe_label": "",
+                "fact_brief": "",
+                "explanation_brief": "",
+                "evidence_brief": "",
+                "action_hint": "",
+                "style_variant": style_variant,
+            }
+
         threshold_ratio = float(
             gate_metrics.get("market_maker_threshold_ratio")
             or gate_metrics.get("smart_money_non_exec_threshold_ratio")
@@ -1225,47 +1264,19 @@ class SignalInterpreter:
             or signal.metadata.get("market_maker_observe_exception_applied")
             or signal.metadata.get("smart_money_non_exec_exception_applied")
         )
-        behavior_type = str(signal.behavior_type or "")
-        behavior_label_map = {
-            "inventory_management": "库存管理",
-            "inventory_shift": "库存切换",
-            "inventory_expansion": "库存扩张",
-            "inventory_distribution": "库存分配",
-            "whale_action": "大额库存动作",
-        }
-
-        observe_label = "Smart Money 观察级雷达"
-        message_variant = "smart_money_primary" if delivery_class == "primary" and is_execution else "smart_money_observe"
+        observe_label = "Smart Money 执行观察雷达"
+        message_variant = "smart_money_primary" if delivery_class == "primary" else "smart_money_observe"
         if style_variant == "market_maker":
-            if is_execution:
-                observe_label = "Market Maker 执行观察雷达"
-            elif behavior_type == "inventory_shift" or delivery_reason == "market_maker_inventory_shift_observe":
-                observe_label = "Market Maker 库存切换观察雷达"
-            else:
-                observe_label = "Market Maker 库存观察雷达"
-            if delivery_class == "observe":
+            observe_label = "Market Maker 执行观察雷达"
+            if delivery_class != "primary":
                 message_variant = "market_maker_observe"
-        elif is_execution:
-            observe_label = "Smart Money 执行观察雷达"
-        elif delivery_class == "primary":
-            observe_label = "Smart Money 执行雷达"
-
-        if style_variant == "market_maker":
-            if is_execution:
-                sm_explanation = "已看到做市地址真实执行，但当前更适合继续看是否形成连续执行或方向切换。"
-            elif behavior_type == "inventory_shift" or delivery_reason == "market_maker_inventory_shift_observe":
-                sm_explanation = "当前更像做市库存切换/方向调整，不直接等同于主观建仓或出货。"
-            elif behavior_type in {"inventory_management", "inventory_expansion", "inventory_distribution"} or delivery_reason == "market_maker_inventory_observe":
-                sm_explanation = "当前更像做市库存调节或换手动作，金额与结构值得继续观察。"
-            else:
-                sm_explanation = "当前更像做市库存动作，后续是否转成真实执行更关键。"
+            sm_explanation = "已看到做市地址真实执行，当前更适合继续看是否形成连续执行、方向切换或跨地址共振。"
         else:
-            if delivery_class == "primary" and is_execution:
-                sm_explanation = "已看到更强的聪明钱真实执行，当前优先按执行路径跟踪。"
-            elif is_execution:
-                sm_explanation = "已看到真实执行，但当前更适合继续观察确认，不急于放大解读。"
-            else:
-                sm_explanation = "金额与地址质量较强，但当前仍属非执行观察，后续是否转成真实执行更关键。"
+            sm_explanation = (
+                "已看到更强的聪明钱真实执行，当前优先按执行路径跟踪。"
+                if delivery_class == "primary"
+                else "已看到真实执行，但当前更适合继续观察确认，不急于放大解读。"
+            )
 
         evidence_items = []
         if threshold_ratio > 0:
@@ -1278,19 +1289,15 @@ class SignalInterpreter:
             evidence_items.append(f"质量 {quality_score:.2f}")
         if exception_applied:
             evidence_items.append("gate 例外保留")
-        if behavior_type in {"inventory_management", "inventory_shift", "inventory_expansion", "inventory_distribution"}:
-            evidence_items.append(behavior_label_map.get(behavior_type, behavior_type))
 
-        sm_action_hint = action_hint
-        if style_variant == "market_maker":
-            sm_action_hint = "继续看同 token 是否连续换手、是否出现跨地址共振，或进一步转成真实执行。"
-        elif is_execution:
-            sm_action_hint = "继续看是否出现连续执行、同地址放量或多聪明钱共振。"
-        else:
-            sm_action_hint = "继续看是否从资金转移升级为真实执行，或形成更多地址共振。"
+        sm_action_hint = (
+            "继续看同 token 是否连续换手、是否出现跨地址共振，或是否进一步放大执行强度。"
+            if style_variant == "market_maker"
+            else "继续看是否出现连续执行、同地址放量或多聪明钱共振。"
+        )
 
         return {
-            "active": delivery_class in {"primary", "observe"},
+            "active": True,
             "message_variant": message_variant,
             "observe_label": observe_label,
             "fact_brief": fact_brief,
@@ -1524,6 +1531,90 @@ class SignalInterpreter:
         if resonance >= 2:
             return f"跨池同向 {resonance} 池"
         return "无跨池共振"
+
+    def _lp_burst_state(self, event: Event, signal: Signal) -> dict:
+        event_meta = event.metadata or {}
+        signal_meta = signal.metadata or {}
+        burst_meta = event_meta.get("lp_burst") or {}
+        return {
+            "applied": bool(
+                event_meta.get("lp_burst_fastlane_applied")
+                or signal_meta.get("lp_burst_fastlane_applied")
+            ),
+            "delivery_class": str(
+                event_meta.get("lp_burst_delivery_class")
+                or signal_meta.get("lp_burst_delivery_class")
+                or ""
+            ),
+            "window_sec": int(
+                event_meta.get("lp_burst_window_sec")
+                or signal_meta.get("lp_burst_window_sec")
+                or burst_meta.get("lp_burst_window_sec")
+                or 0
+            ),
+            "event_count": int(
+                event_meta.get("lp_burst_event_count")
+                or signal_meta.get("lp_burst_event_count")
+                or burst_meta.get("lp_burst_event_count")
+                or 0
+            ),
+            "total_usd": float(
+                event_meta.get("lp_burst_total_usd")
+                or signal_meta.get("lp_burst_total_usd")
+                or burst_meta.get("lp_burst_total_usd")
+                or 0.0
+            ),
+            "max_single_usd": float(
+                event_meta.get("lp_burst_max_single_usd")
+                or signal_meta.get("lp_burst_max_single_usd")
+                or burst_meta.get("lp_burst_max_single_usd")
+                or 0.0
+            ),
+            "same_pool_continuity": int(
+                event_meta.get("lp_burst_same_pool_continuity")
+                or signal_meta.get("lp_burst_same_pool_continuity")
+                or burst_meta.get("lp_burst_same_pool_continuity")
+                or 0
+            ),
+            "volume_surge_ratio": float(
+                event_meta.get("lp_burst_volume_surge_ratio")
+                or signal_meta.get("lp_burst_volume_surge_ratio")
+                or burst_meta.get("lp_burst_volume_surge_ratio")
+                or 0.0
+            ),
+        }
+
+    def _lp_burst_label(self, event: Event, signal: Signal) -> str:
+        burst = self._lp_burst_state(event, signal)
+        if burst["event_count"] <= 0:
+            return ""
+        if burst["applied"] and burst["delivery_class"] == "primary":
+            return "同池同向 burst 主推送"
+        if burst["applied"]:
+            return "同池同向 burst 快车道"
+        return "同池同向 burst 候选"
+
+    def _lp_burst_window_label(self, event: Event, signal: Signal) -> str:
+        window_sec = int(self._lp_burst_state(event, signal).get("window_sec") or 0)
+        if window_sec <= 0:
+            return ""
+        return f"{window_sec} 秒窗口"
+
+    def _lp_burst_summary(self, event: Event, signal: Signal) -> str:
+        burst = self._lp_burst_state(event, signal)
+        event_count = int(burst.get("event_count") or 0)
+        if event_count <= 0:
+            return ""
+        window_sec = int(burst.get("window_sec") or 0)
+        total_usd = float(burst.get("total_usd") or 0.0)
+        max_single_usd = float(burst.get("max_single_usd") or 0.0)
+        continuity = int(burst.get("same_pool_continuity") or event_count or 0)
+        volume_surge_ratio = float(burst.get("volume_surge_ratio") or 0.0)
+        direction = "买压" if str(event.intent_type or "") == "pool_buy_pressure" else "卖压"
+        return (
+            f"{direction} burst｜{window_sec} 秒内连续 {max(event_count, continuity)} 笔｜"
+            f"合计 ${total_usd:,.0f}｜峰值 ${max_single_usd:,.0f}｜放量 {volume_surge_ratio:.1f}x"
+        )
 
     def _pool_label(self, event: Event, raw: dict, actor_label: str) -> str:
         lp_context = raw.get("lp_context") or {}

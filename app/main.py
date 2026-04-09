@@ -13,7 +13,7 @@ from config import (
 )
 from filter import WATCH_ADDRESSES, get_address_meta, set_address_intelligence_manager
 from followup_tracker import FollowupTracker
-from listener import producer, replay_spill_worker, worker
+from listener import producer, replay_spill_worker, set_listener_archive_store, worker
 from notifier import send_signal
 from pipeline import SignalPipeline
 from price_service import PriceService
@@ -44,6 +44,7 @@ signal_interpreter = SignalInterpreter()
 address_intelligence = AddressIntelligenceManager(watch_addresses=WATCH_ADDRESSES)
 archive_store = ArchiveStore()
 followup_tracker = FollowupTracker()
+set_listener_archive_store(archive_store)
 set_address_intelligence_manager(address_intelligence)
 
 pipeline = SignalPipeline(
