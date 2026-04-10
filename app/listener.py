@@ -734,7 +734,13 @@ def _build_runtime_adjacent_scan_plan(
     for address in active_addresses:
         if address in WATCH_ADDRESSES:
             continue
-        meta = dict(maybe_get_runtime_adjacent_watch_meta(address, now_ts=reference_ts) or {})
+        try:
+            meta = dict(maybe_get_runtime_adjacent_watch_meta(address, now_ts=reference_ts) or {})
+        except Exception as e:
+            print(f"[listener] runtime adjacent scan skipped address={str(address or '').lower()} detail={e}")
+            continue
+        if not meta:
+            continue
         meta["address"] = str(address or "").lower()
         meta["scan_priority_score"] = _runtime_adjacent_priority_score(meta)
         if _is_runtime_adjacent_core(meta):

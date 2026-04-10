@@ -92,6 +92,7 @@ class StateManager:
         self._open_cases_by_address: dict[str, set[str]] = defaultdict(set)
         self._open_cases_by_token: dict[str, set[str]] = defaultdict(set)
         self._adjacent_watch_states: dict[str, AdjacentWatchState] = {}
+        self._adjacent_watch_meta_warning_ts: dict[str, int] = {}
         _PRIMARY_STATE_MANAGER = self
 
     def apply_event(self, event: Event) -> None:
@@ -453,45 +454,61 @@ class StateManager:
         state = self.get_adjacent_watch_context(address, now_ts=now_ts)
         if not state:
             return {}
-        metadata = dict(state.get("metadata") or {})
-        display_hint_label = str(metadata.get("display_hint_label") or state.get("reason") or "new_large_counterparty")
-        return {
-            "runtime_adjacent_watch": True,
-            "watch_meta_source": "runtime_adjacent_watch",
-            "role": str(metadata.get("role") or "user_watch"),
-            "strategy_role": str(metadata.get("strategy_role") or ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE or "adjacent_watch"),
-            "semantic_role": str(metadata.get("semantic_role") or "watched_wallet"),
-            "anchor_watch_address": state.get("anchor_watch_address", ""),
-            "anchor_label": state.get("anchor_label", ""),
-            "root_tx_hash": state.get("root_tx_hash", ""),
-            "opened_at": int(state.get("opened_at") or 0),
-            "active_until": int(state.get("active_until") or 0),
-            "cooling_until": int(state.get("cooling_until") or 0),
-            "closing_until": int(state.get("closing_until") or 0),
-            "expire_at": int(state.get("active_until") or 0),
-            "hop": int(state.get("hop") or 1),
-            "strategy_hint": state.get("strategy_hint", ""),
-            "observed_count": int(state.get("observed_count") or 0),
-            "emitted_notification_count": int(state.get("emitted_notification_count") or 0),
-            "last_seen_ts": int(state.get("last_seen_ts") or 0),
-            "last_event_type": str(state.get("last_event_type") or ""),
-            "anchor_usd_value": float(state.get("anchor_usd_value") or 0.0),
-            "priority": int(metadata.get("priority") or ADJACENT_WATCH_RUNTIME_PRIORITY or 3),
-            "display_hint_label": display_hint_label,
-            "display_hint_reason": str(metadata.get("display_hint_reason") or state.get("reason") or ""),
-            "display_hint_anchor_label": state.get("anchor_label", ""),
-            "display_hint_anchor_address": state.get("anchor_watch_address", ""),
-            "display_hint_usd_value": float(state.get("anchor_usd_value") or 0.0),
-            "display_hint_token_symbol": str(metadata.get("token_symbol") or ""),
-            "anchor_strategy_role": str(metadata.get("anchor_strategy_role") or ""),
-            "restore_anchor_mode": str(metadata.get("restore_anchor_mode") or ""),
-            "restored_top_counterparties": list(metadata.get("restored_top_counterparties") or []),
-            "restore_source": str(metadata.get("restore_source") or ""),
-            "restore_strength": str(metadata.get("restore_strength") or ""),
-            "downstream_case_id": str(metadata.get("case_id") or ""),
-            "runtime_label_hint": str(state.get("runtime_label_hint") or display_hint_label),
-            "runtime_state": self._adjacent_watch_phase(state, reference_ts=int(now_ts or time.time())),
-        }
+        if not isinstance(state, dict):
+            self._warn_adjacent_watch_meta_issue(address, f"unexpected_payload_type={type(state).__name__}")
+            return {}
+
+        try:
+            metadata = dict(state.get("metadata") or {})
+            reference_ts = int(now_ts or time.time())
+            active_until = int(state.get("active_until") or 0)
+            cooling_until = int(state.get("cooling_until") or 0)
+            closing_until = int(state.get("closing_until") or 0)
+            runtime_state = self._adjacent_watch_phase_from_payload(
+                state,
+                reference_ts=reference_ts,
+            )
+            display_hint_label = str(metadata.get("display_hint_label") or state.get("reason") or "new_large_counterparty")
+            return {
+                "runtime_adjacent_watch": True,
+                "watch_meta_source": "runtime_adjacent_watch",
+                "role": str(metadata.get("role") or "user_watch"),
+                "strategy_role": str(metadata.get("strategy_role") or ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE or "adjacent_watch"),
+                "semantic_role": str(metadata.get("semantic_role") or "watched_wallet"),
+                "anchor_watch_address": state.get("anchor_watch_address", ""),
+                "anchor_label": state.get("anchor_label", ""),
+                "root_tx_hash": state.get("root_tx_hash", ""),
+                "opened_at": int(state.get("opened_at") or 0),
+                "active_until": active_until,
+                "cooling_until": cooling_until,
+                "closing_until": closing_until,
+                "expire_at": active_until,
+                "hop": int(state.get("hop") or 1),
+                "strategy_hint": state.get("strategy_hint", ""),
+                "observed_count": int(state.get("observed_count") or 0),
+                "emitted_notification_count": int(state.get("emitted_notification_count") or 0),
+                "last_seen_ts": int(state.get("last_seen_ts") or 0),
+                "last_event_type": str(state.get("last_event_type") or ""),
+                "anchor_usd_value": float(state.get("anchor_usd_value") or 0.0),
+                "priority": int(metadata.get("priority") or ADJACENT_WATCH_RUNTIME_PRIORITY or 3),
+                "display_hint_label": display_hint_label,
+                "display_hint_reason": str(metadata.get("display_hint_reason") or state.get("reason") or ""),
+                "display_hint_anchor_label": state.get("anchor_label", ""),
+                "display_hint_anchor_address": state.get("anchor_watch_address", ""),
+                "display_hint_usd_value": float(state.get("anchor_usd_value") or 0.0),
+                "display_hint_token_symbol": str(metadata.get("token_symbol") or ""),
+                "anchor_strategy_role": str(metadata.get("anchor_strategy_role") or ""),
+                "restore_anchor_mode": str(metadata.get("restore_anchor_mode") or ""),
+                "restored_top_counterparties": list(metadata.get("restored_top_counterparties") or []),
+                "restore_source": str(metadata.get("restore_source") or ""),
+                "restore_strength": str(metadata.get("restore_strength") or ""),
+                "downstream_case_id": str(metadata.get("case_id") or ""),
+                "runtime_label_hint": str(state.get("runtime_label_hint") or display_hint_label),
+                "runtime_state": runtime_state,
+            }
+        except Exception as e:
+            self._warn_adjacent_watch_meta_issue(address, f"meta_build_failed={e}")
+            return {}
 
     def get_active_adjacent_watch_addresses(self, now_ts: int | None = None) -> set[str]:
         self.expire_adjacent_watch(None, now_ts=now_ts)
@@ -564,10 +581,23 @@ class StateManager:
         return expired
 
     def _adjacent_watch_payload(self, state: AdjacentWatchState) -> dict:
+        # payload 是 dict 视图；payload 层不要再回传给 dataclass-only helper。
         payload = asdict(state)
         payload["token"] = str(payload.get("token") or "").lower() or None
         payload["expire_at"] = int(payload.get("active_until") or 0)
         return payload
+
+    def _adjacent_watch_phase_from_payload(self, payload: dict, reference_ts: int) -> str:
+        active_until = int(payload.get("active_until") or 0)
+        cooling_until = int(payload.get("cooling_until") or 0)
+        closing_until = int(payload.get("closing_until") or 0)
+        if active_until > reference_ts:
+            return "active"
+        if cooling_until > reference_ts:
+            return "cooling"
+        if closing_until > reference_ts:
+            return "closing"
+        return "closed"
 
     def _adjacent_watch_phase(self, state: AdjacentWatchState, reference_ts: int) -> str:
         if int(state.active_until or 0) > reference_ts:
@@ -577,6 +607,15 @@ class StateManager:
         if int(state.closing_until or 0) > reference_ts:
             return "closing"
         return "closed"
+
+    def _warn_adjacent_watch_meta_issue(self, address: str | None, detail: str) -> None:
+        addr = str(address or "").lower() or "unknown_adjacent_watch"
+        now_ts = int(time.time())
+        last_ts = int(self._adjacent_watch_meta_warning_ts.get(addr) or 0)
+        if now_ts - last_ts < 60:
+            return
+        self._adjacent_watch_meta_warning_ts[addr] = now_ts
+        print(f"[state_manager] runtime adjacent meta warning address={addr} detail={detail}")
 
     def record_counterparty(
         self,
