@@ -15,6 +15,17 @@ from config import (
     MARKET_MAKER_OBSERVE_MIN_RESONANCE,
     MARKET_MAKER_OBSERVE_VALUE_BONUS_MAX,
     LP_VALUE_BONUS_MAX,
+    LP_BUY_FAST_EXCEPTION_MIN_ACTION_INTENSITY,
+    LP_BUY_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO,
+    LP_BUY_OBSERVE_THRESHOLD_RATIO_FLOOR,
+    LP_BUY_TREND_BURST_MIN_ACTION_INTENSITY,
+    LP_BUY_TREND_BURST_MIN_VOLUME_SURGE_RATIO,
+    LP_BUY_TREND_CONTINUATION_MIN_ACTION_INTENSITY,
+    LP_BUY_TREND_CONTINUATION_MIN_VOLUME_SURGE_RATIO,
+    LP_BUY_TREND_CONTINUATION_THRESHOLD_RATIO_FLOOR,
+    LP_BUY_TREND_REVERSAL_MIN_ACTION_INTENSITY,
+    LP_BUY_TREND_REVERSAL_MIN_VOLUME_SURGE_RATIO,
+    LP_BUY_TREND_REVERSAL_THRESHOLD_RATIO_FLOOR,
     LP_BURST_FASTLANE_ENABLE,
     LP_BURST_MIN_ACTION_INTENSITY,
     LP_BURST_MIN_EVENT_COUNT,
@@ -24,6 +35,9 @@ from config import (
     LP_BURST_MIN_TOTAL_USD,
     LP_BURST_MIN_VOLUME_SURGE_RATIO,
     LP_DIRECTIONAL_COOLDOWN_SEC,
+    LP_SELL_FAST_EXCEPTION_MIN_ACTION_INTENSITY,
+    LP_SELL_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO,
+    LP_SELL_OBSERVE_THRESHOLD_RATIO_FLOOR,
     LP_FAST_EXCEPTION_MIN_ACTION_INTENSITY,
     LP_FAST_EXCEPTION_MIN_PRICING_CONFIDENCE,
     LP_FAST_EXCEPTION_MIN_RESERVE_SKEW,
@@ -35,6 +49,13 @@ from config import (
     LP_OBSERVE_THRESHOLD_RATIO_FLOOR,
     LP_PRIMARY_MIN_CONFIDENCE,
     LP_PRIMARY_MIN_SURGE_RATIO,
+    LP_TREND_BURST_MIN_ACTION_INTENSITY,
+    LP_TREND_BURST_MIN_EVENT_COUNT,
+    LP_TREND_BURST_MIN_MAX_SINGLE_USD,
+    LP_TREND_BURST_MIN_PRICING_CONFIDENCE,
+    LP_TREND_BURST_MIN_RESERVE_SKEW,
+    LP_TREND_BURST_MIN_TOTAL_USD,
+    LP_TREND_BURST_MIN_VOLUME_SURGE_RATIO,
     LP_VOLUME_SURGE_MIN_RATIO,
     QUALITY_GATE_COOLDOWN_SEC,
     QUALITY_GATE_MIN_GLOBAL_USD,
@@ -63,6 +84,7 @@ from filter import (
     is_smart_money_strategy_role,
     strategy_role_group,
 )
+from lp_registry import classify_trend_pool_meta
 from models import Event
 from state_manager import StateManager
 
@@ -72,7 +94,7 @@ EXCHANGE_STRICT_ROLES = {
     "exchange_deposit_wallet",
     "exchange_trading_wallet",
 }
-LP_FAST_EXCEPTION_GATE_VERSION = "lp_directional_structural_v2"
+LP_FAST_EXCEPTION_GATE_VERSION = "lp_directional_trend_state_v4"
 
 
 @dataclass
@@ -137,6 +159,18 @@ class SignalQualityGate:
         self.lp_fast_exception_min_action_intensity = float(LP_FAST_EXCEPTION_MIN_ACTION_INTENSITY)
         self.lp_fast_exception_min_reserve_skew = float(LP_FAST_EXCEPTION_MIN_RESERVE_SKEW)
         self.lp_fast_exception_min_pricing_confidence = float(LP_FAST_EXCEPTION_MIN_PRICING_CONFIDENCE)
+        self.lp_sell_observe_threshold_ratio_floor = float(LP_SELL_OBSERVE_THRESHOLD_RATIO_FLOOR)
+        self.lp_sell_fast_exception_min_volume_surge_ratio = float(LP_SELL_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO)
+        self.lp_sell_fast_exception_min_action_intensity = float(LP_SELL_FAST_EXCEPTION_MIN_ACTION_INTENSITY)
+        self.lp_buy_observe_threshold_ratio_floor = float(LP_BUY_OBSERVE_THRESHOLD_RATIO_FLOOR)
+        self.lp_buy_fast_exception_min_volume_surge_ratio = float(LP_BUY_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO)
+        self.lp_buy_fast_exception_min_action_intensity = float(LP_BUY_FAST_EXCEPTION_MIN_ACTION_INTENSITY)
+        self.lp_buy_trend_continuation_threshold_ratio_floor = float(LP_BUY_TREND_CONTINUATION_THRESHOLD_RATIO_FLOOR)
+        self.lp_buy_trend_continuation_min_volume_surge_ratio = float(LP_BUY_TREND_CONTINUATION_MIN_VOLUME_SURGE_RATIO)
+        self.lp_buy_trend_continuation_min_action_intensity = float(LP_BUY_TREND_CONTINUATION_MIN_ACTION_INTENSITY)
+        self.lp_buy_trend_reversal_threshold_ratio_floor = float(LP_BUY_TREND_REVERSAL_THRESHOLD_RATIO_FLOOR)
+        self.lp_buy_trend_reversal_min_volume_surge_ratio = float(LP_BUY_TREND_REVERSAL_MIN_VOLUME_SURGE_RATIO)
+        self.lp_buy_trend_reversal_min_action_intensity = float(LP_BUY_TREND_REVERSAL_MIN_ACTION_INTENSITY)
         self.lp_burst_fastlane_enable = bool(LP_BURST_FASTLANE_ENABLE)
         self.lp_burst_min_event_count = int(LP_BURST_MIN_EVENT_COUNT)
         self.lp_burst_min_total_usd = float(LP_BURST_MIN_TOTAL_USD)
@@ -145,6 +179,15 @@ class SignalQualityGate:
         self.lp_burst_min_action_intensity = float(LP_BURST_MIN_ACTION_INTENSITY)
         self.lp_burst_min_reserve_skew = float(LP_BURST_MIN_RESERVE_SKEW)
         self.lp_burst_min_pricing_confidence = float(LP_BURST_MIN_PRICING_CONFIDENCE)
+        self.lp_trend_burst_min_event_count = int(LP_TREND_BURST_MIN_EVENT_COUNT)
+        self.lp_trend_burst_min_total_usd = float(LP_TREND_BURST_MIN_TOTAL_USD)
+        self.lp_trend_burst_min_max_single_usd = float(LP_TREND_BURST_MIN_MAX_SINGLE_USD)
+        self.lp_trend_burst_min_volume_surge_ratio = float(LP_TREND_BURST_MIN_VOLUME_SURGE_RATIO)
+        self.lp_trend_burst_min_action_intensity = float(LP_TREND_BURST_MIN_ACTION_INTENSITY)
+        self.lp_trend_burst_min_reserve_skew = float(LP_TREND_BURST_MIN_RESERVE_SKEW)
+        self.lp_trend_burst_min_pricing_confidence = float(LP_TREND_BURST_MIN_PRICING_CONFIDENCE)
+        self.lp_buy_trend_burst_min_volume_surge_ratio = float(LP_BUY_TREND_BURST_MIN_VOLUME_SURGE_RATIO)
+        self.lp_buy_trend_burst_min_action_intensity = float(LP_BUY_TREND_BURST_MIN_ACTION_INTENSITY)
         self.liquidation_min_usd = float(LIQUIDATION_MIN_USD)
         self.liquidation_primary_min_usd = float(LIQUIDATION_PRIMARY_MIN_USD)
         self.liquidation_risk_min_score = float(LIQUIDATION_RISK_MIN_SCORE)
@@ -253,6 +296,36 @@ class SignalQualityGate:
         exchange_noise_sensitive = self._exchange_noise_sensitive(event, watch_meta)
         raw = event.metadata.get("raw") or {}
         lp_context = raw.get("lp_context") or {}
+        lp_directional_side = self._lp_directional_side(event)
+        lp_trend_pool_context = self._lp_trend_pool_context(
+            event=event,
+            watch_meta=watch_meta,
+            lp_context=lp_context,
+        )
+        lp_trend_primary_pool = bool(lp_trend_pool_context.get("is_primary_trend_pool"))
+        lp_trend_snapshot = self.state_manager.get_lp_trend_snapshot(
+            pool_address=str(event.address or "").lower(),
+            now_ts=int(event.ts or 0),
+            trend_pool_context=lp_trend_pool_context,
+        )
+        lp_directional_profile = self._lp_directional_profile(
+            event=event,
+            lp_trend_pool_context=lp_trend_pool_context,
+            lp_trend_snapshot=lp_trend_snapshot,
+            same_pool_continuity=same_pool_continuity,
+            multi_pool_resonance=multi_pool_resonance,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            action_intensity=action_intensity,
+            reserve_skew=reserve_skew,
+            lp_burst_event_count=lp_burst_event_count,
+            lp_burst_volume_surge_ratio=lp_burst_volume_surge_ratio,
+            lp_burst_action_intensity=lp_burst_action_intensity,
+        )
+        lp_burst_profile = self._lp_burst_profile(
+            lp_trend_pool_context=lp_trend_pool_context,
+            lp_trend_snapshot=lp_trend_snapshot,
+            directional_side=lp_directional_side,
+        )
         is_stablecoin_flow = bool(raw.get("is_stablecoin_flow") or token in STABLE_TOKEN_CONTRACTS)
         is_exchange_related = bool(raw.get("is_exchange_related"))
         possible_internal_transfer = bool(raw.get("possible_internal_transfer"))
@@ -346,6 +419,28 @@ class SignalQualityGate:
             "lp_protocol": str(lp_context.get("protocol") or ""),
             "lp_action": str(lp_context.get("action") or ""),
             "lp_direction": str(lp_context.get("direction") or ""),
+            "lp_trend_sensitivity_mode": bool(lp_directional_profile.get("trend_sensitivity_mode")),
+            "lp_trend_primary_pool": bool(lp_trend_primary_pool),
+            "lp_trend_pool_family": str(lp_trend_pool_context.get("trend_pool_family") or ""),
+            "lp_trend_base_family": str(lp_trend_pool_context.get("trend_base_family") or ""),
+            "lp_trend_quote_family": str(lp_trend_pool_context.get("trend_quote_family") or ""),
+            "lp_trend_pool_match_mode": str(lp_trend_pool_context.get("trend_pool_match_mode") or "non_trend_pool"),
+            "lp_trend_state": str(lp_trend_snapshot.get("lp_trend_state") or "trend_neutral"),
+            "lp_trend_side_bias": str(lp_trend_snapshot.get("lp_trend_side_bias") or "neutral"),
+            "lp_trend_continuation_score": float(lp_trend_snapshot.get("lp_trend_continuation_score") or 0.0),
+            "lp_trend_reversal_score": float(lp_trend_snapshot.get("lp_trend_reversal_score") or 0.0),
+            "lp_trend_state_source": str(lp_trend_snapshot.get("lp_trend_state_source") or "state_manager_window"),
+            "lp_trend_state_window_sec": int(lp_trend_snapshot.get("lp_trend_state_window_sec") or 0),
+            "lp_trend_buy_pressure_count": int(lp_trend_snapshot.get("lp_trend_buy_pressure_count") or 0),
+            "lp_trend_sell_pressure_count": int(lp_trend_snapshot.get("lp_trend_sell_pressure_count") or 0),
+            "lp_trend_window_total_usd": float(lp_trend_snapshot.get("lp_trend_window_total_usd") or 0.0),
+            "lp_trend_last_shift_ts": int(lp_trend_snapshot.get("lp_trend_last_shift_ts") or 0),
+            "lp_directional_side": lp_directional_side,
+            "lp_directional_threshold_profile": str(lp_directional_profile.get("threshold_profile") or ""),
+            "lp_fast_exception_profile_name": str(lp_directional_profile.get("profile_name") or ""),
+            "lp_buy_trend_profile_active": bool(lp_directional_profile.get("buy_trend_profile_active")),
+            "lp_buy_trend_profile_name": str(lp_directional_profile.get("buy_trend_profile_name") or ""),
+            "lp_buy_trend_profile_reason": str(lp_directional_profile.get("buy_trend_profile_reason") or ""),
             "is_exchange_related": is_exchange_related,
             "is_stablecoin_flow": is_stablecoin_flow,
             "stablecoin_dominant": is_stablecoin_flow,
@@ -373,6 +468,7 @@ class SignalQualityGate:
             "lp_fast_exception_threshold_ratio": round(threshold_ratio, 3),
             "lp_fast_exception_usd_gap": round(max(dynamic_min_usd - usd_value, 0.0), 2),
             "lp_fast_exception_structure_score": 0.0,
+            "lp_fast_exception_structure_passed": False,
             "lp_fast_exception_gate_version": LP_FAST_EXCEPTION_GATE_VERSION,
             "lp_burst_fastlane_applied": False,
             "lp_burst_fastlane_reason": "",
@@ -387,6 +483,10 @@ class SignalQualityGate:
             "lp_burst_first_ts": lp_burst_first_ts,
             "lp_burst_last_ts": lp_burst_last_ts,
             "lp_burst_delivery_class": "",
+            "lp_burst_trend_mode": bool(lp_burst_profile.get("trend_mode")),
+            "lp_burst_event_count_threshold_used": int(lp_burst_profile.get("min_event_count") or 0) if lp_directional_side else 0,
+            "lp_burst_total_usd_threshold_used": float(lp_burst_profile.get("min_total_usd") or 0.0) if lp_directional_side else 0.0,
+            "lp_burst_trend_profile_name": str(lp_burst_profile.get("profile_name") or "") if lp_directional_side else "",
             "lp_directional_cooldown_key": cooldown_key if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else "",
             "lp_directional_cooldown_sec": cooldown_sec if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else 0,
             "lp_directional_cooldown_allowed": True if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else None,
@@ -414,6 +514,7 @@ class SignalQualityGate:
             event=event,
             lp_event=lp_event,
             pricing_confidence=pricing_confidence,
+            burst_profile=lp_burst_profile,
         )
         metrics["lp_burst_fastlane_ready"] = bool(lp_burst_fastlane_ready)
         if lp_burst_fastlane_reason:
@@ -460,7 +561,7 @@ class SignalQualityGate:
             return GateDecision(False, "pricing_low_confidence_non_swap", 0.0, "DROP", self.score_threshold, metrics)
 
         if usd_value < dynamic_min_usd:
-            allow_lp_observe_exception, lp_exception_reason, lp_exception_structure_score = self._allow_lp_directional_observe_exception(
+            allow_lp_observe_exception, lp_exception_reason, lp_exception_structure_score, lp_exception_structure_passed = self._allow_lp_directional_observe_exception(
                 event=event,
                 lp_event=lp_event,
                 usd_value=usd_value,
@@ -476,8 +577,10 @@ class SignalQualityGate:
                 same_pool_continuity=same_pool_continuity,
                 multi_pool_resonance=multi_pool_resonance,
                 pool_volume_surge_ratio=pool_volume_surge_ratio,
+                directional_profile=lp_directional_profile,
             )
             metrics["lp_fast_exception_structure_score"] = round(lp_exception_structure_score, 3)
+            metrics["lp_fast_exception_structure_passed"] = bool(lp_exception_structure_passed)
             metrics["lp_fast_exception_reason"] = str(lp_exception_reason or "")
             if allow_lp_observe_exception:
                 metrics["lp_observe_exception_applied"] = True
@@ -927,6 +1030,218 @@ class SignalQualityGate:
 
         return None
 
+    def _lp_directional_side(self, event: Event) -> str:
+        intent_type = str(event.intent_type or "")
+        if intent_type == "pool_buy_pressure":
+            return "buy_pressure"
+        if intent_type == "pool_sell_pressure":
+            return "sell_pressure"
+        return ""
+
+    def _lp_trend_pool_context(
+        self,
+        event: Event,
+        watch_meta: dict,
+        lp_context: dict,
+    ) -> dict:
+        if not self._is_lp_event(event=event, watch_meta=watch_meta):
+            return {
+                "is_primary_trend_pool": False,
+                "trend_pool_family": "",
+                "trend_base_family": "other",
+                "trend_quote_family": "other",
+                "trend_pool_match_mode": "non_trend_pool",
+            }
+        meta = {
+            "pair_label": lp_context.get("pair_label") or watch_meta.get("pair_label") or "",
+            "base_token_contract": lp_context.get("base_token_contract") or watch_meta.get("base_token_contract") or "",
+            "base_token_symbol": lp_context.get("base_token_symbol") or watch_meta.get("base_token_symbol") or "",
+            "quote_token_contract": lp_context.get("quote_token_contract") or watch_meta.get("quote_token_contract") or "",
+            "quote_token_symbol": lp_context.get("quote_token_symbol") or watch_meta.get("quote_token_symbol") or "",
+            "token0_contract": lp_context.get("token0_contract") or watch_meta.get("token0_contract") or "",
+            "token0_symbol": lp_context.get("token0_symbol") or watch_meta.get("token0_symbol") or "",
+            "token1_contract": lp_context.get("token1_contract") or watch_meta.get("token1_contract") or "",
+            "token1_symbol": lp_context.get("token1_symbol") or watch_meta.get("token1_symbol") or "",
+        }
+        return classify_trend_pool_meta(meta)
+
+    def _lp_trend_primary_pool(
+        self,
+        event: Event,
+        watch_meta: dict,
+        lp_context: dict,
+    ) -> bool:
+        return bool(self._lp_trend_pool_context(event=event, watch_meta=watch_meta, lp_context=lp_context).get("is_primary_trend_pool"))
+
+    def _lp_directional_profile(
+        self,
+        *,
+        event: Event,
+        lp_trend_pool_context: dict,
+        lp_trend_snapshot: dict,
+        same_pool_continuity: int,
+        multi_pool_resonance: int,
+        pool_volume_surge_ratio: float,
+        action_intensity: float,
+        reserve_skew: float,
+        lp_burst_event_count: int,
+        lp_burst_volume_surge_ratio: float,
+        lp_burst_action_intensity: float,
+    ) -> dict:
+        side = self._lp_directional_side(event)
+        profile = {
+            "trend_sensitivity_mode": False,
+            "threshold_profile": "standard" if side else "",
+            "profile_name": "lp_directional_standard_v1" if side else "",
+            "threshold_ratio_floor": self.lp_observe_threshold_ratio_floor,
+            "min_same_pool_continuity": self.lp_fast_exception_min_same_pool_continuity,
+            "min_volume_surge_ratio": self.lp_fast_exception_min_volume_surge_ratio,
+            "min_action_intensity": self.lp_fast_exception_min_action_intensity,
+            "min_reserve_skew": self.lp_fast_exception_min_reserve_skew,
+            "min_pricing_confidence": self.lp_fast_exception_min_pricing_confidence,
+            "buy_trend_profile_active": False,
+            "buy_trend_profile_name": "",
+            "buy_trend_profile_reason": "",
+        }
+        if not bool(lp_trend_pool_context.get("is_primary_trend_pool")) or side not in {"buy_pressure", "sell_pressure"}:
+            return profile
+
+        trend_state = str(lp_trend_snapshot.get("lp_trend_state") or "trend_neutral")
+        trend_side_bias = str(lp_trend_snapshot.get("lp_trend_side_bias") or "neutral")
+        if side == "sell_pressure":
+            if trend_state in {"trend_continuation_sell", "trend_reversal_to_sell"} or trend_side_bias == "sell_pressure":
+                profile.update({
+                    "trend_sensitivity_mode": True,
+                    "threshold_profile": "sell_bias",
+                    "profile_name": "lp_directional_sell_bias_v2",
+                    "threshold_ratio_floor": self.lp_sell_observe_threshold_ratio_floor,
+                    "min_volume_surge_ratio": self.lp_sell_fast_exception_min_volume_surge_ratio,
+                    "min_action_intensity": self.lp_sell_fast_exception_min_action_intensity,
+                })
+            return profile
+
+        if trend_side_bias == "buy_pressure":
+            profile.update({
+                "trend_sensitivity_mode": True,
+                "threshold_profile": "buy_bias",
+                "profile_name": "lp_directional_buy_bias_standard_v1",
+                "threshold_ratio_floor": self.lp_buy_observe_threshold_ratio_floor,
+                "min_volume_surge_ratio": self.lp_buy_fast_exception_min_volume_surge_ratio,
+                "min_action_intensity": self.lp_buy_fast_exception_min_action_intensity,
+            })
+
+        buy_trend_ready, buy_trend_reason = self._buy_trend_structure_ready(
+            trend_state=trend_state,
+            same_pool_continuity=same_pool_continuity,
+            multi_pool_resonance=multi_pool_resonance,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            action_intensity=action_intensity,
+            reserve_skew=reserve_skew,
+            lp_burst_event_count=lp_burst_event_count,
+            lp_burst_volume_surge_ratio=lp_burst_volume_surge_ratio,
+            lp_burst_action_intensity=lp_burst_action_intensity,
+        )
+        if buy_trend_ready and trend_state == "trend_continuation_buy":
+            profile.update({
+                "trend_sensitivity_mode": True,
+                "threshold_profile": "buy_bias_trend_continuation",
+                "profile_name": "lp_directional_buy_bias_trend_v1",
+                "threshold_ratio_floor": self.lp_buy_trend_continuation_threshold_ratio_floor,
+                "min_volume_surge_ratio": self.lp_buy_trend_continuation_min_volume_surge_ratio,
+                "min_action_intensity": self.lp_buy_trend_continuation_min_action_intensity,
+                "buy_trend_profile_active": True,
+                "buy_trend_profile_name": "lp_directional_buy_bias_trend_v1",
+                "buy_trend_profile_reason": buy_trend_reason,
+            })
+        elif buy_trend_ready and trend_state == "trend_reversal_to_buy":
+            profile.update({
+                "trend_sensitivity_mode": True,
+                "threshold_profile": "buy_bias_trend_reversal",
+                "profile_name": "lp_directional_buy_bias_trend_v1",
+                "threshold_ratio_floor": self.lp_buy_trend_reversal_threshold_ratio_floor,
+                "min_volume_surge_ratio": self.lp_buy_trend_reversal_min_volume_surge_ratio,
+                "min_action_intensity": self.lp_buy_trend_reversal_min_action_intensity,
+                "buy_trend_profile_active": True,
+                "buy_trend_profile_name": "lp_directional_buy_bias_trend_v1",
+                "buy_trend_profile_reason": buy_trend_reason,
+            })
+        return profile
+
+    def _lp_burst_profile(self, *, lp_trend_pool_context: dict, lp_trend_snapshot: dict, directional_side: str) -> dict:
+        profile = {
+            "trend_mode": False,
+            "profile_name": "lp_burst_standard_v1" if directional_side else "",
+            "min_event_count": self.lp_burst_min_event_count,
+            "min_total_usd": self.lp_burst_min_total_usd,
+            "min_max_single_usd": self.lp_burst_min_max_single_usd,
+            "min_volume_surge_ratio": self.lp_burst_min_volume_surge_ratio,
+            "min_action_intensity": self.lp_burst_min_action_intensity,
+            "min_reserve_skew": self.lp_burst_min_reserve_skew,
+            "min_pricing_confidence": self.lp_burst_min_pricing_confidence,
+        }
+        if not bool(lp_trend_pool_context.get("is_primary_trend_pool")) or directional_side not in {"buy_pressure", "sell_pressure"}:
+            return profile
+        trend_state = str(lp_trend_snapshot.get("lp_trend_state") or "trend_neutral")
+        trend_side_bias = str(lp_trend_snapshot.get("lp_trend_side_bias") or "neutral")
+        if directional_side == "sell_pressure" and trend_side_bias == "sell_pressure":
+            profile.update({
+                "trend_mode": True,
+                "profile_name": "lp_burst_trend_primary_v2",
+                "min_event_count": self.lp_trend_burst_min_event_count,
+                "min_total_usd": self.lp_trend_burst_min_total_usd,
+                "min_max_single_usd": self.lp_trend_burst_min_max_single_usd,
+                "min_volume_surge_ratio": self.lp_trend_burst_min_volume_surge_ratio,
+                "min_action_intensity": self.lp_trend_burst_min_action_intensity,
+                "min_reserve_skew": self.lp_trend_burst_min_reserve_skew,
+                "min_pricing_confidence": self.lp_trend_burst_min_pricing_confidence,
+            })
+            return profile
+        if directional_side == "buy_pressure" and trend_state in {"trend_continuation_buy", "trend_reversal_to_buy"}:
+            profile.update({
+                "trend_mode": True,
+                "profile_name": "lp_burst_buy_trend_v1",
+                "min_event_count": self.lp_trend_burst_min_event_count,
+                "min_total_usd": self.lp_trend_burst_min_total_usd,
+                "min_max_single_usd": self.lp_trend_burst_min_max_single_usd,
+                "min_volume_surge_ratio": self.lp_buy_trend_burst_min_volume_surge_ratio,
+                "min_action_intensity": self.lp_buy_trend_burst_min_action_intensity,
+                "min_reserve_skew": self.lp_trend_burst_min_reserve_skew,
+                "min_pricing_confidence": self.lp_trend_burst_min_pricing_confidence,
+            })
+        return profile
+
+    def _buy_trend_structure_ready(
+        self,
+        *,
+        trend_state: str,
+        same_pool_continuity: int,
+        multi_pool_resonance: int,
+        pool_volume_surge_ratio: float,
+        action_intensity: float,
+        reserve_skew: float,
+        lp_burst_event_count: int,
+        lp_burst_volume_surge_ratio: float,
+        lp_burst_action_intensity: float,
+    ) -> tuple[bool, str]:
+        score = 0
+        if same_pool_continuity >= 2:
+            score += 1
+        if multi_pool_resonance >= 2:
+            score += 1
+        if pool_volume_surge_ratio >= 3.4:
+            score += 1
+        if reserve_skew >= 0.99:
+            score += 1
+        if action_intensity >= 0.57:
+            score += 1
+        if lp_burst_event_count >= 4 or lp_burst_volume_surge_ratio >= 4.0 or lp_burst_action_intensity >= 0.57:
+            score += 1
+        if trend_state == "trend_reversal_to_buy":
+            return bool(score >= 2 and (lp_burst_event_count >= 3 or same_pool_continuity >= 2 or pool_volume_surge_ratio >= 3.4)), "trend_reversal_to_buy"
+        if trend_state == "trend_continuation_buy":
+            return bool(score >= 2 and (same_pool_continuity >= 2 or lp_burst_event_count >= 3 or multi_pool_resonance >= 2)), "trend_continuation_buy"
+        return False, ""
+
     def _allow_lp_directional_observe_exception(
         self,
         event: Event,
@@ -944,50 +1259,66 @@ class SignalQualityGate:
         same_pool_continuity: int,
         multi_pool_resonance: int,
         pool_volume_surge_ratio: float,
-    ) -> tuple[bool, str, float]:
+        directional_profile: dict,
+    ) -> tuple[bool, str, float, bool]:
         if not lp_event:
-            return False, "", 0.0
+            return False, "", 0.0, False
         if str(event.intent_type or "") not in {"pool_buy_pressure", "pool_sell_pressure"}:
-            return False, "", 0.0
+            return False, "", 0.0, False
         if str(event.intent_type or "") in {"pool_noise", "liquidity_addition", "liquidity_removal", "pool_rebalance"}:
-            return False, "not_directional_lp_pressure", 0.0
-        if pricing_status in {"unknown", "unavailable"}:
-            return False, "pricing_unavailable_for_lp_fast_exception", 0.0
-        if pricing_confidence < self.lp_fast_exception_min_pricing_confidence:
-            return False, "lp_fast_exception_pricing_confidence_too_low", self._lp_fast_exception_structure_score(
-                pricing_confidence=pricing_confidence,
-                same_pool_continuity=same_pool_continuity,
-                pool_volume_surge_ratio=pool_volume_surge_ratio,
-                action_intensity=action_intensity,
-                reserve_skew=reserve_skew,
-            )
-        if dynamic_min_usd <= 0:
-            return False, "invalid_dynamic_min_usd", 0.0
+            return False, "not_directional_lp_pressure", 0.0, False
 
-        threshold_ratio = usd_value / dynamic_min_usd if dynamic_min_usd > 0 else 0.0
-        below_min_gap = max(dynamic_min_usd - usd_value, 0.0)
+        min_same_pool_continuity = int(directional_profile.get("min_same_pool_continuity") or self.lp_fast_exception_min_same_pool_continuity)
+        min_volume_surge_ratio = float(directional_profile.get("min_volume_surge_ratio") or self.lp_fast_exception_min_volume_surge_ratio)
+        min_action_intensity = float(directional_profile.get("min_action_intensity") or self.lp_fast_exception_min_action_intensity)
+        min_reserve_skew = float(directional_profile.get("min_reserve_skew") or self.lp_fast_exception_min_reserve_skew)
+        min_pricing_confidence = float(directional_profile.get("min_pricing_confidence") or self.lp_fast_exception_min_pricing_confidence)
+        threshold_ratio_floor = float(directional_profile.get("threshold_ratio_floor") or self.lp_observe_threshold_ratio_floor)
+
         structure_score = self._lp_fast_exception_structure_score(
             pricing_confidence=pricing_confidence,
             same_pool_continuity=same_pool_continuity,
             pool_volume_surge_ratio=pool_volume_surge_ratio,
             action_intensity=action_intensity,
             reserve_skew=reserve_skew,
+            min_same_pool_continuity=min_same_pool_continuity,
+            min_volume_surge_ratio=min_volume_surge_ratio,
+            min_action_intensity=min_action_intensity,
+            min_reserve_skew=min_reserve_skew,
+            min_pricing_confidence=min_pricing_confidence,
         )
-        if threshold_ratio < self.lp_observe_threshold_ratio_floor:
-            return False, "lp_fast_exception_threshold_ratio_too_low", structure_score
+        structure_passed = (
+            same_pool_continuity >= min_same_pool_continuity
+            and pool_volume_surge_ratio >= min_volume_surge_ratio
+            and action_intensity >= min_action_intensity
+            and reserve_skew >= min_reserve_skew
+            and pricing_confidence >= min_pricing_confidence
+        )
+
+        if pricing_status in {"unknown", "unavailable"}:
+            return False, "pricing_unavailable_for_lp_fast_exception", 0.0, False
+        if pricing_confidence < min_pricing_confidence:
+            return False, "lp_fast_exception_pricing_confidence_too_low", structure_score, structure_passed
+        if dynamic_min_usd <= 0:
+            return False, "invalid_dynamic_min_usd", 0.0, structure_passed
+
+        threshold_ratio = usd_value / dynamic_min_usd if dynamic_min_usd > 0 else 0.0
+        below_min_gap = max(dynamic_min_usd - usd_value, 0.0)
+        if threshold_ratio < threshold_ratio_floor:
+            return False, "lp_fast_exception_threshold_ratio_too_low", structure_score, structure_passed
         if below_min_gap > self.lp_observe_max_usd_gap:
-            return False, "lp_fast_exception_usd_gap_too_wide", structure_score
-        if same_pool_continuity < self.lp_fast_exception_min_same_pool_continuity:
-            return False, "lp_fast_exception_same_pool_continuity_too_low", structure_score
-        if pool_volume_surge_ratio < self.lp_fast_exception_min_volume_surge_ratio:
-            return False, "lp_fast_exception_volume_surge_too_low", structure_score
-        if action_intensity < self.lp_fast_exception_min_action_intensity:
-            return False, "lp_fast_exception_action_intensity_too_low", structure_score
-        if reserve_skew < self.lp_fast_exception_min_reserve_skew:
-            return False, "lp_fast_exception_reserve_skew_too_low", structure_score
+            return False, "lp_fast_exception_usd_gap_too_wide", structure_score, structure_passed
+        if same_pool_continuity < min_same_pool_continuity:
+            return False, "lp_fast_exception_same_pool_continuity_too_low", structure_score, structure_passed
+        if pool_volume_surge_ratio < min_volume_surge_ratio:
+            return False, "lp_fast_exception_volume_surge_too_low", structure_score, structure_passed
+        if action_intensity < min_action_intensity:
+            return False, "lp_fast_exception_action_intensity_too_low", structure_score, structure_passed
+        if reserve_skew < min_reserve_skew:
+            return False, "lp_fast_exception_reserve_skew_too_low", structure_score, structure_passed
 
         del confirmation_score, resonance_score, abnormal_ratio, relative_address_size, multi_pool_resonance
-        return True, "lp_fast_exception_structured_directional", structure_score
+        return True, "lp_fast_exception_structured_directional", structure_score, structure_passed
 
     def _lp_fast_exception_structure_score(
         self,
@@ -997,13 +1328,23 @@ class SignalQualityGate:
         pool_volume_surge_ratio: float,
         action_intensity: float,
         reserve_skew: float,
+        min_same_pool_continuity: int | None = None,
+        min_volume_surge_ratio: float | None = None,
+        min_action_intensity: float | None = None,
+        min_reserve_skew: float | None = None,
+        min_pricing_confidence: float | None = None,
     ) -> float:
+        min_same_pool_continuity = int(min_same_pool_continuity or self.lp_fast_exception_min_same_pool_continuity)
+        min_volume_surge_ratio = float(min_volume_surge_ratio or self.lp_fast_exception_min_volume_surge_ratio)
+        min_action_intensity = float(min_action_intensity or self.lp_fast_exception_min_action_intensity)
+        min_reserve_skew = float(min_reserve_skew or self.lp_fast_exception_min_reserve_skew)
+        min_pricing_confidence = float(min_pricing_confidence or self.lp_fast_exception_min_pricing_confidence)
         checks = (
-            same_pool_continuity >= self.lp_fast_exception_min_same_pool_continuity,
-            pool_volume_surge_ratio >= self.lp_fast_exception_min_volume_surge_ratio,
-            action_intensity >= self.lp_fast_exception_min_action_intensity,
-            reserve_skew >= self.lp_fast_exception_min_reserve_skew,
-            pricing_confidence >= self.lp_fast_exception_min_pricing_confidence,
+            same_pool_continuity >= min_same_pool_continuity,
+            pool_volume_surge_ratio >= min_volume_surge_ratio,
+            action_intensity >= min_action_intensity,
+            reserve_skew >= min_reserve_skew,
+            pricing_confidence >= min_pricing_confidence,
         )
         return round(sum(1 for matched in checks if matched) / len(checks), 3)
 
@@ -1012,26 +1353,35 @@ class SignalQualityGate:
         event: Event,
         lp_event: bool,
         pricing_confidence: float,
+        burst_profile: dict,
     ) -> tuple[bool, str]:
         if not lp_event or str(event.intent_type or "") not in {"pool_buy_pressure", "pool_sell_pressure"}:
             return False, ""
         if not self.lp_burst_fastlane_enable:
             return False, "lp_burst_fastlane_disabled"
 
+        min_event_count = int(burst_profile.get("min_event_count") or self.lp_burst_min_event_count)
+        min_total_usd = float(burst_profile.get("min_total_usd") or self.lp_burst_min_total_usd)
+        min_max_single_usd = float(burst_profile.get("min_max_single_usd") or self.lp_burst_min_max_single_usd)
+        min_volume_surge_ratio = float(burst_profile.get("min_volume_surge_ratio") or self.lp_burst_min_volume_surge_ratio)
+        min_action_intensity = float(burst_profile.get("min_action_intensity") or self.lp_burst_min_action_intensity)
+        min_reserve_skew = float(burst_profile.get("min_reserve_skew") or self.lp_burst_min_reserve_skew)
+        min_pricing_confidence = float(burst_profile.get("min_pricing_confidence") or self.lp_burst_min_pricing_confidence)
+
         burst_state = event.metadata.get("lp_burst") or {}
-        if int(burst_state.get("lp_burst_event_count") or 0) < self.lp_burst_min_event_count:
+        if int(burst_state.get("lp_burst_event_count") or 0) < min_event_count:
             return False, "lp_burst_event_count_too_low"
-        if float(burst_state.get("lp_burst_total_usd") or 0.0) < self.lp_burst_min_total_usd:
+        if float(burst_state.get("lp_burst_total_usd") or 0.0) < min_total_usd:
             return False, "lp_burst_total_usd_too_low"
-        if float(burst_state.get("lp_burst_max_single_usd") or 0.0) < self.lp_burst_min_max_single_usd:
+        if float(burst_state.get("lp_burst_max_single_usd") or 0.0) < min_max_single_usd:
             return False, "lp_burst_max_single_usd_too_low"
-        if float(burst_state.get("lp_burst_volume_surge_ratio") or 0.0) < self.lp_burst_min_volume_surge_ratio:
+        if float(burst_state.get("lp_burst_volume_surge_ratio") or 0.0) < min_volume_surge_ratio:
             return False, "lp_burst_volume_surge_too_low"
-        if float(burst_state.get("lp_burst_action_intensity") or 0.0) < self.lp_burst_min_action_intensity:
+        if float(burst_state.get("lp_burst_action_intensity") or 0.0) < min_action_intensity:
             return False, "lp_burst_action_intensity_too_low"
-        if float(burst_state.get("lp_burst_reserve_skew") or 0.0) < self.lp_burst_min_reserve_skew:
+        if float(burst_state.get("lp_burst_reserve_skew") or 0.0) < min_reserve_skew:
             return False, "lp_burst_reserve_skew_too_low"
-        if pricing_confidence < self.lp_burst_min_pricing_confidence:
+        if pricing_confidence < min_pricing_confidence:
             return False, "lp_burst_pricing_confidence_too_low"
         return True, "lp_burst_fastlane_ready"
 

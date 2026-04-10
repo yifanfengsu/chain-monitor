@@ -544,6 +544,56 @@ class SignalPipeline:
             "listener_block_lp_secondary_scan_used": bool(
                 event.metadata.get("listener_block_lp_secondary_scan_used")
             ),
+            "listener_block_bloom_prefilter_used": bool(
+                event.metadata.get("listener_block_bloom_prefilter_used")
+            ),
+            "listener_block_bloom_skipped_get_logs_count": int(
+                event.metadata.get("listener_block_bloom_skipped_get_logs_count") or 0
+            ),
+            "listener_block_bloom_transfer_possible": bool(
+                event.metadata.get("listener_block_bloom_transfer_possible")
+                if "listener_block_bloom_transfer_possible" in event.metadata
+                else True
+            ),
+            "listener_block_bloom_address_possible_count": int(
+                event.metadata.get("listener_block_bloom_address_possible_count") or 0
+            ),
+            "listener_runtime_adjacent_core_count": int(
+                event.metadata.get("listener_runtime_adjacent_core_count") or 0
+            ),
+            "listener_runtime_adjacent_secondary_count": int(
+                event.metadata.get("listener_runtime_adjacent_secondary_count") or 0
+            ),
+            "listener_runtime_adjacent_secondary_scan_used": bool(
+                event.metadata.get("listener_runtime_adjacent_secondary_scan_used")
+            ),
+            "listener_runtime_adjacent_secondary_skipped_count": int(
+                event.metadata.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+            ),
+            "listener_block_lp_primary_trend_scan_used": bool(
+                event.metadata.get("listener_block_lp_primary_trend_scan_used")
+            ),
+            "listener_block_lp_extended_scan_used": bool(
+                event.metadata.get("listener_block_lp_extended_scan_used")
+            ),
+            "listener_block_lp_primary_trend_pool_count": int(
+                event.metadata.get("listener_block_lp_primary_trend_pool_count") or 0
+            ),
+            "listener_block_lp_extended_pool_count": int(
+                event.metadata.get("listener_block_lp_extended_pool_count") or 0
+            ),
+            "listener_block_get_logs_primary_side_count": int(
+                event.metadata.get("listener_block_get_logs_primary_side_count") or 0
+            ),
+            "listener_block_get_logs_secondary_side_count": int(
+                event.metadata.get("listener_block_get_logs_secondary_side_count") or 0
+            ),
+            "listener_block_get_logs_secondary_side_skipped_count": int(
+                event.metadata.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+            ),
+            "listener_block_get_logs_empty_response_count": int(
+                event.metadata.get("listener_block_get_logs_empty_response_count") or 0
+            ),
             "low_cu_mode_enabled": bool(event.metadata.get("low_cu_mode_enabled")),
             "low_cu_mode_lp_secondary_only": bool(
                 event.metadata.get("low_cu_mode_lp_secondary_only")
@@ -903,6 +953,56 @@ class SignalPipeline:
         parsed["listener_block_lp_secondary_scan_used"] = bool(
             raw_item.get("listener_block_lp_secondary_scan_used")
         )
+        parsed["listener_block_bloom_prefilter_used"] = bool(
+            raw_item.get("listener_block_bloom_prefilter_used")
+        )
+        parsed["listener_block_bloom_skipped_get_logs_count"] = int(
+            raw_item.get("listener_block_bloom_skipped_get_logs_count") or 0
+        )
+        parsed["listener_block_bloom_transfer_possible"] = bool(
+            raw_item.get("listener_block_bloom_transfer_possible")
+            if "listener_block_bloom_transfer_possible" in raw_item
+            else True
+        )
+        parsed["listener_block_bloom_address_possible_count"] = int(
+            raw_item.get("listener_block_bloom_address_possible_count") or 0
+        )
+        parsed["listener_runtime_adjacent_core_count"] = int(
+            raw_item.get("listener_runtime_adjacent_core_count") or 0
+        )
+        parsed["listener_runtime_adjacent_secondary_count"] = int(
+            raw_item.get("listener_runtime_adjacent_secondary_count") or 0
+        )
+        parsed["listener_runtime_adjacent_secondary_scan_used"] = bool(
+            raw_item.get("listener_runtime_adjacent_secondary_scan_used")
+        )
+        parsed["listener_runtime_adjacent_secondary_skipped_count"] = int(
+            raw_item.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+        )
+        parsed["listener_block_lp_primary_trend_scan_used"] = bool(
+            raw_item.get("listener_block_lp_primary_trend_scan_used")
+        )
+        parsed["listener_block_lp_extended_scan_used"] = bool(
+            raw_item.get("listener_block_lp_extended_scan_used")
+        )
+        parsed["listener_block_lp_primary_trend_pool_count"] = int(
+            raw_item.get("listener_block_lp_primary_trend_pool_count") or 0
+        )
+        parsed["listener_block_lp_extended_pool_count"] = int(
+            raw_item.get("listener_block_lp_extended_pool_count") or 0
+        )
+        parsed["listener_block_get_logs_primary_side_count"] = int(
+            raw_item.get("listener_block_get_logs_primary_side_count") or 0
+        )
+        parsed["listener_block_get_logs_secondary_side_count"] = int(
+            raw_item.get("listener_block_get_logs_secondary_side_count") or 0
+        )
+        parsed["listener_block_get_logs_secondary_side_skipped_count"] = int(
+            raw_item.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+        )
+        parsed["listener_block_get_logs_empty_response_count"] = int(
+            raw_item.get("listener_block_get_logs_empty_response_count") or 0
+        )
         parsed["low_cu_mode_enabled"] = bool(raw_item.get("low_cu_mode_enabled"))
         parsed["low_cu_mode_lp_secondary_only"] = bool(
             raw_item.get("low_cu_mode_lp_secondary_only")
@@ -1112,12 +1212,39 @@ class SignalPipeline:
             "lp_observe_exception_reason": str(_first_value(gate_metrics.get("lp_observe_exception_reason"), existing.get("lp_observe_exception_reason"), "") or ""),
             "lp_observe_threshold_ratio": float(_first_value(gate_metrics.get("lp_observe_threshold_ratio"), existing.get("lp_observe_threshold_ratio"), 0.0) or 0.0),
             "lp_observe_below_min_gap": float(_first_value(gate_metrics.get("lp_observe_below_min_gap"), existing.get("lp_observe_below_min_gap"), 0.0) or 0.0),
+            "lp_trend_sensitivity_mode": bool(_first_value(gate_metrics.get("lp_trend_sensitivity_mode"), existing.get("lp_trend_sensitivity_mode"), False)),
+            "lp_trend_primary_pool": bool(_first_value(gate_metrics.get("lp_trend_primary_pool"), existing.get("lp_trend_primary_pool"), False)),
+            "lp_trend_pool_family": str(_first_value(gate_metrics.get("lp_trend_pool_family"), existing.get("lp_trend_pool_family"), "") or ""),
+            "lp_trend_base_family": str(_first_value(gate_metrics.get("lp_trend_base_family"), existing.get("lp_trend_base_family"), "") or ""),
+            "lp_trend_quote_family": str(_first_value(gate_metrics.get("lp_trend_quote_family"), existing.get("lp_trend_quote_family"), "") or ""),
+            "lp_trend_pool_match_mode": str(_first_value(gate_metrics.get("lp_trend_pool_match_mode"), existing.get("lp_trend_pool_match_mode"), "non_trend_pool") or "non_trend_pool"),
+            "lp_trend_state": str(_first_value(gate_metrics.get("lp_trend_state"), existing.get("lp_trend_state"), "trend_neutral") or "trend_neutral"),
+            "lp_trend_side_bias": str(_first_value(gate_metrics.get("lp_trend_side_bias"), existing.get("lp_trend_side_bias"), "neutral") or "neutral"),
+            "lp_trend_continuation_score": float(_first_value(gate_metrics.get("lp_trend_continuation_score"), existing.get("lp_trend_continuation_score"), 0.0) or 0.0),
+            "lp_trend_reversal_score": float(_first_value(gate_metrics.get("lp_trend_reversal_score"), existing.get("lp_trend_reversal_score"), 0.0) or 0.0),
+            "lp_trend_state_source": str(_first_value(gate_metrics.get("lp_trend_state_source"), existing.get("lp_trend_state_source"), "") or ""),
+            "lp_trend_state_window_sec": int(_first_value(gate_metrics.get("lp_trend_state_window_sec"), existing.get("lp_trend_state_window_sec"), 0) or 0),
+            "lp_trend_buy_pressure_count": int(_first_value(gate_metrics.get("lp_trend_buy_pressure_count"), existing.get("lp_trend_buy_pressure_count"), 0) or 0),
+            "lp_trend_sell_pressure_count": int(_first_value(gate_metrics.get("lp_trend_sell_pressure_count"), existing.get("lp_trend_sell_pressure_count"), 0) or 0),
+            "lp_trend_window_total_usd": float(_first_value(gate_metrics.get("lp_trend_window_total_usd"), existing.get("lp_trend_window_total_usd"), 0.0) or 0.0),
+            "lp_trend_last_shift_ts": int(_first_value(gate_metrics.get("lp_trend_last_shift_ts"), existing.get("lp_trend_last_shift_ts"), 0) or 0),
+            "lp_directional_side": str(_first_value(gate_metrics.get("lp_directional_side"), existing.get("lp_directional_side"), "") or ""),
+            "lp_directional_threshold_profile": str(_first_value(gate_metrics.get("lp_directional_threshold_profile"), existing.get("lp_directional_threshold_profile"), "") or ""),
+            "lp_fast_exception_profile_name": str(_first_value(gate_metrics.get("lp_fast_exception_profile_name"), existing.get("lp_fast_exception_profile_name"), "") or ""),
+            "lp_buy_trend_profile_active": bool(_first_value(gate_metrics.get("lp_buy_trend_profile_active"), existing.get("lp_buy_trend_profile_active"), False)),
+            "lp_buy_trend_profile_name": str(_first_value(gate_metrics.get("lp_buy_trend_profile_name"), existing.get("lp_buy_trend_profile_name"), "") or ""),
+            "lp_buy_trend_profile_reason": str(_first_value(gate_metrics.get("lp_buy_trend_profile_reason"), existing.get("lp_buy_trend_profile_reason"), "") or ""),
             "lp_fast_exception_applied": bool(_first_value(gate_metrics.get("lp_fast_exception_applied"), existing.get("lp_fast_exception_applied"), False)),
             "lp_fast_exception_reason": str(_first_value(gate_metrics.get("lp_fast_exception_reason"), existing.get("lp_fast_exception_reason"), "") or ""),
             "lp_fast_exception_threshold_ratio": float(_first_value(gate_metrics.get("lp_fast_exception_threshold_ratio"), existing.get("lp_fast_exception_threshold_ratio"), 0.0) or 0.0),
             "lp_fast_exception_usd_gap": float(_first_value(gate_metrics.get("lp_fast_exception_usd_gap"), existing.get("lp_fast_exception_usd_gap"), 0.0) or 0.0),
             "lp_fast_exception_structure_score": float(_first_value(gate_metrics.get("lp_fast_exception_structure_score"), existing.get("lp_fast_exception_structure_score"), 0.0) or 0.0),
+            "lp_fast_exception_structure_passed": bool(_first_value(gate_metrics.get("lp_fast_exception_structure_passed"), existing.get("lp_fast_exception_structure_passed"), False)),
             "lp_fast_exception_gate_version": str(_first_value(gate_metrics.get("lp_fast_exception_gate_version"), existing.get("lp_fast_exception_gate_version"), "") or ""),
+            "lp_burst_trend_mode": bool(_first_value(gate_metrics.get("lp_burst_trend_mode"), existing.get("lp_burst_trend_mode"), False)),
+            "lp_burst_event_count_threshold_used": int(_first_value(gate_metrics.get("lp_burst_event_count_threshold_used"), existing.get("lp_burst_event_count_threshold_used"), 0) or 0),
+            "lp_burst_total_usd_threshold_used": float(_first_value(gate_metrics.get("lp_burst_total_usd_threshold_used"), existing.get("lp_burst_total_usd_threshold_used"), 0.0) or 0.0),
+            "lp_burst_trend_profile_name": str(_first_value(gate_metrics.get("lp_burst_trend_profile_name"), existing.get("lp_burst_trend_profile_name"), "") or ""),
             "lp_burst_fastlane_applied": bool(_first_value(gate_metrics.get("lp_burst_fastlane_applied"), existing.get("lp_burst_fastlane_applied"), False)),
             "lp_burst_fastlane_reason": str(_first_value(gate_metrics.get("lp_burst_fastlane_reason"), existing.get("lp_burst_fastlane_reason"), "") or ""),
             "lp_burst_window_sec": int(_first_value(gate_metrics.get("lp_burst_window_sec"), existing.get("lp_burst_window_sec"), 0) or 0),
@@ -1282,6 +1409,56 @@ class SignalPipeline:
             ),
             "listener_block_lp_secondary_scan_used": bool(
                 parsed.get("listener_block_lp_secondary_scan_used")
+            ),
+            "listener_block_bloom_prefilter_used": bool(
+                parsed.get("listener_block_bloom_prefilter_used")
+            ),
+            "listener_block_bloom_skipped_get_logs_count": int(
+                parsed.get("listener_block_bloom_skipped_get_logs_count") or 0
+            ),
+            "listener_block_bloom_transfer_possible": bool(
+                parsed.get("listener_block_bloom_transfer_possible")
+                if "listener_block_bloom_transfer_possible" in parsed
+                else True
+            ),
+            "listener_block_bloom_address_possible_count": int(
+                parsed.get("listener_block_bloom_address_possible_count") or 0
+            ),
+            "listener_runtime_adjacent_core_count": int(
+                parsed.get("listener_runtime_adjacent_core_count") or 0
+            ),
+            "listener_runtime_adjacent_secondary_count": int(
+                parsed.get("listener_runtime_adjacent_secondary_count") or 0
+            ),
+            "listener_runtime_adjacent_secondary_scan_used": bool(
+                parsed.get("listener_runtime_adjacent_secondary_scan_used")
+            ),
+            "listener_runtime_adjacent_secondary_skipped_count": int(
+                parsed.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+            ),
+            "listener_block_lp_primary_trend_scan_used": bool(
+                parsed.get("listener_block_lp_primary_trend_scan_used")
+            ),
+            "listener_block_lp_extended_scan_used": bool(
+                parsed.get("listener_block_lp_extended_scan_used")
+            ),
+            "listener_block_lp_primary_trend_pool_count": int(
+                parsed.get("listener_block_lp_primary_trend_pool_count") or 0
+            ),
+            "listener_block_lp_extended_pool_count": int(
+                parsed.get("listener_block_lp_extended_pool_count") or 0
+            ),
+            "listener_block_get_logs_primary_side_count": int(
+                parsed.get("listener_block_get_logs_primary_side_count") or 0
+            ),
+            "listener_block_get_logs_secondary_side_count": int(
+                parsed.get("listener_block_get_logs_secondary_side_count") or 0
+            ),
+            "listener_block_get_logs_secondary_side_skipped_count": int(
+                parsed.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+            ),
+            "listener_block_get_logs_empty_response_count": int(
+                parsed.get("listener_block_get_logs_empty_response_count") or 0
             ),
             "low_cu_mode_enabled": bool(parsed.get("low_cu_mode_enabled")),
             "low_cu_mode_lp_secondary_only": bool(
@@ -2660,6 +2837,102 @@ class SignalPipeline:
                 signal_context.get("listener_block_lp_secondary_scan_used"),
                 raw.get("listener_block_lp_secondary_scan_used"),
             ),
+            "listener_block_bloom_prefilter_used": _bool_value(
+                event_metadata.get("listener_block_bloom_prefilter_used"),
+                signal_metadata.get("listener_block_bloom_prefilter_used"),
+                signal_context.get("listener_block_bloom_prefilter_used"),
+                raw.get("listener_block_bloom_prefilter_used"),
+            ),
+            "listener_block_bloom_skipped_get_logs_count": _int_value(
+                event_metadata.get("listener_block_bloom_skipped_get_logs_count"),
+                signal_metadata.get("listener_block_bloom_skipped_get_logs_count"),
+                signal_context.get("listener_block_bloom_skipped_get_logs_count"),
+                raw.get("listener_block_bloom_skipped_get_logs_count"),
+            ),
+            "listener_block_bloom_transfer_possible": _bool_value(
+                event_metadata.get("listener_block_bloom_transfer_possible"),
+                signal_metadata.get("listener_block_bloom_transfer_possible"),
+                signal_context.get("listener_block_bloom_transfer_possible"),
+                raw.get("listener_block_bloom_transfer_possible"),
+            ),
+            "listener_block_bloom_address_possible_count": _int_value(
+                event_metadata.get("listener_block_bloom_address_possible_count"),
+                signal_metadata.get("listener_block_bloom_address_possible_count"),
+                signal_context.get("listener_block_bloom_address_possible_count"),
+                raw.get("listener_block_bloom_address_possible_count"),
+            ),
+            "listener_runtime_adjacent_core_count": _int_value(
+                event_metadata.get("listener_runtime_adjacent_core_count"),
+                signal_metadata.get("listener_runtime_adjacent_core_count"),
+                signal_context.get("listener_runtime_adjacent_core_count"),
+                raw.get("listener_runtime_adjacent_core_count"),
+            ),
+            "listener_runtime_adjacent_secondary_count": _int_value(
+                event_metadata.get("listener_runtime_adjacent_secondary_count"),
+                signal_metadata.get("listener_runtime_adjacent_secondary_count"),
+                signal_context.get("listener_runtime_adjacent_secondary_count"),
+                raw.get("listener_runtime_adjacent_secondary_count"),
+            ),
+            "listener_runtime_adjacent_secondary_scan_used": _bool_value(
+                event_metadata.get("listener_runtime_adjacent_secondary_scan_used"),
+                signal_metadata.get("listener_runtime_adjacent_secondary_scan_used"),
+                signal_context.get("listener_runtime_adjacent_secondary_scan_used"),
+                raw.get("listener_runtime_adjacent_secondary_scan_used"),
+            ),
+            "listener_runtime_adjacent_secondary_skipped_count": _int_value(
+                event_metadata.get("listener_runtime_adjacent_secondary_skipped_count"),
+                signal_metadata.get("listener_runtime_adjacent_secondary_skipped_count"),
+                signal_context.get("listener_runtime_adjacent_secondary_skipped_count"),
+                raw.get("listener_runtime_adjacent_secondary_skipped_count"),
+            ),
+            "listener_block_lp_primary_trend_scan_used": _bool_value(
+                event_metadata.get("listener_block_lp_primary_trend_scan_used"),
+                signal_metadata.get("listener_block_lp_primary_trend_scan_used"),
+                signal_context.get("listener_block_lp_primary_trend_scan_used"),
+                raw.get("listener_block_lp_primary_trend_scan_used"),
+            ),
+            "listener_block_lp_extended_scan_used": _bool_value(
+                event_metadata.get("listener_block_lp_extended_scan_used"),
+                signal_metadata.get("listener_block_lp_extended_scan_used"),
+                signal_context.get("listener_block_lp_extended_scan_used"),
+                raw.get("listener_block_lp_extended_scan_used"),
+            ),
+            "listener_block_lp_primary_trend_pool_count": _int_value(
+                event_metadata.get("listener_block_lp_primary_trend_pool_count"),
+                signal_metadata.get("listener_block_lp_primary_trend_pool_count"),
+                signal_context.get("listener_block_lp_primary_trend_pool_count"),
+                raw.get("listener_block_lp_primary_trend_pool_count"),
+            ),
+            "listener_block_lp_extended_pool_count": _int_value(
+                event_metadata.get("listener_block_lp_extended_pool_count"),
+                signal_metadata.get("listener_block_lp_extended_pool_count"),
+                signal_context.get("listener_block_lp_extended_pool_count"),
+                raw.get("listener_block_lp_extended_pool_count"),
+            ),
+            "listener_block_get_logs_primary_side_count": _int_value(
+                event_metadata.get("listener_block_get_logs_primary_side_count"),
+                signal_metadata.get("listener_block_get_logs_primary_side_count"),
+                signal_context.get("listener_block_get_logs_primary_side_count"),
+                raw.get("listener_block_get_logs_primary_side_count"),
+            ),
+            "listener_block_get_logs_secondary_side_count": _int_value(
+                event_metadata.get("listener_block_get_logs_secondary_side_count"),
+                signal_metadata.get("listener_block_get_logs_secondary_side_count"),
+                signal_context.get("listener_block_get_logs_secondary_side_count"),
+                raw.get("listener_block_get_logs_secondary_side_count"),
+            ),
+            "listener_block_get_logs_secondary_side_skipped_count": _int_value(
+                event_metadata.get("listener_block_get_logs_secondary_side_skipped_count"),
+                signal_metadata.get("listener_block_get_logs_secondary_side_skipped_count"),
+                signal_context.get("listener_block_get_logs_secondary_side_skipped_count"),
+                raw.get("listener_block_get_logs_secondary_side_skipped_count"),
+            ),
+            "listener_block_get_logs_empty_response_count": _int_value(
+                event_metadata.get("listener_block_get_logs_empty_response_count"),
+                signal_metadata.get("listener_block_get_logs_empty_response_count"),
+                signal_context.get("listener_block_get_logs_empty_response_count"),
+                raw.get("listener_block_get_logs_empty_response_count"),
+            ),
             "low_cu_mode_enabled": _bool_value(
                 event_metadata.get("low_cu_mode_enabled"),
                 signal_metadata.get("low_cu_mode_enabled"),
@@ -2718,6 +2991,114 @@ class SignalPipeline:
             "lp_protocol": _text(gate_metrics.get("lp_protocol"), lp_context.get("protocol")),
             "lp_action": _text(gate_metrics.get("lp_action"), lp_context.get("action")),
             "lp_direction": _text(gate_metrics.get("lp_direction"), lp_context.get("direction")),
+            "lp_trend_sensitivity_mode": _bool_value(
+                event_metadata.get("lp_trend_sensitivity_mode"),
+                signal_metadata.get("lp_trend_sensitivity_mode"),
+                signal_context.get("lp_trend_sensitivity_mode"),
+                gate_metrics.get("lp_trend_sensitivity_mode"),
+            ),
+            "lp_trend_primary_pool": _bool_value(
+                event_metadata.get("lp_trend_primary_pool"),
+                signal_metadata.get("lp_trend_primary_pool"),
+                signal_context.get("lp_trend_primary_pool"),
+                gate_metrics.get("lp_trend_primary_pool"),
+            ),
+            "lp_trend_pool_family": _text(
+                event_metadata.get("lp_trend_pool_family"),
+                signal_metadata.get("lp_trend_pool_family"),
+                signal_context.get("lp_trend_pool_family"),
+                gate_metrics.get("lp_trend_pool_family"),
+            ),
+            "lp_trend_base_family": _text(
+                event_metadata.get("lp_trend_base_family"),
+                signal_metadata.get("lp_trend_base_family"),
+                signal_context.get("lp_trend_base_family"),
+                gate_metrics.get("lp_trend_base_family"),
+            ),
+            "lp_trend_quote_family": _text(
+                event_metadata.get("lp_trend_quote_family"),
+                signal_metadata.get("lp_trend_quote_family"),
+                signal_context.get("lp_trend_quote_family"),
+                gate_metrics.get("lp_trend_quote_family"),
+            ),
+            "lp_trend_pool_match_mode": _text(
+                event_metadata.get("lp_trend_pool_match_mode"),
+                signal_metadata.get("lp_trend_pool_match_mode"),
+                signal_context.get("lp_trend_pool_match_mode"),
+                gate_metrics.get("lp_trend_pool_match_mode"),
+            ),
+            "lp_trend_state": _text(
+                event_metadata.get("lp_trend_state"),
+                signal_metadata.get("lp_trend_state"),
+                signal_context.get("lp_trend_state"),
+                gate_metrics.get("lp_trend_state"),
+            ),
+            "lp_trend_side_bias": _text(
+                event_metadata.get("lp_trend_side_bias"),
+                signal_metadata.get("lp_trend_side_bias"),
+                signal_context.get("lp_trend_side_bias"),
+                gate_metrics.get("lp_trend_side_bias"),
+            ),
+            "lp_trend_continuation_score": _num(
+                event_metadata.get("lp_trend_continuation_score"),
+                signal_metadata.get("lp_trend_continuation_score"),
+                signal_context.get("lp_trend_continuation_score"),
+                gate_metrics.get("lp_trend_continuation_score"),
+            ),
+            "lp_trend_reversal_score": _num(
+                event_metadata.get("lp_trend_reversal_score"),
+                signal_metadata.get("lp_trend_reversal_score"),
+                signal_context.get("lp_trend_reversal_score"),
+                gate_metrics.get("lp_trend_reversal_score"),
+            ),
+            "lp_trend_state_source": _text(
+                event_metadata.get("lp_trend_state_source"),
+                signal_metadata.get("lp_trend_state_source"),
+                signal_context.get("lp_trend_state_source"),
+                gate_metrics.get("lp_trend_state_source"),
+            ),
+            "lp_trend_state_window_sec": _int_value(
+                event_metadata.get("lp_trend_state_window_sec"),
+                signal_metadata.get("lp_trend_state_window_sec"),
+                signal_context.get("lp_trend_state_window_sec"),
+                gate_metrics.get("lp_trend_state_window_sec"),
+            ),
+            "lp_directional_side": _text(
+                event_metadata.get("lp_directional_side"),
+                signal_metadata.get("lp_directional_side"),
+                signal_context.get("lp_directional_side"),
+                gate_metrics.get("lp_directional_side"),
+            ),
+            "lp_directional_threshold_profile": _text(
+                event_metadata.get("lp_directional_threshold_profile"),
+                signal_metadata.get("lp_directional_threshold_profile"),
+                signal_context.get("lp_directional_threshold_profile"),
+                gate_metrics.get("lp_directional_threshold_profile"),
+            ),
+            "lp_fast_exception_profile_name": _text(
+                event_metadata.get("lp_fast_exception_profile_name"),
+                signal_metadata.get("lp_fast_exception_profile_name"),
+                signal_context.get("lp_fast_exception_profile_name"),
+                gate_metrics.get("lp_fast_exception_profile_name"),
+            ),
+            "lp_buy_trend_profile_active": _bool_value(
+                event_metadata.get("lp_buy_trend_profile_active"),
+                signal_metadata.get("lp_buy_trend_profile_active"),
+                signal_context.get("lp_buy_trend_profile_active"),
+                gate_metrics.get("lp_buy_trend_profile_active"),
+            ),
+            "lp_buy_trend_profile_name": _text(
+                event_metadata.get("lp_buy_trend_profile_name"),
+                signal_metadata.get("lp_buy_trend_profile_name"),
+                signal_context.get("lp_buy_trend_profile_name"),
+                gate_metrics.get("lp_buy_trend_profile_name"),
+            ),
+            "lp_buy_trend_profile_reason": _text(
+                event_metadata.get("lp_buy_trend_profile_reason"),
+                signal_metadata.get("lp_buy_trend_profile_reason"),
+                signal_context.get("lp_buy_trend_profile_reason"),
+                gate_metrics.get("lp_buy_trend_profile_reason"),
+            ),
             "lp_same_pool_continuity": _int_value(gate_metrics.get("lp_same_pool_continuity"), lp_analysis.get("same_pool_continuity")),
             "lp_multi_pool_resonance": _int_value(gate_metrics.get("lp_multi_pool_resonance"), lp_analysis.get("multi_pool_resonance")),
             "lp_action_intensity": _num(gate_metrics.get("lp_action_intensity"), lp_analysis.get("action_intensity")),
@@ -2763,6 +3144,18 @@ class SignalPipeline:
                 signal_metadata.get("lp_fast_exception_gate_version"),
                 signal_context.get("lp_fast_exception_gate_version"),
             ),
+            "lp_fast_exception_structure_passed": _bool_value(
+                gate_metrics.get("lp_fast_exception_structure_passed"),
+                event_metadata.get("lp_fast_exception_structure_passed"),
+                signal_metadata.get("lp_fast_exception_structure_passed"),
+                signal_context.get("lp_fast_exception_structure_passed"),
+            ),
+            "lp_burst_trend_mode": _bool_value(
+                event_metadata.get("lp_burst_trend_mode"),
+                signal_metadata.get("lp_burst_trend_mode"),
+                signal_context.get("lp_burst_trend_mode"),
+                gate_metrics.get("lp_burst_trend_mode"),
+            ),
             "lp_burst_fastlane_applied": _bool_value(
                 event_metadata.get("lp_burst_fastlane_applied"),
                 signal_metadata.get("lp_burst_fastlane_applied"),
@@ -2793,6 +3186,25 @@ class SignalPipeline:
                 signal_context.get("lp_burst_total_usd"),
                 gate_metrics.get("lp_burst_total_usd"),
                 digits=2,
+            ),
+            "lp_burst_event_count_threshold_used": _int_value(
+                event_metadata.get("lp_burst_event_count_threshold_used"),
+                signal_metadata.get("lp_burst_event_count_threshold_used"),
+                signal_context.get("lp_burst_event_count_threshold_used"),
+                gate_metrics.get("lp_burst_event_count_threshold_used"),
+            ),
+            "lp_burst_total_usd_threshold_used": _num(
+                event_metadata.get("lp_burst_total_usd_threshold_used"),
+                signal_metadata.get("lp_burst_total_usd_threshold_used"),
+                signal_context.get("lp_burst_total_usd_threshold_used"),
+                gate_metrics.get("lp_burst_total_usd_threshold_used"),
+                digits=2,
+            ),
+            "lp_burst_trend_profile_name": _text(
+                event_metadata.get("lp_burst_trend_profile_name"),
+                signal_metadata.get("lp_burst_trend_profile_name"),
+                signal_context.get("lp_burst_trend_profile_name"),
+                gate_metrics.get("lp_burst_trend_profile_name"),
             ),
             "lp_burst_max_single_usd": _num(
                 event_metadata.get("lp_burst_max_single_usd"),
@@ -2839,6 +3251,31 @@ class SignalPipeline:
                 event_metadata.get("lp_route_semantics"),
                 signal_metadata.get("lp_route_semantics"),
                 signal_context.get("lp_route_semantics"),
+            ),
+            "lp_trend_display_label": _text(
+                event_metadata.get("lp_trend_display_label"),
+                signal_metadata.get("lp_trend_display_label"),
+                signal_context.get("lp_trend_display_label"),
+            ),
+            "lp_trend_display_profile": _text(
+                event_metadata.get("lp_trend_display_profile"),
+                signal_metadata.get("lp_trend_display_profile"),
+                signal_context.get("lp_trend_display_profile"),
+            ),
+            "lp_trend_display_mode": _text(
+                event_metadata.get("lp_trend_display_mode"),
+                signal_metadata.get("lp_trend_display_mode"),
+                signal_context.get("lp_trend_display_mode"),
+            ),
+            "lp_trend_display_bias": _text(
+                event_metadata.get("lp_trend_display_bias"),
+                signal_metadata.get("lp_trend_display_bias"),
+                signal_context.get("lp_trend_display_bias"),
+            ),
+            "lp_trend_display_state": _text(
+                event_metadata.get("lp_trend_display_state"),
+                signal_metadata.get("lp_trend_display_state"),
+                signal_context.get("lp_trend_display_state"),
             ),
             "lp_adjacent_noise_decision_stage": _text(
                 event_metadata.get("lp_adjacent_noise_decision_stage"),
@@ -5615,6 +6052,56 @@ class SignalPipeline:
                 ),
                 "listener_block_lp_secondary_scan_used": bool(
                     parsed.get("listener_block_lp_secondary_scan_used")
+                ),
+                "listener_block_bloom_prefilter_used": bool(
+                    parsed.get("listener_block_bloom_prefilter_used")
+                ),
+                "listener_block_bloom_skipped_get_logs_count": int(
+                    parsed.get("listener_block_bloom_skipped_get_logs_count") or 0
+                ),
+                "listener_block_bloom_transfer_possible": bool(
+                    parsed.get("listener_block_bloom_transfer_possible")
+                    if "listener_block_bloom_transfer_possible" in parsed
+                    else True
+                ),
+                "listener_block_bloom_address_possible_count": int(
+                    parsed.get("listener_block_bloom_address_possible_count") or 0
+                ),
+                "listener_runtime_adjacent_core_count": int(
+                    parsed.get("listener_runtime_adjacent_core_count") or 0
+                ),
+                "listener_runtime_adjacent_secondary_count": int(
+                    parsed.get("listener_runtime_adjacent_secondary_count") or 0
+                ),
+                "listener_runtime_adjacent_secondary_scan_used": bool(
+                    parsed.get("listener_runtime_adjacent_secondary_scan_used")
+                ),
+                "listener_runtime_adjacent_secondary_skipped_count": int(
+                    parsed.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+                ),
+                "listener_block_lp_primary_trend_scan_used": bool(
+                    parsed.get("listener_block_lp_primary_trend_scan_used")
+                ),
+                "listener_block_lp_extended_scan_used": bool(
+                    parsed.get("listener_block_lp_extended_scan_used")
+                ),
+                "listener_block_lp_primary_trend_pool_count": int(
+                    parsed.get("listener_block_lp_primary_trend_pool_count") or 0
+                ),
+                "listener_block_lp_extended_pool_count": int(
+                    parsed.get("listener_block_lp_extended_pool_count") or 0
+                ),
+                "listener_block_get_logs_primary_side_count": int(
+                    parsed.get("listener_block_get_logs_primary_side_count") or 0
+                ),
+                "listener_block_get_logs_secondary_side_count": int(
+                    parsed.get("listener_block_get_logs_secondary_side_count") or 0
+                ),
+                "listener_block_get_logs_secondary_side_skipped_count": int(
+                    parsed.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+                ),
+                "listener_block_get_logs_empty_response_count": int(
+                    parsed.get("listener_block_get_logs_empty_response_count") or 0
                 ),
                 "low_cu_mode_enabled": bool(parsed.get("low_cu_mode_enabled")),
                 "low_cu_mode_lp_secondary_only": bool(

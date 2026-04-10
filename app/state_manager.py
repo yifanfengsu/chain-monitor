@@ -7,6 +7,9 @@ from config import (
     ADJACENT_WATCH_RUNTIME_PRIORITY,
     ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
     LP_BURST_WINDOW_SEC,
+    LP_TREND_CONTINUATION_MIN_SCORE,
+    LP_TREND_REVERSAL_MIN_SCORE,
+    LP_TREND_STATE_WINDOW_SEC,
 )
 from models import AdjacentWatchState, Event
 
@@ -76,6 +79,9 @@ class StateManager:
         global _PRIMARY_STATE_MANAGER
         self.max_events_per_address = max_events_per_address
         self.max_events_per_token = max_events_per_token
+        self.lp_trend_state_window_sec = int(LP_TREND_STATE_WINDOW_SEC)
+        self.lp_trend_continuation_min_score = float(LP_TREND_CONTINUATION_MIN_SCORE)
+        self.lp_trend_reversal_min_score = float(LP_TREND_REVERSAL_MIN_SCORE)
         self._address_states: dict[str, AddressState] = {}
         self._token_states: dict[str, TokenState] = {}
         self._pool_states: dict[str, PoolState] = {}
@@ -240,6 +246,33 @@ class StateManager:
             if self._lp_directional_bucket(evt) == direction_key
         ]
         return self._lp_burst_summary(pool_key, direction_key, directional_events, window_sec)
+
+    def get_lp_trend_snapshot(
+        self,
+        pool_address: str,
+        window_sec: int | None = None,
+        now_ts: int | None = None,
+        trend_pool_context: dict | None = None,
+    ) -> dict:
+        pool_key = str(pool_address or "").lower()
+        effective_window_sec = int(window_sec or self.lp_trend_state_window_sec)
+        state = self._pool_states.get(pool_key)
+        if state is None:
+            return self._empty_lp_trend_snapshot(pool_key, effective_window_sec, trend_pool_context)
+
+        reference_now = int(now_ts or state.last_seen_ts or 0)
+        recent_all = list(state.recent_events)
+        recent = self._filter_events_by_window(recent_all, reference_now, effective_window_sec)
+        directional_events = [
+            evt for evt in recent
+            if self._lp_directional_bucket(evt) in {"buy_pressure", "sell_pressure"}
+        ]
+        return self._lp_trend_summary(
+            pool_address=pool_key,
+            events=directional_events,
+            window_sec=effective_window_sec,
+            trend_pool_context=trend_pool_context,
+        )
 
     def can_emit_signal(self, address: str, now_ts: int, cooldown_sec: int) -> bool:
         addr = (address or "").lower()
@@ -859,6 +892,23 @@ class StateManager:
             "lp_burst_last_ts": 0,
         }
 
+    def _empty_lp_trend_snapshot(self, pool_address: str, window_sec: int, trend_pool_context: dict | None = None) -> dict:
+        trend_pool_context = trend_pool_context or {}
+        return {
+            "lp_trend_pool_address": str(pool_address or "").lower(),
+            "lp_trend_state_window_sec": int(window_sec),
+            "lp_trend_state": "trend_neutral",
+            "lp_trend_side_bias": "neutral",
+            "lp_trend_continuation_score": 0.0,
+            "lp_trend_reversal_score": 0.0,
+            "lp_trend_buy_pressure_count": 0,
+            "lp_trend_sell_pressure_count": 0,
+            "lp_trend_window_total_usd": 0.0,
+            "lp_trend_last_shift_ts": 0,
+            "lp_trend_state_source": "state_manager_window",
+            "lp_trend_primary_pool": bool(trend_pool_context.get("is_primary_trend_pool")),
+        }
+
     def _address_summary(self, events: list[Event], window_sec: int) -> dict:
         buy_events = [evt for evt in events if evt.kind == "swap" and evt.side == "买入"]
         sell_events = [evt for evt in events if evt.kind == "swap" and evt.side == "卖出"]
@@ -998,6 +1048,218 @@ class StateManager:
             "lp_burst_first_ts": int(first_ts),
             "lp_burst_last_ts": int(last_ts),
         }
+
+    def _lp_trend_summary(
+        self,
+        *,
+        pool_address: str,
+        events: list[Event],
+        window_sec: int,
+        trend_pool_context: dict | None = None,
+    ) -> dict:
+        trend_pool_context = trend_pool_context or {}
+        if not events:
+            return self._empty_lp_trend_snapshot(pool_address, window_sec, trend_pool_context)
+
+        directional_events = [
+            evt for evt in events
+            if self._lp_directional_bucket(evt) in {"buy_pressure", "sell_pressure"}
+        ]
+        if not directional_events:
+            return self._empty_lp_trend_snapshot(pool_address, window_sec, trend_pool_context)
+
+        buy_events = [evt for evt in directional_events if self._lp_directional_bucket(evt) == "buy_pressure"]
+        sell_events = [evt for evt in directional_events if self._lp_directional_bucket(evt) == "sell_pressure"]
+        buy_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in buy_events)
+        sell_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in sell_events)
+        window_total_usd = buy_usd + sell_usd
+        is_primary = bool(trend_pool_context.get("is_primary_trend_pool"))
+
+        buy_side_score = self._lp_side_state_score(
+            events=directional_events,
+            side="buy_pressure",
+            total_usd=window_total_usd,
+            is_primary=is_primary,
+        )
+        sell_side_score = self._lp_side_state_score(
+            events=directional_events,
+            side="sell_pressure",
+            total_usd=window_total_usd,
+            is_primary=is_primary,
+        )
+        side_bias = self._lp_state_bias(
+            buy_score=buy_side_score,
+            sell_score=sell_side_score,
+            buy_usd=buy_usd,
+            sell_usd=sell_usd,
+            buy_count=len(buy_events),
+            sell_count=len(sell_events),
+        )
+
+        last_side = self._lp_directional_bucket(directional_events[-1])
+        current_streak = self._lp_current_streak(direction_events=directional_events)
+        last_shift_ts = int(directional_events[-current_streak].ts or 0) if current_streak > 0 else 0
+        continuation_score = buy_side_score if side_bias == "buy_pressure" else sell_side_score if side_bias == "sell_pressure" else max(buy_side_score, sell_side_score)
+
+        history_before_streak = directional_events[:-current_streak] if current_streak > 0 else directional_events
+        previous_bias = self._lp_previous_side_bias(history_before_streak)
+        reversal_score = self._lp_reversal_score(
+            events=directional_events,
+            current_streak=current_streak,
+            total_usd=window_total_usd,
+            is_primary=is_primary,
+        )
+
+        trend_state = "trend_neutral"
+        if last_side == "buy_pressure":
+            if previous_bias == "sell_pressure" and reversal_score >= self.lp_trend_reversal_min_score:
+                trend_state = "trend_reversal_to_buy"
+            elif side_bias == "buy_pressure" and continuation_score >= self.lp_trend_continuation_min_score:
+                trend_state = "trend_continuation_buy"
+        elif last_side == "sell_pressure":
+            if previous_bias == "buy_pressure" and reversal_score >= self.lp_trend_reversal_min_score:
+                trend_state = "trend_reversal_to_sell"
+            elif side_bias == "sell_pressure" and continuation_score >= self.lp_trend_continuation_min_score:
+                trend_state = "trend_continuation_sell"
+
+        return {
+            "lp_trend_pool_address": str(pool_address or "").lower(),
+            "lp_trend_state_window_sec": int(window_sec),
+            "lp_trend_state": trend_state,
+            "lp_trend_side_bias": side_bias,
+            "lp_trend_continuation_score": round(float(continuation_score), 3),
+            "lp_trend_reversal_score": round(float(reversal_score), 3),
+            "lp_trend_buy_pressure_count": len(buy_events),
+            "lp_trend_sell_pressure_count": len(sell_events),
+            "lp_trend_window_total_usd": round(float(window_total_usd), 2),
+            "lp_trend_last_shift_ts": int(last_shift_ts),
+            "lp_trend_state_source": "state_manager_window",
+            "lp_trend_primary_pool": is_primary,
+        }
+
+    def _lp_side_state_score(
+        self,
+        *,
+        events: list[Event],
+        side: str,
+        total_usd: float,
+        is_primary: bool,
+    ) -> float:
+        side_events = [evt for evt in events if self._lp_directional_bucket(evt) == side]
+        if not side_events:
+            return 0.0
+        usd_value = sum(abs(float(evt.usd_value or 0.0)) for evt in side_events)
+        trailing_streak = self._lp_trailing_streak(events, side)
+        continuity_max = 0
+        surge_max = 0.0
+        skew_max = 0.0
+        intensity_max = 0.0
+        for evt in side_events:
+            lp_analysis = evt.metadata.get("lp_analysis") or {}
+            continuity_max = max(continuity_max, int(lp_analysis.get("same_pool_continuity") or 0) + 1)
+            surge_max = max(surge_max, float(lp_analysis.get("pool_volume_surge_ratio") or 0.0))
+            skew_max = max(skew_max, float(lp_analysis.get("reserve_skew") or 0.0))
+            intensity_max = max(intensity_max, float(lp_analysis.get("action_intensity") or 0.0))
+        score = 0.0
+        score += min(len(side_events) / 5.0, 1.0) * 0.22
+        score += min(usd_value / max(total_usd, 1.0), 1.0) * 0.24
+        score += min(trailing_streak / 4.0, 1.0) * 0.18
+        score += min(continuity_max / 4.0, 1.0) * 0.12
+        score += min(max(surge_max - 1.0, 0.0) / 4.0, 1.0) * 0.10
+        score += min(skew_max / 1.2, 1.0) * 0.08
+        score += min(intensity_max / 0.75, 1.0) * 0.06
+        if is_primary:
+            score += 0.04
+        return self._clamp(score, 0.0, 1.0)
+
+    def _lp_state_bias(
+        self,
+        *,
+        buy_score: float,
+        sell_score: float,
+        buy_usd: float,
+        sell_usd: float,
+        buy_count: int,
+        sell_count: int,
+    ) -> str:
+        total_usd = buy_usd + sell_usd
+        usd_gap_ratio = abs(buy_usd - sell_usd) / max(total_usd, 1.0)
+        score_gap = abs(buy_score - sell_score)
+        if score_gap < 0.08 and usd_gap_ratio < 0.12 and abs(buy_count - sell_count) <= 1:
+            return "neutral"
+        if buy_score > sell_score:
+            return "buy_pressure"
+        if sell_score > buy_score:
+            return "sell_pressure"
+        if buy_usd > sell_usd:
+            return "buy_pressure"
+        if sell_usd > buy_usd:
+            return "sell_pressure"
+        return "neutral"
+
+    def _lp_current_streak(self, direction_events: list[Event]) -> int:
+        if not direction_events:
+            return 0
+        target = self._lp_directional_bucket(direction_events[-1])
+        streak = 0
+        for evt in reversed(direction_events):
+            if self._lp_directional_bucket(evt) != target:
+                break
+            streak += 1
+        return streak
+
+    def _lp_trailing_streak(self, events: list[Event], side: str) -> int:
+        streak = 0
+        for evt in reversed(events):
+            if self._lp_directional_bucket(evt) != side:
+                break
+            streak += 1
+        return streak
+
+    def _lp_previous_side_bias(self, events: list[Event]) -> str:
+        if not events:
+            return "neutral"
+        buy_events = [evt for evt in events if self._lp_directional_bucket(evt) == "buy_pressure"]
+        sell_events = [evt for evt in events if self._lp_directional_bucket(evt) == "sell_pressure"]
+        buy_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in buy_events)
+        sell_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in sell_events)
+        if len(buy_events) >= len(sell_events) + 1 or buy_usd > sell_usd * 1.10:
+            return "buy_pressure"
+        if len(sell_events) >= len(buy_events) + 1 or sell_usd > buy_usd * 1.10:
+            return "sell_pressure"
+        return "neutral"
+
+    def _lp_reversal_score(
+        self,
+        *,
+        events: list[Event],
+        current_streak: int,
+        total_usd: float,
+        is_primary: bool,
+    ) -> float:
+        if not events or current_streak <= 0:
+            return 0.0
+        tail_events = events[-current_streak:]
+        if not tail_events:
+            return 0.0
+        tail_total_usd = sum(abs(float(evt.usd_value or 0.0)) for evt in tail_events)
+        surge_max = 0.0
+        skew_max = 0.0
+        intensity_max = 0.0
+        for evt in tail_events:
+            lp_analysis = evt.metadata.get("lp_analysis") or {}
+            surge_max = max(surge_max, float(lp_analysis.get("pool_volume_surge_ratio") or 0.0))
+            skew_max = max(skew_max, float(lp_analysis.get("reserve_skew") or 0.0))
+            intensity_max = max(intensity_max, float(lp_analysis.get("action_intensity") or 0.0))
+        score = 0.0
+        score += min(current_streak / 3.0, 1.0) * 0.30
+        score += min(tail_total_usd / max(total_usd, 1.0), 1.0) * 0.26
+        score += min(max(surge_max - 1.0, 0.0) / 4.0, 1.0) * 0.16
+        score += min(skew_max / 1.2, 1.0) * 0.14
+        score += min(intensity_max / 0.75, 1.0) * 0.10
+        if is_primary:
+            score += 0.04
+        return self._clamp(score, 0.0, 1.0)
 
     def _resonance_summary(self, participant_events: list[dict]) -> dict:
         buckets = {

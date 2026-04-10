@@ -9,14 +9,27 @@ import time
 from web3 import Web3
 
 from config import (
+    LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE,
+    LISTENER_GET_LOGS_DIRECTIONAL_SCAN_ENABLE,
+    LISTENER_GET_LOGS_SECONDARY_SIDE_FALLBACK,
+    LISTENER_GET_LOGS_SECONDARY_SIDE_REQUIRED_GROUPS,
     LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN,
     LISTENER_SELECTIVE_TX_FETCH_MAX_COUNT,
     LISTENER_TOPIC_CHUNK_SIZE,
     LOW_CU_MODE,
+    LP_EXTENDED_SCAN_ENABLE,
+    LP_EXTENDED_SCAN_INTERVAL_SEC,
+    LP_PRIMARY_TREND_SCAN_INTERVAL_SEC,
     LP_SECONDARY_SCAN_ENABLE,
     LP_SECONDARY_SCAN_INTERVAL_SEC,
+    LP_SECONDARY_SCAN_PRIMARY_TREND_ONLY,
     PRODUCER_POLL_INTERVAL_SEC,
     RPC_URL,
+    RUNTIME_ADJACENT_CORE_MAX_COUNT,
+    RUNTIME_ADJACENT_CORE_SCAN_ENABLE,
+    RUNTIME_ADJACENT_SECONDARY_MAX_COUNT,
+    RUNTIME_ADJACENT_SECONDARY_SCAN_ENABLE,
+    RUNTIME_ADJACENT_SECONDARY_SCAN_INTERVAL_SEC,
     SPILL_REPLAY_INTERVAL_SEC,
     SPILL_REPLAY_MAX_BATCH,
     SPILL_REPLAY_QUEUE_WATERMARK,
@@ -29,10 +42,14 @@ from lp_noise_rules import (
     lp_adjacent_noise_confidence_bucket,
     lp_adjacent_noise_core_decision,
 )
-from lp_registry import ACTIVE_LP_POOL_ADDRESSES
+from lp_registry import (
+    ACTIVE_EXTENDED_LP_POOL_ADDRESSES,
+    ACTIVE_LP_POOL_ADDRESSES,
+    ACTIVE_PRIMARY_TREND_SCAN_LP_POOL_ADDRESSES,
+)
 from processor import get_token_metadata_stats_snapshot
 from rpc_resilience import get_rpc_stats_snapshot, rpc_call_with_backoff
-from state_manager import get_runtime_adjacent_watch_addresses
+from state_manager import get_runtime_adjacent_watch_addresses, maybe_get_runtime_adjacent_watch_meta
 
 # 使用 HTTPProvider 做新区块轮询。
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -61,6 +78,22 @@ QUEUE_STATS = {
     "listener_block_topic_chunk_count": 0,
     "listener_block_monitored_address_count": 0,
     "listener_block_lp_secondary_scan_used": False,
+    "listener_block_bloom_prefilter_used": False,
+    "listener_block_bloom_skipped_get_logs_count": 0,
+    "listener_block_bloom_transfer_possible": True,
+    "listener_block_bloom_address_possible_count": 0,
+    "listener_runtime_adjacent_core_count": 0,
+    "listener_runtime_adjacent_secondary_count": 0,
+    "listener_runtime_adjacent_secondary_scan_used": False,
+    "listener_runtime_adjacent_secondary_skipped_count": 0,
+    "listener_block_lp_primary_trend_scan_used": False,
+    "listener_block_lp_extended_scan_used": False,
+    "listener_block_lp_primary_trend_pool_count": 0,
+    "listener_block_lp_extended_pool_count": 0,
+    "listener_block_get_logs_primary_side_count": 0,
+    "listener_block_get_logs_secondary_side_count": 0,
+    "listener_block_get_logs_secondary_side_skipped_count": 0,
+    "listener_block_get_logs_empty_response_count": 0,
     "low_cu_mode_enabled": bool(LOW_CU_MODE),
     "low_cu_mode_lp_secondary_only": bool(
         LOW_CU_MODE
@@ -76,6 +109,19 @@ QUEUE_STATS = {
 
 # get_logs 的 topic OR 数量不宜过大，按批次分片查询。
 TOPIC_CHUNK_SIZE = max(int(LISTENER_TOPIC_CHUNK_SIZE or 25), 1)
+SECONDARY_SIDE_REQUIRED_SCAN_GROUPS = {
+    str(item).strip().lower()
+    for item in LISTENER_GET_LOGS_SECONDARY_SIDE_REQUIRED_GROUPS
+    if str(item).strip()
+}
+SCAN_PRIMARY_SIDE_BY_GROUP = {
+    "core_watch": "to",
+    "runtime_adjacent_core": "from",
+    "runtime_adjacent_secondary": "from",
+    "lp_primary_trend": "to",
+    "lp_extended": "to",
+}
+HIGH_VALUE_ADJACENT_ANCHOR_ROLE_GROUPS = {"smart_money", "exchange"}
 
 
 def get_monitored_watch_addresses() -> set[str]:
@@ -113,9 +159,23 @@ def _effective_poll_interval_sec() -> float:
 
 
 def _effective_lp_secondary_interval_sec() -> float:
-    base_interval = max(float(LP_SECONDARY_SCAN_INTERVAL_SEC or 2.0), 0.5)
+    base_interval = max(float(LP_PRIMARY_TREND_SCAN_INTERVAL_SEC or LP_SECONDARY_SCAN_INTERVAL_SEC or 2.0), 0.5)
     if LOW_CU_MODE:
-        return max(base_interval, 18.0)
+        return max(base_interval, 12.0)
+    return base_interval
+
+
+def _effective_lp_extended_interval_sec() -> float:
+    base_interval = max(float(LP_EXTENDED_SCAN_INTERVAL_SEC or 60.0), 1.0)
+    if LOW_CU_MODE:
+        return max(base_interval, 60.0)
+    return base_interval
+
+
+def _effective_runtime_adjacent_secondary_interval_sec() -> float:
+    base_interval = max(float(RUNTIME_ADJACENT_SECONDARY_SCAN_INTERVAL_SEC or 15.0), 1.0)
+    if LOW_CU_MODE:
+        return max(base_interval, 15.0)
     return base_interval
 
 
@@ -128,6 +188,22 @@ def _listener_runtime_defaults() -> dict:
         "listener_block_topic_chunk_count": 0,
         "listener_block_monitored_address_count": 0,
         "listener_block_lp_secondary_scan_used": False,
+        "listener_block_bloom_prefilter_used": False,
+        "listener_block_bloom_skipped_get_logs_count": 0,
+        "listener_block_bloom_transfer_possible": True,
+        "listener_block_bloom_address_possible_count": 0,
+        "listener_runtime_adjacent_core_count": 0,
+        "listener_runtime_adjacent_secondary_count": 0,
+        "listener_runtime_adjacent_secondary_scan_used": False,
+        "listener_runtime_adjacent_secondary_skipped_count": 0,
+        "listener_block_lp_primary_trend_scan_used": False,
+        "listener_block_lp_extended_scan_used": False,
+        "listener_block_lp_primary_trend_pool_count": 0,
+        "listener_block_lp_extended_pool_count": 0,
+        "listener_block_get_logs_primary_side_count": 0,
+        "listener_block_get_logs_secondary_side_count": 0,
+        "listener_block_get_logs_secondary_side_skipped_count": 0,
+        "listener_block_get_logs_empty_response_count": 0,
         "low_cu_mode_enabled": bool(LOW_CU_MODE),
         "low_cu_mode_lp_secondary_only": bool(
             LOW_CU_MODE
@@ -163,6 +239,56 @@ def _listener_runtime_metadata(block_context: dict | None = None) -> dict:
                 ),
                 "listener_block_lp_secondary_scan_used": bool(
                     block_context.get("listener_block_lp_secondary_scan_used")
+                ),
+                "listener_block_bloom_prefilter_used": bool(
+                    block_context.get("listener_block_bloom_prefilter_used")
+                ),
+                "listener_block_bloom_skipped_get_logs_count": int(
+                    block_context.get("listener_block_bloom_skipped_get_logs_count") or 0
+                ),
+                "listener_block_bloom_transfer_possible": bool(
+                    block_context.get("listener_block_bloom_transfer_possible")
+                    if "listener_block_bloom_transfer_possible" in block_context
+                    else payload["listener_block_bloom_transfer_possible"]
+                ),
+                "listener_block_bloom_address_possible_count": int(
+                    block_context.get("listener_block_bloom_address_possible_count") or 0
+                ),
+                "listener_runtime_adjacent_core_count": int(
+                    block_context.get("listener_runtime_adjacent_core_count") or 0
+                ),
+                "listener_runtime_adjacent_secondary_count": int(
+                    block_context.get("listener_runtime_adjacent_secondary_count") or 0
+                ),
+                "listener_runtime_adjacent_secondary_scan_used": bool(
+                    block_context.get("listener_runtime_adjacent_secondary_scan_used")
+                ),
+                "listener_runtime_adjacent_secondary_skipped_count": int(
+                    block_context.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+                ),
+                "listener_block_lp_primary_trend_scan_used": bool(
+                    block_context.get("listener_block_lp_primary_trend_scan_used")
+                ),
+                "listener_block_lp_extended_scan_used": bool(
+                    block_context.get("listener_block_lp_extended_scan_used")
+                ),
+                "listener_block_lp_primary_trend_pool_count": int(
+                    block_context.get("listener_block_lp_primary_trend_pool_count") or 0
+                ),
+                "listener_block_lp_extended_pool_count": int(
+                    block_context.get("listener_block_lp_extended_pool_count") or 0
+                ),
+                "listener_block_get_logs_primary_side_count": int(
+                    block_context.get("listener_block_get_logs_primary_side_count") or 0
+                ),
+                "listener_block_get_logs_secondary_side_count": int(
+                    block_context.get("listener_block_get_logs_secondary_side_count") or 0
+                ),
+                "listener_block_get_logs_secondary_side_skipped_count": int(
+                    block_context.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+                ),
+                "listener_block_get_logs_empty_response_count": int(
+                    block_context.get("listener_block_get_logs_empty_response_count") or 0
                 ),
                 "low_cu_mode_enabled": bool(
                     block_context.get("low_cu_mode_enabled")
@@ -314,6 +440,475 @@ def _pool_candidate_weight(raw_log_count: int, touched_lp_pools: list[str], pool
     pool_hits = min(0.6, len(touched_lp_pools) * 0.18)
     transfer_density = min(0.6, sum(int(value or 0) for value in pool_transfer_counts.values()) / 10.0)
     return round(min(1.0, 0.2 + base * 0.35 + pool_hits + transfer_density * 0.25), 3)
+
+
+def _normalize_scan_group_name(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _scan_group_primary_side(scan_group: str | None) -> str:
+    side = SCAN_PRIMARY_SIDE_BY_GROUP.get(_normalize_scan_group_name(scan_group), "to")
+    return side if side in {"from", "to"} else "to"
+
+
+def _scan_group_secondary_side(scan_group: str | None) -> str:
+    return "from" if _scan_group_primary_side(scan_group) == "to" else "to"
+
+
+def _scan_group_requires_secondary_side(scan_group: str | None) -> bool:
+    if not bool(LISTENER_GET_LOGS_DIRECTIONAL_SCAN_ENABLE):
+        return True
+    if not bool(LISTENER_GET_LOGS_SECONDARY_SIDE_FALLBACK):
+        return False
+    return _normalize_scan_group_name(scan_group) in SECONDARY_SIDE_REQUIRED_SCAN_GROUPS
+
+
+def _hex_bytes(value) -> bytes:
+    text = _to_hex(value)
+    if text.startswith("0x"):
+        text = text[2:]
+    if not text:
+        return b""
+    if len(text) % 2 == 1:
+        text = f"0{text}"
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        return b""
+
+
+def _extract_block_logs_bloom_bytes(block) -> bytes | None:
+    if not bool(LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE) or block is None:
+        return None
+    bloom = None
+    try:
+        bloom = block.get("logsBloom")
+    except Exception:
+        bloom = getattr(block, "logsBloom", None)
+    if bloom is None:
+        bloom = getattr(block, "logsBloom", None)
+    data = _hex_bytes(bloom)
+    return data if len(data) == 256 else None
+
+
+def _bloom_maybe_contains_value(block_bloom: bytes | None, value) -> bool:
+    if not bool(LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE) or not block_bloom:
+        return True
+    data = _hex_bytes(value)
+    if not data:
+        return True
+    digest = Web3.keccak(data)
+    for offset in (0, 2, 4):
+        bit_index = ((digest[offset] << 8) | digest[offset + 1]) & 2047
+        byte_index = 255 - (bit_index >> 3)
+        mask = 1 << (bit_index & 0x07)
+        if block_bloom[byte_index] & mask != mask:
+            return False
+    return True
+
+
+def _bloom_maybe_contains_topic(block_bloom: bytes | None, topic: str | None) -> bool:
+    return _bloom_maybe_contains_value(block_bloom, topic)
+
+
+def _bloom_maybe_contains_any_topic(block_bloom: bytes | None, topics: list[str]) -> tuple[bool, int]:
+    candidates = [topic for topic in topics if topic]
+    if not bool(LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE) or not block_bloom:
+        return bool(candidates), len(candidates)
+    possible_count = sum(1 for topic in candidates if _bloom_maybe_contains_topic(block_bloom, topic))
+    return possible_count > 0, int(possible_count)
+
+
+def _block_transfer_bloom_possible(block_bloom: bytes | None) -> bool:
+    return _bloom_maybe_contains_topic(block_bloom, ERC20_TRANSFER_EVENT_SIG)
+
+
+def _should_issue_get_logs_for_chunk(
+    *,
+    block_bloom: bytes | None,
+    topic_chunk: list[str],
+    block_transfer_possible: bool | None = None,
+) -> dict:
+    if not bool(LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE) or not block_bloom:
+        return {
+            "prefilter_used": False,
+            "should_issue": True,
+            "transfer_possible": True if block_transfer_possible is None else bool(block_transfer_possible),
+            "address_possible_count": len([topic for topic in topic_chunk if topic]),
+        }
+
+    transfer_possible = (
+        bool(block_transfer_possible)
+        if block_transfer_possible is not None
+        else _block_transfer_bloom_possible(block_bloom)
+    )
+    if not transfer_possible:
+        return {
+            "prefilter_used": True,
+            "should_issue": False,
+            "transfer_possible": False,
+            "address_possible_count": 0,
+        }
+
+    address_possible, address_possible_count = _bloom_maybe_contains_any_topic(block_bloom, topic_chunk)
+    return {
+        "prefilter_used": True,
+        "should_issue": bool(address_possible),
+        "transfer_possible": True,
+        "address_possible_count": int(address_possible_count),
+    }
+
+
+def _query_filter_for_side(block_num: int, topic_chunk: list[str], side: str) -> dict:
+    if side == "from":
+        topics = [ERC20_TRANSFER_EVENT_SIG, topic_chunk, None]
+    else:
+        topics = [ERC20_TRANSFER_EVENT_SIG, None, topic_chunk]
+    return {
+        "fromBlock": block_num,
+        "toBlock": block_num,
+        "topics": topics,
+    }
+
+
+def _append_grouped_logs(grouped: dict[str, list[dict]], seen: set[tuple[str, int]], logs) -> None:
+    for log in logs or []:
+        tx_hash = _to_hex(log.get("transactionHash")).lower()
+        log_index = int(log.get("logIndex", 0)) if log.get("logIndex") is not None else 0
+        dedup_key = (tx_hash, log_index)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        grouped[tx_hash].append(_compact_log(log))
+
+
+def _empty_transfer_scan_stats(scan_label: str) -> dict:
+    return {
+        "request_count": 0,
+        "topic_chunk_count": 0,
+        "monitored_address_count": 0,
+        "failure_count": 0,
+        "scan_label": str(scan_label or ""),
+        "listener_block_bloom_prefilter_used": False,
+        "listener_block_bloom_skipped_get_logs_count": 0,
+        "listener_block_bloom_transfer_possible": True,
+        "listener_block_bloom_address_possible_count": 0,
+        "listener_block_get_logs_primary_side_count": 0,
+        "listener_block_get_logs_secondary_side_count": 0,
+        "listener_block_get_logs_secondary_side_skipped_count": 0,
+        "listener_block_get_logs_empty_response_count": 0,
+    }
+
+
+def _merge_transfer_scan_stats(base_stats: dict, extra_stats: dict) -> dict:
+    base = dict(base_stats or {})
+    extra = dict(extra_stats or {})
+    base["request_count"] = int(base.get("request_count") or 0) + int(extra.get("request_count") or 0)
+    base["topic_chunk_count"] = int(base.get("topic_chunk_count") or 0) + int(extra.get("topic_chunk_count") or 0)
+    base["monitored_address_count"] = int(base.get("monitored_address_count") or 0) + int(extra.get("monitored_address_count") or 0)
+    base["failure_count"] = int(base.get("failure_count") or 0) + int(extra.get("failure_count") or 0)
+    base["listener_block_bloom_prefilter_used"] = bool(
+        base.get("listener_block_bloom_prefilter_used")
+        or extra.get("listener_block_bloom_prefilter_used")
+    )
+    base["listener_block_bloom_skipped_get_logs_count"] = int(
+        base.get("listener_block_bloom_skipped_get_logs_count") or 0
+    ) + int(extra.get("listener_block_bloom_skipped_get_logs_count") or 0)
+    base["listener_block_bloom_transfer_possible"] = bool(
+        base.get("listener_block_bloom_transfer_possible", True)
+        and extra.get("listener_block_bloom_transfer_possible", True)
+    )
+    base["listener_block_bloom_address_possible_count"] = int(
+        base.get("listener_block_bloom_address_possible_count") or 0
+    ) + int(extra.get("listener_block_bloom_address_possible_count") or 0)
+    base["listener_block_get_logs_primary_side_count"] = int(
+        base.get("listener_block_get_logs_primary_side_count") or 0
+    ) + int(extra.get("listener_block_get_logs_primary_side_count") or 0)
+    base["listener_block_get_logs_secondary_side_count"] = int(
+        base.get("listener_block_get_logs_secondary_side_count") or 0
+    ) + int(extra.get("listener_block_get_logs_secondary_side_count") or 0)
+    base["listener_block_get_logs_secondary_side_skipped_count"] = int(
+        base.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+    ) + int(extra.get("listener_block_get_logs_secondary_side_skipped_count") or 0)
+    base["listener_block_get_logs_empty_response_count"] = int(
+        base.get("listener_block_get_logs_empty_response_count") or 0
+    ) + int(extra.get("listener_block_get_logs_empty_response_count") or 0)
+    return base
+
+
+def _runtime_adjacent_priority_score(meta: dict | None) -> float:
+    meta = dict(meta or {})
+    score = 0.0
+    runtime_state = str(meta.get("runtime_state") or "")
+    priority = int(meta.get("priority") or 3)
+    anchor_usd_value = float(meta.get("anchor_usd_value") or 0.0)
+    observed_count = int(meta.get("observed_count") or 0)
+    emitted_count = int(meta.get("emitted_notification_count") or 0)
+    strategy_hint = str(meta.get("strategy_hint") or "")
+    anchor_role_group = str(strategy_role_group(meta.get("anchor_strategy_role") or ""))
+
+    if runtime_state == "active":
+        score += 2.0
+    if priority <= 2:
+        score += 1.4
+    if strategy_hint == "persisted_exchange_adjacent":
+        score += 2.0
+    if anchor_role_group in HIGH_VALUE_ADJACENT_ANCHOR_ROLE_GROUPS:
+        score += 1.4
+    if str(meta.get("downstream_case_id") or ""):
+        score += 1.3
+    if bool(meta.get("runtime_adjacent_anchor_flag")):
+        score += 1.0
+    if anchor_usd_value >= 500_000.0:
+        score += 2.0
+    elif anchor_usd_value >= 150_000.0:
+        score += 1.0
+    if observed_count > 0:
+        score += min(2.0, observed_count * 0.4)
+    if emitted_count > 0:
+        score += 1.2
+    return round(score, 3)
+
+
+def _is_runtime_adjacent_core(meta: dict | None) -> bool:
+    meta = dict(meta or {})
+    if not bool(RUNTIME_ADJACENT_CORE_SCAN_ENABLE):
+        return False
+    if str(meta.get("runtime_state") or "") != "active":
+        return False
+
+    priority = int(meta.get("priority") or 3)
+    anchor_usd_value = float(meta.get("anchor_usd_value") or 0.0)
+    observed_count = int(meta.get("observed_count") or 0)
+    emitted_count = int(meta.get("emitted_notification_count") or 0)
+    strategy_hint = str(meta.get("strategy_hint") or "")
+    anchor_role_group = str(strategy_role_group(meta.get("anchor_strategy_role") or ""))
+
+    return bool(
+        strategy_hint == "persisted_exchange_adjacent"
+        or str(meta.get("downstream_case_id") or "")
+        or emitted_count > 0
+        or observed_count > 0
+        or anchor_usd_value >= 150_000.0
+        or priority <= 2
+        or anchor_role_group in HIGH_VALUE_ADJACENT_ANCHOR_ROLE_GROUPS
+        or _runtime_adjacent_priority_score(meta) >= 3.5
+    )
+
+
+def _runtime_adjacent_sort_key(item: dict) -> tuple:
+    return (
+        -float(item.get("scan_priority_score") or 0.0),
+        int(item.get("priority") or 3),
+        -float(item.get("anchor_usd_value") or 0.0),
+        -int(item.get("observed_count") or 0),
+        -int(item.get("emitted_notification_count") or 0),
+        -int(item.get("last_seen_ts") or 0),
+        str(item.get("address") or ""),
+    )
+
+
+def _should_run_runtime_adjacent_secondary_scan(last_scan_ts: float, *, secondary_available: bool) -> tuple[bool, str]:
+    if not secondary_available:
+        return False, "runtime_adjacent_secondary_empty"
+    if not bool(RUNTIME_ADJACENT_SECONDARY_SCAN_ENABLE):
+        return False, "runtime_adjacent_secondary_disabled"
+    if LOW_CU_MODE and tx_queue.qsize() >= int(SPILL_REPLAY_QUEUE_WATERMARK or 0):
+        return False, "runtime_adjacent_secondary_queue_pressure"
+    now_ts = time.time()
+    if now_ts - float(last_scan_ts or 0.0) < _effective_runtime_adjacent_secondary_interval_sec():
+        return False, "runtime_adjacent_secondary_interval_throttled"
+    return True, "runtime_adjacent_secondary_scheduled"
+
+
+def _build_runtime_adjacent_scan_plan(
+    *,
+    now_ts: int | None = None,
+    last_secondary_scan_ts: float = 0.0,
+) -> dict:
+    reference_ts = int(now_ts or time.time())
+    active_addresses = sorted(get_runtime_adjacent_watch_addresses(now_ts=reference_ts))
+    core_entries = []
+    secondary_entries = []
+
+    for address in active_addresses:
+        if address in WATCH_ADDRESSES:
+            continue
+        meta = dict(maybe_get_runtime_adjacent_watch_meta(address, now_ts=reference_ts) or {})
+        meta["address"] = str(address or "").lower()
+        meta["scan_priority_score"] = _runtime_adjacent_priority_score(meta)
+        if _is_runtime_adjacent_core(meta):
+            core_entries.append(meta)
+        else:
+            secondary_entries.append(meta)
+
+    core_entries.sort(key=_runtime_adjacent_sort_key)
+    secondary_entries.sort(key=_runtime_adjacent_sort_key)
+
+    if not bool(RUNTIME_ADJACENT_CORE_SCAN_ENABLE):
+        secondary_entries = core_entries + secondary_entries
+        core_entries = []
+
+    core_limit = max(int(RUNTIME_ADJACENT_CORE_MAX_COUNT or 0), 0)
+    secondary_limit = max(int(RUNTIME_ADJACENT_SECONDARY_MAX_COUNT or 0), 0)
+    selected_core_entries = core_entries[:core_limit] if core_limit else []
+    selected_secondary_entries = secondary_entries[:secondary_limit] if secondary_limit else []
+
+    secondary_scan_used, secondary_reason = _should_run_runtime_adjacent_secondary_scan(
+        last_secondary_scan_ts,
+        secondary_available=bool(selected_secondary_entries),
+    )
+    scanned_secondary_entries = selected_secondary_entries if secondary_scan_used else []
+
+    return {
+        "core_addresses": [item["address"] for item in selected_core_entries],
+        "secondary_addresses": [item["address"] for item in scanned_secondary_entries],
+        "selected_secondary_addresses": [item["address"] for item in selected_secondary_entries],
+        "core_count": len(selected_core_entries),
+        "secondary_count": len(selected_secondary_entries),
+        "secondary_scan_used": bool(secondary_scan_used and scanned_secondary_entries),
+        "secondary_reason": secondary_reason,
+        "secondary_skipped_count": max(
+            len(secondary_entries) - (len(scanned_secondary_entries) if secondary_scan_used else 0),
+            0,
+        ),
+    }
+
+
+def _lp_primary_trend_scan_addresses() -> list[str]:
+    if not bool(LP_SECONDARY_SCAN_PRIMARY_TREND_ONLY):
+        return sorted(ACTIVE_LP_POOL_ADDRESSES)
+    return sorted(ACTIVE_PRIMARY_TREND_SCAN_LP_POOL_ADDRESSES)
+
+
+def _lp_extended_scan_addresses() -> list[str]:
+    if not bool(LP_SECONDARY_SCAN_PRIMARY_TREND_ONLY):
+        return []
+    return sorted(ACTIVE_EXTENDED_LP_POOL_ADDRESSES)
+
+
+def _should_run_lp_primary_trend_scan(last_scan_ts: float) -> tuple[bool, str]:
+    if not bool(LP_SECONDARY_SCAN_ENABLE):
+        return False, "lp_secondary_disabled"
+    if bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN):
+        return False, "lp_included_in_main_scan"
+    if LOW_CU_MODE and tx_queue.qsize() >= int(SPILL_REPLAY_QUEUE_WATERMARK or 0):
+        return False, "lp_primary_trend_queue_pressure"
+    if not _lp_primary_trend_scan_addresses():
+        return False, "lp_primary_trend_empty"
+    now_ts = time.time()
+    if now_ts - float(last_scan_ts or 0.0) < _effective_lp_secondary_interval_sec():
+        return False, "lp_primary_trend_interval_throttled"
+    return True, "lp_primary_trend_scheduled"
+
+
+def _should_run_lp_extended_scan(last_scan_ts: float) -> tuple[bool, str]:
+    if not bool(LP_SECONDARY_SCAN_ENABLE):
+        return False, "lp_secondary_disabled"
+    if bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN):
+        return False, "lp_included_in_main_scan"
+    if not bool(LP_EXTENDED_SCAN_ENABLE):
+        return False, "lp_extended_disabled"
+    if LOW_CU_MODE and tx_queue.qsize() >= int(SPILL_REPLAY_QUEUE_WATERMARK or 0):
+        return False, "lp_extended_queue_pressure"
+    if not _lp_extended_scan_addresses():
+        return False, "lp_extended_empty"
+    now_ts = time.time()
+    if now_ts - float(last_scan_ts or 0.0) < _effective_lp_extended_interval_sec():
+        return False, "lp_extended_interval_throttled"
+    return True, "lp_extended_scheduled"
+
+
+def _build_lp_scan_plan(
+    *,
+    last_primary_scan_ts: float = 0.0,
+    last_extended_scan_ts: float = 0.0,
+    include_active_lp_pools: bool = False,
+) -> dict:
+    primary_addresses = _lp_primary_trend_scan_addresses()
+    extended_addresses = _lp_extended_scan_addresses()
+
+    if include_active_lp_pools:
+        return {
+            "primary_addresses": primary_addresses,
+            "extended_addresses": extended_addresses,
+            "primary_scan_used": bool(primary_addresses),
+            "extended_scan_used": bool(extended_addresses),
+            "secondary_scan_used": False,
+            "primary_reason": "lp_included_in_main_scan",
+            "extended_reason": "lp_included_in_main_scan",
+        }
+
+    primary_scan_used, primary_reason = _should_run_lp_primary_trend_scan(last_primary_scan_ts)
+    extended_scan_used, extended_reason = _should_run_lp_extended_scan(last_extended_scan_ts)
+    primary_scan_used = bool(primary_scan_used and primary_addresses)
+    extended_scan_used = bool(extended_scan_used and extended_addresses)
+
+    return {
+        "primary_addresses": primary_addresses,
+        "extended_addresses": extended_addresses,
+        "primary_scan_used": primary_scan_used,
+        "extended_scan_used": extended_scan_used,
+        "secondary_scan_used": bool(primary_scan_used or extended_scan_used),
+        "primary_reason": primary_reason,
+        "extended_reason": extended_reason,
+    }
+
+
+def _build_transfer_scan_groups(
+    *,
+    runtime_adjacent_plan: dict,
+    lp_scan_plan: dict,
+    include_active_lp_pools: bool = False,
+) -> list[dict]:
+    groups = []
+    if WATCH_ADDRESSES:
+        groups.append({
+            "group_name": "core_watch",
+            "scan_label": "core_watch",
+            "addresses": sorted(WATCH_ADDRESSES),
+        })
+    if runtime_adjacent_plan.get("core_addresses"):
+        groups.append({
+            "group_name": "runtime_adjacent_core",
+            "scan_label": "runtime_adjacent_core",
+            "addresses": list(runtime_adjacent_plan.get("core_addresses") or []),
+        })
+    if runtime_adjacent_plan.get("secondary_scan_used") and runtime_adjacent_plan.get("secondary_addresses"):
+        groups.append({
+            "group_name": "runtime_adjacent_secondary",
+            "scan_label": "runtime_adjacent_secondary",
+            "addresses": list(runtime_adjacent_plan.get("secondary_addresses") or []),
+        })
+
+    if include_active_lp_pools:
+        if lp_scan_plan.get("primary_addresses"):
+            groups.append({
+                "group_name": "lp_primary_trend",
+                "scan_label": "lp_primary_trend",
+                "addresses": list(lp_scan_plan.get("primary_addresses") or []),
+            })
+        if lp_scan_plan.get("extended_addresses"):
+            groups.append({
+                "group_name": "lp_extended",
+                "scan_label": "lp_extended",
+                "addresses": list(lp_scan_plan.get("extended_addresses") or []),
+            })
+        return groups
+
+    if lp_scan_plan.get("primary_scan_used") and lp_scan_plan.get("primary_addresses"):
+        groups.append({
+            "group_name": "lp_primary_trend",
+            "scan_label": "lp_primary_trend",
+            "addresses": list(lp_scan_plan.get("primary_addresses") or []),
+        })
+    if lp_scan_plan.get("extended_scan_used") and lp_scan_plan.get("extended_addresses"):
+        groups.append({
+            "group_name": "lp_extended",
+            "scan_label": "lp_extended",
+            "addresses": list(lp_scan_plan.get("extended_addresses") or []),
+        })
+    return groups
 
 
 def _build_eth_candidate(tx, block_num: int, touched_watch_addresses: list[str]) -> dict:
@@ -470,6 +1065,56 @@ def _listener_lp_adjacent_skip_audit_record(
         "listener_block_lp_secondary_scan_used": bool(
             candidate.get("listener_block_lp_secondary_scan_used")
         ),
+        "listener_block_bloom_prefilter_used": bool(
+            candidate.get("listener_block_bloom_prefilter_used")
+        ),
+        "listener_block_bloom_skipped_get_logs_count": int(
+            candidate.get("listener_block_bloom_skipped_get_logs_count") or 0
+        ),
+        "listener_block_bloom_transfer_possible": bool(
+            candidate.get("listener_block_bloom_transfer_possible")
+            if "listener_block_bloom_transfer_possible" in candidate
+            else True
+        ),
+        "listener_block_bloom_address_possible_count": int(
+            candidate.get("listener_block_bloom_address_possible_count") or 0
+        ),
+        "listener_runtime_adjacent_core_count": int(
+            candidate.get("listener_runtime_adjacent_core_count") or 0
+        ),
+        "listener_runtime_adjacent_secondary_count": int(
+            candidate.get("listener_runtime_adjacent_secondary_count") or 0
+        ),
+        "listener_runtime_adjacent_secondary_scan_used": bool(
+            candidate.get("listener_runtime_adjacent_secondary_scan_used")
+        ),
+        "listener_runtime_adjacent_secondary_skipped_count": int(
+            candidate.get("listener_runtime_adjacent_secondary_skipped_count") or 0
+        ),
+        "listener_block_lp_primary_trend_scan_used": bool(
+            candidate.get("listener_block_lp_primary_trend_scan_used")
+        ),
+        "listener_block_lp_extended_scan_used": bool(
+            candidate.get("listener_block_lp_extended_scan_used")
+        ),
+        "listener_block_lp_primary_trend_pool_count": int(
+            candidate.get("listener_block_lp_primary_trend_pool_count") or 0
+        ),
+        "listener_block_lp_extended_pool_count": int(
+            candidate.get("listener_block_lp_extended_pool_count") or 0
+        ),
+        "listener_block_get_logs_primary_side_count": int(
+            candidate.get("listener_block_get_logs_primary_side_count") or 0
+        ),
+        "listener_block_get_logs_secondary_side_count": int(
+            candidate.get("listener_block_get_logs_secondary_side_count") or 0
+        ),
+        "listener_block_get_logs_secondary_side_skipped_count": int(
+            candidate.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+        ),
+        "listener_block_get_logs_empty_response_count": int(
+            candidate.get("listener_block_get_logs_empty_response_count") or 0
+        ),
         "low_cu_mode_enabled": bool(candidate.get("low_cu_mode_enabled")),
         "low_cu_mode_lp_secondary_only": bool(
             candidate.get("low_cu_mode_lp_secondary_only")
@@ -612,14 +1257,6 @@ def _lp_adjacent_noise_listener_decision(
     )
 
 
-async def _fetch_transfer_logs_for_block(block_num: int):
-    return await _fetch_transfer_logs_for_block_for_addresses(
-        block_num,
-        get_monitored_transfer_addresses(),
-        scan_label="core",
-    )
-
-
 def _rpc_get_block_number() -> int | None:
     return rpc_call_with_backoff(
         "listener.block_number",
@@ -649,69 +1286,134 @@ async def _fetch_transfer_logs_for_block_for_addresses(
     monitored_addresses: set[str],
     *,
     scan_label: str,
+    scan_group: str,
+    block_bloom: bytes | None = None,
+    block_transfer_possible: bool | None = None,
 ) -> tuple[dict[str, list[dict]], dict]:
+    stats = _empty_transfer_scan_stats(scan_label)
+    stats["monitored_address_count"] = len(monitored_addresses or [])
+    stats["listener_block_bloom_prefilter_used"] = bool(
+        LISTENER_BLOCK_BLOOM_PREFILTER_ENABLE and block_bloom
+    )
+    stats["listener_block_bloom_transfer_possible"] = bool(
+        True if block_transfer_possible is None else block_transfer_possible
+    )
+
     if not monitored_addresses:
-        return {}, {
-            "request_count": 0,
-            "topic_chunk_count": 0,
-            "monitored_address_count": 0,
-            "failure_count": 0,
-            "scan_label": str(scan_label or ""),
-        }
+        return {}, stats
 
     watch_topics = [_topic_for_address(addr) for addr in sorted(monitored_addresses)]
     grouped: dict[str, list[dict]] = defaultdict(list)
     seen = set()
-    request_count = 0
-    topic_chunk_count = 0
-    failure_count = 0
+    primary_side = _scan_group_primary_side(scan_group)
+    secondary_side = _scan_group_secondary_side(scan_group)
+    query_secondary_side = _scan_group_requires_secondary_side(scan_group)
 
     for topic_chunk in _chunked(watch_topics, TOPIC_CHUNK_SIZE):
-        topic_chunk_count += 1
-        filters = [
-            {
-                "fromBlock": block_num,
-                "toBlock": block_num,
-                "topics": [ERC20_TRANSFER_EVENT_SIG, topic_chunk, None],
-            },
-            {
-                "fromBlock": block_num,
-                "toBlock": block_num,
-                "topics": [ERC20_TRANSFER_EVENT_SIG, None, topic_chunk],
-            },
-        ]
+        stats["topic_chunk_count"] = int(stats.get("topic_chunk_count") or 0) + 1
+        bloom_decision = _should_issue_get_logs_for_chunk(
+            block_bloom=block_bloom,
+            topic_chunk=topic_chunk,
+            block_transfer_possible=block_transfer_possible,
+        )
+        stats["listener_block_bloom_prefilter_used"] = bool(
+            stats.get("listener_block_bloom_prefilter_used")
+            or bloom_decision.get("prefilter_used")
+        )
+        stats["listener_block_bloom_transfer_possible"] = bool(
+            bloom_decision.get("transfer_possible")
+            if "transfer_possible" in bloom_decision
+            else stats.get("listener_block_bloom_transfer_possible", True)
+        )
+        stats["listener_block_bloom_address_possible_count"] = int(
+            stats.get("listener_block_bloom_address_possible_count") or 0
+        ) + int(bloom_decision.get("address_possible_count") or 0)
 
-        for query_filter in filters:
-            request_count += 1
+        if not bool(bloom_decision.get("should_issue", True)):
+            skipped_request_count = 1 + (1 if query_secondary_side else 0)
+            stats["listener_block_bloom_skipped_get_logs_count"] = int(
+                stats.get("listener_block_bloom_skipped_get_logs_count") or 0
+            ) + skipped_request_count
+            continue
+
+        for side in [primary_side, secondary_side if query_secondary_side else None]:
+            if side is None:
+                continue
+            query_filter = _query_filter_for_side(block_num, topic_chunk, side)
+            stats["request_count"] = int(stats.get("request_count") or 0) + 1
+            if side == primary_side:
+                stats["listener_block_get_logs_primary_side_count"] = int(
+                    stats.get("listener_block_get_logs_primary_side_count") or 0
+                ) + 1
+            else:
+                stats["listener_block_get_logs_secondary_side_count"] = int(
+                    stats.get("listener_block_get_logs_secondary_side_count") or 0
+                ) + 1
+
             logs = await asyncio.to_thread(
                 rpc_call_with_backoff,
-                f"listener.get_logs.{scan_label}",
+                f"listener.get_logs.{scan_label}.{side}",
                 lambda query_filter=query_filter: w3.eth.get_logs(query_filter),
                 return_none_on_failure=True,
             )
             if logs is None:
-                failure_count += 1
+                stats["failure_count"] = int(stats.get("failure_count") or 0) + 1
                 continue
+            if not logs:
+                stats["listener_block_get_logs_empty_response_count"] = int(
+                    stats.get("listener_block_get_logs_empty_response_count") or 0
+                ) + 1
+                continue
+            _append_grouped_logs(grouped, seen, logs)
 
-            for log in logs:
-                tx_hash = _to_hex(log.get("transactionHash")).lower()
-                log_index = int(log.get("logIndex", 0)) if log.get("logIndex") is not None else 0
-                dedup_key = (tx_hash, log_index)
-                if dedup_key in seen:
-                    continue
-                seen.add(dedup_key)
-                grouped[tx_hash].append(_compact_log(log))
+        if not query_secondary_side:
+            stats["listener_block_get_logs_secondary_side_skipped_count"] = int(
+                stats.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+            ) + 1
 
     for tx_hash in grouped:
         grouped[tx_hash].sort(key=lambda item: item["logIndex"])
 
-    return dict(grouped), {
-        "request_count": request_count,
-        "topic_chunk_count": topic_chunk_count,
-        "monitored_address_count": len(monitored_addresses),
-        "failure_count": failure_count,
-        "scan_label": str(scan_label or ""),
-    }
+    return dict(grouped), stats
+
+
+async def _fetch_transfer_logs_for_scan_groups(
+    block_num: int,
+    scan_groups: list[dict],
+    *,
+    block_bloom: bytes | None = None,
+    block_transfer_possible: bool | None = None,
+) -> tuple[dict[str, list[dict]], dict]:
+    grouped: dict[str, list[dict]] = {}
+    total_stats = _empty_transfer_scan_stats("block")
+
+    for group in scan_groups:
+        group_logs, group_stats = await _fetch_transfer_logs_for_block_for_addresses(
+            block_num,
+            set(group.get("addresses") or []),
+            scan_label=str(group.get("scan_label") or group.get("group_name") or "scan"),
+            scan_group=str(group.get("group_name") or group.get("scan_label") or "scan"),
+            block_bloom=block_bloom,
+            block_transfer_possible=block_transfer_possible,
+        )
+        grouped = _merge_grouped_logs(grouped, group_logs)
+        total_stats = _merge_transfer_scan_stats(total_stats, group_stats)
+
+    return grouped, total_stats
+
+
+async def _fetch_transfer_logs_for_block(block_num: int):
+    scan_groups = [{
+        "group_name": "core_watch",
+        "scan_label": "core_watch",
+        "addresses": sorted(get_monitored_transfer_addresses()),
+    }]
+    return await _fetch_transfer_logs_for_scan_groups(
+        block_num,
+        scan_groups,
+        block_bloom=None,
+        block_transfer_possible=True,
+    )
 
 
 def _merge_grouped_logs(*groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
@@ -729,19 +1431,6 @@ def _merge_grouped_logs(*groups: dict[str, list[dict]]) -> dict[str, list[dict]]
     for tx_hash in merged:
         merged[tx_hash].sort(key=lambda item: item["logIndex"])
     return dict(merged)
-
-
-def _should_run_lp_secondary_scan(last_lp_secondary_scan_ts: float) -> tuple[bool, str]:
-    if not bool(LP_SECONDARY_SCAN_ENABLE):
-        return False, "lp_secondary_disabled"
-    if bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN):
-        return False, "lp_included_in_main_scan"
-    if LOW_CU_MODE and tx_queue.qsize() >= int(SPILL_REPLAY_QUEUE_WATERMARK or 0):
-        return False, "low_cu_queue_pressure"
-    now_ts = time.time()
-    if now_ts - float(last_lp_secondary_scan_ts or 0.0) < _effective_lp_secondary_interval_sec():
-        return False, "lp_secondary_interval_throttled"
-    return True, "lp_secondary_scheduled"
 
 
 def _spill_to_disk(item):
@@ -888,7 +1577,9 @@ async def producer():
         await asyncio.sleep(effective_poll_interval)
         last_block = await asyncio.to_thread(_rpc_get_block_number)
 
-    last_lp_secondary_scan_ts = 0.0
+    last_runtime_adjacent_secondary_scan_ts = 0.0
+    last_lp_primary_trend_scan_ts = 0.0
+    last_lp_extended_scan_ts = 0.0
 
     while True:
         try:
@@ -901,69 +1592,85 @@ async def producer():
             processed_until = last_block
 
             for block_num in range(last_block + 1, latest_block + 1):
-                monitored_watch_addresses = get_monitored_watch_addresses()
-                core_monitored_addresses = get_monitored_transfer_addresses(
-                    include_active_lp_pools=LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN,
+                now_ts = int(time.time())
+                runtime_adjacent_plan = _build_runtime_adjacent_scan_plan(
+                    now_ts=now_ts,
+                    last_secondary_scan_ts=last_runtime_adjacent_secondary_scan_ts,
                 )
+                lp_scan_plan = _build_lp_scan_plan(
+                    last_primary_scan_ts=last_lp_primary_trend_scan_ts,
+                    last_extended_scan_ts=last_lp_extended_scan_ts,
+                    include_active_lp_pools=bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN),
+                )
+
+                block_monitored_watch_addresses = set(WATCH_ADDRESSES) | set(
+                    runtime_adjacent_plan.get("core_addresses") or []
+                )
+                if runtime_adjacent_plan.get("secondary_scan_used"):
+                    block_monitored_watch_addresses |= set(
+                        runtime_adjacent_plan.get("secondary_addresses") or []
+                    )
+
+                scan_groups = _build_transfer_scan_groups(
+                    runtime_adjacent_plan=runtime_adjacent_plan,
+                    lp_scan_plan=lp_scan_plan,
+                    include_active_lp_pools=bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN),
+                )
+
                 block_transactions = []
                 block_tx_hashes = []
+                block_obj = None
                 if LOW_CU_MODE:
-                    header_block = await asyncio.to_thread(
+                    block_obj = await asyncio.to_thread(
                         _rpc_get_block,
                         block_num,
                         full_transactions=False,
                     )
-                    if header_block is None:
+                    if block_obj is None:
                         break
                     block_tx_hashes = [
                         _to_hex(tx_hash).lower()
-                        for tx_hash in list(header_block.transactions or [])
+                        for tx_hash in list(block_obj.transactions or [])
                     ]
                 else:
-                    full_block = await asyncio.to_thread(
+                    block_obj = await asyncio.to_thread(
                         _rpc_get_block,
                         block_num,
                         full_transactions=True,
                     )
-                    if full_block is None:
+                    if block_obj is None:
                         break
-                    block_transactions = list(full_block.transactions or [])
+                    block_transactions = list(block_obj.transactions or [])
                     block_tx_hashes = [
                         _to_hex(tx.get("hash")).lower()
                         for tx in block_transactions
                     ]
 
-                core_logs, core_scan_stats = await _fetch_transfer_logs_for_block_for_addresses(
+                block_bloom = _extract_block_logs_bloom_bytes(block_obj)
+                block_transfer_possible = _block_transfer_bloom_possible(block_bloom)
+
+                tx_transfer_logs, scan_stats = await _fetch_transfer_logs_for_scan_groups(
                     block_num,
-                    core_monitored_addresses,
-                    scan_label="core",
+                    scan_groups,
+                    block_bloom=block_bloom,
+                    block_transfer_possible=block_transfer_possible,
                 )
-                if int(core_scan_stats.get("failure_count") or 0) > 0:
+                if int(scan_stats.get("failure_count") or 0) > 0:
                     break
 
-                lp_logs = {}
-                lp_scan_stats = {
-                    "request_count": 0,
-                    "topic_chunk_count": 0,
-                    "monitored_address_count": 0,
-                    "failure_count": 0,
-                    "scan_label": "lp_secondary",
-                }
-                lp_secondary_scan_used = False
-                lp_secondary_reason = "lp_secondary_not_requested"
-                should_scan_lp_secondary, lp_secondary_reason = _should_run_lp_secondary_scan(
-                    last_lp_secondary_scan_ts
-                )
-                if should_scan_lp_secondary:
-                    lp_logs, lp_scan_stats = await _fetch_transfer_logs_for_block_for_addresses(
-                        block_num,
-                        get_lp_monitored_addresses(),
-                        scan_label="lp_secondary",
-                    )
-                    last_lp_secondary_scan_ts = time.time()
-                    lp_secondary_scan_used = bool(lp_scan_stats.get("request_count"))
+                if runtime_adjacent_plan.get("secondary_scan_used"):
+                    last_runtime_adjacent_secondary_scan_ts = time.time()
+                if (
+                    lp_scan_plan.get("primary_scan_used")
+                    and not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
+                ):
+                    last_lp_primary_trend_scan_ts = time.time()
+                if (
+                    lp_scan_plan.get("extended_scan_used")
+                    and not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
+                ):
+                    last_lp_extended_scan_ts = time.time()
 
-                tx_transfer_logs = _merge_grouped_logs(core_logs, lp_logs)
                 token_flow_tx_hashes = set(tx_transfer_logs.keys())
 
                 block_fetch_mode = "full_transactions_block_fetch"
@@ -992,15 +1699,63 @@ async def producer():
                         "listener_block_fetch_mode": block_fetch_mode,
                         "listener_block_fetch_reason": block_fetch_reason,
                         "listener_block_get_logs_request_count": int(
-                            core_scan_stats.get("request_count") or 0
-                        ) + int(lp_scan_stats.get("request_count") or 0),
+                            scan_stats.get("request_count") or 0
+                        ),
                         "listener_block_topic_chunk_count": int(
-                            core_scan_stats.get("topic_chunk_count") or 0
-                        ) + int(lp_scan_stats.get("topic_chunk_count") or 0),
+                            scan_stats.get("topic_chunk_count") or 0
+                        ),
                         "listener_block_monitored_address_count": int(
-                            core_scan_stats.get("monitored_address_count") or 0
-                        ) + int(lp_scan_stats.get("monitored_address_count") or 0),
-                        "listener_block_lp_secondary_scan_used": lp_secondary_scan_used,
+                            scan_stats.get("monitored_address_count") or 0
+                        ),
+                        "listener_block_lp_secondary_scan_used": bool(
+                            lp_scan_plan.get("secondary_scan_used")
+                        ),
+                        "listener_block_bloom_prefilter_used": bool(
+                            scan_stats.get("listener_block_bloom_prefilter_used")
+                        ),
+                        "listener_block_bloom_skipped_get_logs_count": int(
+                            scan_stats.get("listener_block_bloom_skipped_get_logs_count") or 0
+                        ),
+                        "listener_block_bloom_transfer_possible": bool(block_transfer_possible),
+                        "listener_block_bloom_address_possible_count": int(
+                            scan_stats.get("listener_block_bloom_address_possible_count") or 0
+                        ),
+                        "listener_runtime_adjacent_core_count": int(
+                            runtime_adjacent_plan.get("core_count") or 0
+                        ),
+                        "listener_runtime_adjacent_secondary_count": int(
+                            runtime_adjacent_plan.get("secondary_count") or 0
+                        ),
+                        "listener_runtime_adjacent_secondary_scan_used": bool(
+                            runtime_adjacent_plan.get("secondary_scan_used")
+                        ),
+                        "listener_runtime_adjacent_secondary_skipped_count": int(
+                            runtime_adjacent_plan.get("secondary_skipped_count") or 0
+                        ),
+                        "listener_block_lp_primary_trend_scan_used": bool(
+                            lp_scan_plan.get("primary_scan_used")
+                        ),
+                        "listener_block_lp_extended_scan_used": bool(
+                            lp_scan_plan.get("extended_scan_used")
+                        ),
+                        "listener_block_lp_primary_trend_pool_count": int(
+                            len(lp_scan_plan.get("primary_addresses") or [])
+                        ),
+                        "listener_block_lp_extended_pool_count": int(
+                            len(lp_scan_plan.get("extended_addresses") or [])
+                        ),
+                        "listener_block_get_logs_primary_side_count": int(
+                            scan_stats.get("listener_block_get_logs_primary_side_count") or 0
+                        ),
+                        "listener_block_get_logs_secondary_side_count": int(
+                            scan_stats.get("listener_block_get_logs_secondary_side_count") or 0
+                        ),
+                        "listener_block_get_logs_secondary_side_skipped_count": int(
+                            scan_stats.get("listener_block_get_logs_secondary_side_skipped_count") or 0
+                        ),
+                        "listener_block_get_logs_empty_response_count": int(
+                            scan_stats.get("listener_block_get_logs_empty_response_count") or 0
+                        ),
                         "low_cu_mode_enabled": bool(LOW_CU_MODE),
                         "low_cu_mode_lp_secondary_only": bool(
                             not LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN
@@ -1015,11 +1770,18 @@ async def producer():
                     f"{block_num} tx={len(block_tx_hashes)} "
                     f"rpc_mode={block_context['listener_rpc_mode']} "
                     f"fetch_mode={block_context['listener_block_fetch_mode']} "
-                    f"fetch_reason={block_context['listener_block_fetch_reason']} "
                     f"get_logs_req={block_context['listener_block_get_logs_request_count']} "
-                    f"topic_chunks={block_context['listener_block_topic_chunk_count']} "
-                    f"monitored={block_context['listener_block_monitored_address_count']} "
-                    f"lp_secondary={int(block_context['listener_block_lp_secondary_scan_used'])}"
+                    f"bloom_skip={block_context['listener_block_bloom_skipped_get_logs_count']} "
+                    f"dir_primary={block_context['listener_block_get_logs_primary_side_count']} "
+                    f"dir_secondary={block_context['listener_block_get_logs_secondary_side_count']} "
+                    f"dir_skip={block_context['listener_block_get_logs_secondary_side_skipped_count']} "
+                    f"empty={block_context['listener_block_get_logs_empty_response_count']} "
+                    f"adj_core={block_context['listener_runtime_adjacent_core_count']} "
+                    f"adj_secondary={block_context['listener_runtime_adjacent_secondary_count']} "
+                    f"lp_primary={int(block_context['listener_block_lp_primary_trend_scan_used'])}/"
+                    f"{block_context['listener_block_lp_primary_trend_pool_count']} "
+                    f"lp_extended={int(block_context['listener_block_lp_extended_scan_used'])}/"
+                    f"{block_context['listener_block_lp_extended_pool_count']}"
                 )
 
                 for tx in block_transactions:
@@ -1030,12 +1792,12 @@ async def producer():
                         continue
 
                     if tx["value"] > 0 and (
-                        from_addr in monitored_watch_addresses
-                        or (to_addr and to_addr in monitored_watch_addresses)
+                        from_addr in block_monitored_watch_addresses
+                        or (to_addr and to_addr in block_monitored_watch_addresses)
                     ):
                         touched_watch_addresses = [
                             addr for addr in [from_addr, to_addr]
-                            if addr and addr in monitored_watch_addresses
+                            if addr and addr in block_monitored_watch_addresses
                         ]
                         candidate = _build_eth_candidate(
                             tx,
@@ -1048,7 +1810,7 @@ async def producer():
                 for tx_hash, logs in tx_transfer_logs.items():
                     touched_watch_addresses = _extract_touched_watch_addresses(
                         logs,
-                        monitored_watch_addresses,
+                        block_monitored_watch_addresses,
                     )
                     touched_lp_pools = _extract_touched_lp_pools(logs)
                     if not touched_watch_addresses and not touched_lp_pools:
@@ -1123,7 +1885,6 @@ async def producer():
             print("❌ 获取区块失败:", e)
             await asyncio.sleep(max(effective_poll_interval, 2.0))
 
-        # 轮询间隔，避免对 RPC 过载。
         await asyncio.sleep(effective_poll_interval)
 
 

@@ -254,6 +254,23 @@ def _path_line(context: dict, raw: dict) -> str:
     return str(context.get("path_label") or path_text)
 
 
+def _lp_trend_slot_line(context: dict) -> str:
+    label = str(context.get("lp_trend_display_label") or "").strip()
+    profile = str(context.get("lp_trend_display_profile") or "").strip()
+    state = str(context.get("lp_trend_display_state") or "").strip()
+    if not (label or profile or state):
+        return ""
+    parts = [item for item in [label, profile, state] if item]
+    return f"趋势档位：{'｜'.join(parts)}"
+
+
+def _lp_trend_mode_line(context: dict) -> str:
+    mode = str(context.get("lp_trend_display_mode") or "").strip()
+    if not mode:
+        return ""
+    return f"趋势模式：{mode}"
+
+
 def _followup_explanation_prefix(signal: Signal, event: Event, context: dict) -> str:
     semantic = str(
         context.get("followup_semantic")
@@ -383,6 +400,8 @@ def _lp_directional_message(signal: Signal, event: Event, context: dict, raw: di
         _header_for_variant(signal, context, "lp_directional"),
         f"池子：{_pool_label(signal, context)}",
         f"方向：{_lp_direction_field(signal, context)}",
+        _lp_trend_slot_line(context),
+        _lp_trend_mode_line(context),
         f"金额：{_usd_value_text(signal.usd_value)}",
         _lp_burst_line(signal, context),
         _lp_route_semantics_line(signal, context),
@@ -519,6 +538,8 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             _header_for_variant(signal, context, "lp_directional", compact=True),
             f"池子：{_pool_label(signal, context)}",
             f"方向：{_lp_direction_field(signal, context)}",
+            _lp_trend_slot_line(context),
+            _lp_trend_mode_line(context),
             _lp_burst_line(signal, context),
             f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
             f"证据：{_evidence_brief(context)}",

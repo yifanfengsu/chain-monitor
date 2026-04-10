@@ -34,6 +34,10 @@ from config import (
     LP_BURST_PRIMARY_MIN_QUALITY,
     LP_BURST_PRIMARY_MIN_TOTAL_USD,
     LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO,
+    LP_TREND_BURST_PRIMARY_MIN_ACTION_INTENSITY,
+    LP_TREND_BURST_PRIMARY_MIN_EVENT_COUNT,
+    LP_TREND_BURST_PRIMARY_MIN_TOTAL_USD,
+    LP_TREND_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO,
     LP_OBSERVE_MIN_CONFIDENCE,
     LP_OBSERVE_MIN_USD,
     LP_PRIMARY_MIN_CONFIDENCE,
@@ -180,6 +184,16 @@ class StrategyEngine:
         lp_burst_volume_surge_ratio = float(gate_metrics.get("lp_burst_volume_surge_ratio") or 0.0)
         lp_burst_action_intensity = float(gate_metrics.get("lp_burst_action_intensity") or 0.0)
         lp_burst_reserve_skew = float(gate_metrics.get("lp_burst_reserve_skew") or 0.0)
+        lp_trend_sensitivity_mode = bool(gate_metrics.get("lp_trend_sensitivity_mode"))
+        lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool"))
+        lp_directional_side = str(gate_metrics.get("lp_directional_side") or "")
+        lp_directional_threshold_profile = str(gate_metrics.get("lp_directional_threshold_profile") or "")
+        lp_fast_exception_profile_name = str(gate_metrics.get("lp_fast_exception_profile_name") or "")
+        lp_fast_exception_structure_passed = bool(gate_metrics.get("lp_fast_exception_structure_passed"))
+        lp_burst_trend_mode = bool(gate_metrics.get("lp_burst_trend_mode"))
+        lp_burst_event_count_threshold_used = int(gate_metrics.get("lp_burst_event_count_threshold_used") or 0)
+        lp_burst_total_usd_threshold_used = float(gate_metrics.get("lp_burst_total_usd_threshold_used") or 0.0)
+        lp_burst_trend_profile_name = str(gate_metrics.get("lp_burst_trend_profile_name") or "")
         smart_money_non_exec_exception_applied = bool(gate_metrics.get("smart_money_non_exec_exception_applied"))
         smart_money_non_exec_exception_reason = str(gate_metrics.get("smart_money_non_exec_exception_reason") or "")
         market_maker_observe_exception_applied = bool(gate_metrics.get("market_maker_observe_exception_applied"))
@@ -413,12 +427,22 @@ class StrategyEngine:
                 "lp_observe_threshold_ratio": round(lp_observe_threshold_ratio, 3),
                 "lp_observe_below_min_gap": round(lp_observe_below_min_gap, 2),
                 "lp_observe_delivery_cap": "observe_only" if is_lp_directional_exception_candidate else "",
+                "lp_trend_sensitivity_mode": lp_trend_sensitivity_mode,
+                "lp_trend_primary_pool": lp_trend_primary_pool,
+                "lp_directional_side": lp_directional_side,
+                "lp_directional_threshold_profile": lp_directional_threshold_profile,
+                "lp_fast_exception_profile_name": lp_fast_exception_profile_name,
                 "lp_fast_exception_applied": lp_fast_exception_applied,
                 "lp_fast_exception_reason": lp_fast_exception_reason,
                 "lp_fast_exception_threshold_ratio": round(lp_fast_exception_threshold_ratio, 3),
                 "lp_fast_exception_usd_gap": round(lp_fast_exception_usd_gap, 2),
                 "lp_fast_exception_structure_score": round(lp_fast_exception_structure_score, 3),
+                "lp_fast_exception_structure_passed": lp_fast_exception_structure_passed,
                 "lp_fast_exception_gate_version": lp_fast_exception_gate_version,
+                "lp_burst_trend_mode": lp_burst_trend_mode,
+                "lp_burst_event_count_threshold_used": lp_burst_event_count_threshold_used,
+                "lp_burst_total_usd_threshold_used": round(lp_burst_total_usd_threshold_used, 2),
+                "lp_burst_trend_profile_name": lp_burst_trend_profile_name,
                 "lp_burst_fastlane_ready": lp_burst_fastlane_ready,
                 "lp_burst_fastlane_reason": lp_burst_fastlane_reason,
                 "lp_burst_window_sec": lp_burst_window_sec,
@@ -533,6 +557,11 @@ class StrategyEngine:
             or signal.metadata.get("lp_burst_reserve_skew")
             or event.metadata.get("lp_burst_reserve_skew")
             or 0.0
+        )
+        lp_trend_primary_pool = bool(
+            gate_metrics.get("lp_trend_primary_pool")
+            or signal.metadata.get("lp_trend_primary_pool")
+            or event.metadata.get("lp_trend_primary_pool")
         )
         liquidation_stage = str(event.metadata.get("liquidation_stage") or signal.metadata.get("liquidation_stage") or "none")
         liquidation_score = float(event.metadata.get("liquidation_score") or signal.metadata.get("liquidation_score") or 0.0)
@@ -664,6 +693,7 @@ class StrategyEngine:
                     lp_burst_volume_surge_ratio=lp_burst_volume_surge_ratio,
                     lp_burst_action_intensity=lp_burst_action_intensity,
                     lp_burst_reserve_skew=lp_burst_reserve_skew,
+                    lp_trend_primary_pool=lp_trend_primary_pool,
                 ):
                     return self._apply_delivery(
                         event,
@@ -1000,18 +1030,29 @@ class StrategyEngine:
         lp_burst_volume_surge_ratio: float,
         lp_burst_action_intensity: float,
         lp_burst_reserve_skew: float,
+        lp_trend_primary_pool: bool,
     ) -> bool:
-        if lp_burst_event_count < LP_BURST_PRIMARY_MIN_EVENT_COUNT:
+        min_event_count = LP_TREND_BURST_PRIMARY_MIN_EVENT_COUNT if lp_trend_primary_pool else LP_BURST_PRIMARY_MIN_EVENT_COUNT
+        min_total_usd = LP_TREND_BURST_PRIMARY_MIN_TOTAL_USD if lp_trend_primary_pool else LP_BURST_PRIMARY_MIN_TOTAL_USD
+        min_volume_surge_ratio = (
+            LP_TREND_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO
+            if lp_trend_primary_pool else LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO
+        )
+        min_action_intensity = (
+            LP_TREND_BURST_PRIMARY_MIN_ACTION_INTENSITY
+            if lp_trend_primary_pool else LP_BURST_PRIMARY_MIN_ACTION_INTENSITY
+        )
+        if lp_burst_event_count < min_event_count:
             return False
-        if lp_burst_total_usd < LP_BURST_PRIMARY_MIN_TOTAL_USD:
+        if lp_burst_total_usd < min_total_usd:
             return False
         if confirmation_score < LP_BURST_PRIMARY_MIN_CONFIRMATION:
             return False
         if quality_score < LP_BURST_PRIMARY_MIN_QUALITY:
             return False
-        if lp_burst_volume_surge_ratio < LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO:
+        if lp_burst_volume_surge_ratio < min_volume_surge_ratio:
             return False
-        if lp_burst_action_intensity < LP_BURST_PRIMARY_MIN_ACTION_INTENSITY:
+        if lp_burst_action_intensity < min_action_intensity:
             return False
         if lp_burst_reserve_skew < 0.99:
             return False

@@ -171,6 +171,7 @@ class SignalInterpreter:
         lp_burst_label = self._lp_burst_label(event, signal)
         lp_burst_summary = self._lp_burst_summary(event, signal)
         lp_burst_window_label = self._lp_burst_window_label(event, signal)
+        lp_trend_display = self._lp_trend_display(event, signal)
         observe_or_primary_label = "主推送" if str(signal.delivery_class or "") == "primary" else "观察级"
         liquidation_meta = self._liquidation_meta(event)
         smart_money_context = self._smart_money_context(
@@ -335,6 +336,11 @@ class SignalInterpreter:
             "lp_burst_label": lp_burst_label,
             "lp_burst_summary": lp_burst_summary,
             "lp_burst_window_label": lp_burst_window_label,
+            "lp_trend_display_label": lp_trend_display.get("lp_trend_display_label", ""),
+            "lp_trend_display_profile": lp_trend_display.get("lp_trend_display_profile", ""),
+            "lp_trend_display_mode": lp_trend_display.get("lp_trend_display_mode", ""),
+            "lp_trend_display_bias": lp_trend_display.get("lp_trend_display_bias", ""),
+            "lp_trend_display_state": lp_trend_display.get("lp_trend_display_state", ""),
             "lp_burst_fastlane_applied": bool(event.metadata.get("lp_burst_fastlane_applied") or signal.metadata.get("lp_burst_fastlane_applied")),
             "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
             "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
@@ -369,11 +375,13 @@ class SignalInterpreter:
             "current_event_is_anchor": current_event_is_anchor,
         }
 
+        event.metadata.update(lp_trend_display)
         signal.metadata.setdefault("summary", {})
         signal.metadata.update({
             "message_variant": message_variant,
             "smart_money_style_variant": smart_money_context["style_variant"],
             "smart_money_observe_label": smart_money_context["observe_label"],
+            **lp_trend_display,
         })
         signal.metadata["summary"].update({
             "counterparty_role": counterparty_meta.get("role", "unknown"),
@@ -424,6 +432,11 @@ class SignalInterpreter:
             "lp_burst_label": lp_burst_label,
             "lp_burst_summary": lp_burst_summary,
             "lp_burst_window_label": lp_burst_window_label,
+            "lp_trend_display_label": lp_trend_display.get("lp_trend_display_label", ""),
+            "lp_trend_display_profile": lp_trend_display.get("lp_trend_display_profile", ""),
+            "lp_trend_display_mode": lp_trend_display.get("lp_trend_display_mode", ""),
+            "lp_trend_display_bias": lp_trend_display.get("lp_trend_display_bias", ""),
+            "lp_trend_display_state": lp_trend_display.get("lp_trend_display_state", ""),
             "lp_burst_fastlane_applied": bool(event.metadata.get("lp_burst_fastlane_applied") or signal.metadata.get("lp_burst_fastlane_applied")),
             "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
             "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
@@ -1615,6 +1628,82 @@ class SignalInterpreter:
             f"{direction} burst｜{window_sec} 秒内连续 {max(event_count, continuity)} 笔｜"
             f"合计 ${total_usd:,.0f}｜峰值 ${max_single_usd:,.0f}｜放量 {volume_surge_ratio:.1f}x"
         )
+
+    def _lp_trend_display(self, event: Event, signal: Signal) -> dict:
+        if str(event.strategy_role or "") != "lp_pool" and str(event.intent_type or "") not in LP_INTENTS:
+            return {}
+
+        event_meta = event.metadata or {}
+        signal_meta = signal.metadata or {}
+        raw_profile = str(
+            event_meta.get("lp_directional_threshold_profile")
+            or signal_meta.get("lp_directional_threshold_profile")
+            or "standard"
+        )
+        if raw_profile.startswith("buy_bias"):
+            profile = "buy_bias"
+        elif raw_profile == "sell_bias":
+            profile = "sell_bias"
+        else:
+            profile = "standard"
+
+        primary_pool = bool(
+            event_meta.get("lp_trend_primary_pool")
+            or signal_meta.get("lp_trend_primary_pool")
+        )
+        trend_state = str(
+            event_meta.get("lp_trend_state")
+            or signal_meta.get("lp_trend_state")
+            or "trend_neutral"
+        )
+        burst_trend_mode = bool(
+            event_meta.get("lp_burst_trend_mode")
+            or signal_meta.get("lp_burst_trend_mode")
+        )
+        route_semantics = str(
+            event_meta.get("lp_route_semantics")
+            or signal_meta.get("lp_route_semantics")
+            or ""
+        )
+
+        if trend_state in {"trend_continuation_sell", "trend_continuation_buy"}:
+            state_label = "趋势延续"
+        elif trend_state in {"trend_reversal_to_buy", "trend_reversal_to_sell"}:
+            state_label = "趋势反转"
+        else:
+            state_label = "常规 directional"
+
+        if profile == "sell_bias":
+            bias_label = "偏空趋势敏感化"
+        elif raw_profile in {"buy_bias_trend_continuation", "buy_bias_trend_reversal"}:
+            bias_label = "偏多趋势校准"
+        elif profile == "buy_bias":
+            bias_label = "温和偏多校准"
+        else:
+            bias_label = "标准 directional"
+
+        if route_semantics == "single_shot_fallback":
+            mode_label = "single-shot fallback"
+        elif route_semantics == "burst_main_entry":
+            mode_label = "trend burst｜主入口" if burst_trend_mode else "standard burst｜主入口"
+        elif route_semantics == "directional_exception_entry":
+            mode_label = "trend directional｜例外入口" if profile != "standard" or primary_pool else "standard directional｜例外入口"
+        elif route_semantics == "directional_standard_entry":
+            mode_label = "trend directional｜常规入口" if profile != "standard" or primary_pool else "standard directional｜常规入口"
+        elif burst_trend_mode:
+            mode_label = "trend burst"
+        elif str(signal.delivery_reason or "").startswith("lp_burst_directional_"):
+            mode_label = "standard burst"
+        else:
+            mode_label = "trend directional" if profile != "standard" or primary_pool else "standard directional"
+
+        return {
+            "lp_trend_display_label": "主流趋势池" if primary_pool else "普通池",
+            "lp_trend_display_profile": profile,
+            "lp_trend_display_mode": mode_label,
+            "lp_trend_display_bias": bias_label,
+            "lp_trend_display_state": state_label,
+        }
 
     def _pool_label(self, event: Event, raw: dict, actor_label: str) -> str:
         lp_context = raw.get("lp_context") or {}
