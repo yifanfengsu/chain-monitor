@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from pathlib import Path
 import time
 
@@ -26,6 +27,18 @@ from token_scoring import TokenScorer
 
 
 PERSISTED_EXCHANGE_ADJACENT_PATH = Path(__file__).resolve().parent.parent / "data" / "persisted_exchange_adjacent.json"
+PERSISTED_EXCHANGE_ACTIVE_WATCH_ACTIVE_SEC = 12 * 3600
+PERSISTED_EXCHANGE_ACTIVE_WATCH_COOLING_SEC = 24 * 3600
+PERSISTED_EXCHANGE_ACTIVE_WATCH_CLOSING_SEC = 72 * 3600
+PERSISTED_EXCHANGE_HISTORICAL_ACTIVE_SEC = 4 * 3600
+PERSISTED_EXCHANGE_HISTORICAL_COOLING_SEC = 12 * 3600
+PERSISTED_EXCHANGE_HISTORICAL_CLOSING_SEC = 24 * 3600
+PERSISTED_EXCHANGE_HISTORICAL_MIN_CANDIDATE_SCORE = 72.0
+PERSISTED_EXCHANGE_HISTORICAL_MIN_EXCHANGE_INTERACTIONS = 5
+PERSISTED_EXCHANGE_HISTORICAL_MIN_SEEN_COUNT = 6
+PERSISTED_EXCHANGE_HISTORICAL_MIN_MAX_USD = 250000.0
+PERSISTED_EXCHANGE_HISTORICAL_MIN_AVG_USD = 50000.0
+PERSISTED_EXCHANGE_HISTORICAL_MIN_COUNTERPARTY_COUNT = 4
 
 
 price_service = PriceService(
@@ -102,27 +115,101 @@ def _select_restore_anchor(counterparties: list[dict] | list[list] | None) -> tu
     return "", ""
 
 
+def _restore_window_by_mode(now_ts: int, restore_anchor_mode: str) -> tuple[int, int, int]:
+    if restore_anchor_mode == "historical_non_watch":
+        return (
+            now_ts + PERSISTED_EXCHANGE_HISTORICAL_ACTIVE_SEC,
+            now_ts + PERSISTED_EXCHANGE_HISTORICAL_COOLING_SEC,
+            now_ts + PERSISTED_EXCHANGE_HISTORICAL_CLOSING_SEC,
+        )
+    return (
+        now_ts + PERSISTED_EXCHANGE_ACTIVE_WATCH_ACTIVE_SEC,
+        now_ts + PERSISTED_EXCHANGE_ACTIVE_WATCH_COOLING_SEC,
+        now_ts + PERSISTED_EXCHANGE_ACTIVE_WATCH_CLOSING_SEC,
+    )
+
+
+def _evaluate_restore_candidate(
+    item: dict,
+    *,
+    anchor_watch_address: str,
+    restore_anchor_mode: str,
+    full_top_counterparties: list[dict] | list[list],
+) -> tuple[bool, str]:
+    if not anchor_watch_address:
+        return False, "missing_restore_anchor"
+
+    if restore_anchor_mode != "historical_non_watch":
+        return True, ""
+
+    candidate_score = float(item.get("candidate_score") or 0.0)
+    exchange_interactions = int(item.get("exchange_interactions") or 0)
+    seen_count = int(item.get("seen_count") or 0)
+    max_usd = float(item.get("max_usd") or 0.0)
+    avg_usd = float(item.get("avg_usd") or 0.0)
+    top_counterparty_count = 0
+    if full_top_counterparties:
+        top_counterparty_count = max(
+            _extract_counterparty_count(entry)
+            for entry in full_top_counterparties
+        )
+
+    if candidate_score < PERSISTED_EXCHANGE_HISTORICAL_MIN_CANDIDATE_SCORE:
+        return False, "historical_candidate_score_too_low"
+    if exchange_interactions < PERSISTED_EXCHANGE_HISTORICAL_MIN_EXCHANGE_INTERACTIONS:
+        return False, "historical_exchange_interactions_too_low"
+    if seen_count < PERSISTED_EXCHANGE_HISTORICAL_MIN_SEEN_COUNT:
+        return False, "historical_seen_count_too_low"
+    if (
+        max_usd < PERSISTED_EXCHANGE_HISTORICAL_MIN_MAX_USD
+        and avg_usd < PERSISTED_EXCHANGE_HISTORICAL_MIN_AVG_USD
+    ):
+        return False, "historical_value_evidence_too_low"
+    if top_counterparty_count < PERSISTED_EXCHANGE_HISTORICAL_MIN_COUNTERPARTY_COUNT:
+        return False, "historical_counterparty_support_too_low"
+    return True, ""
+
+
 def restore_persisted_exchange_adjacent() -> dict:
     loaded = address_intelligence.load_persisted_exchange_adjacent(PERSISTED_EXCHANGE_ADJACENT_PATH)
     now_ts = int(time.time())
-    restored_runtime_count = 0
-    restored_fallback_count = 0
+    stats = {
+        "restored_attempted": 0,
+        "restored_runtime_count": 0,
+        "restored_fallback_count": 0,
+        "restored_skipped_count": 0,
+        "restored_skipped_by_reason": defaultdict(int),
+        "restored_by_anchor": defaultdict(int),
+        "restored_by_mode": defaultdict(int),
+    }
 
     for item in address_intelligence.export_persistable_exchange_adjacent():
         address = str(item.get("address") or "").lower()
         if not address:
+            stats["restored_skipped_count"] += 1
+            stats["restored_skipped_by_reason"]["missing_address"] += 1
             continue
+        stats["restored_attempted"] += 1
 
         full_top_counterparties = list(item.get("top_counterparties") or [])
         restored_top_counterparties = full_top_counterparties[:5]
         anchor_watch_address, restore_anchor_mode = _select_restore_anchor(full_top_counterparties)
-        if not anchor_watch_address:
+        restore_allowed, skip_reason = _evaluate_restore_candidate(
+            item,
+            anchor_watch_address=anchor_watch_address,
+            restore_anchor_mode=restore_anchor_mode,
+            full_top_counterparties=full_top_counterparties,
+        )
+        if not restore_allowed:
+            stats["restored_skipped_count"] += 1
+            stats["restored_skipped_by_reason"][skip_reason or "restore_candidate_rejected"] += 1
             continue
 
         anchor_meta = get_address_meta(anchor_watch_address)
-        active_until = now_ts + 86400
-        cooling_until = now_ts + 2 * 86400
-        closing_until = now_ts + 7 * 86400
+        active_until, cooling_until, closing_until = _restore_window_by_mode(
+            now_ts,
+            restore_anchor_mode,
+        )
         anchor_usd_value = max(
             float(item.get("max_usd") or 0.0),
             float(item.get("avg_usd") or 0.0),
@@ -166,11 +253,15 @@ def restore_persisted_exchange_adjacent() -> dict:
             },
         )
         if not registered:
+            stats["restored_skipped_count"] += 1
+            stats["restored_skipped_by_reason"]["register_adjacent_watch_failed"] += 1
             continue
 
-        restored_runtime_count += 1
+        stats["restored_runtime_count"] += 1
+        stats["restored_by_anchor"][anchor_watch_address] += 1
+        stats["restored_by_mode"][restore_anchor_mode] += 1
         if restore_anchor_mode == "historical_non_watch":
-            restored_fallback_count += 1
+            stats["restored_fallback_count"] += 1
         address_intelligence.mark_display_hint(
             address=address,
             display_hint_label="exchange_adjacent",
@@ -184,8 +275,18 @@ def restore_persisted_exchange_adjacent() -> dict:
 
     return {
         "loaded_intel_count": len(loaded),
-        "restored_runtime_count": restored_runtime_count,
-        "restored_fallback_count": restored_fallback_count,
+        "restored_attempted": int(stats["restored_attempted"]),
+        "restored_runtime_count": int(stats["restored_runtime_count"]),
+        "restored_fallback_count": int(stats["restored_fallback_count"]),
+        "restored_skipped_count": int(stats["restored_skipped_count"]),
+        "restored_skipped_by_reason": dict(sorted(stats["restored_skipped_by_reason"].items())),
+        "restored_by_anchor": dict(
+            sorted(
+                stats["restored_by_anchor"].items(),
+                key=lambda item: (-int(item[1]), item[0]),
+            )[:5]
+        ),
+        "restored_by_mode": dict(sorted(stats["restored_by_mode"].items())),
         "path": str(PERSISTED_EXCHANGE_ADJACENT_PATH),
     }
 
@@ -221,9 +322,17 @@ async def main():
         print(
             "♻️ 已恢复 persisted exchange_adjacent:",
             f"intel={restore_stats['loaded_intel_count']},",
+            f"attempted={restore_stats['restored_attempted']},",
             f"runtime_watch={restore_stats['restored_runtime_count']},",
             f"fallback_anchor={restore_stats['restored_fallback_count']},",
+            f"skipped={restore_stats['restored_skipped_count']},",
             f"path={restore_stats['path']}",
+        )
+        print(
+            "♻️ persisted exchange_adjacent 恢复摘要:",
+            f"by_mode={restore_stats['restored_by_mode']},",
+            f"top_anchor={restore_stats['restored_by_anchor']},",
+            f"skipped_by_reason={restore_stats['restored_skipped_by_reason']}",
         )
     asyncio.create_task(producer())
     asyncio.create_task(replay_spill_worker())

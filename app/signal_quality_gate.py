@@ -17,6 +17,15 @@ from config import (
     LP_VALUE_BONUS_MAX,
     LP_BUY_FAST_EXCEPTION_MIN_ACTION_INTENSITY,
     LP_BUY_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO,
+    LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY,
+    LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO,
+    LP_PREALERT_LIQUIDITY_ADDITION_MIN_ACTION_INTENSITY,
+    LP_PREALERT_LIQUIDITY_ADDITION_MIN_VOLUME_SURGE_RATIO,
+    LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY,
+    LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO,
+    LP_PREALERT_MIN_CONFIRMATION,
+    LP_PREALERT_MIN_PRICING_CONFIDENCE,
+    LP_PREALERT_MIN_RESERVE_SKEW,
     LP_BUY_OBSERVE_THRESHOLD_RATIO_FLOOR,
     LP_BUY_TREND_BURST_MIN_ACTION_INTENSITY,
     LP_BUY_TREND_BURST_MIN_VOLUME_SURGE_RATIO,
@@ -179,6 +188,15 @@ class SignalQualityGate:
         self.lp_burst_min_action_intensity = float(LP_BURST_MIN_ACTION_INTENSITY)
         self.lp_burst_min_reserve_skew = float(LP_BURST_MIN_RESERVE_SKEW)
         self.lp_burst_min_pricing_confidence = float(LP_BURST_MIN_PRICING_CONFIDENCE)
+        self.lp_prealert_min_pricing_confidence = float(LP_PREALERT_MIN_PRICING_CONFIDENCE)
+        self.lp_prealert_min_reserve_skew = float(LP_PREALERT_MIN_RESERVE_SKEW)
+        self.lp_prealert_min_confirmation = float(LP_PREALERT_MIN_CONFIRMATION)
+        self.lp_prealert_directional_min_action_intensity = float(LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY)
+        self.lp_prealert_directional_min_volume_surge_ratio = float(LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO)
+        self.lp_prealert_liquidity_removal_min_action_intensity = float(LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY)
+        self.lp_prealert_liquidity_removal_min_volume_surge_ratio = float(LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO)
+        self.lp_prealert_liquidity_addition_min_action_intensity = float(LP_PREALERT_LIQUIDITY_ADDITION_MIN_ACTION_INTENSITY)
+        self.lp_prealert_liquidity_addition_min_volume_surge_ratio = float(LP_PREALERT_LIQUIDITY_ADDITION_MIN_VOLUME_SURGE_RATIO)
         self.lp_trend_burst_min_event_count = int(LP_TREND_BURST_MIN_EVENT_COUNT)
         self.lp_trend_burst_min_total_usd = float(LP_TREND_BURST_MIN_TOTAL_USD)
         self.lp_trend_burst_min_max_single_usd = float(LP_TREND_BURST_MIN_MAX_SINGLE_USD)
@@ -487,9 +505,18 @@ class SignalQualityGate:
             "lp_burst_event_count_threshold_used": int(lp_burst_profile.get("min_event_count") or 0) if lp_directional_side else 0,
             "lp_burst_total_usd_threshold_used": float(lp_burst_profile.get("min_total_usd") or 0.0) if lp_directional_side else 0.0,
             "lp_burst_trend_profile_name": str(lp_burst_profile.get("profile_name") or "") if lp_directional_side else "",
+            "lp_fastlane_ready": False,
+            "lp_fastlane_applied": False,
             "lp_directional_cooldown_key": cooldown_key if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else "",
             "lp_directional_cooldown_sec": cooldown_sec if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else 0,
             "lp_directional_cooldown_allowed": True if lp_event and str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"} else None,
+            "lp_stage_decision": "gate_pending" if lp_event else "",
+            "lp_reject_reason": "",
+            "lp_prealert_candidate": False,
+            "lp_prealert_applied": False,
+            "lp_structure_score": 0.0,
+            "lp_structure_components": {},
+            "lp_pool_priority_class": "primary_trend_pool" if lp_trend_primary_pool else "standard_pool",
             "liquidation_observe_exception_applied": False,
             "liquidation_observe_exception_reason": "",
             "value_weight_multiplier": 1.0,
@@ -517,10 +544,13 @@ class SignalQualityGate:
             burst_profile=lp_burst_profile,
         )
         metrics["lp_burst_fastlane_ready"] = bool(lp_burst_fastlane_ready)
+        metrics["lp_fastlane_ready"] = bool(lp_burst_fastlane_ready)
         if lp_burst_fastlane_reason:
             metrics["lp_burst_fastlane_reason"] = str(lp_burst_fastlane_reason)
 
         if lp_event and event.intent_type == "pool_noise":
+            metrics["lp_stage_decision"] = "gate_rejected"
+            metrics["lp_reject_reason"] = "lp_noise_filtered"
             return GateDecision(False, "lp_noise_filtered", 0.0, "DROP", self.score_threshold, metrics)
 
         if (
@@ -561,6 +591,25 @@ class SignalQualityGate:
             return GateDecision(False, "pricing_low_confidence_non_swap", 0.0, "DROP", self.score_threshold, metrics)
 
         if usd_value < dynamic_min_usd:
+            allow_lp_prealert, lp_prealert_reason, lp_prealert_score, lp_prealert_components = self._allow_lp_prealert_exception(
+                event=event,
+                lp_trend_primary_pool=lp_trend_primary_pool,
+                pricing_status=pricing_status,
+                pricing_confidence=pricing_confidence,
+                confirmation_score=float(event.confirmation_score or 0.0),
+                action_intensity=action_intensity,
+                reserve_skew=reserve_skew,
+                pool_volume_surge_ratio=pool_volume_surge_ratio,
+            )
+            metrics["lp_prealert_candidate"] = bool(allow_lp_prealert)
+            metrics["lp_structure_score"] = round(lp_prealert_score, 3)
+            metrics["lp_structure_components"] = dict(lp_prealert_components or {})
+            if allow_lp_prealert:
+                metrics["lp_prealert_applied"] = True
+                metrics["lp_stage_decision"] = "gate_prealert_pass"
+            else:
+                metrics["lp_stage_decision"] = "gate_under_threshold"
+
             allow_lp_observe_exception, lp_exception_reason, lp_exception_structure_score, lp_exception_structure_passed = self._allow_lp_directional_observe_exception(
                 event=event,
                 lp_event=lp_event,
@@ -582,11 +631,14 @@ class SignalQualityGate:
             metrics["lp_fast_exception_structure_score"] = round(lp_exception_structure_score, 3)
             metrics["lp_fast_exception_structure_passed"] = bool(lp_exception_structure_passed)
             metrics["lp_fast_exception_reason"] = str(lp_exception_reason or "")
-            if allow_lp_observe_exception:
+            if allow_lp_prealert:
+                pass
+            elif allow_lp_observe_exception:
                 metrics["lp_observe_exception_applied"] = True
                 metrics["lp_observe_exception_reason"] = lp_exception_reason
                 metrics["lp_fast_exception_applied"] = True
                 metrics["lp_fast_exception_reason"] = lp_exception_reason
+                metrics["lp_stage_decision"] = "gate_fast_exception_pass"
             else:
                 if not lp_burst_fastlane_ready:
                     allow_liq, liq_reason = self._allow_liquidation_observe_exception(
@@ -609,6 +661,8 @@ class SignalQualityGate:
                         metrics["liquidation_observe_exception_applied"] = True
                         metrics["liquidation_observe_exception_reason"] = liq_reason
                     else:
+                        metrics["lp_stage_decision"] = "gate_rejected"
+                        metrics["lp_reject_reason"] = "below_min_usd"
                         return GateDecision(False, "below_min_usd", 0.0, "DROP", self.score_threshold, metrics)
 
         if lp_event and event.intent_type in {"pool_buy_pressure", "pool_sell_pressure"}:
@@ -623,6 +677,8 @@ class SignalQualityGate:
                 and abnormal_ratio < 1.35
                 and relative_address_size < 1.14
             ):
+                metrics["lp_stage_decision"] = "gate_rejected"
+                metrics["lp_reject_reason"] = "lp_swap_low_confirmation"
                 return GateDecision(False, "lp_swap_low_confirmation", 0.0, "DROP", self.score_threshold, metrics)
 
         if liquidation_stage == "risk":
@@ -655,10 +711,14 @@ class SignalQualityGate:
                 and action_intensity < 0.34
                 and float(event.confirmation_score or 0.0) < max(LP_OBSERVE_MIN_CONFIDENCE - 0.08, 0.42)
             ):
+                metrics["lp_stage_decision"] = "gate_rejected"
+                metrics["lp_reject_reason"] = "lp_liquidity_low_signal"
                 return GateDecision(False, "lp_liquidity_low_signal", 0.0, "DROP", self.score_threshold, metrics)
 
         if lp_event and event.intent_type == "pool_rebalance":
             if reserve_skew < 0.12 and action_intensity < 0.46 and same_pool_continuity == 0:
+                metrics["lp_stage_decision"] = "gate_rejected"
+                metrics["lp_reject_reason"] = "lp_rebalance_noise"
                 return GateDecision(False, "lp_rebalance_noise", 0.0, "DROP", self.score_threshold, metrics)
 
         if self.require_non_normal_behavior and behavior_type == "normal" and not (priority_smart_money and is_real_execution):
@@ -787,8 +847,13 @@ class SignalQualityGate:
             metrics["cooldown_sec"] = cooldown_sec
             metrics["lp_directional_cooldown_allowed"] = False if metrics.get("lp_directional_cooldown_key") else None
             metrics["last_signal_ts"] = getattr(self.state_manager, "get_last_signal_ts_by_key", lambda key: None)(cooldown_key)
+            if lp_event:
+                metrics["lp_stage_decision"] = "cooldown_blocked"
+                metrics["lp_reject_reason"] = "cooldown_active"
             return GateDecision(False, "cooldown_active", adjusted_quality_score, "DROP", quality_threshold, metrics)
         metrics["lp_directional_cooldown_allowed"] = True if metrics.get("lp_directional_cooldown_key") else None
+        if lp_event and metrics.get("lp_stage_decision") in {"gate_pending", "gate_under_threshold"}:
+            metrics["lp_stage_decision"] = "gate_passed"
 
         exception_applied = False
         exception_reason = ""
@@ -1319,6 +1384,58 @@ class SignalQualityGate:
 
         del confirmation_score, resonance_score, abnormal_ratio, relative_address_size, multi_pool_resonance
         return True, "lp_fast_exception_structured_directional", structure_score, structure_passed
+
+    def _allow_lp_prealert_exception(
+        self,
+        *,
+        event: Event,
+        lp_trend_primary_pool: bool,
+        pricing_status: str,
+        pricing_confidence: float,
+        confirmation_score: float,
+        action_intensity: float,
+        reserve_skew: float,
+        pool_volume_surge_ratio: float,
+    ) -> tuple[bool, str, float, dict]:
+        if not lp_trend_primary_pool:
+            return False, "", 0.0, {}
+        intent_type = str(event.intent_type or "")
+        if intent_type not in {
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "liquidity_removal",
+            "liquidity_addition",
+        }:
+            return False, "", 0.0, {}
+        if pricing_status in {"unknown", "unavailable"}:
+            return False, "lp_prealert_pricing_unavailable", 0.0, {}
+        if pricing_confidence < self.lp_prealert_min_pricing_confidence:
+            return False, "lp_prealert_pricing_confidence_too_low", 0.0, {}
+        if confirmation_score < self.lp_prealert_min_confirmation:
+            return False, "lp_prealert_confirmation_too_low", 0.0, {}
+
+        min_action_intensity = self.lp_prealert_directional_min_action_intensity
+        min_volume_surge_ratio = self.lp_prealert_directional_min_volume_surge_ratio
+        min_matches = 3
+        if intent_type == "liquidity_removal":
+            min_action_intensity = self.lp_prealert_liquidity_removal_min_action_intensity
+            min_volume_surge_ratio = self.lp_prealert_liquidity_removal_min_volume_surge_ratio
+        elif intent_type == "liquidity_addition":
+            min_action_intensity = self.lp_prealert_liquidity_addition_min_action_intensity
+            min_volume_surge_ratio = self.lp_prealert_liquidity_addition_min_volume_surge_ratio
+            min_matches = 4
+
+        components = {
+            "pricing_confidence": bool(pricing_confidence >= self.lp_prealert_min_pricing_confidence),
+            "action_intensity": bool(action_intensity >= min_action_intensity),
+            "reserve_skew": bool(reserve_skew >= self.lp_prealert_min_reserve_skew),
+            "volume_surge_ratio": bool(pool_volume_surge_ratio >= min_volume_surge_ratio),
+        }
+        matched = sum(1 for matched in components.values() if matched)
+        structure_score = round(matched / max(len(components), 1), 3)
+        if matched < min_matches:
+            return False, "lp_prealert_structure_too_weak", structure_score, components
+        return True, "lp_prealert_structured_mainstream_pool", structure_score, components
 
     def _lp_fast_exception_structure_score(
         self,

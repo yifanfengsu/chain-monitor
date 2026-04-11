@@ -34,6 +34,7 @@ from config import (
     LP_BURST_PRIMARY_MIN_QUALITY,
     LP_BURST_PRIMARY_MIN_TOTAL_USD,
     LP_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO,
+    LP_PREALERT_MIN_PRICING_CONFIDENCE,
     LP_TREND_BURST_PRIMARY_MIN_ACTION_INTENSITY,
     LP_TREND_BURST_PRIMARY_MIN_EVENT_COUNT,
     LP_TREND_BURST_PRIMARY_MIN_TOTAL_USD,
@@ -782,6 +783,18 @@ class StrategyEngine:
                         "observe",
                         "lp_directional_early_observe",
                     )
+                if self._allow_lp_prealert_observe(
+                    event=event,
+                    lp_trend_primary_pool=lp_trend_primary_pool,
+                    lp_prealert_candidate=bool(gate_metrics.get("lp_prealert_candidate")),
+                    pricing_confidence=pricing_confidence,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_directional_prealert_observe",
+                    )
                 if (
                     confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE
                     or lp_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO
@@ -807,6 +820,18 @@ class StrategyEngine:
                         signal,
                         "observe",
                         "lp_non_directional_structured_observe",
+                    )
+                if self._allow_lp_prealert_observe(
+                    event=event,
+                    lp_trend_primary_pool=lp_trend_primary_pool,
+                    lp_prealert_candidate=bool(gate_metrics.get("lp_prealert_candidate")),
+                    pricing_confidence=pricing_confidence,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_liquidity_prealert_observe",
                     )
                 if (
                     float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 1.10, 22_000.0)
@@ -1085,6 +1110,25 @@ class StrategyEngine:
         )
         return matched_signals >= 2
 
+    def _allow_lp_prealert_observe(
+        self,
+        *,
+        event: Event,
+        lp_trend_primary_pool: bool,
+        lp_prealert_candidate: bool,
+        pricing_confidence: float,
+    ) -> bool:
+        if not lp_trend_primary_pool or not lp_prealert_candidate:
+            return False
+        if str(event.intent_type or "") not in {
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "liquidity_removal",
+            "liquidity_addition",
+        }:
+            return False
+        return pricing_confidence >= LP_PREALERT_MIN_PRICING_CONFIDENCE
+
     def _allow_lp_non_directional_structured_observe(
         self,
         event: Event,
@@ -1145,6 +1189,14 @@ class StrategyEngine:
                 "lp_burst_fastlane_applied": True,
                 "lp_burst_fastlane_reason": reason,
                 "lp_burst_delivery_class": delivery_class,
+                "lp_fastlane_applied": True,
+            })
+        if str(event.strategy_role or "") == "lp_pool":
+            payload.update({
+                "lp_stage_decision": reason,
+                "lp_reject_reason": reason if delivery_class == "drop" else "",
+                "lp_prealert_applied": reason in {"lp_directional_prealert_observe", "lp_liquidity_prealert_observe"},
+                "lp_fastlane_applied": bool(payload.get("lp_fastlane_applied")),
             })
         event.metadata.update(payload)
         signal.metadata.update(payload)
@@ -1170,11 +1222,15 @@ class StrategyEngine:
         if normalized_reason == "lp_observe_exception_capped":
             return "directional_exception", "legacy_route", "directional_exception_entry"
         if normalized_reason in {
+            "lp_directional_prealert_observe",
+            "lp_liquidity_prealert_observe",
             "lp_directional_early_observe",
             "lp_directional_pressure_primary",
             "lp_directional_pressure_observe",
             "lp_directional_pressure_drop",
         }:
+            if normalized_reason in {"lp_directional_prealert_observe", "lp_liquidity_prealert_observe"}:
+                return "prealert_entry", "primary_trend_pool", "prealert_entry"
             return "directional_standard", "legacy_route", "directional_standard_entry"
         return "", "", ""
 

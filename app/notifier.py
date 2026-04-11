@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from telegram import Bot
 
 from config import (
@@ -10,6 +11,13 @@ from filter import format_address_label, is_smart_money_strategy_role, strategy_
 from models import Event, Signal
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
+NOTIFIER_RUNTIME_STATS = {
+    "signals_attempted_send": 0,
+    "signals_sent_ok": 0,
+    "signals_sent_failed": 0,
+}
+_NOTIFIER_STATS_LOG_INTERVAL_SEC = 300
+_last_notifier_stats_log_ts = 0.0
 DEFAULT_MESSAGE_TEMPLATE = os.getenv("WHALE_MESSAGE_TEMPLATE", "long").strip().lower()
 MESSAGE_VARIANTS = {
     "downstream_followup",
@@ -36,6 +44,25 @@ async def send(msg) -> bool:
             if i < 2:
                 await asyncio.sleep(2)
     return False
+
+
+def _log_notifier_stats_if_needed(force: bool = False) -> None:
+    global _last_notifier_stats_log_ts
+    now = time.time()
+    if not force and (now - _last_notifier_stats_log_ts) < _NOTIFIER_STATS_LOG_INTERVAL_SEC:
+        return
+    _last_notifier_stats_log_ts = now
+    print(
+        "📣 notifier funnel:",
+        f"attempted={NOTIFIER_RUNTIME_STATS['signals_attempted_send']}",
+        f"sent_ok={NOTIFIER_RUNTIME_STATS['signals_sent_ok']}",
+        f"sent_failed={NOTIFIER_RUNTIME_STATS['signals_sent_failed']}",
+    )
+
+
+def _bump_notifier_stat(stat_key: str, *, force_log: bool = False) -> None:
+    NOTIFIER_RUNTIME_STATS[stat_key] = int(NOTIFIER_RUNTIME_STATS.get(stat_key) or 0) + 1
+    _log_notifier_stats_if_needed(force=force_log)
 
 
 def _format_path_line(prefix: str, from_addr: str | None, to_addr: str | None) -> str | None:
@@ -712,7 +739,14 @@ async def send_signal(signal: Signal, event: Event) -> bool:
         return False
     try:
         msg = format_signal_message(signal, event)
-        return await send(msg)
+        _bump_notifier_stat("signals_attempted_send")
+        delivered = await send(msg)
+        if delivered:
+            _bump_notifier_stat("signals_sent_ok")
+        else:
+            _bump_notifier_stat("signals_sent_failed", force_log=True)
+        return delivered
     except Exception as e:
+        _bump_notifier_stat("signals_sent_failed", force_log=True)
         print(f"信号发送失败: {e}")
         return False

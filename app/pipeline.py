@@ -1,5 +1,6 @@
 import time
 import hashlib
+from collections import defaultdict
 
 from analyzer import BehaviorAnalyzer
 from config import (
@@ -93,6 +94,125 @@ class SignalPipeline:
         self.address_intelligence = address_intelligence
         self.archive_store = archive_store
         self.followup_tracker = followup_tracker
+        self.runtime_stats = {
+            "signals_entered_notifier": 0,
+            "pricing_unavailable_no_proxy_count": 0,
+            "low_pricing_confidence_count": 0,
+        }
+        self._runtime_log_interval_sec = 300
+        self._last_notifier_stats_log_ts = 0.0
+        self._last_pricing_stats_log_ts = 0.0
+        self._pricing_unavailable_by_token_contract = defaultdict(int)
+        self._pricing_unavailable_by_token_symbol = defaultdict(int)
+        self._pricing_unavailable_by_strategy_role = defaultdict(int)
+        self._pricing_unavailable_by_watch_address = defaultdict(int)
+        self._pricing_unavailable_by_monitor_type = defaultdict(int)
+        self._pricing_unavailable_by_anchor_watch = defaultdict(int)
+        self._pricing_unavailable_by_watch_meta_source = defaultdict(int)
+        self._low_pricing_confidence_by_bucket = defaultdict(int)
+        self._low_pricing_confidence_by_token_contract = defaultdict(int)
+        self._low_pricing_confidence_by_token_symbol = defaultdict(int)
+        self._low_pricing_confidence_by_strategy_role = defaultdict(int)
+        self._low_pricing_confidence_by_watch_address = defaultdict(int)
+
+    def _top_counter_items(self, counter: dict[str, int], limit: int = 3) -> list[tuple[str, int]]:
+        return sorted(
+            (
+                (str(key), int(value))
+                for key, value in (counter or {}).items()
+                if key and int(value) > 0
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )[:limit]
+
+    def _log_runtime_notifier_stats_if_needed(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_notifier_stats_log_ts) < self._runtime_log_interval_sec:
+            return
+        self._last_notifier_stats_log_ts = now
+        print(
+            "🧭 pipeline funnel:",
+            f"entered_notifier={int(self.runtime_stats.get('signals_entered_notifier') or 0)}",
+        )
+
+    def _mark_entered_notifier(self) -> None:
+        self.runtime_stats["signals_entered_notifier"] = int(
+            self.runtime_stats.get("signals_entered_notifier") or 0
+        ) + 1
+        self._log_runtime_notifier_stats_if_needed()
+
+    def _pricing_confidence_bucket(self, pricing_confidence: float) -> str:
+        if 0.0 < pricing_confidence < 0.5:
+            return "(0,0.5)"
+        if 0.5 <= pricing_confidence < 0.8:
+            return "[0.5,0.8)"
+        return ""
+
+    def _log_pricing_stats_if_needed(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_pricing_stats_log_ts) < self._runtime_log_interval_sec:
+            return
+        self._last_pricing_stats_log_ts = now
+        print(
+            "💲 pricing stats:",
+            f"unavailable_no_proxy={int(self.runtime_stats.get('pricing_unavailable_no_proxy_count') or 0)}",
+            f"low_confidence={int(self.runtime_stats.get('low_pricing_confidence_count') or 0)}",
+            f"top_unavailable_token={self._top_counter_items(self._pricing_unavailable_by_token_symbol)}",
+            f"top_unavailable_role={self._top_counter_items(self._pricing_unavailable_by_strategy_role)}",
+            f"top_unavailable_watch={self._top_counter_items(self._pricing_unavailable_by_watch_address, limit=2)}",
+            f"top_unavailable_anchor={self._top_counter_items(self._pricing_unavailable_by_anchor_watch, limit=2)}",
+            f"top_low_conf_token={self._top_counter_items(self._low_pricing_confidence_by_token_symbol)}",
+            f"top_low_conf_role={self._top_counter_items(self._low_pricing_confidence_by_strategy_role, limit=2)}",
+            f"top_low_conf_watch={self._top_counter_items(self._low_pricing_confidence_by_watch_address, limit=2)}",
+            f"low_conf_bucket={self._top_counter_items(self._low_pricing_confidence_by_bucket)}",
+        )
+
+    def _record_pricing_runtime_stats(self, event: Event, watch_meta: dict, gate_decision) -> None:
+        pricing_confidence = float(event.pricing_confidence or 0.0)
+        token_contract = str(event.token or "").lower()
+        token_symbol = str(event.metadata.get("token_symbol") or "")
+        strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "")
+        watch_address = str(event.address or "").lower()
+        monitor_type = str(event.metadata.get("monitor_type") or "")
+        anchor_watch_address = str(event.metadata.get("anchor_watch_address") or "")
+        watch_meta_source = str(event.metadata.get("watch_meta_source") or "")
+
+        if str(gate_decision.reason or "") == "pricing_unavailable_no_proxy":
+            self.runtime_stats["pricing_unavailable_no_proxy_count"] = int(
+                self.runtime_stats.get("pricing_unavailable_no_proxy_count") or 0
+            ) + 1
+            if token_contract:
+                self._pricing_unavailable_by_token_contract[token_contract] += 1
+            if token_symbol:
+                self._pricing_unavailable_by_token_symbol[token_symbol] += 1
+            if strategy_role:
+                self._pricing_unavailable_by_strategy_role[strategy_role] += 1
+            if watch_address:
+                self._pricing_unavailable_by_watch_address[watch_address] += 1
+            if monitor_type:
+                self._pricing_unavailable_by_monitor_type[monitor_type] += 1
+            if anchor_watch_address:
+                self._pricing_unavailable_by_anchor_watch[anchor_watch_address] += 1
+            if watch_meta_source:
+                self._pricing_unavailable_by_watch_meta_source[watch_meta_source] += 1
+
+        bucket = self._pricing_confidence_bucket(pricing_confidence)
+        if bucket:
+            self.runtime_stats["low_pricing_confidence_count"] = int(
+                self.runtime_stats.get("low_pricing_confidence_count") or 0
+            ) + 1
+            self._low_pricing_confidence_by_bucket[bucket] += 1
+            if token_contract:
+                self._low_pricing_confidence_by_token_contract[token_contract] += 1
+            if token_symbol:
+                self._low_pricing_confidence_by_token_symbol[token_symbol] += 1
+            if strategy_role:
+                self._low_pricing_confidence_by_strategy_role[strategy_role] += 1
+            if watch_address:
+                self._low_pricing_confidence_by_watch_address[watch_address] += 1
+
+        if str(gate_decision.reason or "") == "pricing_unavailable_no_proxy" or bucket:
+            self._log_pricing_stats_if_needed()
 
     async def process(self, raw_item: dict):
         archive_status = {
@@ -360,6 +480,7 @@ class SignalPipeline:
             address_snapshot=address_snapshot,
             token_snapshot=token_snapshot,
         )
+        self._record_pricing_runtime_stats(event, watch_meta, gate_decision)
         self._apply_lp_gate_runtime_metadata(
             event=event,
             gate_metrics=gate_decision.metrics,
@@ -877,6 +998,7 @@ class SignalPipeline:
 
         if delivery_class == "primary" or self._is_downstream_followup_case(behavior_case):
             self._archive_signal(signal, event, archive_status, archive_ts)
+        self._mark_entered_notifier()
         self._archive_delivery_audit(
             event=event,
             signal=signal,
@@ -3161,6 +3283,63 @@ class SignalPipeline:
                 signal_metadata.get("lp_burst_fastlane_applied"),
                 signal_context.get("lp_burst_fastlane_applied"),
                 gate_metrics.get("lp_burst_fastlane_applied"),
+            ),
+            "lp_stage_decision": _text(
+                event_metadata.get("lp_stage_decision"),
+                signal_metadata.get("lp_stage_decision"),
+                signal_context.get("lp_stage_decision"),
+                gate_metrics.get("lp_stage_decision"),
+            ),
+            "lp_reject_reason": _text(
+                event_metadata.get("lp_reject_reason"),
+                signal_metadata.get("lp_reject_reason"),
+                signal_context.get("lp_reject_reason"),
+                gate_metrics.get("lp_reject_reason"),
+            ),
+            "lp_fastlane_ready": _bool_value(
+                event_metadata.get("lp_fastlane_ready"),
+                signal_metadata.get("lp_fastlane_ready"),
+                signal_context.get("lp_fastlane_ready"),
+                gate_metrics.get("lp_fastlane_ready"),
+                gate_metrics.get("lp_burst_fastlane_ready"),
+            ),
+            "lp_fastlane_applied": _bool_value(
+                event_metadata.get("lp_fastlane_applied"),
+                signal_metadata.get("lp_fastlane_applied"),
+                signal_context.get("lp_fastlane_applied"),
+                gate_metrics.get("lp_fastlane_applied"),
+                event_metadata.get("lp_burst_fastlane_applied"),
+            ),
+            "lp_prealert_candidate": _bool_value(
+                event_metadata.get("lp_prealert_candidate"),
+                signal_metadata.get("lp_prealert_candidate"),
+                signal_context.get("lp_prealert_candidate"),
+                gate_metrics.get("lp_prealert_candidate"),
+            ),
+            "lp_prealert_applied": _bool_value(
+                event_metadata.get("lp_prealert_applied"),
+                signal_metadata.get("lp_prealert_applied"),
+                signal_context.get("lp_prealert_applied"),
+                gate_metrics.get("lp_prealert_applied"),
+            ),
+            "lp_structure_score": _num(
+                event_metadata.get("lp_structure_score"),
+                signal_metadata.get("lp_structure_score"),
+                signal_context.get("lp_structure_score"),
+                gate_metrics.get("lp_structure_score"),
+                gate_metrics.get("lp_fast_exception_structure_score"),
+            ),
+            "lp_structure_components": _first_value(
+                event_metadata.get("lp_structure_components"),
+                signal_metadata.get("lp_structure_components"),
+                signal_context.get("lp_structure_components"),
+                gate_metrics.get("lp_structure_components"),
+            ) or {},
+            "lp_pool_priority_class": _text(
+                event_metadata.get("lp_pool_priority_class"),
+                signal_metadata.get("lp_pool_priority_class"),
+                signal_context.get("lp_pool_priority_class"),
+                gate_metrics.get("lp_pool_priority_class"),
             ),
             "lp_burst_fastlane_reason": _text(
                 event_metadata.get("lp_burst_fastlane_reason"),
