@@ -27,7 +27,7 @@ from config import (
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
 from constants import STABLE_TOKEN_CONTRACTS
-from delivery_policy import can_emit_delivery_notification
+from delivery_policy import can_emit_delivery_notification, record_delivery_notification
 from filter import (
     WATCH_ADDRESSES,
     get_address_meta,
@@ -2065,6 +2065,14 @@ class SignalPipeline:
                 or signal_context.get("smart_money_delivery_policy_reason")
                 or ("smart_money_execution_only_allowed" if allowed else "smart_money_execution_only_blocked")
             )
+        stage_budget_reason = str(
+            event_metadata.get("stage_budget_reason")
+            or signal_metadata.get("stage_budget_reason")
+            or signal_context.get("stage_budget_reason")
+            or ""
+        ).strip()
+        if stage_budget_reason:
+            return stage_budget_reason
 
         delivery_class = str(
             getattr(signal, "delivery_class", "")
@@ -2901,6 +2909,126 @@ class SignalPipeline:
                 event_metadata.get("delivery_policy_evaluated_at_stage"),
                 signal_metadata.get("delivery_policy_evaluated_at_stage"),
                 signal_context.get("delivery_policy_evaluated_at_stage"),
+            ),
+            "role_priority_tier": _text(
+                event_metadata.get("role_priority_tier"),
+                signal_metadata.get("role_priority_tier"),
+                signal_context.get("role_priority_tier"),
+            ),
+            "role_priority_rank": _int_value(
+                event_metadata.get("role_priority_rank"),
+                signal_metadata.get("role_priority_rank"),
+                signal_context.get("role_priority_rank"),
+            ),
+            "role_priority_label": _text(
+                event_metadata.get("role_priority_label"),
+                signal_metadata.get("role_priority_label"),
+                signal_context.get("role_priority_label"),
+            ),
+            "stage_tier": _text(
+                event_metadata.get("stage_tier"),
+                signal_metadata.get("stage_tier"),
+                signal_context.get("stage_tier"),
+            ),
+            "routing_reason": _text(
+                event_metadata.get("routing_reason"),
+                signal_metadata.get("routing_reason"),
+                signal_context.get("routing_reason"),
+            ),
+            "observe_route_reason": _text(
+                event_metadata.get("observe_route_reason"),
+                signal_metadata.get("observe_route_reason"),
+                signal_context.get("observe_route_reason"),
+            ),
+            "primary_route_reason": _text(
+                event_metadata.get("primary_route_reason"),
+                signal_metadata.get("primary_route_reason"),
+                signal_context.get("primary_route_reason"),
+            ),
+            "archive_only_reason": _text(
+                event_metadata.get("archive_only_reason"),
+                signal_metadata.get("archive_only_reason"),
+                signal_context.get("archive_only_reason"),
+            ),
+            "promotion_path": _text(
+                event_metadata.get("promotion_path"),
+                signal_metadata.get("promotion_path"),
+                signal_context.get("promotion_path"),
+            ),
+            "relaxed_thresholds_applied": _bool_value(
+                event_metadata.get("relaxed_thresholds_applied"),
+                signal_metadata.get("relaxed_thresholds_applied"),
+                signal_context.get("relaxed_thresholds_applied"),
+            ),
+            "relaxed_threshold_details": _first_value(
+                event_metadata.get("relaxed_threshold_details"),
+                signal_metadata.get("relaxed_threshold_details"),
+                signal_context.get("relaxed_threshold_details"),
+            ) or {},
+            "observe_threshold_profile": _first_value(
+                event_metadata.get("observe_threshold_profile"),
+                signal_metadata.get("observe_threshold_profile"),
+                signal_context.get("observe_threshold_profile"),
+            ) or {},
+            "primary_threshold_profile": _first_value(
+                event_metadata.get("primary_threshold_profile"),
+                signal_metadata.get("primary_threshold_profile"),
+                signal_context.get("primary_threshold_profile"),
+            ) or {},
+            "stage_budget_evaluated": _bool_value(
+                event_metadata.get("stage_budget_evaluated"),
+                signal_metadata.get("stage_budget_evaluated"),
+                signal_context.get("stage_budget_evaluated"),
+            ),
+            "stage_budget_allowed": _bool_or_none(
+                event_metadata.get("stage_budget_allowed"),
+                signal_metadata.get("stage_budget_allowed"),
+                signal_context.get("stage_budget_allowed"),
+            ),
+            "stage_budget_reason": _text(
+                event_metadata.get("stage_budget_reason"),
+                signal_metadata.get("stage_budget_reason"),
+                signal_context.get("stage_budget_reason"),
+            ),
+            "stage_budget_stage": _text(
+                event_metadata.get("stage_budget_stage"),
+                signal_metadata.get("stage_budget_stage"),
+                signal_context.get("stage_budget_stage"),
+            ),
+            "stage_budget_window_sec": _int_value(
+                event_metadata.get("stage_budget_window_sec"),
+                signal_metadata.get("stage_budget_window_sec"),
+                signal_context.get("stage_budget_window_sec"),
+            ),
+            "stage_budget_role_tier": _text(
+                event_metadata.get("stage_budget_role_tier"),
+                signal_metadata.get("stage_budget_role_tier"),
+                signal_context.get("stage_budget_role_tier"),
+            ),
+            "stage_budget_recent_total": _int_value(
+                event_metadata.get("stage_budget_recent_total"),
+                signal_metadata.get("stage_budget_recent_total"),
+                signal_context.get("stage_budget_recent_total"),
+            ),
+            "stage_budget_recent_same_tier": _int_value(
+                event_metadata.get("stage_budget_recent_same_tier"),
+                signal_metadata.get("stage_budget_recent_same_tier"),
+                signal_context.get("stage_budget_recent_same_tier"),
+            ),
+            "stage_budget_recent_higher_tier": _int_value(
+                event_metadata.get("stage_budget_recent_higher_tier"),
+                signal_metadata.get("stage_budget_recent_higher_tier"),
+                signal_context.get("stage_budget_recent_higher_tier"),
+            ),
+            "stage_budget_total_cap": _int_value(
+                event_metadata.get("stage_budget_total_cap"),
+                signal_metadata.get("stage_budget_total_cap"),
+                signal_context.get("stage_budget_total_cap"),
+            ),
+            "stage_budget_tier_cap": _int_value(
+                event_metadata.get("stage_budget_tier_cap"),
+                signal_metadata.get("stage_budget_tier_cap"),
+                signal_context.get("stage_budget_tier_cap"),
             ),
             "stage": _text(stage or "strategy"),
             "archive_ts": _int_value(archive_ts, event.archive_ts, time.time()),
@@ -5288,6 +5416,7 @@ class SignalPipeline:
             delivered=delivered,
             reason=delivery_reason,
         )
+        record_delivery_notification(event, signal, delivered)
         if delivered:
             stage = str(
                 event.metadata.get("pending_case_notification_stage")

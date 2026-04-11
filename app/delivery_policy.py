@@ -1,8 +1,20 @@
+import time
+from collections import deque
+
 from config import (
     DELIVERY_ALLOW_DOWNSTREAM_OBSERVE,
     DELIVERY_ALLOW_EXCHANGE_OBSERVE,
     DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
     DELIVERY_ALLOW_LP_OBSERVE,
+    DELIVERY_OBSERVE_STAGE_BUDGET_TIER1,
+    DELIVERY_OBSERVE_STAGE_BUDGET_TIER2,
+    DELIVERY_OBSERVE_STAGE_BUDGET_TIER3,
+    DELIVERY_OBSERVE_STAGE_BUDGET_TOTAL,
+    DELIVERY_PRIMARY_STAGE_BUDGET_TIER1,
+    DELIVERY_PRIMARY_STAGE_BUDGET_TIER2,
+    DELIVERY_PRIMARY_STAGE_BUDGET_TIER3,
+    DELIVERY_PRIMARY_STAGE_BUDGET_TOTAL,
+    DELIVERY_STAGE_BUDGET_WINDOW_SEC,
     EXCHANGE_STRONG_OBSERVE_ALLOWED_REASONS,
     EXCHANGE_STRONG_OBSERVE_ENABLE,
     EXCHANGE_STRONG_OBSERVE_MIN_CONFIRMATION,
@@ -49,6 +61,33 @@ EXCHANGE_STRONG_OBSERVE_EXCLUDED_REASONS = {
     "exchange_transfer_observe",
     "exchange_observe",
 }
+STAGE_BUDGETS = {
+    "observe": {
+        "total": int(DELIVERY_OBSERVE_STAGE_BUDGET_TOTAL),
+        "tier_caps": {
+            "tier1": int(DELIVERY_OBSERVE_STAGE_BUDGET_TIER1),
+            "tier2": int(DELIVERY_OBSERVE_STAGE_BUDGET_TIER2),
+            "tier3": int(DELIVERY_OBSERVE_STAGE_BUDGET_TIER3),
+        },
+        "reserve": {
+            "tier1": min(int(DELIVERY_OBSERVE_STAGE_BUDGET_TIER1), 2),
+            "tier2": min(int(DELIVERY_OBSERVE_STAGE_BUDGET_TIER2), 1),
+        },
+    },
+    "primary": {
+        "total": int(DELIVERY_PRIMARY_STAGE_BUDGET_TOTAL),
+        "tier_caps": {
+            "tier1": int(DELIVERY_PRIMARY_STAGE_BUDGET_TIER1),
+            "tier2": int(DELIVERY_PRIMARY_STAGE_BUDGET_TIER2),
+            "tier3": int(DELIVERY_PRIMARY_STAGE_BUDGET_TIER3),
+        },
+        "reserve": {
+            "tier1": min(int(DELIVERY_PRIMARY_STAGE_BUDGET_TIER1), 1),
+            "tier2": min(int(DELIVERY_PRIMARY_STAGE_BUDGET_TIER2), 1),
+        },
+    },
+}
+_DELIVERY_HISTORY = deque(maxlen=512)
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -56,6 +95,142 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
+def _prune_delivery_history(now_ts: int | None = None) -> None:
+    reference_ts = int(now_ts or time.time())
+    window_sec = max(int(DELIVERY_STAGE_BUDGET_WINDOW_SEC), 1)
+    while _DELIVERY_HISTORY and reference_ts - int(_DELIVERY_HISTORY[0].get("ts") or 0) > window_sec:
+        _DELIVERY_HISTORY.popleft()
+
+
+def _stage_budget_payload(
+    event,
+    signal,
+    *,
+    allowed: bool,
+    reason: str,
+    recent_total: int,
+    recent_same_tier: int,
+    recent_higher_tier: int,
+    total_cap: int,
+    tier_cap: int,
+) -> None:
+    delivery_class = str(getattr(signal, "delivery_class", "") or getattr(event, "delivery_class", "") or "")
+    role_priority_tier = str(
+        getattr(signal, "metadata", {}).get("role_priority_tier")
+        or getattr(event, "metadata", {}).get("role_priority_tier")
+        or "tier4"
+    )
+    payload = {
+        "stage_budget_evaluated": delivery_class in STAGE_BUDGETS,
+        "stage_budget_allowed": bool(allowed),
+        "stage_budget_reason": str(reason or ""),
+        "stage_budget_stage": delivery_class,
+        "stage_budget_window_sec": int(DELIVERY_STAGE_BUDGET_WINDOW_SEC),
+        "stage_budget_role_tier": role_priority_tier,
+        "stage_budget_recent_total": int(recent_total),
+        "stage_budget_recent_same_tier": int(recent_same_tier),
+        "stage_budget_recent_higher_tier": int(recent_higher_tier),
+        "stage_budget_total_cap": int(total_cap),
+        "stage_budget_tier_cap": int(tier_cap),
+    }
+    getattr(event, "metadata", {}).update(payload)
+    getattr(signal, "metadata", {}).update(payload)
+    getattr(signal, "context", {}).update(payload)
+
+
+def _allow_stage_budget(event, signal) -> bool:
+    delivery_class = str(getattr(signal, "delivery_class", "") or getattr(event, "delivery_class", "") or "")
+    budget = STAGE_BUDGETS.get(delivery_class)
+    if budget is None:
+        _stage_budget_payload(
+            event,
+            signal,
+            allowed=True,
+            reason="stage_budget_not_applicable",
+            recent_total=0,
+            recent_same_tier=0,
+            recent_higher_tier=0,
+            total_cap=0,
+            tier_cap=0,
+        )
+        return True
+
+    role_priority_tier = str(
+        getattr(signal, "metadata", {}).get("role_priority_tier")
+        or getattr(event, "metadata", {}).get("role_priority_tier")
+        or "tier4"
+    )
+    role_priority_rank = _safe_int(
+        getattr(signal, "metadata", {}).get("role_priority_rank")
+        or getattr(event, "metadata", {}).get("role_priority_rank"),
+        4,
+    )
+    if role_priority_tier not in {"tier1", "tier2", "tier3"}:
+        _stage_budget_payload(
+            event,
+            signal,
+            allowed=True,
+            reason="stage_budget_other_role_passthrough",
+            recent_total=0,
+            recent_same_tier=0,
+            recent_higher_tier=0,
+            total_cap=int(budget["total"]),
+            tier_cap=0,
+        )
+        return True
+
+    now_ts = int(getattr(event, "ts", 0) or time.time())
+    _prune_delivery_history(now_ts)
+    recent = [item for item in _DELIVERY_HISTORY if item.get("delivery_class") == delivery_class]
+    recent_total = len(recent)
+    recent_same_tier = sum(1 for item in recent if item.get("role_priority_tier") == role_priority_tier)
+    recent_higher_tier = sum(1 for item in recent if _safe_int(item.get("role_priority_rank"), 4) < role_priority_rank)
+    total_cap = int(budget["total"])
+    tier_cap = int((budget.get("tier_caps") or {}).get(role_priority_tier) or 0)
+    reserve = budget.get("reserve") or {}
+
+    allowed = True
+    reason = "stage_budget_allowed"
+    if recent_total >= total_cap:
+        allowed = False
+        reason = f"stage_budget_{delivery_class}_window_full"
+    elif tier_cap > 0 and recent_same_tier >= tier_cap:
+        allowed = False
+        reason = f"stage_budget_{delivery_class}_{role_priority_tier}_tier_cap"
+    elif role_priority_tier == "tier2" and recent_total >= max(total_cap - int(reserve.get('tier1') or 0), 0):
+        allowed = False
+        reason = f"stage_budget_{delivery_class}_reserved_for_tier1"
+    elif role_priority_tier == "tier3" and recent_total >= max(total_cap - int(reserve.get('tier1') or 0) - int(reserve.get('tier2') or 0), 0):
+        allowed = False
+        reason = f"stage_budget_{delivery_class}_reserved_for_higher_tiers"
+    elif role_priority_tier == "tier3" and recent_higher_tier >= 1 and recent_total >= 1:
+        allowed = False
+        reason = f"stage_budget_{delivery_class}_higher_tier_pressure"
+
+    _stage_budget_payload(
+        event,
+        signal,
+        allowed=allowed,
+        reason=reason,
+        recent_total=recent_total,
+        recent_same_tier=recent_same_tier,
+        recent_higher_tier=recent_higher_tier,
+        total_cap=total_cap,
+        tier_cap=tier_cap,
+    )
+    return allowed
 
 
 def _exchange_strong_observe_thresholds() -> dict:
@@ -331,16 +506,44 @@ def can_emit_delivery_notification(event, signal) -> bool:
         or ""
     )
     if role_group == "smart_money":
-        return _allow_smart_money_delivery(event, signal, delivery_class)
+        return _allow_smart_money_delivery(event, signal, delivery_class) and _allow_stage_budget(event, signal)
     if delivery_class == "primary":
-        return True
+        return _allow_stage_budget(event, signal)
     if delivery_class != "observe":
         return False
     if role_group == "lp_pool":
-        return bool(DELIVERY_ALLOW_LP_OBSERVE)
+        return bool(DELIVERY_ALLOW_LP_OBSERVE) and _allow_stage_budget(event, signal)
     if role_group == "exchange":
         strong_allowed = _allow_strong_exchange_observe(event, signal)
         if DELIVERY_ALLOW_EXCHANGE_OBSERVE:
-            return True
-        return strong_allowed
+            return _allow_stage_budget(event, signal)
+        return strong_allowed and _allow_stage_budget(event, signal)
     return False
+
+
+def record_delivery_notification(event, signal, delivered: bool) -> None:
+    if not delivered:
+        return
+    delivery_class = str(getattr(signal, "delivery_class", "") or getattr(event, "delivery_class", "") or "")
+    if delivery_class not in STAGE_BUDGETS:
+        return
+    role_priority_tier = str(
+        getattr(signal, "metadata", {}).get("role_priority_tier")
+        or getattr(event, "metadata", {}).get("role_priority_tier")
+        or "tier4"
+    )
+    role_priority_rank = _safe_int(
+        getattr(signal, "metadata", {}).get("role_priority_rank")
+        or getattr(event, "metadata", {}).get("role_priority_rank"),
+        4,
+    )
+    _prune_delivery_history(int(getattr(event, "ts", 0) or time.time()))
+    _DELIVERY_HISTORY.append(
+        {
+            "ts": int(getattr(event, "ts", 0) or time.time()),
+            "delivery_class": delivery_class,
+            "role_priority_tier": role_priority_tier,
+            "role_priority_rank": role_priority_rank,
+            "tx_hash": str(getattr(event, "tx_hash", "") or getattr(signal, "tx_hash", "") or ""),
+        }
+    )

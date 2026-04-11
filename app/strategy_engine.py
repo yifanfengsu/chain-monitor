@@ -53,6 +53,36 @@ from config import (
     MIN_CONFIDENCE,
     MIN_SIGNAL_USD,
     MIN_TOKEN_SCORE,
+    ROLE_TIER_OBSERVE_T1_MIN_CONFIRMATION,
+    ROLE_TIER_OBSERVE_T1_MIN_CONTINUATION,
+    ROLE_TIER_OBSERVE_T1_MIN_QUALITY,
+    ROLE_TIER_OBSERVE_T1_MIN_RESONANCE,
+    ROLE_TIER_OBSERVE_T1_MIN_SIZE_EXPANSION,
+    ROLE_TIER_OBSERVE_T2_MIN_CONFIRMATION,
+    ROLE_TIER_OBSERVE_T2_MIN_CONTINUATION,
+    ROLE_TIER_OBSERVE_T2_MIN_QUALITY,
+    ROLE_TIER_OBSERVE_T2_MIN_RESONANCE,
+    ROLE_TIER_OBSERVE_T2_MIN_SIZE_EXPANSION,
+    ROLE_TIER_OBSERVE_T3_MIN_CONFIRMATION,
+    ROLE_TIER_OBSERVE_T3_MIN_CONTINUATION,
+    ROLE_TIER_OBSERVE_T3_MIN_QUALITY,
+    ROLE_TIER_OBSERVE_T3_MIN_RESONANCE,
+    ROLE_TIER_OBSERVE_T3_MIN_SIZE_EXPANSION,
+    ROLE_TIER_PRIMARY_T1_MIN_CONFIRMATION,
+    ROLE_TIER_PRIMARY_T1_MIN_CONTINUATION,
+    ROLE_TIER_PRIMARY_T1_MIN_QUALITY,
+    ROLE_TIER_PRIMARY_T1_MIN_RESONANCE,
+    ROLE_TIER_PRIMARY_T1_MIN_SIZE_EXPANSION,
+    ROLE_TIER_PRIMARY_T2_MIN_CONFIRMATION,
+    ROLE_TIER_PRIMARY_T2_MIN_CONTINUATION,
+    ROLE_TIER_PRIMARY_T2_MIN_QUALITY,
+    ROLE_TIER_PRIMARY_T2_MIN_RESONANCE,
+    ROLE_TIER_PRIMARY_T2_MIN_SIZE_EXPANSION,
+    ROLE_TIER_PRIMARY_T3_MIN_CONFIRMATION,
+    ROLE_TIER_PRIMARY_T3_MIN_CONTINUATION,
+    ROLE_TIER_PRIMARY_T3_MIN_QUALITY,
+    ROLE_TIER_PRIMARY_T3_MIN_RESONANCE,
+    ROLE_TIER_PRIMARY_T3_MIN_SIZE_EXPANSION,
     SMART_MONEY_NOTIFY_EXECUTION_ONLY,
     STRATEGY_REQUIRE_NON_NORMAL_BEHAVIOR,
 )
@@ -101,6 +131,83 @@ SMART_MONEY_ALLOWED_REASON_WHITELIST = sorted(
         "smart_money_continuous_execution_primary",
     ]
 )
+ROLE_PRIORITY_TIER_LABELS = {
+    "tier1": "smart_money_priority",
+    "tier2": "lp_pool",
+    "tier3": "exchange",
+    "tier4": "other",
+}
+ROLE_STAGE_THRESHOLDS = {
+    "observe": {
+        "tier1": {
+            "confirmation": float(ROLE_TIER_OBSERVE_T1_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_OBSERVE_T1_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_OBSERVE_T1_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_OBSERVE_T1_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_OBSERVE_T1_MIN_SIZE_EXPANSION),
+            "matched_signals": 2,
+        },
+        "tier2": {
+            "confirmation": float(ROLE_TIER_OBSERVE_T2_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_OBSERVE_T2_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_OBSERVE_T2_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_OBSERVE_T2_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_OBSERVE_T2_MIN_SIZE_EXPANSION),
+            "matched_signals": 2,
+        },
+        "tier3": {
+            "confirmation": float(ROLE_TIER_OBSERVE_T3_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_OBSERVE_T3_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_OBSERVE_T3_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_OBSERVE_T3_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_OBSERVE_T3_MIN_SIZE_EXPANSION),
+            "matched_signals": 3,
+        },
+        "tier4": {
+            "confirmation": 0.62,
+            "quality": 0.80,
+            "resonance": 0.42,
+            "continuation": 2,
+            "size_expansion": 1.25,
+            "matched_signals": 2,
+        },
+    },
+    "primary": {
+        "tier1": {
+            "confirmation": float(ROLE_TIER_PRIMARY_T1_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_PRIMARY_T1_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_PRIMARY_T1_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_PRIMARY_T1_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_PRIMARY_T1_MIN_SIZE_EXPANSION),
+            "matched_signals": 3,
+        },
+        "tier2": {
+            "confirmation": float(ROLE_TIER_PRIMARY_T2_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_PRIMARY_T2_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_PRIMARY_T2_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_PRIMARY_T2_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_PRIMARY_T2_MIN_SIZE_EXPANSION),
+            "matched_signals": 3,
+        },
+        "tier3": {
+            "confirmation": float(ROLE_TIER_PRIMARY_T3_MIN_CONFIRMATION),
+            "quality": float(ROLE_TIER_PRIMARY_T3_MIN_QUALITY),
+            "resonance": float(ROLE_TIER_PRIMARY_T3_MIN_RESONANCE),
+            "continuation": int(ROLE_TIER_PRIMARY_T3_MIN_CONTINUATION),
+            "size_expansion": float(ROLE_TIER_PRIMARY_T3_MIN_SIZE_EXPANSION),
+            "matched_signals": 4,
+        },
+        "tier4": {
+            "confirmation": 0.80,
+            "quality": 0.84,
+            "resonance": 0.50,
+            "continuation": 2,
+            "size_expansion": 1.30,
+            "matched_signals": 3,
+        },
+    },
+}
+
 class StrategyEngine:
     """
     Strategy Layer：
@@ -144,6 +251,8 @@ class StrategyEngine:
 
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
+        role_priority_tier = self._role_priority_tier(strategy_role)
+        role_priority_rank = self._role_priority_rank(strategy_role)
         priority_smart_money = is_priority_smart_money_strategy_role(strategy_role)
         market_maker = is_market_maker_strategy_role(strategy_role)
         behavior_type = str(behavior.get("behavior_type") or "normal")
@@ -437,6 +546,9 @@ class StrategyEngine:
                 "exchange_noise_sensitive": exchange_noise_sensitive,
                 "role_group": role_group,
                 "strategy_role": strategy_role,
+                "role_priority_tier": role_priority_tier,
+                "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
+                "role_priority_rank": role_priority_rank,
                 "is_real_execution": is_real_execution,
                 "lp_observe_exception_applied": bool(lp_observe_exception_applied),
                 "lp_observe_exception_reason": lp_observe_exception_reason,
@@ -498,6 +610,8 @@ class StrategyEngine:
         gate_metrics = gate_metrics or {}
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
+        role_priority_tier = self._role_priority_tier(strategy_role)
+        role_priority_rank = self._role_priority_rank(strategy_role)
         priority_smart_money = is_priority_smart_money_strategy_role(strategy_role)
         market_maker = is_market_maker_strategy_role(strategy_role)
         intent_type = str(event.intent_type or signal.intent_type or "unknown_intent")
@@ -517,6 +631,10 @@ class StrategyEngine:
         smart_money_same_actor_continuation = bool(event.metadata.get("smart_money_same_actor_continuation"))
         smart_money_size_expansion_ratio = float(event.metadata.get("smart_money_size_expansion_ratio") or 1.0)
         intent_confirmed = str(event.intent_stage or signal.intent_stage or "") == "confirmed"
+        continuation_score = 0.0
+        size_expansion_ratio = 1.0
+        explicit_candidate_intent = False
+        context_supported = False
         lp_volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or event.metadata.get("lp_analysis", {}).get("pool_volume_surge_ratio") or 0.0)
         lp_same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or event.metadata.get("lp_analysis", {}).get("same_pool_continuity") or 0)
         lp_multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or event.metadata.get("lp_analysis", {}).get("multi_pool_resonance") or 0)
@@ -600,6 +718,83 @@ class StrategyEngine:
         )
         possible_keeper_executor = bool(gate_metrics.get("possible_keeper_executor"))
         possible_vault_or_auction = bool(gate_metrics.get("possible_vault_or_auction"))
+        if role_group == "smart_money":
+            continuation_score = max(
+                float(smart_money_execution_count),
+                2.0 if smart_money_same_actor_continuation else 0.0,
+            )
+            size_expansion_ratio = max(float(smart_money_size_expansion_ratio or 1.0), 1.0)
+            explicit_candidate_intent = is_real_execution
+            context_supported = bool(
+                smart_money_case_confirmed
+                or same_side_smart_money_addresses >= 1
+                or resonance_score >= 0.32
+            )
+        elif role_group == "lp_pool":
+            continuation_score = float(max(lp_same_pool_continuity, lp_multi_pool_resonance, lp_burst_same_pool_continuity))
+            size_expansion_ratio = max(
+                float(lp_volume_surge_ratio or 0.0),
+                float(lp_burst_volume_surge_ratio or 0.0),
+                1.0,
+            )
+            explicit_candidate_intent = intent_type in LP_INTENTS
+            context_supported = bool(
+                lp_trend_primary_pool
+                or lp_prealert_applied
+                or lp_burst_fastlane_ready
+                or lp_same_pool_continuity >= 2
+                or lp_multi_pool_resonance >= 2
+            )
+        elif role_group == "exchange":
+            continuation_score = float(max(same_side_addresses, same_side_smart_money_addresses, 1 if followup_confirmed else 0))
+            size_expansion_ratio = max(
+                float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
+                1.0,
+            )
+            explicit_candidate_intent = intent_type in EXCHANGE_SENSITIVE_INTENTS or is_real_execution
+            context_supported = bool(
+                followup_confirmed
+                or multi_address_resonance
+                or same_side_addresses >= 2
+                or resonance_score >= 0.45
+            )
+        else:
+            continuation_score = float(max(same_side_addresses, 0))
+            size_expansion_ratio = max(
+                float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
+                1.0,
+            )
+            explicit_candidate_intent = is_real_execution or intent_type not in {"pure_transfer", "unknown_intent"}
+            context_supported = bool(multi_address_resonance or resonance_score >= 0.42)
+
+        observe_route = self._role_stage_route(
+            stage="observe",
+            role_priority_tier=role_priority_tier,
+            confirmation_score=confirmation_score,
+            quality_score=quality_score,
+            resonance_score=resonance_score,
+            continuation_score=continuation_score,
+            size_expansion_ratio=size_expansion_ratio,
+            intent_confirmed=intent_confirmed,
+            explicit_candidate_intent=explicit_candidate_intent,
+            context_supported=context_supported,
+            is_real_execution=is_real_execution,
+            market_maker=market_maker,
+        )
+        primary_route = self._role_stage_route(
+            stage="primary",
+            role_priority_tier=role_priority_tier,
+            confirmation_score=confirmation_score,
+            quality_score=quality_score,
+            resonance_score=resonance_score,
+            continuation_score=continuation_score,
+            size_expansion_ratio=size_expansion_ratio,
+            intent_confirmed=intent_confirmed,
+            explicit_candidate_intent=explicit_candidate_intent,
+            context_supported=context_supported,
+            is_real_execution=is_real_execution,
+            market_maker=market_maker,
+        )
         if case_family == "downstream_counterparty_followup":
             if not bool(event.metadata.get("downstream_followup_anchor_event")) and not bool(event.metadata.get("downstream_followup_confirmed_event")) and case_stage == "followup_opened":
                 return self._apply_delivery(
@@ -790,6 +985,7 @@ class StrategyEngine:
                     not lp_observe_exception_applied
                     and
                     confirmation_score >= LP_PRIMARY_MIN_CONFIDENCE
+                    and primary_route["qualified"]
                     and (
                         lp_volume_surge_ratio >= LP_PRIMARY_MIN_SURGE_RATIO
                         or lp_same_pool_continuity >= 2
@@ -802,6 +998,7 @@ class StrategyEngine:
                         signal,
                         "primary",
                         "lp_directional_pressure_primary",
+                        route_context=primary_route,
                     )
                 if self._allow_lp_directional_early_observe(
                     event=event,
@@ -816,15 +1013,25 @@ class StrategyEngine:
                         signal,
                         "observe",
                         "lp_directional_early_observe",
+                        route_context=observe_route,
                     )
                 if (
-                    confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE
-                    or lp_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO
-                    or lp_same_pool_continuity >= 2
-                    or lp_multi_pool_resonance >= 2
-                    or float(event.usd_value or 0.0) >= LP_OBSERVE_MIN_USD
+                    observe_route["qualified"]
+                    and (
+                        confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE
+                        or lp_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO
+                        or lp_same_pool_continuity >= 2
+                        or lp_multi_pool_resonance >= 2
+                        or float(event.usd_value or 0.0) >= LP_OBSERVE_MIN_USD
+                    )
                 ):
-                    return self._apply_delivery(event, signal, "observe", "lp_directional_pressure_observe")
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_directional_pressure_observe",
+                        route_context=observe_route,
+                    )
                 return self._apply_delivery(event, signal, "drop", "lp_directional_pressure_drop")
 
             if intent_type in LP_INTENTS:
@@ -848,20 +1055,30 @@ class StrategyEngine:
                     quality_score=quality_score,
                     pricing_confidence=pricing_confidence,
                     lp_volume_surge_ratio=lp_volume_surge_ratio,
-                ):
+                ) and observe_route["qualified"]:
                     return self._apply_delivery(
                         event,
                         signal,
                         "observe",
                         "lp_non_directional_structured_observe",
+                        route_context=observe_route,
                     )
                 if (
-                    float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 1.10, 22_000.0)
-                    or lp_same_pool_continuity >= 2
-                    or lp_volume_surge_ratio >= max(LP_VOLUME_SURGE_MIN_RATIO, 1.75)
-                    or confirmation_score >= max(LP_OBSERVE_MIN_CONFIDENCE + 0.06, 0.64)
+                    observe_route["qualified"]
+                    and (
+                        float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 1.10, 22_000.0)
+                        or lp_same_pool_continuity >= 2
+                        or lp_volume_surge_ratio >= max(LP_VOLUME_SURGE_MIN_RATIO, 1.75)
+                        or confirmation_score >= max(LP_OBSERVE_MIN_CONFIDENCE + 0.06, 0.64)
+                    )
                 ):
-                    return self._apply_delivery(event, signal, "observe", "lp_non_directional_observe")
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_non_directional_observe",
+                        route_context=observe_route,
+                    )
                 if DELIVERY_LP_WEAK_SIGNAL_ARCHIVE_ONLY:
                     return self._apply_delivery(event, signal, "drop", "lp_non_directional_drop")
                 return self._apply_delivery(event, signal, "drop", "lp_non_directional_drop")
@@ -878,17 +1095,37 @@ class StrategyEngine:
 
             if is_real_execution:
                 if (
-                    intent_confirmed
-                    and confirmation_score >= 0.88
-                    and resonance_score >= 0.68
-                    and quality_score >= 0.88
+                    primary_route["qualified"]
+                    and intent_confirmed
                     and (multi_address_resonance or same_side_addresses >= 3)
                 ):
-                    return self._apply_delivery(event, signal, "primary", "exchange_execution_primary")
-                return self._apply_delivery(event, signal, "observe", "exchange_execution_observe")
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "exchange_execution_primary",
+                        route_context=primary_route,
+                    )
+                if observe_route["qualified"]:
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "exchange_execution_observe",
+                        route_context=observe_route,
+                    )
+                return self._apply_delivery(event, signal, "drop", "exchange_execution_drop")
 
             if intent_type in EXCHANGE_SENSITIVE_INTENTS:
-                return self._apply_delivery(event, signal, "observe", "exchange_directional_observe")
+                if observe_route["qualified"]:
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "exchange_directional_observe",
+                        route_context=observe_route,
+                    )
+                return self._apply_delivery(event, signal, "drop", "exchange_directional_drop")
 
             if intent_type in {"internal_rebalance", "market_making_inventory_move"}:
                 if quality_score >= 0.82 or confirmation_score >= 0.58:
@@ -896,11 +1133,25 @@ class StrategyEngine:
                 return self._apply_delivery(event, signal, "drop", "exchange_inventory_drop")
 
             if intent_type in {"pure_transfer", "unknown_intent"}:
-                if quality_score >= 0.84 and same_side_addresses >= 3 and resonance_score >= 0.6:
-                    return self._apply_delivery(event, signal, "observe", "exchange_transfer_observe")
+                if observe_route["qualified"] and quality_score >= 0.84 and same_side_addresses >= 3 and resonance_score >= 0.6:
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "exchange_transfer_observe",
+                        route_context=observe_route,
+                    )
                 return self._apply_delivery(event, signal, "drop", "exchange_transfer_drop")
 
-            return self._apply_delivery(event, signal, "observe", "exchange_observe")
+            if observe_route["qualified"]:
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "observe",
+                    "exchange_observe",
+                    route_context=observe_route,
+                )
+            return self._apply_delivery(event, signal, "drop", "exchange_observe_drop")
 
         if role_group == "smart_money":
             if is_real_execution:
@@ -946,19 +1197,29 @@ class StrategyEngine:
                         signal,
                         "primary",
                         "smart_money_continuous_execution_primary",
+                        route_context=primary_route,
                     )
-                if DELIVERY_SMART_MONEY_EXECUTION_PRIMARY and priority_smart_money and (
-                    confirmation_score >= 0.52
-                    or quality_score >= 0.76
-                    or smart_money_size_expansion_ratio >= 1.18
-                ):
-                    return self._apply_delivery(event, signal, "primary", "smart_money_execution_primary")
-                if DELIVERY_SMART_MONEY_EXECUTION_PRIMARY and not priority_smart_money and (
-                    confirmation_score >= 0.62
-                    and (quality_score >= 0.78 or resonance_score >= 0.40 or same_side_smart_money_addresses >= 1)
-                ):
-                    return self._apply_delivery(event, signal, "primary", "smart_money_execution_primary")
-                return self._apply_delivery(event, signal, "observe", "smart_money_execution_observe")
+                if DELIVERY_SMART_MONEY_EXECUTION_PRIMARY and primary_route["qualified"]:
+                    if priority_smart_money or (
+                        confirmation_score >= 0.62
+                        and (quality_score >= 0.78 or resonance_score >= 0.40 or same_side_smart_money_addresses >= 1)
+                    ):
+                        return self._apply_delivery(
+                            event,
+                            signal,
+                            "primary",
+                            "smart_money_execution_primary",
+                            route_context=primary_route,
+                        )
+                if observe_route["qualified"] or priority_smart_money:
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "smart_money_execution_observe",
+                        route_context=observe_route,
+                    )
+                return self._apply_delivery(event, signal, "drop", "smart_money_execution_drop")
             archive_reason = (
                 "market_maker_non_execution_archived"
                 if market_maker else
@@ -972,17 +1233,37 @@ class StrategyEngine:
             )
 
         if is_real_execution:
-            if confirmation_score >= 0.78 and (
+            if primary_route["qualified"] and (
                 multi_address_resonance or resonance_score >= 0.56 or quality_score >= 0.82
             ):
-                return self._apply_delivery(event, signal, "primary", "real_execution_primary")
-            return self._apply_delivery(event, signal, "observe", "real_execution_observe")
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "primary",
+                    "real_execution_primary",
+                    route_context=primary_route,
+                )
+            if observe_route["qualified"]:
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "observe",
+                    "real_execution_observe",
+                    route_context=observe_route,
+                )
+            return self._apply_delivery(event, signal, "drop", "real_execution_drop")
 
         if intent_type in {"pure_transfer", "unknown_intent", "pool_noise"}:
             return self._apply_delivery(event, signal, "drop", "weak_fact_drop")
 
-        if confirmation_score >= 0.60 or quality_score >= 0.80:
-            return self._apply_delivery(event, signal, "observe", "directional_observe")
+        if observe_route["qualified"] and (confirmation_score >= 0.60 or quality_score >= 0.80):
+            return self._apply_delivery(
+                event,
+                signal,
+                "observe",
+                "directional_observe",
+                route_context=observe_route,
+            )
         return self._apply_delivery(event, signal, "drop", "low_trade_value_drop")
 
     def _allow_lp_first_hit_directional_primary(
@@ -1180,6 +1461,122 @@ class StrategyEngine:
             return False
         return confirmation_score >= 0.58 or lp_volume_surge_ratio >= 1.35
 
+    def _role_priority_tier(self, strategy_role: str | None) -> str:
+        normalized = str(strategy_role or "unknown")
+        if (
+            is_priority_smart_money_strategy_role(normalized)
+            or is_market_maker_strategy_role(normalized)
+        ):
+            return "tier1"
+        if is_lp_strategy_role(normalized):
+            return "tier2"
+        if is_exchange_strategy_role(normalized):
+            return "tier3"
+        return "tier4"
+
+    def _role_priority_rank(self, strategy_role: str | None) -> int:
+        mapping = {
+            "tier1": 1,
+            "tier2": 2,
+            "tier3": 3,
+            "tier4": 4,
+        }
+        return mapping.get(self._role_priority_tier(strategy_role), 4)
+
+    def _stage_threshold_profile(
+        self,
+        *,
+        stage: str,
+        role_priority_tier: str,
+        market_maker: bool = False,
+    ) -> dict:
+        profile = dict(ROLE_STAGE_THRESHOLDS.get(stage, {}).get(role_priority_tier, ROLE_STAGE_THRESHOLDS[stage]["tier4"]))
+        if market_maker and stage == "observe":
+            profile["confirmation"] = max(float(profile["confirmation"]), float(MARKET_MAKER_OBSERVE_MIN_CONFIRMATION))
+            profile["resonance"] = max(float(profile["resonance"]), float(MARKET_MAKER_OBSERVE_MIN_RESONANCE))
+            profile["quality"] = max(float(profile["quality"]), float(MARKET_MAKER_OBSERVE_GATE_FLOOR))
+        return profile
+
+    def _role_stage_route(
+        self,
+        *,
+        stage: str,
+        role_priority_tier: str,
+        confirmation_score: float,
+        quality_score: float,
+        resonance_score: float,
+        continuation_score: float,
+        size_expansion_ratio: float,
+        intent_confirmed: bool = False,
+        explicit_candidate_intent: bool = False,
+        context_supported: bool = False,
+        is_real_execution: bool = False,
+        market_maker: bool = False,
+    ) -> dict:
+        profile = self._stage_threshold_profile(
+            stage=stage,
+            role_priority_tier=role_priority_tier,
+            market_maker=market_maker,
+        )
+        matched = []
+        if confirmation_score >= float(profile["confirmation"]):
+            matched.append("confirmation")
+        if quality_score >= float(profile["quality"]):
+            matched.append("quality")
+        if resonance_score >= float(profile["resonance"]):
+            matched.append("resonance")
+        if continuation_score >= float(profile["continuation"]):
+            matched.append("continuation")
+        if size_expansion_ratio >= float(profile["size_expansion"]):
+            matched.append("size_expansion")
+
+        required_matches = int(profile.get("matched_signals") or 2)
+        qualifies = len(matched) >= required_matches
+
+        if stage == "observe":
+            if role_priority_tier == "tier3":
+                qualifies = qualifies and explicit_candidate_intent and context_supported
+            elif role_priority_tier == "tier2":
+                qualifies = qualifies and (context_supported or explicit_candidate_intent or is_real_execution)
+            elif role_priority_tier == "tier1":
+                qualifies = qualifies and (is_real_execution or context_supported or len(matched) >= required_matches + 1)
+        elif stage == "primary":
+            qualifies = qualifies and (intent_confirmed or continuation_score >= float(profile["continuation"]) or resonance_score >= float(profile["resonance"]) + 0.08)
+            if role_priority_tier == "tier3":
+                qualifies = qualifies and explicit_candidate_intent and context_supported and is_real_execution
+            elif role_priority_tier == "tier2":
+                qualifies = qualifies and context_supported
+            elif role_priority_tier == "tier1":
+                qualifies = qualifies and is_real_execution
+
+        return {
+            "qualified": bool(qualifies),
+            "profile": profile,
+            "matched_signals": matched,
+            "required_matches": required_matches,
+            "relaxed_thresholds_applied": bool(role_priority_tier == "tier1"),
+            "promotion_path": self._promotion_path(stage, matched, continuation_score, resonance_score),
+        }
+
+    def _promotion_path(
+        self,
+        stage: str,
+        matched_signals: list[str],
+        continuation_score: float,
+        resonance_score: float,
+    ) -> str:
+        if stage == "primary":
+            if "continuation" in matched_signals or continuation_score >= 2:
+                return "continuation_primary"
+            if "resonance" in matched_signals or resonance_score >= 0.60:
+                return "resonance_primary"
+            return "confirmed_primary"
+        if "continuation" in matched_signals:
+            return "continuation_observe"
+        if "size_expansion" in matched_signals:
+            return "size_expansion_observe"
+        return "early_warning_observe"
+
     def _apply_delivery(
         self,
         event: Event,
@@ -1187,16 +1584,54 @@ class StrategyEngine:
         delivery_class: str,
         reason: str,
         fact_type: str | None = None,
+        route_context: dict | None = None,
     ) -> tuple[str, str]:
         event.delivery_class = delivery_class
         event.delivery_reason = reason
         signal.delivery_class = delivery_class
         signal.delivery_reason = reason
+        route_context = dict(route_context or {})
+        role_priority_tier = str(
+            signal.metadata.get("role_priority_tier")
+            or event.metadata.get("role_priority_tier")
+            or self._role_priority_tier(event.strategy_role)
+        )
+        role_priority_rank = int(
+            signal.metadata.get("role_priority_rank")
+            or event.metadata.get("role_priority_rank")
+            or self._role_priority_rank(event.strategy_role)
+        )
         payload = {
             "delivery_class": delivery_class,
             "delivery_reason": reason,
             "delivery_fact_type": fact_type or self._delivery_fact_type(event, signal),
+            "stage_tier": "archive_only" if delivery_class == "drop" else delivery_class,
+            "routing_reason": reason,
+            "observe_route_reason": reason if delivery_class == "observe" else "",
+            "primary_route_reason": reason if delivery_class == "primary" else "",
+            "archive_only_reason": reason if delivery_class == "drop" else "",
+            "role_priority_tier": role_priority_tier,
+            "role_priority_rank": role_priority_rank,
+            "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
         }
+        if route_context:
+            stage_name = "archive_only" if delivery_class == "drop" else delivery_class
+            payload.update({
+                "stage_threshold_profile": route_context.get("profile") or {},
+                "stage_threshold_matched_signals": list(route_context.get("matched_signals") or []),
+                "stage_threshold_required_matches": int(route_context.get("required_matches") or 0),
+                "promotion_path": str(route_context.get("promotion_path") or ""),
+                "relaxed_thresholds_applied": bool(route_context.get("relaxed_thresholds_applied")),
+                "relaxed_threshold_details": dict(route_context.get("profile") or {}) if route_context.get("relaxed_thresholds_applied") else {},
+            })
+            if stage_name == "observe":
+                payload["observe_route_reason"] = reason
+                payload["observe_threshold_profile"] = route_context.get("profile") or {}
+            elif stage_name == "primary":
+                payload["primary_route_reason"] = reason
+                payload["primary_threshold_profile"] = route_context.get("profile") or {}
+            else:
+                payload["archive_only_reason"] = reason
         message_variant = self._message_variant_for_delivery(
             event=event,
             signal=signal,
