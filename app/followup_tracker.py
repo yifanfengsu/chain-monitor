@@ -856,32 +856,8 @@ class FollowupTracker:
                 "downstream_event_state": None,
             }
         if existing is not None and not (is_anchor or followup.get("matched")):
-            metadata = self._ensure_downstream_case_metadata(existing)
-            if str(event.address or "").lower() == str(metadata.get("downstream_address") or existing.watch_address or "").lower():
-                downstream_event_state = self._build_downstream_event_state(
-                    is_anchor=False,
-                    is_followup=False,
-                    followup_type=str(followup.get("followup_type") or ""),
-                    followup_reason=str(followup.get("reason") or "downstream_followup_not_confirmed"),
-                    stage=str(existing.stage or "followup_opened"),
-                )
-                self._apply_downstream_current_event_state(
-                    existing,
-                    metadata,
-                    downstream_event_state,
-                    source="matched_case_result",
-                )
-                metadata["last_observed_usd"] = round(float(event.usd_value or 0.0), 2)
-                metadata["last_observed_tx_hash"] = str(event.tx_hash or "")
-                return {
-                    "case": existing,
-                    "created": False,
-                    "downstream_followup_case": True,
-                    "downstream_followup_anchor": False,
-                    "downstream_followup_type": str(followup.get("followup_type") or ""),
-                    "downstream_followup_stage": str(existing.stage or "followup_opened"),
-                    "downstream_event_state": downstream_event_state,
-                }
+            # Sharing the same downstream address is not enough to reuse the case.
+            # Only anchors or confirmed followups should keep the downstream path active.
             return {
                 "case": None,
                 "created": False,
@@ -943,7 +919,7 @@ class FollowupTracker:
         for behavior_case in list(self._cases.values()):
             if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
                 continue
-            if behavior_case.status in {"closed", "invalidated"}:
+            if behavior_case.status in {"cooled", "closed", "invalidated"}:
                 continue
             metadata = self._ensure_downstream_case_metadata(behavior_case)
             if str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower() != case_address:

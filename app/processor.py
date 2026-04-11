@@ -831,15 +831,17 @@ def parse_swap_candidate(item):
         return None
 
     pool_meta = get_lp_pool(watch_address, active_only=True)
+    lp_like_flow = _looks_like_lp_flow(flows)
     if pool_meta is not None:
-        return _parse_lp_pool_candidate(item, pool_meta, watch_address, transfers, flows)
+        parsed = _parse_lp_pool_candidate(item, pool_meta, watch_address, transfers, flows)
+        if parsed:
+            return parsed
+        # LP pool parsing can miss partial-leg samples; fall back instead of dropping the tx.
 
-    if _looks_like_lp_flow(flows):
-        return None
-
-    swap = _parse_swap_from_flows(item, watch_address, transfers, flows)
-    if swap:
-        return swap
+    if not lp_like_flow:
+        swap = _parse_swap_from_flows(item, watch_address, transfers, flows)
+        if swap:
+            return swap
 
     return _parse_token_transfer_from_flows(item, watch_address, transfers, flows)
 
