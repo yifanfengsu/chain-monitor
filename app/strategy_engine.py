@@ -86,6 +86,12 @@ PRIMARY_LP_INTENTS = {
     "pool_buy_pressure",
     "pool_sell_pressure",
 }
+LP_PREALERT_INTENTS = {
+    "pool_buy_pressure",
+    "pool_sell_pressure",
+    "liquidity_addition",
+    "liquidity_removal",
+}
 SMART_MONEY_ALLOWED_REASON_WHITELIST = sorted(
     [
         "market_maker_execution_observe",
@@ -169,6 +175,14 @@ class StrategyEngine:
         lp_observe_exception_reason = str(gate_metrics.get("lp_observe_exception_reason") or "")
         lp_observe_threshold_ratio = float(gate_metrics.get("lp_observe_threshold_ratio") or 0.0)
         lp_observe_below_min_gap = float(gate_metrics.get("lp_observe_below_min_gap") or 0.0)
+        lp_prealert_candidate = bool(
+            gate_metrics.get("lp_prealert_candidate")
+            or event.metadata.get("lp_prealert_candidate")
+        )
+        lp_prealert_applied = bool(
+            gate_metrics.get("lp_prealert_applied")
+            or event.metadata.get("lp_prealert_applied")
+        )
         lp_fast_exception_applied = bool(gate_metrics.get("lp_fast_exception_applied"))
         lp_fast_exception_reason = str(gate_metrics.get("lp_fast_exception_reason") or "")
         lp_fast_exception_threshold_ratio = float(gate_metrics.get("lp_fast_exception_threshold_ratio") or 0.0)
@@ -201,10 +215,11 @@ class StrategyEngine:
         market_maker_observe_exception_reason = str(gate_metrics.get("market_maker_observe_exception_reason") or "")
         market_maker_threshold_ratio = float(gate_metrics.get("market_maker_threshold_ratio") or 0.0)
         market_maker_quality_gap = float(gate_metrics.get("market_maker_quality_gap") or 0.0)
-        is_lp_directional_exception_candidate = (
-            lp_observe_exception_applied
-            and role_group == "lp_pool"
-            and intent_type in PRIMARY_LP_INTENTS
+        is_lp_below_min_usd_exception_candidate = self._allow_lp_below_min_usd_observe_exception(
+            role_group=role_group,
+            intent_type=intent_type,
+            lp_observe_exception_applied=lp_observe_exception_applied,
+            lp_prealert_applied=lp_prealert_applied,
         )
 
         if pricing_status in {"unknown", "unavailable"} and pricing_confidence < 0.35:
@@ -301,12 +316,12 @@ class StrategyEngine:
             exchange_noise_sensitive=exchange_noise_sensitive,
         )
         gate_min_usd = float(gate_metrics.get("dynamic_min_usd") or 0.0)
-        if not is_lp_directional_exception_candidate:
+        if not is_lp_below_min_usd_exception_candidate:
             effective_threshold = max(effective_threshold, gate_min_usd)
             if usd_value < max(effective_threshold, self.min_signal_usd):
                 return None
         else:
-            # gate 已经确认这是“金额略低但结构很强”的 directional LP；
+            # gate 已经确认这是“金额略低但结构很强”的 LP observe 例外；
             # 这里不再重复用同一金额门槛拦截，但仍保留二次质量控制。
             if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.55:
                 return None
@@ -423,11 +438,13 @@ class StrategyEngine:
                 "role_group": role_group,
                 "strategy_role": strategy_role,
                 "is_real_execution": is_real_execution,
-                "lp_observe_exception_applied": bool(is_lp_directional_exception_candidate),
+                "lp_observe_exception_applied": bool(lp_observe_exception_applied),
                 "lp_observe_exception_reason": lp_observe_exception_reason,
                 "lp_observe_threshold_ratio": round(lp_observe_threshold_ratio, 3),
                 "lp_observe_below_min_gap": round(lp_observe_below_min_gap, 2),
-                "lp_observe_delivery_cap": "observe_only" if is_lp_directional_exception_candidate else "",
+                "lp_observe_delivery_cap": "observe_only" if is_lp_below_min_usd_exception_candidate else "",
+                "lp_prealert_candidate": bool(lp_prealert_candidate),
+                "lp_prealert_applied": bool(lp_prealert_applied),
                 "lp_trend_sensitivity_mode": lp_trend_sensitivity_mode,
                 "lp_trend_primary_pool": lp_trend_primary_pool,
                 "lp_directional_side": lp_directional_side,
@@ -506,6 +523,11 @@ class StrategyEngine:
         lp_observe_exception_applied = bool(
             signal.metadata.get("lp_observe_exception_applied")
             or gate_metrics.get("lp_observe_exception_applied")
+        )
+        lp_prealert_applied = bool(
+            signal.metadata.get("lp_prealert_applied")
+            or gate_metrics.get("lp_prealert_applied")
+            or event.metadata.get("lp_prealert_applied")
         )
         lp_observe_exception_reason = str(
             signal.metadata.get("lp_observe_exception_reason")
@@ -686,6 +708,18 @@ class StrategyEngine:
                     )
 
             if intent_type in PRIMARY_LP_INTENTS:
+                if self._allow_lp_prealert_observe(
+                    event=event,
+                    lp_trend_primary_pool=lp_trend_primary_pool,
+                    lp_prealert_applied=lp_prealert_applied,
+                    pricing_confidence=pricing_confidence,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_directional_prealert_observe",
+                    )
                 if lp_burst_fastlane_ready and self._allow_lp_burst_directional_primary(
                     confirmation_score=confirmation_score,
                     quality_score=quality_score,
@@ -783,18 +817,6 @@ class StrategyEngine:
                         "observe",
                         "lp_directional_early_observe",
                     )
-                if self._allow_lp_prealert_observe(
-                    event=event,
-                    lp_trend_primary_pool=lp_trend_primary_pool,
-                    lp_prealert_candidate=bool(gate_metrics.get("lp_prealert_candidate")),
-                    pricing_confidence=pricing_confidence,
-                ):
-                    return self._apply_delivery(
-                        event,
-                        signal,
-                        "observe",
-                        "lp_directional_prealert_observe",
-                    )
                 if (
                     confirmation_score >= LP_OBSERVE_MIN_CONFIDENCE
                     or lp_volume_surge_ratio >= LP_VOLUME_SURGE_MIN_RATIO
@@ -808,6 +830,18 @@ class StrategyEngine:
             if intent_type in LP_INTENTS:
                 if intent_type == "pool_noise":
                     return self._apply_delivery(event, signal, "drop", "lp_noise_drop")
+                if self._allow_lp_prealert_observe(
+                    event=event,
+                    lp_trend_primary_pool=lp_trend_primary_pool,
+                    lp_prealert_applied=lp_prealert_applied,
+                    pricing_confidence=pricing_confidence,
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "lp_liquidity_prealert_observe",
+                    )
                 if self._allow_lp_non_directional_structured_observe(
                     event=event,
                     confirmation_score=confirmation_score,
@@ -820,18 +854,6 @@ class StrategyEngine:
                         signal,
                         "observe",
                         "lp_non_directional_structured_observe",
-                    )
-                if self._allow_lp_prealert_observe(
-                    event=event,
-                    lp_trend_primary_pool=lp_trend_primary_pool,
-                    lp_prealert_candidate=bool(gate_metrics.get("lp_prealert_candidate")),
-                    pricing_confidence=pricing_confidence,
-                ):
-                    return self._apply_delivery(
-                        event,
-                        signal,
-                        "observe",
-                        "lp_liquidity_prealert_observe",
                     )
                 if (
                     float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 1.10, 22_000.0)
@@ -1115,19 +1137,30 @@ class StrategyEngine:
         *,
         event: Event,
         lp_trend_primary_pool: bool,
-        lp_prealert_candidate: bool,
+        lp_prealert_applied: bool,
         pricing_confidence: float,
     ) -> bool:
-        if not lp_trend_primary_pool or not lp_prealert_candidate:
+        if not lp_trend_primary_pool or not lp_prealert_applied:
             return False
-        if str(event.intent_type or "") not in {
-            "pool_buy_pressure",
-            "pool_sell_pressure",
-            "liquidity_removal",
-            "liquidity_addition",
-        }:
+        if str(event.intent_type or "") not in LP_PREALERT_INTENTS:
             return False
         return pricing_confidence >= LP_PREALERT_MIN_PRICING_CONFIDENCE
+
+    def _allow_lp_below_min_usd_observe_exception(
+        self,
+        *,
+        role_group: str,
+        intent_type: str,
+        lp_observe_exception_applied: bool,
+        lp_prealert_applied: bool,
+    ) -> bool:
+        if role_group != "lp_pool":
+            return False
+        if lp_observe_exception_applied and intent_type in PRIMARY_LP_INTENTS:
+            return True
+        if lp_prealert_applied and intent_type in LP_PREALERT_INTENTS:
+            return True
+        return False
 
     def _allow_lp_non_directional_structured_observe(
         self,
