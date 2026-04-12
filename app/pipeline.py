@@ -299,7 +299,6 @@ class SignalPipeline:
         event.archive_ts = archive_ts
         event.event_id = self._build_event_id(event)
         parsed["event_id"] = event.event_id
-        parsed["archive_ts"] = archive_ts
 
         preliminary_intent = self._classify_intent(
             event=event,
@@ -1736,7 +1735,6 @@ class SignalPipeline:
             "gate_reason": reason,
             "delivery_class": "drop",
             "stage": "strategy",
-            "archive_ts": int(archive_ts),
             "lp_parse_status": str(lp_debug.get("status") or "failed"),
             "lp_parse_missing_legs": list(lp_debug.get("missing_legs") or []),
             "replay_source": str(raw_item.get("replay_source") or ""),
@@ -1876,6 +1874,19 @@ class SignalPipeline:
 
         wrote_followup = False
         try:
+            signal_followup = {
+                "status": behavior_case.status,
+                "stage": behavior_case.stage,
+            }
+            signal_id = str(getattr(signal, "signal_id", "") or "")
+            signal_type = str(getattr(signal, "type", "") or "")
+            signal_confidence = getattr(signal, "confidence", None)
+            if signal_id:
+                signal_followup["signal_id"] = signal_id
+            if signal_type:
+                signal_followup["signal_type"] = signal_type
+            if signal_confidence not in (None, ""):
+                signal_followup["confidence"] = float(signal_confidence or 0.0)
             self.archive_store.write_case_update(
                 behavior_case,
                 signal=signal,
@@ -1898,13 +1909,7 @@ class SignalPipeline:
                 wrote_followup = bool(
                     self.archive_store.write_case_followup(
                         behavior_case.case_id,
-                        {
-                            "signal_id": getattr(signal, "signal_id", ""),
-                            "signal_type": getattr(signal, "type", ""),
-                            "confidence": float(getattr(signal, "confidence", 0.0) or 0.0),
-                            "status": behavior_case.status,
-                            "stage": behavior_case.stage,
-                        },
+                        signal_followup,
                         archive_ts=archive_ts,
                     )
                 )
@@ -1958,7 +1963,6 @@ class SignalPipeline:
         metadata = getattr(behavior_case, "metadata", {}) or {}
         followup = {
             "case_family": str(metadata.get("case_family") or ""),
-            "case_id": str(getattr(behavior_case, "case_id", "") or ""),
             "stage": str(stage or getattr(behavior_case, "stage", "") or ""),
             "status": str(status or getattr(behavior_case, "status", "") or ""),
             "anchor_watch_address": str(metadata.get("anchor_watch_address") or ""),
@@ -1985,9 +1989,11 @@ class SignalPipeline:
             "reason": str(reason or metadata.get("current_followup_reason") or metadata.get("lifecycle_reason") or ""),
             "hop": int(metadata.get("hop") or 1),
             "window_sec": int(metadata.get("window_sec") or 0),
-            "signal_id": str(getattr(signal, "signal_id", "") or ""),
             "delivery_class": str(getattr(signal, "delivery_class", "") or (event.delivery_class if event is not None else "") or ""),
         }
+        signal_id = str(getattr(signal, "signal_id", "") or "")
+        if signal_id:
+            followup["signal_id"] = signal_id
         try:
             wrote = bool(
                 self.archive_store.write_case_followup(
@@ -3056,7 +3062,6 @@ class SignalPipeline:
                 signal_context.get("stage_budget_tier_cap"),
             ),
             "stage": _text(stage or "strategy"),
-            "archive_ts": _int_value(archive_ts, event.archive_ts, time.time()),
             "chain": _text(event.chain, "ethereum"),
             "event_kind": _text(event.kind),
             "side": _text(event.side),
@@ -4105,7 +4110,82 @@ class SignalPipeline:
         }
         if audit_extras:
             payload.update(audit_extras)
-        return payload
+        return self._compact_delivery_audit_payload(payload)
+
+    def _compact_delivery_audit_payload(self, payload: dict) -> dict:
+        compact = dict(payload)
+
+        # Prefer a single canonical field for duplicated followup / notification semantics.
+        for field in {
+            "downstream_followup_audit_reason",
+            "followup_type",
+            "followup_stage",
+            "notification_stage",
+            "silent_reason_bucket",
+        }:
+            compact.pop(field, None)
+
+        empty_skip_fields = {
+            "primary_threshold_profile",
+            "relaxed_threshold_details",
+            "observe_threshold_profile",
+            "exchange_strong_observe_thresholds",
+            "lp_adjacent_noise_listener_reason",
+            "lp_adjacent_noise_listener_source_signals",
+            "shadow_candidate_reason",
+            "shadow_candidate_class",
+            "replay_source",
+            "smart_money_allowed_reason_whitelist",
+        }
+        for field in empty_skip_fields:
+            if compact.get(field) in (None, "", [], {}):
+                compact.pop(field, None)
+
+        conditional_nonempty_fields = {
+            "role_priority_tier",
+            "role_priority_label",
+            "stage_tier",
+            "delivery_policy_reason",
+            "delivery_policy_evaluated_at_stage",
+        }
+        for field in conditional_nonempty_fields:
+            if compact.get(field) == "":
+                compact.pop(field, None)
+
+        conditional_none_fields = {
+            "stage_budget_allowed",
+            "stage_budget_window_sec",
+            "stage_budget_recent_total",
+            "stage_budget_recent_same_tier",
+            "stage_budget_recent_higher_tier",
+            "stage_budget_total_cap",
+            "stage_budget_tier_cap",
+            "role_priority_rank",
+            "delivery_policy_allowed",
+            "cooldown_allowed",
+            "last_signal_ts",
+            "window_sec",
+            "anchor_usd_value",
+        }
+        for field in conditional_none_fields:
+            if compact.get(field) is None:
+                compact.pop(field, None)
+
+        if compact.get("stage_budget_reason") == "":
+            compact.pop("stage_budget_reason", None)
+        if compact.get("stage_budget_stage") == "":
+            compact.pop("stage_budget_stage", None)
+        if compact.get("stage_budget_role_tier") == "":
+            compact.pop("stage_budget_role_tier", None)
+
+        silent_reason = compact.get("silent_reason")
+        if isinstance(silent_reason, dict):
+            silent_reason = dict(silent_reason)
+            if silent_reason.get("reason_detail") == silent_reason.get("reason_code"):
+                silent_reason.pop("reason_detail", None)
+            compact["silent_reason"] = silent_reason
+
+        return compact
 
     def _observe_address_intelligence(
         self,

@@ -84,9 +84,26 @@ class ArchiveStore:
 
     def _payload(self, data: Any, archive_ts: int | None = None) -> dict:
         ts = int(archive_ts or self._now_ts())
+        serialized = self._serialize(data)
+        canonical_archive_time_bj = self._format_bj_time(ts)
+        if isinstance(serialized, dict):
+            inner_archive_ts = serialized.get("archive_ts")
+            inner_archive_time_bj = serialized.get("archive_time_bj")
+            same_archive_ts = False
+            try:
+                same_archive_ts = inner_archive_ts is not None and int(inner_archive_ts) == ts
+            except (TypeError, ValueError):
+                same_archive_ts = False
+            same_archive_time_bj = (
+                canonical_archive_time_bj is not None
+                and str(inner_archive_time_bj or "") == canonical_archive_time_bj
+            )
+            if same_archive_ts or same_archive_time_bj:
+                serialized.pop("archive_ts", None)
+                serialized.pop("archive_time_bj", None)
         payload = {
             "archive_ts": ts,
-            "data": self._serialize(data),
+            "data": serialized,
         }
         return self._enrich_time_fields(payload)
 
