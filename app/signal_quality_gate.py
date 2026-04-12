@@ -24,6 +24,7 @@ from config import (
     LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY,
     LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO,
     LP_PREALERT_MIN_CONFIRMATION,
+    LP_PREALERT_PRIMARY_TREND_MIN_MATCHES,
     LP_PREALERT_MIN_PRICING_CONFIDENCE,
     LP_PREALERT_MIN_RESERVE_SKEW,
     LP_BUY_OBSERVE_THRESHOLD_RATIO_FLOOR,
@@ -78,11 +79,15 @@ from config import (
     QUALITY_GATE_STABLE_TRANSFER_MIN_USD,
     QUALITY_GATE_TIER1_THRESHOLD,
     QUALITY_GATE_TIER2_THRESHOLD,
+    SMART_MONEY_HIGH_VALUE_GATE_MAX_QUALITY_GAP,
+    SMART_MONEY_HIGH_VALUE_GATE_MIN_USD,
+    SMART_MONEY_HIGH_VALUE_GATE_THRESHOLD_RATIO,
     SMART_MONEY_NON_EXEC_GATE_FLOOR,
     SMART_MONEY_VALUE_BONUS_MAX,
     SMART_MONEY_VALUE_THRESHOLD_RATIO,
     TOKEN_RESONANCE_MIN_ADDRESSES,
     TOKEN_RESONANCE_WINDOW_SEC,
+    MARKET_MAKER_HIGH_VALUE_GATE_THRESHOLD_RATIO,
 )
 from constants import STABLE_TOKEN_CONTRACTS
 from filter import (
@@ -191,6 +196,7 @@ class SignalQualityGate:
         self.lp_prealert_min_pricing_confidence = float(LP_PREALERT_MIN_PRICING_CONFIDENCE)
         self.lp_prealert_min_reserve_skew = float(LP_PREALERT_MIN_RESERVE_SKEW)
         self.lp_prealert_min_confirmation = float(LP_PREALERT_MIN_CONFIRMATION)
+        self.lp_prealert_primary_trend_min_matches = int(LP_PREALERT_PRIMARY_TREND_MIN_MATCHES)
         self.lp_prealert_directional_min_action_intensity = float(LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY)
         self.lp_prealert_directional_min_volume_surge_ratio = float(LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO)
         self.lp_prealert_liquidity_removal_min_action_intensity = float(LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY)
@@ -214,10 +220,14 @@ class SignalQualityGate:
         self.smart_money_value_bonus_max = float(SMART_MONEY_VALUE_BONUS_MAX)
         self.smart_money_value_threshold_ratio = float(SMART_MONEY_VALUE_THRESHOLD_RATIO)
         self.smart_money_non_exec_gate_floor = float(SMART_MONEY_NON_EXEC_GATE_FLOOR)
+        self.smart_money_high_value_gate_min_usd = float(SMART_MONEY_HIGH_VALUE_GATE_MIN_USD)
+        self.smart_money_high_value_gate_threshold_ratio = float(SMART_MONEY_HIGH_VALUE_GATE_THRESHOLD_RATIO)
+        self.smart_money_high_value_gate_max_quality_gap = float(SMART_MONEY_HIGH_VALUE_GATE_MAX_QUALITY_GAP)
         self.market_maker_observe_gate_floor = float(MARKET_MAKER_OBSERVE_GATE_FLOOR)
         self.market_maker_observe_min_confirmation = float(MARKET_MAKER_OBSERVE_MIN_CONFIRMATION)
         self.market_maker_observe_min_resonance = float(MARKET_MAKER_OBSERVE_MIN_RESONANCE)
         self.market_maker_observe_value_bonus_max = float(MARKET_MAKER_OBSERVE_VALUE_BONUS_MAX)
+        self.market_maker_high_value_gate_threshold_ratio = float(MARKET_MAKER_HIGH_VALUE_GATE_THRESHOLD_RATIO)
         self.lp_value_bonus_max = float(LP_VALUE_BONUS_MAX)
         self.exchange_directional_value_bonus_max = float(EXCHANGE_DIRECTIONAL_VALUE_BONUS_MAX)
         self.exchange_directional_value_threshold_ratio = float(EXCHANGE_DIRECTIONAL_VALUE_THRESHOLD_RATIO)
@@ -534,6 +544,7 @@ class SignalQualityGate:
             "market_maker_threshold_ratio": round(threshold_ratio, 3),
             "market_maker_quality_gap": 0.0,
             "gate_exception_passed": False,
+            "gate_relaxed_by_role": "",
             "lp_observe_threshold_ratio": round(threshold_ratio, 3),
             "lp_observe_below_min_gap": round(max(dynamic_min_usd - usd_value, 0.0), 2),
         }
@@ -607,6 +618,7 @@ class SignalQualityGate:
             if allow_lp_prealert:
                 metrics["lp_prealert_applied"] = True
                 metrics["lp_stage_decision"] = "gate_prealert_pass"
+                metrics["gate_relaxed_by_role"] = "tier2_lp_prealert"
             else:
                 metrics["lp_stage_decision"] = "gate_under_threshold"
 
@@ -639,6 +651,7 @@ class SignalQualityGate:
                 metrics["lp_fast_exception_applied"] = True
                 metrics["lp_fast_exception_reason"] = lp_exception_reason
                 metrics["lp_stage_decision"] = "gate_fast_exception_pass"
+                metrics["gate_relaxed_by_role"] = "tier2_lp_directional_exception"
             else:
                 if not lp_burst_fastlane_ready:
                     allow_liq, liq_reason = self._allow_liquidation_observe_exception(
@@ -909,6 +922,7 @@ class SignalQualityGate:
                 exception_applied = True
                 exception_reason = market_maker_exception_reason
                 metrics["gate_exception_passed"] = True
+                metrics["gate_relaxed_by_role"] = "tier1_market_maker_high_value"
                 metrics["market_maker_observe_exception_applied"] = True
                 metrics["market_maker_observe_exception_reason"] = market_maker_exception_reason
                 metrics["smart_money_non_exec_exception_applied"] = True
@@ -924,6 +938,7 @@ class SignalQualityGate:
             elif allow_smart_money_exception:
                 exception_applied = True
                 metrics["gate_exception_passed"] = True
+                metrics["gate_relaxed_by_role"] = "tier1_smart_money_high_value"
                 metrics["smart_money_non_exec_exception_applied"] = True
                 metrics["smart_money_non_exec_exception_reason"] = exception_reason
                 adjusted_quality_score = self._clamp(
@@ -1416,14 +1431,14 @@ class SignalQualityGate:
 
         min_action_intensity = self.lp_prealert_directional_min_action_intensity
         min_volume_surge_ratio = self.lp_prealert_directional_min_volume_surge_ratio
-        min_matches = 3
+        min_matches = self.lp_prealert_primary_trend_min_matches
         if intent_type == "liquidity_removal":
             min_action_intensity = self.lp_prealert_liquidity_removal_min_action_intensity
             min_volume_surge_ratio = self.lp_prealert_liquidity_removal_min_volume_surge_ratio
         elif intent_type == "liquidity_addition":
             min_action_intensity = self.lp_prealert_liquidity_addition_min_action_intensity
             min_volume_surge_ratio = self.lp_prealert_liquidity_addition_min_volume_surge_ratio
-            min_matches = 4
+            min_matches = max(self.lp_prealert_primary_trend_min_matches + 1, 3)
 
         components = {
             "pricing_confidence": bool(pricing_confidence >= self.lp_prealert_min_pricing_confidence),
@@ -1678,21 +1693,23 @@ class SignalQualityGate:
             return False, ""
         if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.58:
             return False, ""
-        if dynamic_min_usd <= 0 or usd_value < dynamic_min_usd * self.smart_money_value_threshold_ratio:
+        if usd_value < self.smart_money_high_value_gate_min_usd:
             return False, ""
-        if threshold_ratio < self.smart_money_value_threshold_ratio:
+        if dynamic_min_usd <= 0 or usd_value < dynamic_min_usd * self.smart_money_high_value_gate_threshold_ratio:
             return False, ""
-        if address_score < 72.0:
+        if threshold_ratio < self.smart_money_high_value_gate_threshold_ratio:
             return False, ""
-        if token_score < 28.0:
+        if address_score < 68.0:
             return False, ""
-        if behavior_confidence < 0.38:
+        if token_score < 22.0:
+            return False, ""
+        if behavior_confidence < 0.34:
             return False, ""
         if adjusted_quality_score < self.smart_money_non_exec_gate_floor - 0.08:
             return False, ""
-        if quality_threshold - adjusted_quality_score > 0.12:
+        if quality_threshold - adjusted_quality_score > self.smart_money_high_value_gate_max_quality_gap:
             return False, ""
-        if max(confirmation_score, resonance_score, intent_confidence) < 0.46:
+        if max(confirmation_score, resonance_score, intent_confidence) < 0.42:
             return False, ""
         if smart_money_value_bonus <= 0:
             return False, ""
@@ -1737,13 +1754,15 @@ class SignalQualityGate:
         if is_stablecoin_flow and event.kind != "swap" and not possible_internal_transfer:
             if confirmation_score < self.market_maker_observe_min_confirmation and resonance_score < self.market_maker_observe_min_resonance:
                 return False, ""
-        if dynamic_min_usd <= 0 or usd_value < dynamic_min_usd * 1.75:
+        if usd_value < self.smart_money_high_value_gate_min_usd:
             return False, ""
-        if threshold_ratio < 1.75:
+        if dynamic_min_usd <= 0 or usd_value < dynamic_min_usd * self.market_maker_high_value_gate_threshold_ratio:
             return False, ""
-        if address_score < 68.0 or token_score < 24.0:
+        if threshold_ratio < self.market_maker_high_value_gate_threshold_ratio:
             return False, ""
-        if behavior_confidence < 0.42 and behavior_type not in {
+        if address_score < 64.0 or token_score < 20.0:
+            return False, ""
+        if behavior_confidence < 0.36 and behavior_type not in {
             "inventory_management",
             "inventory_shift",
             "inventory_expansion",
@@ -1753,7 +1772,7 @@ class SignalQualityGate:
             return False, ""
         if adjusted_quality_score < self.market_maker_observe_gate_floor - 0.08:
             return False, ""
-        if quality_threshold - adjusted_quality_score > 0.14:
+        if quality_threshold - adjusted_quality_score > self.smart_money_high_value_gate_max_quality_gap:
             return False, ""
         if smart_money_value_bonus <= 0:
             return False, ""

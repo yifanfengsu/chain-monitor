@@ -551,13 +551,17 @@ class SignalPipeline:
             gate_metrics=gate_decision.metrics,
         )
         if not signal:
+            strategy_reject_reason = str(
+                event.metadata.get("strategy_reject_reason")
+                or "strategy_rejected"
+            )
             event.delivery_class = "drop"
-            event.delivery_reason = "strategy_rejected"
+            event.delivery_reason = strategy_reject_reason
             self._apply_silent_reason(
                 event=event,
                 stage="strategy",
-                reason_code="strategy_rejected",
-                reason_detail="strategy_rejected",
+                reason_code=strategy_reject_reason,
+                reason_detail=strategy_reject_reason,
                 behavior_case=behavior_case,
                 gate_metrics=gate_decision.metrics,
             )
@@ -567,7 +571,7 @@ class SignalPipeline:
                 behavior=behavior,
                 gate_metrics=gate_decision.metrics,
                 stage="strategy",
-                gate_reason="strategy_rejected",
+                gate_reason=strategy_reject_reason,
                 archive_status=archive_status,
                 archive_ts=archive_ts,
             )
@@ -2949,6 +2953,27 @@ class SignalPipeline:
                 event_metadata.get("archive_only_reason"),
                 signal_metadata.get("archive_only_reason"),
                 signal_context.get("archive_only_reason"),
+            ),
+            "strategy_reject_reason": _text(
+                event_metadata.get("strategy_reject_reason"),
+                signal_metadata.get("strategy_reject_reason"),
+                signal_context.get("strategy_reject_reason"),
+            ),
+            "observe_candidate_reason": _text(
+                event_metadata.get("observe_candidate_reason"),
+                signal_metadata.get("observe_candidate_reason"),
+                signal_context.get("observe_candidate_reason"),
+            ),
+            "observe_relaxed_by_role": _text(
+                event_metadata.get("observe_relaxed_by_role"),
+                signal_metadata.get("observe_relaxed_by_role"),
+                signal_context.get("observe_relaxed_by_role"),
+            ),
+            "gate_relaxed_by_role": _text(
+                event_metadata.get("gate_relaxed_by_role"),
+                signal_metadata.get("gate_relaxed_by_role"),
+                signal_context.get("gate_relaxed_by_role"),
+                gate_metrics.get("gate_relaxed_by_role"),
             ),
             "promotion_path": _text(
                 event_metadata.get("promotion_path"),

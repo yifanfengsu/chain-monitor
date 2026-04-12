@@ -83,6 +83,10 @@ from config import (
     ROLE_TIER_PRIMARY_T3_MIN_QUALITY,
     ROLE_TIER_PRIMARY_T3_MIN_RESONANCE,
     ROLE_TIER_PRIMARY_T3_MIN_SIZE_EXPANSION,
+    STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_CONFIRMATION,
+    STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_QUALITY,
+    STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_RESONANCE,
+    STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_USD,
     SMART_MONEY_NOTIFY_EXECUTION_ONLY,
     STRATEGY_REQUIRE_NON_NORMAL_BEHAVIOR,
 )
@@ -230,6 +234,10 @@ class StrategyEngine:
         self.min_token_score = float(min_token_score)
         self.min_behavior_confidence = float(min_behavior_confidence)
         self.require_non_normal_behavior = bool(require_non_normal_behavior)
+        self.smart_money_high_value_observe_min_usd = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_USD)
+        self.smart_money_high_value_observe_min_quality = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_QUALITY)
+        self.smart_money_high_value_observe_min_confirmation = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_CONFIRMATION)
+        self.smart_money_high_value_observe_min_resonance = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_RESONANCE)
 
     def decide(
         self,
@@ -243,10 +251,12 @@ class StrategyEngine:
         gate_metrics = gate_metrics or {}
         usd_value = float(event.usd_value or 0.0)
         if usd_value <= 0:
+            event.metadata["strategy_reject_reason"] = "strategy_observe_quality_below_min"
             return None
 
         cooldown_key = str(gate_metrics.get("cooldown_key") or "")
         if not cooldown_key:
+            event.metadata["strategy_reject_reason"] = "strategy_observe_role_not_allowed"
             return None
 
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
@@ -330,14 +340,52 @@ class StrategyEngine:
             lp_observe_exception_applied=lp_observe_exception_applied,
             lp_prealert_applied=lp_prealert_applied,
         )
+        event.metadata.update({
+            "role_priority_tier": role_priority_tier,
+            "role_priority_rank": role_priority_rank,
+            "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
+            "gate_relaxed_by_role": str(gate_metrics.get("gate_relaxed_by_role") or event.metadata.get("gate_relaxed_by_role") or ""),
+            "lp_prealert_applied": bool(lp_prealert_applied or event.metadata.get("lp_prealert_applied")),
+        })
+
+        def reject(
+            reason_code: str,
+            *,
+            observe_candidate_reason: str = "",
+            observe_relaxed_by_role: str = "",
+        ) -> None:
+            payload = {
+                "strategy_reject_reason": str(reason_code or "strategy_rejected"),
+                "observe_candidate_reason": str(
+                    observe_candidate_reason
+                    or event.metadata.get("observe_candidate_reason")
+                    or ""
+                ),
+                "observe_relaxed_by_role": str(
+                    observe_relaxed_by_role
+                    or event.metadata.get("observe_relaxed_by_role")
+                    or ""
+                ),
+                "stage_tier": "archive_only",
+                "routing_reason": "",
+                "observe_route_reason": "",
+                "primary_route_reason": "",
+                "archive_only_reason": str(reason_code or "strategy_rejected"),
+            }
+            event.metadata.update(payload)
+            event.delivery_class = "drop"
+            event.delivery_reason = str(reason_code or "strategy_rejected")
 
         if pricing_status in {"unknown", "unavailable"} and pricing_confidence < 0.35:
+            reject("strategy_observe_quality_below_min")
             return None
 
         if self.require_non_normal_behavior and behavior_type == "normal" and intent_type in {"pure_transfer", "unknown_intent"}:
+            reject("strategy_observe_behavior_below_min")
             return None
 
         if intent_type == "pool_noise":
+            reject("strategy_observe_intent_not_supported")
             return None
 
         if role_group == "exchange":
@@ -348,6 +396,7 @@ class StrategyEngine:
                 and resonance_score < 0.30
                 and quality_score < 0.82
             ):
+                reject("strategy_exchange_threshold_not_met")
                 return None
             if (
                 intent_type in EXCHANGE_SENSITIVE_INTENTS
@@ -356,6 +405,7 @@ class StrategyEngine:
                 and resonance_score < 0.24
                 and quality_score < 0.80
             ):
+                reject("strategy_exchange_threshold_not_met")
                 return None
 
         if priority_smart_money and is_real_execution:
@@ -378,6 +428,7 @@ class StrategyEngine:
             and quality_score < 0.78
             and not market_maker_observe_exception_applied
         ):
+            reject("strategy_observe_behavior_below_min")
             return None
 
         if (
@@ -387,6 +438,7 @@ class StrategyEngine:
             and not (priority_smart_money and is_real_execution)
             and not market_maker_observe_exception_applied
         ):
+            reject("strategy_observe_quality_below_min")
             return None
 
         if (
@@ -397,6 +449,7 @@ class StrategyEngine:
             and role_group != "lp_pool"
             and not market_maker_observe_exception_applied
         ):
+            reject("strategy_observe_quality_below_min")
             return None
 
         if (
@@ -406,6 +459,7 @@ class StrategyEngine:
             and quality_score < 0.8
             and role_group not in {"smart_money", "exchange"}
         ):
+            reject("strategy_observe_intent_not_supported")
             return None
 
         base_threshold = float(get_threshold(watch_meta))
@@ -428,13 +482,21 @@ class StrategyEngine:
         if not is_lp_below_min_usd_exception_candidate:
             effective_threshold = max(effective_threshold, gate_min_usd)
             if usd_value < max(effective_threshold, self.min_signal_usd):
+                reject(
+                    "strategy_lp_threshold_not_met" if role_group == "lp_pool" else (
+                        "strategy_exchange_threshold_not_met" if role_group == "exchange" else "strategy_observe_quality_below_min"
+                    ),
+                    observe_candidate_reason="lp_prealert_candidate" if lp_prealert_applied else "",
+                )
                 return None
         else:
             # gate 已经确认这是“金额略低但结构很强”的 LP observe 例外；
             # 这里不再重复用同一金额门槛拦截，但仍保留二次质量控制。
             if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.55:
+                reject("strategy_lp_threshold_not_met", observe_candidate_reason="lp_prealert_candidate")
                 return None
             if quality_score < 0.60:
+                reject("strategy_lp_threshold_not_met", observe_candidate_reason="lp_prealert_candidate")
                 return None
             if (
                 confirmation_score < LP_OBSERVE_MIN_CONFIDENCE
@@ -444,6 +506,7 @@ class StrategyEngine:
                 and lp_volume_surge_ratio < LP_VOLUME_SURGE_MIN_RATIO
                 and lp_action_intensity < 0.52
             ):
+                reject("strategy_lp_threshold_not_met", observe_candidate_reason="lp_prealert_candidate")
                 return None
 
         signal_type = self._signal_type(event, behavior_type, intent_type)
@@ -474,6 +537,12 @@ class StrategyEngine:
         if market_maker_observe_exception_applied:
             min_confidence = min(min_confidence, 0.62)
         if confidence < min_confidence:
+            reject(
+                "strategy_lp_threshold_not_met" if role_group == "lp_pool" else (
+                    "strategy_exchange_threshold_not_met" if role_group == "exchange" else "strategy_observe_confirmation_below_min"
+                ),
+                observe_candidate_reason="lp_prealert_candidate" if lp_prealert_applied else "",
+            )
             return None
 
         tier = self._tier(
@@ -1220,6 +1289,29 @@ class StrategyEngine:
                         route_context=observe_route,
                     )
                 return self._apply_delivery(event, signal, "drop", "smart_money_execution_drop")
+            if self._allow_smart_money_high_value_non_execution_observe(
+                event=event,
+                signal=signal,
+                confirmation_score=confirmation_score,
+                quality_score=quality_score,
+                resonance_score=resonance_score,
+                pricing_confidence=pricing_confidence,
+                priority_smart_money=priority_smart_money,
+                market_maker=market_maker,
+                smart_money_case_confirmed=smart_money_case_confirmed,
+                smart_money_same_actor_continuation=smart_money_same_actor_continuation,
+                same_side_smart_money_addresses=same_side_smart_money_addresses,
+                observe_route=observe_route,
+                smart_money_non_exec_exception_applied=smart_money_non_exec_exception_applied,
+                market_maker_observe_exception_applied=market_maker_observe_exception_applied,
+            ):
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "observe",
+                    "market_maker_non_execution_observe" if market_maker else "smart_money_non_execution_observe",
+                    route_context=observe_route,
+                )
             archive_reason = (
                 "market_maker_non_execution_archived"
                 if market_maker else
@@ -1265,6 +1357,61 @@ class StrategyEngine:
                 route_context=observe_route,
             )
         return self._apply_delivery(event, signal, "drop", "low_trade_value_drop")
+
+    def _allow_smart_money_high_value_non_execution_observe(
+        self,
+        *,
+        event: Event,
+        signal: Signal,
+        confirmation_score: float,
+        quality_score: float,
+        resonance_score: float,
+        pricing_confidence: float,
+        priority_smart_money: bool,
+        market_maker: bool,
+        smart_money_case_confirmed: bool,
+        smart_money_same_actor_continuation: bool,
+        same_side_smart_money_addresses: int,
+        observe_route: dict,
+        smart_money_non_exec_exception_applied: bool,
+        market_maker_observe_exception_applied: bool,
+    ) -> bool:
+        intent_type = str(event.intent_type or signal.intent_type or "")
+        if intent_type not in {
+            "pure_transfer",
+            "internal_rebalance",
+            "market_making_inventory_move",
+            "possible_buy_preparation",
+            "possible_sell_preparation",
+        }:
+            return False
+        if not (priority_smart_money or market_maker):
+            return False
+        if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
+            return False
+        if pricing_confidence < 0.72:
+            return False
+        if quality_score < self.smart_money_high_value_observe_min_quality:
+            return False
+
+        strength_hits = 0
+        if confirmation_score >= self.smart_money_high_value_observe_min_confirmation:
+            strength_hits += 1
+        if resonance_score >= self.smart_money_high_value_observe_min_resonance:
+            strength_hits += 1
+        if smart_money_case_confirmed:
+            strength_hits += 1
+        if smart_money_same_actor_continuation:
+            strength_hits += 1
+        if same_side_smart_money_addresses >= 1:
+            strength_hits += 1
+        if observe_route.get("qualified"):
+            strength_hits += 1
+        if smart_money_non_exec_exception_applied or market_maker_observe_exception_applied:
+            strength_hits += 1
+
+        minimum_hits = 2 if market_maker else 3
+        return strength_hits >= minimum_hits
 
     def _allow_lp_first_hit_directional_primary(
         self,
@@ -1610,6 +1757,9 @@ class StrategyEngine:
             "observe_route_reason": reason if delivery_class == "observe" else "",
             "primary_route_reason": reason if delivery_class == "primary" else "",
             "archive_only_reason": reason if delivery_class == "drop" else "",
+            "strategy_reject_reason": self._strategy_reject_reason(reason) if delivery_class == "drop" else "",
+            "observe_candidate_reason": reason if delivery_class == "observe" else "",
+            "observe_relaxed_by_role": self._observe_relaxed_by_role(reason, delivery_class),
             "role_priority_tier": role_priority_tier,
             "role_priority_rank": role_priority_rank,
             "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
@@ -1758,6 +1908,47 @@ class StrategyEngine:
             return "market_maker_observe"
         if reason == "smart_money_execution_observe" and delivery_class == "observe":
             return "smart_money_observe"
+        if reason == "market_maker_non_execution_observe" and delivery_class == "observe":
+            return "market_maker_observe"
+        if reason == "smart_money_non_execution_observe" and delivery_class == "observe":
+            return "smart_money_observe"
+        return ""
+
+    def _strategy_reject_reason(self, reason: str) -> str:
+        normalized = str(reason or "")
+        if normalized.startswith("lp_"):
+            return "strategy_lp_threshold_not_met"
+        if normalized.startswith("exchange_"):
+            return "strategy_exchange_threshold_not_met"
+        if normalized in {
+            "smart_money_execution_drop",
+            "real_execution_drop",
+        }:
+            return "strategy_primary_threshold_not_met"
+        if normalized in {
+            "market_maker_non_execution_archived",
+            "smart_money_non_execution_archived",
+        }:
+            return "strategy_observe_role_not_allowed"
+        if normalized in {
+            "weak_fact_drop",
+            "low_trade_value_drop",
+        }:
+            return "strategy_observe_intent_not_supported"
+        if normalized.endswith("_drop"):
+            return "strategy_observe_quality_below_min"
+        return "strategy_observe_quality_below_min"
+
+    def _observe_relaxed_by_role(self, reason: str, delivery_class: str) -> str:
+        if delivery_class != "observe":
+            return ""
+        normalized = str(reason or "")
+        if normalized in {"smart_money_non_execution_observe", "market_maker_non_execution_observe"}:
+            return "tier1_smart_money_high_value"
+        if normalized in {"lp_directional_prealert_observe", "lp_liquidity_prealert_observe"}:
+            return "tier2_lp_prealert"
+        if normalized == "lp_observe_exception_capped":
+            return "tier2_lp_directional_exception"
         return ""
 
     def _delivery_fact_type(self, event: Event, signal: Signal) -> str:

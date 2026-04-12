@@ -6,6 +6,7 @@ from config import (
     DELIVERY_ALLOW_EXCHANGE_OBSERVE,
     DELIVERY_ALLOW_LIQUIDATION_RISK_OBSERVE,
     DELIVERY_ALLOW_LP_OBSERVE,
+    DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE,
     DELIVERY_OBSERVE_STAGE_BUDGET_TIER1,
     DELIVERY_OBSERVE_STAGE_BUDGET_TIER2,
     DELIVERY_OBSERVE_STAGE_BUDGET_TIER3,
@@ -323,6 +324,21 @@ def _allow_smart_money_delivery(event, signal, delivery_class: str) -> bool:
         or ""
     )
     is_execution = _is_real_execution(event, signal)
+
+    if (
+        delivery_class == "observe"
+        and bool(DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE)
+        and delivery_reason in SMART_MONEY_LEGACY_OBSERVE_REASONS
+    ):
+        _smart_money_policy_metadata(
+            event,
+            signal,
+            allowed=True,
+            reason="market_maker_legacy_observe_allowed" if market_maker else "smart_money_legacy_observe_allowed",
+            market_maker=market_maker,
+            execution_required_but_missing=False,
+        )
+        return True
 
     if delivery_reason not in SMART_MONEY_EXECUTION_DELIVERY_REASONS:
         reason = (
