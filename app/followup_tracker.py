@@ -15,7 +15,6 @@ from config import (
     ADJACENT_WATCH_FOLLOWUP_MIN_USD,
     ADJACENT_WATCH_MAJOR_ASSET_SUPER_LARGE_USD,
     ADJACENT_WATCH_MAX_HOPS,
-    ADJACENT_WATCH_MAX_NOTIFICATIONS,
     ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
     ADJACENT_WATCH_NOTIFY_MIN_FOLLOWUP_COUNT,
     ADJACENT_WATCH_OTHER_ASSET_SUPER_LARGE_USD,
@@ -23,6 +22,7 @@ from config import (
     ADJACENT_WATCH_STABLE_SUPER_LARGE_USD,
     ADJACENT_WATCH_SUPER_LARGE_USD,
     ADJACENT_WATCH_WINDOW_SEC,
+    DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS,
     DOWNSTREAM_EARLY_WARNING_ENABLE,
     DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE,
     DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD,
@@ -111,7 +111,7 @@ class FollowupTracker:
         self.downstream_notify_allowed_stages = {
             str(item or "").strip() for item in ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES if item
         }
-        self.downstream_followup_max_notifications = max(int(ADJACENT_WATCH_MAX_NOTIFICATIONS or 1), 1)
+        self.downstream_followup_max_notifications = max(int(DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS or 1), 1)
         self.downstream_early_warning_enabled = bool(DOWNSTREAM_EARLY_WARNING_ENABLE)
         self.downstream_early_warning_min_anchor_usd = float(DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD)
         self.downstream_early_warning_max_per_case = max(int(DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE or 1), 1)
@@ -477,6 +477,11 @@ class FollowupTracker:
                 emitted.append(stage)
             metadata["emitted_notification_stages"] = emitted
             metadata["emitted_notification_count"] = len(metadata["emitted_notification_stages"])
+            metadata["downstream_notification_cap"] = int(self.downstream_followup_max_notifications)
+            metadata["downstream_notification_count"] = sum(
+                1 for emitted_stage in metadata["emitted_notification_stages"] if emitted_stage != "followup_opened"
+            )
+            metadata["downstream_notification_cap_source"] = "DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS"
             metadata["emitted_notification_history_version"] = 2
             metadata["emitted_notification_stage_source"] = "unified_case_history"
             metadata["downstream_early_warning_stage_recorded"] = "followup_opened" in metadata["emitted_notification_stages"]
@@ -605,6 +610,11 @@ class FollowupTracker:
         stage: str | None,
     ) -> tuple[bool, str]:
         metadata = self._ensure_downstream_case_metadata(behavior_case)
+        metadata["downstream_notification_cap"] = int(self.downstream_followup_max_notifications)
+        metadata["downstream_notification_count"] = sum(
+            1 for emitted_stage in list(metadata.get("emitted_notification_stages") or []) if emitted_stage != "followup_opened"
+        )
+        metadata["downstream_notification_cap_source"] = "DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS"
         if behavior_case.status in {"closed", "invalidated"}:
             return False, "downstream_window_expired"
         if behavior_case.status == "cooled":
@@ -840,7 +850,11 @@ class FollowupTracker:
         watch_meta: dict,
         now_ts: int,
     ) -> dict:
-        existing = self.match_downstream_followup_case(event, now_ts=now_ts)
+        existing, match_mode = self.match_downstream_followup_case(
+            event,
+            watch_meta=watch_meta,
+            now_ts=now_ts,
+        )
         is_anchor = self.is_downstream_followup_anchor(event, watch_meta=watch_meta)
         followup = self._classify_downstream_followup_event(event, existing)
         opened = False
@@ -879,6 +893,17 @@ class FollowupTracker:
 
         if existing is not None:
             metadata = self._ensure_downstream_case_metadata(existing)
+            resolved_match_mode = str(match_mode or "")
+            if opened and resolved_match_mode not in {
+                "downstream_new_case_anchor_mismatch",
+                "downstream_address_only_legacy_rejected",
+            }:
+                resolved_match_mode = "downstream_new_case_opened"
+            if not opened and not resolved_match_mode:
+                resolved_match_mode = "downstream_anchor_exact_match"
+            metadata["downstream_case_match_mode"] = resolved_match_mode
+            metadata["downstream_case_anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
+            metadata["downstream_case_reused"] = bool(not opened)
             downstream_event_state = self._build_downstream_event_state(
                 is_anchor=bool(is_anchor),
                 is_followup=bool(followup.get("matched")),
@@ -903,18 +928,33 @@ class FollowupTracker:
             "downstream_followup_type": str(followup.get("followup_type") or ""),
             "downstream_followup_stage": str(followup.get("stage") or (existing.stage if existing is not None else "")),
             "downstream_event_state": downstream_event_state,
+            "downstream_case_match_mode": (
+                str(metadata.get("downstream_case_match_mode") or "")
+                if existing is not None else
+                str(match_mode or "")
+            ),
+            "downstream_case_anchor_watch_address": (
+                str(metadata.get("downstream_case_anchor_watch_address") or "")
+                if existing is not None else
+                self._resolve_downstream_anchor_watch_address(event, watch_meta)
+            ),
+            "downstream_case_reused": bool(existing is not None and not opened),
         }
 
     def match_downstream_followup_case(
         self,
         event: Event,
+        watch_meta: dict | None = None,
         now_ts: int | None = None,
-    ) -> BehaviorCase | None:
+    ) -> tuple[BehaviorCase | None, str]:
         reference_ts = int(now_ts or event.ts or time.time())
         candidates = []
         case_address = self._downstream_case_address(event)
         if not case_address:
-            return None
+            return None, "downstream_case_address_missing"
+        anchor_watch_address = self._resolve_downstream_anchor_watch_address(event, watch_meta)
+        saw_legacy_address_only_candidate = False
+        saw_anchor_mismatch_candidate = False
 
         for behavior_case in list(self._cases.values()):
             if behavior_case is None or not self._is_downstream_followup_case(behavior_case):
@@ -924,15 +964,29 @@ class FollowupTracker:
             metadata = self._ensure_downstream_case_metadata(behavior_case)
             if str(metadata.get("downstream_address") or behavior_case.watch_address or "").lower() != case_address:
                 continue
+            case_anchor_watch_address = str(metadata.get("anchor_watch_address") or "").lower()
+            if not case_anchor_watch_address:
+                saw_legacy_address_only_candidate = True
+                continue
+            if not anchor_watch_address:
+                saw_legacy_address_only_candidate = True
+                continue
+            if case_anchor_watch_address != anchor_watch_address:
+                saw_anchor_mismatch_candidate = True
+                continue
             closing_until = int(metadata.get("closing_until") or metadata.get("expire_at") or 0)
             if closing_until and reference_ts > closing_until:
                 continue
             candidates.append(behavior_case)
 
         if not candidates:
-            return None
+            if saw_anchor_mismatch_candidate:
+                return None, "downstream_new_case_anchor_mismatch"
+            if saw_legacy_address_only_candidate:
+                return None, "downstream_address_only_legacy_rejected"
+            return None, "downstream_no_matching_case"
         candidates.sort(key=lambda item: int(item.last_event_ts or 0), reverse=True)
-        return candidates[0]
+        return candidates[0], "downstream_anchor_exact_match"
 
     def match_exchange_followup_case(
         self,
@@ -1208,6 +1262,9 @@ class FollowupTracker:
             "deadline_ts": int(event.ts or time.time()) + self.downstream_followup_window_sec,
             "window_sec": int(self.downstream_followup_window_sec),
             "max_notifications": int(self.downstream_followup_max_notifications),
+            "downstream_notification_cap": int(self.downstream_followup_max_notifications),
+            "downstream_notification_count": 0,
+            "downstream_notification_cap_source": "DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS",
             "hop": 1,
             "reason": "anchor_large_transfer",
             "strategy_hint": "runtime_adjacent_watch",
@@ -1239,6 +1296,9 @@ class FollowupTracker:
             "downstream_current_event_state_missing": False,
             "downstream_current_event_state_fail_closed": False,
             "downstream_current_event_state_reason": "downstream_anchor_opened",
+            "downstream_case_match_mode": "downstream_new_case_opened",
+            "downstream_case_anchor_watch_address": str(event.address or "").lower(),
+            "downstream_case_reused": False,
         }
         behavior_case.summary = self._case_summary(behavior_case, event, watch_meta)
         behavior_case.followup_steps = self._followup_steps(behavior_case, event)
@@ -1257,6 +1317,7 @@ class FollowupTracker:
         metadata = self._ensure_downstream_case_metadata(behavior_case)
         reference_ts = int(now_ts or event.ts or time.time())
         metadata["anchor_watch_address"] = str(event.address or metadata.get("anchor_watch_address") or "").lower()
+        metadata["downstream_case_anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
         metadata["anchor_label"] = str(watch_meta.get("label") or metadata.get("anchor_label") or "")
         metadata["anchor_strategy_role"] = str(watch_meta.get("strategy_role") or metadata.get("anchor_strategy_role") or event.strategy_role or "unknown")
         metadata["anchor_priority"] = int(watch_meta.get("priority", metadata.get("anchor_priority", 1)) or 1)
@@ -1966,6 +2027,12 @@ class FollowupTracker:
         metadata.setdefault("deadline_ts", metadata.get("active_until"))
         metadata.setdefault("window_sec", int(self.downstream_followup_window_sec))
         metadata.setdefault("max_notifications", int(self.downstream_followup_max_notifications))
+        metadata.setdefault("downstream_notification_cap", int(metadata.get("max_notifications") or self.downstream_followup_max_notifications))
+        metadata.setdefault(
+            "downstream_notification_count",
+            sum(1 for emitted_stage in list(metadata.get("emitted_notification_stages") or []) if emitted_stage != "followup_opened"),
+        )
+        metadata.setdefault("downstream_notification_cap_source", "DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS")
         metadata.setdefault("hop", 1)
         metadata.setdefault("reason", "anchor_large_transfer")
         metadata.setdefault("strategy_hint", "runtime_adjacent_watch")
@@ -2023,6 +2090,9 @@ class FollowupTracker:
         metadata.setdefault("last_notification_signal_id", "")
         metadata.setdefault("last_notification_stage", "")
         metadata.setdefault("emitted_notification_count", len(list(metadata.get("emitted_notification_stages") or [])))
+        metadata.setdefault("downstream_case_match_mode", "")
+        metadata.setdefault("downstream_case_anchor_watch_address", str(metadata.get("anchor_watch_address") or ""))
+        metadata.setdefault("downstream_case_reused", False)
         metadata.setdefault("lifecycle_reason", "")
         return metadata
 
@@ -2254,6 +2324,7 @@ class FollowupTracker:
         metadata["anchor_label"] = str(metadata.get("anchor_label") or watch_meta.get("anchor_label") or metadata.get("anchor_label") or "")
         metadata["downstream_label"] = str(metadata.get("downstream_label") or self._downstream_label(metadata.get("downstream_address"), None))
         metadata["last_seen_ts"] = int(event.ts or time.time())
+        metadata["downstream_case_anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
         if downstream_event_state is not None:
             self._apply_downstream_current_event_state(
                 behavior_case,
@@ -2274,6 +2345,20 @@ class FollowupTracker:
         if event_address and not self.is_downstream_followup_anchor(event, watch_meta={"strategy_role": event.strategy_role}):
             return event_address
         return self._downstream_counterparty_address(event)
+
+    def _resolve_downstream_anchor_watch_address(self, event: Event, watch_meta: dict | None = None) -> str:
+        watch_meta = watch_meta or {}
+        anchor_watch_address = str(
+            watch_meta.get("anchor_watch_address")
+            or event.metadata.get("anchor_watch_address")
+            or event.metadata.get("downstream_anchor_address")
+            or ""
+        ).lower()
+        if anchor_watch_address:
+            return anchor_watch_address
+        if self.is_downstream_followup_anchor(event, watch_meta=watch_meta):
+            return str(event.address or "").lower()
+        return ""
 
     def _build_downstream_event_state(
         self,

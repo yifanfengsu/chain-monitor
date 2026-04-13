@@ -2198,6 +2198,14 @@ class SignalPipeline:
             "emitted_stages": emitted_stages,
             "emitted_notification_stages": emitted_stages,
             "emitted_notification_count": int(metadata.get("emitted_notification_count") or len(emitted_stages)),
+            "downstream_notification_cap": int(metadata.get("downstream_notification_cap") or metadata.get("max_notifications") or 0),
+            "downstream_notification_count": int(
+                metadata.get("downstream_notification_count")
+                or sum(1 for emitted_stage in emitted_stages if emitted_stage != "followup_opened")
+            ),
+            "downstream_notification_cap_source": str(
+                metadata.get("downstream_notification_cap_source") or "DOWNSTREAM_FOLLOWUP_MAX_NOTIFICATIONS"
+            ),
             "last_notification_stage": str(metadata.get("last_notification_stage") or ""),
             "last_notification_signal_id": str(metadata.get("last_notification_signal_id") or ""),
             "downstream_early_warning_emitted": bool(metadata.get("downstream_early_warning_emitted")),
@@ -2213,6 +2221,9 @@ class SignalPipeline:
         metadata.update({
             "downstream_early_warning_stage_recorded": payload["downstream_early_warning_stage_recorded"],
             "emitted_notification_count": payload["emitted_notification_count"],
+            "downstream_notification_cap": payload["downstream_notification_cap"],
+            "downstream_notification_count": payload["downstream_notification_count"],
+            "downstream_notification_cap_source": payload["downstream_notification_cap_source"],
             "emitted_notification_history_version": payload["emitted_notification_history_version"],
             "emitted_notification_stage_source": payload["emitted_notification_stage_source"],
         })
@@ -4526,6 +4537,11 @@ class SignalPipeline:
         event.metadata["downstream_followup_next_hint"] = next_hint
         event.metadata["anchor_tx_hash"] = str(metadata.get("root_tx_hash") or behavior_case.root_tx_hash or "")
         event.metadata["anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
+        event.metadata["downstream_case_anchor_watch_address"] = str(
+            metadata.get("downstream_case_anchor_watch_address") or metadata.get("anchor_watch_address") or ""
+        )
+        event.metadata["downstream_case_match_mode"] = str(metadata.get("downstream_case_match_mode") or "")
+        event.metadata["downstream_case_reused"] = bool(metadata.get("downstream_case_reused"))
         event.metadata["anchor_label"] = anchor_label
         event.metadata["downstream_address"] = downstream_address
         event.metadata["downstream_label"] = downstream_label
@@ -5126,6 +5142,9 @@ class SignalPipeline:
             "anchor_watch_address": str(event.metadata.get("anchor_watch_address") or event.metadata.get("downstream_anchor_address") or ""),
             "anchor_label": str(event.metadata.get("anchor_label") or event.metadata.get("downstream_anchor_label") or ""),
             "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
+            "downstream_case_anchor_watch_address": str(event.metadata.get("downstream_case_anchor_watch_address") or ""),
+            "downstream_case_match_mode": str(event.metadata.get("downstream_case_match_mode") or ""),
+            "downstream_case_reused": bool(event.metadata.get("downstream_case_reused")),
             "current_event_is_anchor": bool(event.metadata.get("current_event_is_anchor")),
             "current_event_is_followup": bool(event.metadata.get("current_event_is_followup")),
             "current_followup_type": str(event.metadata.get("current_followup_type") or ""),
@@ -5158,6 +5177,9 @@ class SignalPipeline:
             "notification_stage_label": str(event.metadata.get("notification_stage_label") or ""),
             "emitted_stages": list(event.metadata.get("emitted_stages") or event.metadata.get("emitted_notification_stages") or []),
             "emitted_notification_count": int(event.metadata.get("emitted_notification_count") or 0),
+            "downstream_notification_cap": int(event.metadata.get("downstream_notification_cap") or 0),
+            "downstream_notification_count": int(event.metadata.get("downstream_notification_count") or 0),
+            "downstream_notification_cap_source": str(event.metadata.get("downstream_notification_cap_source") or ""),
             "last_notification_stage": str(event.metadata.get("last_notification_stage") or ""),
             "last_notification_signal_id": str(event.metadata.get("last_notification_signal_id") or ""),
             "emitted_notification_history_version": int(event.metadata.get("emitted_notification_history_version") or 2),
