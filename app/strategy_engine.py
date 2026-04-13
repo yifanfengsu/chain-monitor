@@ -340,6 +340,19 @@ class StrategyEngine:
             lp_observe_exception_applied=lp_observe_exception_applied,
             lp_prealert_applied=lp_prealert_applied,
         )
+        smart_money_observe_boost_candidate = self._allow_smart_money_non_exec_signal_exception(
+            event=event,
+            role_group=role_group,
+            strategy_role=strategy_role,
+            pricing_status=pricing_status,
+            pricing_confidence=pricing_confidence,
+            confirmation_score=confirmation_score,
+            resonance_score=resonance_score,
+            quality_score=quality_score,
+            relative_address_size=relative_address_size,
+            smart_money_non_exec_exception_applied=smart_money_non_exec_exception_applied,
+            market_maker_observe_exception_applied=market_maker_observe_exception_applied,
+        )
         event.metadata.update({
             "role_priority_tier": role_priority_tier,
             "role_priority_rank": role_priority_rank,
@@ -427,6 +440,7 @@ class StrategyEngine:
             and confirmation_score < 0.5
             and quality_score < 0.78
             and not market_maker_observe_exception_applied
+            and not smart_money_observe_boost_candidate
         ):
             reject("strategy_observe_behavior_below_min")
             return None
@@ -437,6 +451,7 @@ class StrategyEngine:
             and relative_address_size < 2.4
             and not (priority_smart_money and is_real_execution)
             and not market_maker_observe_exception_applied
+            and not smart_money_observe_boost_candidate
         ):
             reject("strategy_observe_quality_below_min")
             return None
@@ -448,6 +463,7 @@ class StrategyEngine:
             and not is_real_execution
             and role_group != "lp_pool"
             and not market_maker_observe_exception_applied
+            and not smart_money_observe_boost_candidate
         ):
             reject("strategy_observe_quality_below_min")
             return None
@@ -534,14 +550,25 @@ class StrategyEngine:
                 min_confidence *= 0.90
             elif intent_type in LP_INTENTS:
                 min_confidence *= 0.94
+            if lp_prealert_applied or lp_observe_exception_applied:
+                min_confidence = min(min_confidence, 0.40)
         if market_maker_observe_exception_applied:
             min_confidence = min(min_confidence, 0.62)
+        if smart_money_observe_boost_candidate:
+            min_confidence = min(min_confidence, 0.38)
         if confidence < min_confidence:
             reject(
                 "strategy_lp_threshold_not_met" if role_group == "lp_pool" else (
                     "strategy_exchange_threshold_not_met" if role_group == "exchange" else "strategy_observe_confirmation_below_min"
                 ),
-                observe_candidate_reason="lp_prealert_candidate" if lp_prealert_applied else "",
+                observe_candidate_reason=(
+                    "lp_prealert_candidate" if lp_prealert_applied else (
+                        "market_maker_non_execution_observe" if market_maker and smart_money_observe_boost_candidate else (
+                            "smart_money_non_execution_observe" if smart_money_observe_boost_candidate else ""
+                        )
+                    )
+                ),
+                observe_relaxed_by_role="tier1_smart_money_high_value" if smart_money_observe_boost_candidate else "",
             )
             return None
 
@@ -1389,7 +1416,7 @@ class StrategyEngine:
             return False
         if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
             return False
-        if pricing_confidence < 0.72:
+        if pricing_confidence < 0.62:
             return False
         if quality_score < self.smart_money_high_value_observe_min_quality:
             return False
@@ -1410,8 +1437,52 @@ class StrategyEngine:
         if smart_money_non_exec_exception_applied or market_maker_observe_exception_applied:
             strength_hits += 1
 
-        minimum_hits = 2 if market_maker else 3
+        minimum_hits = 1 if (smart_money_non_exec_exception_applied or market_maker_observe_exception_applied) else (1 if market_maker else 2)
         return strength_hits >= minimum_hits
+
+    def _allow_smart_money_non_exec_signal_exception(
+        self,
+        *,
+        event: Event,
+        role_group: str,
+        strategy_role: str,
+        pricing_status: str,
+        pricing_confidence: float,
+        confirmation_score: float,
+        resonance_score: float,
+        quality_score: float,
+        relative_address_size: float,
+        smart_money_non_exec_exception_applied: bool,
+        market_maker_observe_exception_applied: bool,
+    ) -> bool:
+        if role_group != "smart_money":
+            return False
+        if strategy_role not in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
+            return False
+        if str(event.intent_type or "") not in {
+            "pure_transfer",
+            "internal_rebalance",
+            "market_making_inventory_move",
+            "possible_buy_preparation",
+            "possible_sell_preparation",
+        }:
+            return False
+        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.62:
+            return False
+        if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
+            return False
+        if quality_score < max(self.smart_money_high_value_observe_min_quality - 0.04, 0.56):
+            return False
+        strength_hits = 0
+        if confirmation_score >= max(self.smart_money_high_value_observe_min_confirmation - 0.04, 0.30):
+            strength_hits += 1
+        if resonance_score >= max(self.smart_money_high_value_observe_min_resonance - 0.04, 0.18):
+            strength_hits += 1
+        if relative_address_size >= 1.08:
+            strength_hits += 1
+        if smart_money_non_exec_exception_applied or market_maker_observe_exception_applied:
+            strength_hits += 1
+        return strength_hits >= 1
 
     def _allow_lp_first_hit_directional_primary(
         self,
@@ -1568,11 +1639,15 @@ class StrategyEngine:
         lp_prealert_applied: bool,
         pricing_confidence: float,
     ) -> bool:
-        if not lp_trend_primary_pool or not lp_prealert_applied:
+        if not lp_prealert_applied:
             return False
         if str(event.intent_type or "") not in LP_PREALERT_INTENTS:
             return False
-        return pricing_confidence >= LP_PREALERT_MIN_PRICING_CONFIDENCE
+        if pricing_confidence < max(LP_PREALERT_MIN_PRICING_CONFIDENCE - 0.06, 0.58):
+            return False
+        if lp_trend_primary_pool:
+            return True
+        return float(event.usd_value or 0.0) >= max(LP_OBSERVE_MIN_USD * 0.10, 250.0)
 
     def _allow_lp_below_min_usd_observe_exception(
         self,

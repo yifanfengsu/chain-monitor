@@ -737,13 +737,34 @@ class SignalQualityGate:
         if self.require_non_normal_behavior and behavior_type == "normal" and not (priority_smart_money and is_real_execution):
             return GateDecision(False, "normal_behavior_blocked", 0.0, "DROP", self.score_threshold, metrics)
 
+        allow_lp_prealert_observe_gate_exception, lp_prealert_observe_gate_reason = self._allow_lp_prealert_observe_gate_exception(
+            event=event,
+            lp_prealert_applied=bool(metrics.get("lp_prealert_applied")),
+            lp_trend_primary_pool=lp_trend_primary_pool,
+            pricing_status=pricing_status,
+            pricing_confidence=pricing_confidence,
+            confirmation_score=float(event.confirmation_score or 0.0),
+            action_intensity=action_intensity,
+            reserve_skew=reserve_skew,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            adjusted_quality_score=None,
+            quality_threshold=self.score_threshold,
+        )
+
         if (
             liquidity_proxy_usd < self.min_token_liquidity_usd
             and price_impact_ratio < self.min_price_impact_ratio
             and token_volume_ratio < self.min_token_volume_ratio
             and not (priority_smart_money and is_real_execution)
+            and not allow_lp_prealert_observe_gate_exception
         ):
             return GateDecision(False, "low_liquidity_no_tradeable_impact", 0.0, "DROP", self.score_threshold, metrics)
+        if allow_lp_prealert_observe_gate_exception:
+            metrics["gate_exception_passed"] = True
+            metrics["gate_relaxed_by_role"] = "tier2_lp_prealert"
+            metrics["lp_stage_decision"] = "gate_prealert_observe_pass"
+            metrics["lp_observe_exception_applied"] = True
+            metrics["lp_observe_exception_reason"] = lp_prealert_observe_gate_reason
 
         exchange_noise_reason = self._exchange_noise_reason(
             event=event,
@@ -916,6 +937,19 @@ class SignalQualityGate:
                 quality_threshold=quality_threshold,
                 smart_money_value_bonus=smart_money_value_bonus,
             )
+            allow_lp_quality_exception, lp_quality_exception_reason = self._allow_lp_prealert_observe_gate_exception(
+                event=event,
+                lp_prealert_applied=bool(metrics.get("lp_prealert_applied")),
+                lp_trend_primary_pool=lp_trend_primary_pool,
+                pricing_status=pricing_status,
+                pricing_confidence=pricing_confidence,
+                confirmation_score=float(event.confirmation_score or 0.0),
+                action_intensity=action_intensity,
+                reserve_skew=reserve_skew,
+                pool_volume_surge_ratio=pool_volume_surge_ratio,
+                adjusted_quality_score=adjusted_quality_score,
+                quality_threshold=quality_threshold,
+            )
             metrics["smart_money_non_exec_quality_gap"] = round(max(quality_gap, 0.0), 3)
             metrics["market_maker_quality_gap"] = round(max(quality_gap, 0.0), 3)
             if allow_market_maker_exception:
@@ -943,6 +977,21 @@ class SignalQualityGate:
                 metrics["smart_money_non_exec_exception_reason"] = exception_reason
                 adjusted_quality_score = self._clamp(
                     max(adjusted_quality_score, self.smart_money_non_exec_gate_floor),
+                    0.0,
+                    1.0,
+                )
+                metrics["adjusted_quality_score"] = round(adjusted_quality_score, 3)
+                quality_tier = self._quality_tier(adjusted_quality_score, quality_threshold)
+                metrics["quality_tier"] = quality_tier
+            elif allow_lp_quality_exception:
+                exception_applied = True
+                metrics["gate_exception_passed"] = True
+                metrics["gate_relaxed_by_role"] = "tier2_lp_prealert"
+                metrics["lp_stage_decision"] = "gate_prealert_observe_pass"
+                metrics["lp_observe_exception_applied"] = True
+                metrics["lp_observe_exception_reason"] = lp_quality_exception_reason
+                adjusted_quality_score = self._clamp(
+                    max(adjusted_quality_score, max(0.58, quality_threshold - 0.10)),
                     0.0,
                     1.0,
                 )
@@ -1687,11 +1736,17 @@ class SignalQualityGate:
             return False, ""
         if strategy_role not in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
             return False, ""
-        if str(event.intent_type or "") not in {"pure_transfer", "internal_rebalance", "market_making_inventory_move"}:
+        if str(event.intent_type or "") not in {
+            "pure_transfer",
+            "internal_rebalance",
+            "market_making_inventory_move",
+            "possible_buy_preparation",
+            "possible_sell_preparation",
+        }:
             return False, ""
         if stable_non_swap_filtered or exchange_noise_sensitive and is_stablecoin_flow and event.kind != "swap":
             return False, ""
-        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.58:
+        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.52:
             return False, ""
         if usd_value < self.smart_money_high_value_gate_min_usd:
             return False, ""
@@ -1699,26 +1754,29 @@ class SignalQualityGate:
             return False, ""
         if threshold_ratio < self.smart_money_high_value_gate_threshold_ratio:
             return False, ""
-        if address_score < 68.0:
+        if address_score < 55.0:
             return False, ""
-        if token_score < 22.0:
+        if token_score < 18.0:
             return False, ""
-        if behavior_confidence < 0.34:
+        if behavior_confidence < 0.26:
             return False, ""
-        if adjusted_quality_score < self.smart_money_non_exec_gate_floor - 0.08:
+        if adjusted_quality_score < self.smart_money_non_exec_gate_floor - 0.12:
             return False, ""
         if quality_threshold - adjusted_quality_score > self.smart_money_high_value_gate_max_quality_gap:
             return False, ""
-        if max(confirmation_score, resonance_score, intent_confidence) < 0.42:
-            return False, ""
-        if smart_money_value_bonus <= 0:
+        if max(confirmation_score, resonance_score, intent_confidence) < 0.30:
             return False, ""
 
         if strategy_role == "market_maker_wallet":
-            if confirmation_score < 0.52 and resonance_score < 0.38 and intent_confidence < 0.56:
+            if confirmation_score < 0.38 and resonance_score < 0.24 and intent_confidence < 0.42:
                 return False, ""
             return True, "market_maker_non_exec_value_exception"
-        if confirmation_score >= 0.48 or resonance_score >= 0.34 or intent_confidence >= 0.56:
+        if (
+            confirmation_score >= 0.34
+            or resonance_score >= 0.22
+            or intent_confidence >= 0.40
+            or smart_money_value_bonus > 0
+        ):
             return True, "smart_money_non_exec_value_exception"
         return False, ""
 
@@ -1747,9 +1805,15 @@ class SignalQualityGate:
     ) -> tuple[bool, str]:
         if strategy_role != "market_maker_wallet":
             return False, ""
-        if str(event.intent_type or "") not in {"pure_transfer", "internal_rebalance", "market_making_inventory_move"}:
+        if str(event.intent_type or "") not in {
+            "pure_transfer",
+            "internal_rebalance",
+            "market_making_inventory_move",
+            "possible_buy_preparation",
+            "possible_sell_preparation",
+        }:
             return False, ""
-        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.58:
+        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.52:
             return False, ""
         if is_stablecoin_flow and event.kind != "swap" and not possible_internal_transfer:
             if confirmation_score < self.market_maker_observe_min_confirmation and resonance_score < self.market_maker_observe_min_resonance:
@@ -1760,9 +1824,9 @@ class SignalQualityGate:
             return False, ""
         if threshold_ratio < self.market_maker_high_value_gate_threshold_ratio:
             return False, ""
-        if address_score < 64.0 or token_score < 20.0:
+        if address_score < 52.0 or token_score < 18.0:
             return False, ""
-        if behavior_confidence < 0.36 and behavior_type not in {
+        if behavior_confidence < 0.28 and behavior_type not in {
             "inventory_management",
             "inventory_shift",
             "inventory_expansion",
@@ -1770,11 +1834,9 @@ class SignalQualityGate:
             "whale_action",
         }:
             return False, ""
-        if adjusted_quality_score < self.market_maker_observe_gate_floor - 0.08:
+        if adjusted_quality_score < self.market_maker_observe_gate_floor - 0.12:
             return False, ""
         if quality_threshold - adjusted_quality_score > self.smart_money_high_value_gate_max_quality_gap:
-            return False, ""
-        if smart_money_value_bonus <= 0:
             return False, ""
 
         strength_hits = 0
@@ -1782,7 +1844,7 @@ class SignalQualityGate:
             strength_hits += 1
         if resonance_score >= self.market_maker_observe_min_resonance:
             strength_hits += 1
-        if threshold_ratio >= max(2.35, self.smart_money_value_threshold_ratio):
+        if threshold_ratio >= max(1.15, self.smart_money_value_threshold_ratio):
             strength_hits += 1
         if possible_internal_transfer:
             strength_hits += 1
@@ -1792,14 +1854,62 @@ class SignalQualityGate:
             strength_hits += 1
         if intent_confidence >= 0.56:
             strength_hits += 1
+        if smart_money_value_bonus > 0:
+            strength_hits += 1
 
-        if strength_hits < 2:
+        if strength_hits < 1:
             return False, ""
         if behavior_type == "inventory_shift":
             return True, "market_maker_inventory_shift_exception"
         if behavior_type in {"inventory_management", "inventory_expansion", "inventory_distribution"} or possible_internal_transfer:
             return True, "market_maker_inventory_management_exception"
         return True, "market_maker_observe_value_exception"
+
+    def _allow_lp_prealert_observe_gate_exception(
+        self,
+        *,
+        event: Event,
+        lp_prealert_applied: bool,
+        lp_trend_primary_pool: bool,
+        pricing_status: str,
+        pricing_confidence: float,
+        confirmation_score: float,
+        action_intensity: float,
+        reserve_skew: float,
+        pool_volume_surge_ratio: float,
+        adjusted_quality_score: float | None,
+        quality_threshold: float,
+    ) -> tuple[bool, str]:
+        if not lp_prealert_applied:
+            return False, ""
+        if str(event.intent_type or "") not in {
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "liquidity_addition",
+            "liquidity_removal",
+        }:
+            return False, ""
+        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < max(self.lp_prealert_min_pricing_confidence - 0.08, 0.56):
+            return False, ""
+        if adjusted_quality_score is not None:
+            if adjusted_quality_score < 0.48:
+                return False, ""
+            if quality_threshold - adjusted_quality_score > 0.22:
+                return False, ""
+        strength_hits = 0
+        if lp_trend_primary_pool:
+            strength_hits += 1
+        if confirmation_score >= max(self.lp_prealert_min_confirmation - 0.08, 0.30):
+            strength_hits += 1
+        if action_intensity >= max(self.lp_prealert_directional_min_action_intensity - 0.08, 0.18):
+            strength_hits += 1
+        if reserve_skew >= max(self.lp_prealert_min_reserve_skew, 0.08):
+            strength_hits += 1
+        if pool_volume_surge_ratio >= max(self.lp_prealert_directional_min_volume_surge_ratio - 0.10, 1.10):
+            strength_hits += 1
+        if strength_hits >= 2:
+            return True, "lp_prealert_observe_gate_exception"
+        return False, ""
 
     def _quality_score(
         self,

@@ -44,6 +44,7 @@ SMART_MONEY_EXECUTION_DELIVERY_REASONS = {
     "smart_money_execution_primary",
     "smart_money_continuous_execution_primary",
 }
+SMART_MONEY_OBSERVE_DELIVERY_REASONS = SMART_MONEY_EXECUTION_DELIVERY_REASONS | SMART_MONEY_LEGACY_OBSERVE_REASONS
 EXCHANGE_STRONG_OBSERVE_ALLOWED_INTENTS = {
     "exchange_deposit_candidate",
     "exchange_withdraw_candidate",
@@ -289,7 +290,11 @@ def _smart_money_policy_metadata(
         "smart_money_delivery_policy_reason": str(reason or ""),
         "smart_money_delivery_policy_mode": "execution_whitelist_only",
         "smart_money_delivery_policy_hard_whitelist_applied": True,
-        "smart_money_allowed_reason_whitelist": sorted(SMART_MONEY_EXECUTION_DELIVERY_REASONS),
+        "smart_money_allowed_reason_whitelist": sorted(
+            SMART_MONEY_OBSERVE_DELIVERY_REASONS
+            if bool(DELIVERY_ALLOW_SMART_MONEY_TRANSFER_OBSERVE)
+            else SMART_MONEY_EXECUTION_DELIVERY_REASONS
+        ),
         "smart_money_execution_only_mode": bool(SMART_MONEY_NOTIFY_EXECUTION_ONLY),
         "market_maker_execution_only_mode": bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY),
         "smart_money_legacy_non_exec_branch_disabled": True,
@@ -334,7 +339,7 @@ def _allow_smart_money_delivery(event, signal, delivery_class: str) -> bool:
             event,
             signal,
             allowed=True,
-            reason="market_maker_legacy_observe_allowed" if market_maker else "smart_money_legacy_observe_allowed",
+            reason="market_maker_non_execution_observe_allowed" if market_maker else "smart_money_non_execution_observe_allowed",
             market_maker=market_maker,
             execution_required_but_missing=False,
         )
