@@ -1,4 +1,5 @@
 from constants import ETH_EQUIVALENT_CONTRACTS, ETH_EQUIVALENT_SYMBOLS, STABLE_TOKEN_CONTRACTS, STABLE_TOKEN_SYMBOLS
+from config import LP_STRUCTURE_MIN_USD_PER_EVENT
 from models import Event
 
 
@@ -27,6 +28,9 @@ def _display_symbol(symbol: str | None) -> str:
 
 class LPAnalyzer:
     """LP 池子专用解析与意图确认逻辑。"""
+
+    def __init__(self) -> None:
+        self.structure_min_usd_per_event = float(LP_STRUCTURE_MIN_USD_PER_EVENT)
 
     def parse_pool_candidate(
         self,
@@ -252,20 +256,26 @@ class LPAnalyzer:
         lp_context = parsed.get("lp_context") or {}
         current_intent = str(preliminary_intent.get("intent_type") or "pool_noise")
         prior_events = self._prior_events(address_snapshot, event)
-        same_intent_prior = [item for item in prior_events if item.intent_type == current_intent]
-        same_side_prior = [item for item in prior_events if str(item.side or "") == str(event.side or "")]
+        structure_eligible = self._is_structure_eligible_event(event)
+        eligible_prior = [item for item in prior_events if self._is_structure_eligible_event(item)]
+        same_intent_prior = [item for item in eligible_prior if item.intent_type == current_intent]
+        same_side_prior = [item for item in eligible_prior if str(item.side or "") == str(event.side or "")]
         same_action_prior = [
-            item for item in prior_events
+            item for item in eligible_prior
             if (item.metadata.get("raw") or {}).get("lp_context", {}).get("action") == lp_context.get("action")
         ]
+        pool_recent = list(pool_snapshot.get("recent") or [])
+        eligible_pool_recent = [item for item in pool_recent if self._is_structure_eligible_event(item)]
 
-        pool_same_direction_streak = int(pool_snapshot.get("same_direction_streak") or 0)
-        same_pool_continuity = max(
-            max(pool_same_direction_streak - 1, 0),
-            len(same_action_prior),
-            len(same_intent_prior),
-            len(same_side_prior),
-        )
+        pool_same_direction_streak = self._eligible_pool_same_direction_streak(eligible_pool_recent)
+        same_pool_continuity = 0
+        if structure_eligible:
+            same_pool_continuity = max(
+                max(pool_same_direction_streak - 1, 0),
+                len(same_action_prior),
+                len(same_intent_prior),
+                len(same_side_prior),
+            )
         multi_pool_resonance = self._multi_pool_resonance(token_snapshot, event.side, event)
         resonance_score = self._pool_resonance_score(token_snapshot, event.side)
         abnormal_ratio = self._abnormal_ratio(address_snapshot, event)
@@ -367,6 +377,23 @@ class LPAnalyzer:
             if item and item not in unique_evidence:
                 unique_evidence.append(item)
 
+        raw_same_intent_prior = [item for item in prior_events if item.intent_type == current_intent]
+        raw_same_side_prior = [item for item in prior_events if str(item.side or "") == str(event.side or "")]
+        raw_same_action_prior = [
+            item for item in prior_events
+            if (item.metadata.get("raw") or {}).get("lp_context", {}).get("action") == lp_context.get("action")
+        ]
+        continuity_filtered_by_min_usd = max(
+            len(raw_same_action_prior) - len(same_action_prior),
+            len(raw_same_intent_prior) - len(same_intent_prior),
+            len(raw_same_side_prior) - len(same_side_prior),
+            max(int(pool_snapshot.get("same_direction_streak") or 0) - pool_same_direction_streak, 0),
+        )
+        resonance_filtered_by_min_usd = max(
+            self._raw_multi_pool_resonance(token_snapshot, event.side, event) - multi_pool_resonance,
+            0,
+        )
+
         return {
             **preliminary_intent,
             "intent_type": current_intent,
@@ -385,6 +412,11 @@ class LPAnalyzer:
             "pool_window_trade_count": pool_window_trade_count,
             "pool_window_usd_total": round(pool_window_usd_total, 2),
             "market_impact_hint": self._market_impact_hint(action_intensity, reserve_skew, multi_pool_resonance),
+            "lp_structure_min_usd_per_event": round(float(self.structure_min_usd_per_event), 2),
+            "lp_continuity_eligible": bool(structure_eligible),
+            "lp_resonance_eligible": bool(structure_eligible),
+            "lp_continuity_filtered_by_min_usd": int(continuity_filtered_by_min_usd),
+            "lp_resonance_filtered_by_min_usd": int(resonance_filtered_by_min_usd),
         }
 
     def _resolve_counterparty(
@@ -460,6 +492,16 @@ class LPAnalyzer:
         return [item for item in recent if item.tx_hash != event.tx_hash]
 
     def _multi_pool_resonance(self, token_snapshot: dict, side: str | None, event: Event) -> int:
+        return self._raw_multi_pool_resonance(token_snapshot, side, event, eligible_only=True)
+
+    def _raw_multi_pool_resonance(
+        self,
+        token_snapshot: dict,
+        side: str | None,
+        event: Event,
+        *,
+        eligible_only: bool = False,
+    ) -> int:
         recent = token_snapshot.get("windows", {}).get("5m", {}).get("recent") or token_snapshot.get("recent") or []
         pool_addresses = set()
         current_pool = str(event.address or "").lower()
@@ -471,12 +513,36 @@ class LPAnalyzer:
                 continue
             if str(getattr(item, "intent_type", "") or "") not in {"pool_buy_pressure", "pool_sell_pressure"}:
                 continue
+            if eligible_only and not self._is_structure_eligible_event(item):
+                continue
             pool_address = str(getattr(item, "address", "") or "").lower()
             if pool_address:
                 pool_addresses.add(pool_address)
-        if current_pool:
+        if current_pool and (not eligible_only or self._is_structure_eligible_event(event)):
             pool_addresses.add(current_pool)
         return len(pool_addresses)
+
+    def _eligible_pool_same_direction_streak(self, events: list[Event]) -> int:
+        streak = 0
+        target_bucket = None
+        for item in reversed(events):
+            intent_type = str(item.intent_type or "")
+            if intent_type not in {"pool_buy_pressure", "pool_sell_pressure", "liquidity_addition", "liquidity_removal"}:
+                continue
+            bucket = str(item.side or "")
+            if intent_type == "liquidity_addition":
+                bucket = "liquidity_add"
+            elif intent_type == "liquidity_removal":
+                bucket = "liquidity_remove"
+            if target_bucket is None:
+                target_bucket = bucket
+            if bucket != target_bucket:
+                break
+            streak += 1
+        return streak
+
+    def _is_structure_eligible_event(self, event: Event) -> bool:
+        return abs(float(getattr(event, "usd_value", 0.0) or 0.0)) >= float(self.structure_min_usd_per_event)
 
     def _pool_resonance_score(self, token_snapshot: dict, side: str | None) -> float:
         resonance = token_snapshot.get("resonance_5m") or {}

@@ -7,6 +7,7 @@ from config import (
     ADJACENT_WATCH_RUNTIME_PRIORITY,
     ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
     LP_BURST_WINDOW_SEC,
+    LP_STRUCTURE_MIN_USD_PER_EVENT,
     LP_TREND_CONTINUATION_MIN_SCORE,
     LP_TREND_REVERSAL_MIN_SCORE,
     LP_TREND_STATE_WINDOW_SEC,
@@ -79,6 +80,7 @@ class StateManager:
         global _PRIMARY_STATE_MANAGER
         self.max_events_per_address = max_events_per_address
         self.max_events_per_token = max_events_per_token
+        self.lp_structure_min_usd_per_event = float(LP_STRUCTURE_MIN_USD_PER_EVENT)
         self.lp_trend_state_window_sec = int(LP_TREND_STATE_WINDOW_SEC)
         self.lp_trend_continuation_min_score = float(LP_TREND_CONTINUATION_MIN_SCORE)
         self.lp_trend_reversal_min_score = float(LP_TREND_REVERSAL_MIN_SCORE)
@@ -245,6 +247,7 @@ class StateManager:
         directional_events = [
             evt for evt in recent
             if self._lp_directional_bucket(evt) == direction_key
+            and self._lp_structure_eligible_event(evt)
         ]
         return self._lp_burst_summary(pool_key, direction_key, directional_events, window_sec)
 
@@ -267,6 +270,7 @@ class StateManager:
         directional_events = [
             evt for evt in recent
             if self._lp_directional_bucket(evt) in {"buy_pressure", "sell_pressure"}
+            and self._lp_structure_eligible_event(evt)
         ]
         return self._lp_trend_summary(
             pool_address=pool_key,
@@ -1496,6 +1500,9 @@ class StateManager:
                 break
             streak += 1
         return streak
+
+    def _lp_structure_eligible_event(self, event: Event) -> bool:
+        return abs(float(getattr(event, "usd_value", 0.0) or 0.0)) >= float(self.lp_structure_min_usd_per_event)
 
     def _clamp(self, value: float, low: float, high: float) -> float:
         return max(low, min(high, float(value)))

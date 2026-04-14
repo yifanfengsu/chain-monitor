@@ -1395,6 +1395,13 @@ class SignalPipeline:
             "lp_directional_cooldown_key": str(_first_value(gate_metrics.get("lp_directional_cooldown_key"), existing.get("lp_directional_cooldown_key"), "") or ""),
             "lp_directional_cooldown_sec": int(_first_value(gate_metrics.get("lp_directional_cooldown_sec"), existing.get("lp_directional_cooldown_sec"), 0) or 0),
             "lp_directional_cooldown_allowed": bool(_first_value(gate_metrics.get("lp_directional_cooldown_allowed"), existing.get("lp_directional_cooldown_allowed"), False)),
+            "lp_notify_hard_min_usd": float(_first_value(gate_metrics.get("lp_notify_hard_min_usd"), existing.get("lp_notify_hard_min_usd"), 0.0) or 0.0),
+            "lp_notify_hard_min_usd_not_met": bool(_first_value(gate_metrics.get("lp_notify_hard_min_usd_not_met"), existing.get("lp_notify_hard_min_usd_not_met"), False)),
+            "lp_structure_min_usd_per_event": float(_first_value(gate_metrics.get("lp_structure_min_usd_per_event"), existing.get("lp_structure_min_usd_per_event"), 0.0) or 0.0),
+            "lp_continuity_eligible": bool(_first_value(gate_metrics.get("lp_continuity_eligible"), existing.get("lp_continuity_eligible"), False)),
+            "lp_resonance_eligible": bool(_first_value(gate_metrics.get("lp_resonance_eligible"), existing.get("lp_resonance_eligible"), False)),
+            "lp_continuity_filtered_by_min_usd": int(_first_value(gate_metrics.get("lp_continuity_filtered_by_min_usd"), existing.get("lp_continuity_filtered_by_min_usd"), 0) or 0),
+            "lp_resonance_filtered_by_min_usd": int(_first_value(gate_metrics.get("lp_resonance_filtered_by_min_usd"), existing.get("lp_resonance_filtered_by_min_usd"), 0) or 0),
         }
         event.metadata["lp_burst"] = {
             "lp_burst_window_sec": payload["lp_burst_window_sec"],
@@ -3433,6 +3440,46 @@ class SignalPipeline:
             "lp_observe_exception_reason": _text(gate_metrics.get("lp_observe_exception_reason")),
             "lp_observe_threshold_ratio": _num(gate_metrics.get("lp_observe_threshold_ratio")),
             "lp_observe_below_min_gap": _num(gate_metrics.get("lp_observe_below_min_gap"), digits=2),
+            "lp_notify_hard_min_usd": _num(
+                gate_metrics.get("lp_notify_hard_min_usd"),
+                event_metadata.get("lp_notify_hard_min_usd"),
+                signal_metadata.get("lp_notify_hard_min_usd"),
+                signal_context.get("lp_notify_hard_min_usd"),
+                digits=2,
+            ),
+            "lp_notify_hard_min_usd_not_met": _bool_value(
+                gate_metrics.get("lp_notify_hard_min_usd_not_met"),
+                event_metadata.get("lp_notify_hard_min_usd_not_met"),
+                signal_metadata.get("lp_notify_hard_min_usd_not_met"),
+                signal_context.get("lp_notify_hard_min_usd_not_met"),
+            ),
+            "lp_structure_min_usd_per_event": _num(
+                gate_metrics.get("lp_structure_min_usd_per_event"),
+                lp_analysis.get("lp_structure_min_usd_per_event"),
+                event_metadata.get("lp_structure_min_usd_per_event"),
+                signal_metadata.get("lp_structure_min_usd_per_event"),
+                digits=2,
+            ),
+            "lp_continuity_eligible": _bool_value(
+                gate_metrics.get("lp_continuity_eligible"),
+                lp_analysis.get("lp_continuity_eligible"),
+                event_metadata.get("lp_continuity_eligible"),
+            ),
+            "lp_resonance_eligible": _bool_value(
+                gate_metrics.get("lp_resonance_eligible"),
+                lp_analysis.get("lp_resonance_eligible"),
+                event_metadata.get("lp_resonance_eligible"),
+            ),
+            "lp_continuity_filtered_by_min_usd": _int_value(
+                gate_metrics.get("lp_continuity_filtered_by_min_usd"),
+                lp_analysis.get("lp_continuity_filtered_by_min_usd"),
+                event_metadata.get("lp_continuity_filtered_by_min_usd"),
+            ),
+            "lp_resonance_filtered_by_min_usd": _int_value(
+                gate_metrics.get("lp_resonance_filtered_by_min_usd"),
+                lp_analysis.get("lp_resonance_filtered_by_min_usd"),
+                event_metadata.get("lp_resonance_filtered_by_min_usd"),
+            ),
             "lp_fast_exception_applied": _bool_value(
                 gate_metrics.get("lp_fast_exception_applied"),
                 event_metadata.get("lp_fast_exception_applied"),
@@ -6367,6 +6414,11 @@ class SignalPipeline:
                 "pool_window_usd_total": float(confirmed_intent.get("pool_window_usd_total") or 0.0),
                 "abnormal_ratio": float(confirmed_intent.get("abnormal_ratio") or 0.0),
                 "market_impact_hint": str(confirmed_intent.get("market_impact_hint") or ""),
+                "lp_structure_min_usd_per_event": float(confirmed_intent.get("lp_structure_min_usd_per_event") or 0.0),
+                "lp_continuity_eligible": bool(confirmed_intent.get("lp_continuity_eligible")),
+                "lp_resonance_eligible": bool(confirmed_intent.get("lp_resonance_eligible")),
+                "lp_continuity_filtered_by_min_usd": int(confirmed_intent.get("lp_continuity_filtered_by_min_usd") or 0),
+                "lp_resonance_filtered_by_min_usd": int(confirmed_intent.get("lp_resonance_filtered_by_min_usd") or 0),
             }
 
     def _apply_liquidation_overlay(

@@ -56,9 +56,11 @@ from config import (
     LP_OBSERVE_MIN_CONFIDENCE,
     LP_OBSERVE_MAX_USD_GAP,
     LP_OBSERVE_MIN_USD,
+    LP_NOTIFY_HARD_MIN_USD,
     LP_OBSERVE_THRESHOLD_RATIO_FLOOR,
     LP_PRIMARY_MIN_CONFIDENCE,
     LP_PRIMARY_MIN_SURGE_RATIO,
+    LP_STRUCTURE_MIN_USD_PER_EVENT,
     LP_TREND_BURST_MIN_ACTION_INTENSITY,
     LP_TREND_BURST_MIN_EVENT_COUNT,
     LP_TREND_BURST_MIN_MAX_SINGLE_USD,
@@ -168,6 +170,8 @@ class SignalQualityGate:
         self.token_resonance_window_sec = int(token_resonance_window_sec)
         self.lp_observe_threshold_ratio_floor = float(LP_OBSERVE_THRESHOLD_RATIO_FLOOR)
         self.lp_observe_max_usd_gap = float(LP_OBSERVE_MAX_USD_GAP)
+        self.lp_notify_hard_min_usd = float(LP_NOTIFY_HARD_MIN_USD)
+        self.lp_structure_min_usd_per_event = float(LP_STRUCTURE_MIN_USD_PER_EVENT)
         self.lp_fast_exception_min_same_pool_continuity = int(LP_FAST_EXCEPTION_MIN_SAME_POOL_CONTINUITY)
         self.lp_fast_exception_min_volume_surge_ratio = float(LP_FAST_EXCEPTION_MIN_VOLUME_SURGE_RATIO)
         self.lp_fast_exception_min_action_intensity = float(LP_FAST_EXCEPTION_MIN_ACTION_INTENSITY)
@@ -383,6 +387,7 @@ class SignalQualityGate:
             or (raw.get("inferred_context") or {}).get("possible_lending_protocol")
         )
         threshold_ratio = (usd_value / dynamic_min_usd) if dynamic_min_usd > 0 else 0.0
+        lp_notify_hard_min_usd_not_met = bool(lp_event and usd_value < self.lp_notify_hard_min_usd)
         metrics = {
             "usd_value": usd_value,
             "dynamic_min_usd": dynamic_min_usd,
@@ -547,6 +552,13 @@ class SignalQualityGate:
             "gate_relaxed_by_role": "",
             "lp_observe_threshold_ratio": round(threshold_ratio, 3),
             "lp_observe_below_min_gap": round(max(dynamic_min_usd - usd_value, 0.0), 2),
+            "lp_notify_hard_min_usd": float(self.lp_notify_hard_min_usd),
+            "lp_notify_hard_min_usd_not_met": bool(lp_notify_hard_min_usd_not_met),
+            "lp_structure_min_usd_per_event": float(lp_analysis.get("lp_structure_min_usd_per_event") or self.lp_structure_min_usd_per_event),
+            "lp_continuity_eligible": bool(lp_analysis.get("lp_continuity_eligible")),
+            "lp_resonance_eligible": bool(lp_analysis.get("lp_resonance_eligible")),
+            "lp_continuity_filtered_by_min_usd": int(lp_analysis.get("lp_continuity_filtered_by_min_usd") or 0),
+            "lp_resonance_filtered_by_min_usd": int(lp_analysis.get("lp_resonance_filtered_by_min_usd") or 0),
         }
         lp_burst_fastlane_ready, lp_burst_fastlane_reason = self._allow_lp_burst_fastlane_exception(
             event=event,
@@ -1003,6 +1015,16 @@ class SignalQualityGate:
         else:
             metrics["smart_money_non_exec_quality_gap"] = round(max(quality_gap, 0.0), 3)
             metrics["market_maker_quality_gap"] = round(max(quality_gap, 0.0), 3)
+
+        if lp_notify_hard_min_usd_not_met:
+            notify_hard_min_reason = "lp_notify_hard_min_usd_not_met"
+            if bool(metrics.get("lp_prealert_applied")):
+                notify_hard_min_reason = "lp_prealert_notify_hard_min_usd_not_met"
+            elif bool(metrics.get("lp_observe_exception_applied")):
+                notify_hard_min_reason = "lp_observe_gate_blocked_by_notify_hard_min"
+            metrics["lp_stage_decision"] = "gate_rejected"
+            metrics["lp_reject_reason"] = notify_hard_min_reason
+            return GateDecision(False, notify_hard_min_reason, adjusted_quality_score, "DROP", quality_threshold, metrics)
 
         return GateDecision(
             True,

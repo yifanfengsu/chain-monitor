@@ -40,6 +40,7 @@ from config import (
     LP_TREND_BURST_PRIMARY_MIN_TOTAL_USD,
     LP_TREND_BURST_PRIMARY_MIN_VOLUME_SURGE_RATIO,
     LP_OBSERVE_MIN_CONFIDENCE,
+    LP_NOTIFY_HARD_MIN_USD,
     LP_OBSERVE_MIN_USD,
     LP_PRIMARY_MIN_CONFIDENCE,
     LP_PRIMARY_MIN_SURGE_RATIO,
@@ -234,6 +235,7 @@ class StrategyEngine:
         self.min_token_score = float(min_token_score)
         self.min_behavior_confidence = float(min_behavior_confidence)
         self.require_non_normal_behavior = bool(require_non_normal_behavior)
+        self.lp_notify_hard_min_usd = float(LP_NOTIFY_HARD_MIN_USD)
         self.smart_money_high_value_observe_min_usd = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_USD)
         self.smart_money_high_value_observe_min_quality = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_QUALITY)
         self.smart_money_high_value_observe_min_confirmation = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_CONFIRMATION)
@@ -388,6 +390,14 @@ class StrategyEngine:
             event.metadata.update(payload)
             event.delivery_class = "drop"
             event.delivery_reason = str(reason_code or "strategy_rejected")
+
+        if role_group == "lp_pool" and usd_value < self.lp_notify_hard_min_usd:
+            reject(
+                "strategy_lp_notify_hard_min_usd_not_met",
+                observe_candidate_reason="lp_prealert_candidate" if lp_prealert_applied else "",
+                observe_relaxed_by_role=str(gate_metrics.get("gate_relaxed_by_role") or ""),
+            )
+            return None
 
         if pricing_status in {"unknown", "unavailable"} and pricing_confidence < 0.35:
             reject("strategy_observe_quality_below_min")
@@ -778,6 +788,8 @@ class StrategyEngine:
             or event.metadata.get("lp_burst_same_pool_continuity")
             or 0
         )
+        if role_group == "lp_pool" and float(event.usd_value or 0.0) < self.lp_notify_hard_min_usd:
+            return self._apply_delivery(event, signal, "drop", "lp_notify_hard_min_usd_not_met")
         lp_burst_volume_surge_ratio = float(
             gate_metrics.get("lp_burst_volume_surge_ratio")
             or signal.metadata.get("lp_burst_volume_surge_ratio")
