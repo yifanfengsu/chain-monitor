@@ -241,6 +241,18 @@ class StrategyEngine:
         self.smart_money_high_value_observe_min_confirmation = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_CONFIRMATION)
         self.smart_money_high_value_observe_min_resonance = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_RESONANCE)
 
+    @staticmethod
+    def _observe_exception_flags(
+        gate_metrics: dict | None,
+    ) -> tuple[bool, str, bool, str]:
+        gate_metrics = gate_metrics or {}
+        return (
+            bool(gate_metrics.get("smart_money_non_exec_exception_applied")),
+            str(gate_metrics.get("smart_money_non_exec_exception_reason") or ""),
+            bool(gate_metrics.get("market_maker_observe_exception_applied")),
+            str(gate_metrics.get("market_maker_observe_exception_reason") or ""),
+        )
+
     def decide(
         self,
         event: Event,
@@ -330,10 +342,12 @@ class StrategyEngine:
         lp_burst_event_count_threshold_used = int(gate_metrics.get("lp_burst_event_count_threshold_used") or 0)
         lp_burst_total_usd_threshold_used = float(gate_metrics.get("lp_burst_total_usd_threshold_used") or 0.0)
         lp_burst_trend_profile_name = str(gate_metrics.get("lp_burst_trend_profile_name") or "")
-        smart_money_non_exec_exception_applied = bool(gate_metrics.get("smart_money_non_exec_exception_applied"))
-        smart_money_non_exec_exception_reason = str(gate_metrics.get("smart_money_non_exec_exception_reason") or "")
-        market_maker_observe_exception_applied = bool(gate_metrics.get("market_maker_observe_exception_applied"))
-        market_maker_observe_exception_reason = str(gate_metrics.get("market_maker_observe_exception_reason") or "")
+        (
+            smart_money_non_exec_exception_applied,
+            smart_money_non_exec_exception_reason,
+            market_maker_observe_exception_applied,
+            market_maker_observe_exception_reason,
+        ) = self._observe_exception_flags(gate_metrics)
         market_maker_threshold_ratio = float(gate_metrics.get("market_maker_threshold_ratio") or 0.0)
         market_maker_quality_gap = float(gate_metrics.get("market_maker_quality_gap") or 0.0)
         is_lp_below_min_usd_exception_candidate = self._allow_lp_below_min_usd_observe_exception(
@@ -745,6 +759,7 @@ class StrategyEngine:
         lp_volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or event.metadata.get("lp_analysis", {}).get("pool_volume_surge_ratio") or 0.0)
         lp_same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or event.metadata.get("lp_analysis", {}).get("same_pool_continuity") or 0)
         lp_multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or event.metadata.get("lp_analysis", {}).get("multi_pool_resonance") or 0)
+        abnormal_ratio = float(gate_metrics.get("abnormal_ratio") or signal.abnormal_ratio or 0.0)
         lp_observe_exception_applied = bool(
             signal.metadata.get("lp_observe_exception_applied")
             or gate_metrics.get("lp_observe_exception_applied")
@@ -759,6 +774,12 @@ class StrategyEngine:
             or gate_metrics.get("lp_observe_exception_reason")
             or ""
         )
+        (
+            smart_money_non_exec_exception_applied,
+            smart_money_non_exec_exception_reason,
+            market_maker_observe_exception_applied,
+            market_maker_observe_exception_reason,
+        ) = self._observe_exception_flags(gate_metrics)
         lp_burst_fastlane_ready = bool(
             gate_metrics.get("lp_burst_fastlane_ready")
             or signal.metadata.get("lp_burst_fastlane_ready")
