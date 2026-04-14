@@ -336,13 +336,13 @@ class StrategyEngine:
         elif "lp_prealert_applied" in event.metadata:
             lp_prealert_applied_raw = event.metadata.get("lp_prealert_applied")
         lp_prealert_applied = self._normalize_bool_flag(lp_prealert_applied_raw)
-        lp_fast_exception_applied = bool(gate_metrics.get("lp_fast_exception_applied"))
+        lp_fast_exception_applied = self._normalize_bool_flag(gate_metrics.get("lp_fast_exception_applied"))
         lp_fast_exception_reason = str(gate_metrics.get("lp_fast_exception_reason") or "")
         lp_fast_exception_threshold_ratio = float(gate_metrics.get("lp_fast_exception_threshold_ratio") or 0.0)
         lp_fast_exception_usd_gap = float(gate_metrics.get("lp_fast_exception_usd_gap") or 0.0)
         lp_fast_exception_structure_score = float(gate_metrics.get("lp_fast_exception_structure_score") or 0.0)
         lp_fast_exception_gate_version = str(gate_metrics.get("lp_fast_exception_gate_version") or "")
-        lp_burst_fastlane_ready = bool(gate_metrics.get("lp_burst_fastlane_ready"))
+        lp_burst_fastlane_ready = self._normalize_bool_flag(gate_metrics.get("lp_burst_fastlane_ready"))
         lp_burst_fastlane_reason = str(gate_metrics.get("lp_burst_fastlane_reason") or "")
         lp_burst_window_sec = int(gate_metrics.get("lp_burst_window_sec") or 0)
         lp_burst_event_count_raw = gate_metrics.get("lp_burst_event_count") if "lp_burst_event_count" in gate_metrics else None
@@ -359,13 +359,13 @@ class StrategyEngine:
         lp_burst_action_intensity = float(0.0 if lp_burst_action_intensity_raw is None else lp_burst_action_intensity_raw)
         lp_burst_reserve_skew_raw = gate_metrics.get("lp_burst_reserve_skew") if "lp_burst_reserve_skew" in gate_metrics else None
         lp_burst_reserve_skew = float(0.0 if lp_burst_reserve_skew_raw is None else lp_burst_reserve_skew_raw)
-        lp_trend_sensitivity_mode = bool(gate_metrics.get("lp_trend_sensitivity_mode"))
-        lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool"))
+        lp_trend_sensitivity_mode = self._normalize_bool_flag(gate_metrics.get("lp_trend_sensitivity_mode"))
+        lp_trend_primary_pool = self._normalize_bool_flag(gate_metrics.get("lp_trend_primary_pool"))
         lp_directional_side = str(gate_metrics.get("lp_directional_side") or "")
         lp_directional_threshold_profile = str(gate_metrics.get("lp_directional_threshold_profile") or "")
         lp_fast_exception_profile_name = str(gate_metrics.get("lp_fast_exception_profile_name") or "")
-        lp_fast_exception_structure_passed = bool(gate_metrics.get("lp_fast_exception_structure_passed"))
-        lp_burst_trend_mode = bool(gate_metrics.get("lp_burst_trend_mode"))
+        lp_fast_exception_structure_passed = self._normalize_bool_flag(gate_metrics.get("lp_fast_exception_structure_passed"))
+        lp_burst_trend_mode = self._normalize_bool_flag(gate_metrics.get("lp_burst_trend_mode"))
         lp_burst_event_count_threshold_used = int(gate_metrics.get("lp_burst_event_count_threshold_used") or 0)
         lp_burst_total_usd_threshold_used = float(gate_metrics.get("lp_burst_total_usd_threshold_used") or 0.0)
         lp_burst_trend_profile_name = str(gate_metrics.get("lp_burst_trend_profile_name") or "")
@@ -844,55 +844,72 @@ class StrategyEngine:
             market_maker_observe_exception_applied,
             market_maker_observe_exception_reason,
         ) = self._observe_exception_flags(gate_metrics)
-        lp_burst_fastlane_ready = bool(
-            gate_metrics.get("lp_burst_fastlane_ready")
-            or signal.metadata.get("lp_burst_fastlane_ready")
-            or event.metadata.get("lp_burst_fastlane_ready")
-        )
-        lp_burst_event_count = int(
-            gate_metrics.get("lp_burst_event_count")
-            or signal.metadata.get("lp_burst_event_count")
-            or event.metadata.get("lp_burst_event_count")
-            or 0
-        )
-        lp_burst_total_usd = float(
-            gate_metrics.get("lp_burst_total_usd")
-            or signal.metadata.get("lp_burst_total_usd")
-            or event.metadata.get("lp_burst_total_usd")
-            or 0.0
-        )
-        lp_burst_max_single_usd = float(
-            gate_metrics.get("lp_burst_max_single_usd")
-            or signal.metadata.get("lp_burst_max_single_usd")
-            or event.metadata.get("lp_burst_max_single_usd")
-            or 0.0
-        )
-        lp_burst_same_pool_continuity = int(
-            gate_metrics.get("lp_burst_same_pool_continuity")
-            or signal.metadata.get("lp_burst_same_pool_continuity")
-            or event.metadata.get("lp_burst_same_pool_continuity")
-            or 0
-        )
+        lp_burst_fastlane_ready_raw = None
+        if gate_metrics and "lp_burst_fastlane_ready" in gate_metrics:
+            lp_burst_fastlane_ready_raw = gate_metrics.get("lp_burst_fastlane_ready")
+        elif "lp_burst_fastlane_ready" in signal.metadata:
+            lp_burst_fastlane_ready_raw = signal.metadata.get("lp_burst_fastlane_ready")
+        elif "lp_burst_fastlane_ready" in event.metadata:
+            lp_burst_fastlane_ready_raw = event.metadata.get("lp_burst_fastlane_ready")
+        lp_burst_fastlane_ready = self._normalize_bool_flag(lp_burst_fastlane_ready_raw)
+        lp_burst_event_count_raw = None
+        if gate_metrics and "lp_burst_event_count" in gate_metrics:
+            lp_burst_event_count_raw = gate_metrics.get("lp_burst_event_count")
+        elif "lp_burst_event_count" in signal.metadata:
+            lp_burst_event_count_raw = signal.metadata.get("lp_burst_event_count")
+        elif "lp_burst_event_count" in event.metadata:
+            lp_burst_event_count_raw = event.metadata.get("lp_burst_event_count")
+        lp_burst_event_count = int(0 if lp_burst_event_count_raw is None else lp_burst_event_count_raw)
+        lp_burst_total_usd_raw = None
+        if gate_metrics and "lp_burst_total_usd" in gate_metrics:
+            lp_burst_total_usd_raw = gate_metrics.get("lp_burst_total_usd")
+        elif "lp_burst_total_usd" in signal.metadata:
+            lp_burst_total_usd_raw = signal.metadata.get("lp_burst_total_usd")
+        elif "lp_burst_total_usd" in event.metadata:
+            lp_burst_total_usd_raw = event.metadata.get("lp_burst_total_usd")
+        lp_burst_total_usd = float(0.0 if lp_burst_total_usd_raw is None else lp_burst_total_usd_raw)
+        lp_burst_max_single_usd_raw = None
+        if gate_metrics and "lp_burst_max_single_usd" in gate_metrics:
+            lp_burst_max_single_usd_raw = gate_metrics.get("lp_burst_max_single_usd")
+        elif "lp_burst_max_single_usd" in signal.metadata:
+            lp_burst_max_single_usd_raw = signal.metadata.get("lp_burst_max_single_usd")
+        elif "lp_burst_max_single_usd" in event.metadata:
+            lp_burst_max_single_usd_raw = event.metadata.get("lp_burst_max_single_usd")
+        lp_burst_max_single_usd = float(0.0 if lp_burst_max_single_usd_raw is None else lp_burst_max_single_usd_raw)
+        lp_burst_same_pool_continuity_raw = None
+        if gate_metrics and "lp_burst_same_pool_continuity" in gate_metrics:
+            lp_burst_same_pool_continuity_raw = gate_metrics.get("lp_burst_same_pool_continuity")
+        elif "lp_burst_same_pool_continuity" in signal.metadata:
+            lp_burst_same_pool_continuity_raw = signal.metadata.get("lp_burst_same_pool_continuity")
+        elif "lp_burst_same_pool_continuity" in event.metadata:
+            lp_burst_same_pool_continuity_raw = event.metadata.get("lp_burst_same_pool_continuity")
+        lp_burst_same_pool_continuity = int(0 if lp_burst_same_pool_continuity_raw is None else lp_burst_same_pool_continuity_raw)
         if role_group == "lp_pool" and float(event.usd_value or 0.0) < self.lp_notify_hard_min_usd:
             return self._apply_delivery(event, signal, "drop", "lp_notify_hard_min_usd_not_met")
-        lp_burst_volume_surge_ratio = float(
-            gate_metrics.get("lp_burst_volume_surge_ratio")
-            or signal.metadata.get("lp_burst_volume_surge_ratio")
-            or event.metadata.get("lp_burst_volume_surge_ratio")
-            or 0.0
-        )
-        lp_burst_action_intensity = float(
-            gate_metrics.get("lp_burst_action_intensity")
-            or signal.metadata.get("lp_burst_action_intensity")
-            or event.metadata.get("lp_burst_action_intensity")
-            or 0.0
-        )
-        lp_burst_reserve_skew = float(
-            gate_metrics.get("lp_burst_reserve_skew")
-            or signal.metadata.get("lp_burst_reserve_skew")
-            or event.metadata.get("lp_burst_reserve_skew")
-            or 0.0
-        )
+        lp_burst_volume_surge_ratio_raw = None
+        if gate_metrics and "lp_burst_volume_surge_ratio" in gate_metrics:
+            lp_burst_volume_surge_ratio_raw = gate_metrics.get("lp_burst_volume_surge_ratio")
+        elif "lp_burst_volume_surge_ratio" in signal.metadata:
+            lp_burst_volume_surge_ratio_raw = signal.metadata.get("lp_burst_volume_surge_ratio")
+        elif "lp_burst_volume_surge_ratio" in event.metadata:
+            lp_burst_volume_surge_ratio_raw = event.metadata.get("lp_burst_volume_surge_ratio")
+        lp_burst_volume_surge_ratio = float(0.0 if lp_burst_volume_surge_ratio_raw is None else lp_burst_volume_surge_ratio_raw)
+        lp_burst_action_intensity_raw = None
+        if gate_metrics and "lp_burst_action_intensity" in gate_metrics:
+            lp_burst_action_intensity_raw = gate_metrics.get("lp_burst_action_intensity")
+        elif "lp_burst_action_intensity" in signal.metadata:
+            lp_burst_action_intensity_raw = signal.metadata.get("lp_burst_action_intensity")
+        elif "lp_burst_action_intensity" in event.metadata:
+            lp_burst_action_intensity_raw = event.metadata.get("lp_burst_action_intensity")
+        lp_burst_action_intensity = float(0.0 if lp_burst_action_intensity_raw is None else lp_burst_action_intensity_raw)
+        lp_burst_reserve_skew_raw = None
+        if gate_metrics and "lp_burst_reserve_skew" in gate_metrics:
+            lp_burst_reserve_skew_raw = gate_metrics.get("lp_burst_reserve_skew")
+        elif "lp_burst_reserve_skew" in signal.metadata:
+            lp_burst_reserve_skew_raw = signal.metadata.get("lp_burst_reserve_skew")
+        elif "lp_burst_reserve_skew" in event.metadata:
+            lp_burst_reserve_skew_raw = event.metadata.get("lp_burst_reserve_skew")
+        lp_burst_reserve_skew = float(0.0 if lp_burst_reserve_skew_raw is None else lp_burst_reserve_skew_raw)
         lp_trend_primary_pool = bool(
             gate_metrics.get("lp_trend_primary_pool")
             or signal.metadata.get("lp_trend_primary_pool")

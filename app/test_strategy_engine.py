@@ -1,3 +1,4 @@
+import sys
 import unittest
 
 from models import Event, Signal
@@ -107,6 +108,40 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         )
         self.assertIsNotNone(signal)
         return event, signal
+
+    def _capture_classify_locals(
+        self,
+        engine: StrategyEngine,
+        event: Event,
+        signal: Signal,
+        watch_meta: dict,
+        gate_metrics: dict | None = None,
+        behavior_case=None,
+    ) -> dict:
+        captured: dict = {}
+
+        def tracer(frame, event_name, arg):
+            if (
+                event_name == "return"
+                and frame.f_code.co_name == "classify_delivery"
+                and frame.f_globals.get("__name__") == "strategy_engine"
+            ):
+                captured.update(frame.f_locals)
+            return tracer
+
+        previous = sys.gettrace()
+        sys.settrace(tracer)
+        try:
+            engine.classify_delivery(
+                event,
+                signal,
+                watch_meta,
+                gate_metrics=gate_metrics,
+                behavior_case=behavior_case,
+            )
+        finally:
+            sys.settrace(previous)
+        return captured
 
     def test_classify_delivery_missing_observe_exception_keys_does_not_raise(self) -> None:
         event = self._event(
@@ -546,6 +581,127 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         self.assertEqual(0.0, signal.metadata["lp_burst_volume_surge_ratio"])
         self.assertEqual(0.0, signal.metadata["lp_burst_action_intensity"])
         self.assertEqual(0.0, signal.metadata["lp_burst_reserve_skew"])
+
+    def test_decide_lp_remaining_boolean_fields_parse_false_strings(self) -> None:
+        for raw_value in ("False", "0"):
+            _, signal = self._decide_lp(
+                {
+                    "lp_fast_exception_applied": raw_value,
+                    "lp_burst_fastlane_ready": raw_value,
+                    "lp_trend_sensitivity_mode": raw_value,
+                    "lp_trend_primary_pool": raw_value,
+                    "lp_fast_exception_structure_passed": raw_value,
+                    "lp_burst_trend_mode": raw_value,
+                }
+            )
+            self.assertFalse(signal.metadata["lp_fast_exception_applied"])
+            self.assertFalse(signal.metadata["lp_burst_fastlane_ready"])
+            self.assertFalse(signal.metadata["lp_trend_sensitivity_mode"])
+            self.assertFalse(signal.metadata["lp_trend_primary_pool"])
+            self.assertFalse(signal.metadata["lp_fast_exception_structure_passed"])
+            self.assertFalse(signal.metadata["lp_burst_trend_mode"])
+
+    def test_decide_lp_remaining_boolean_fields_parse_true_strings(self) -> None:
+        for raw_value in ("True", "1"):
+            _, signal = self._decide_lp(
+                {
+                    "lp_fast_exception_applied": raw_value,
+                    "lp_burst_fastlane_ready": raw_value,
+                    "lp_trend_sensitivity_mode": raw_value,
+                    "lp_trend_primary_pool": raw_value,
+                    "lp_fast_exception_structure_passed": raw_value,
+                    "lp_burst_trend_mode": raw_value,
+                }
+            )
+            self.assertTrue(signal.metadata["lp_fast_exception_applied"])
+            self.assertTrue(signal.metadata["lp_burst_fastlane_ready"])
+            self.assertTrue(signal.metadata["lp_trend_sensitivity_mode"])
+            self.assertTrue(signal.metadata["lp_trend_primary_pool"])
+            self.assertTrue(signal.metadata["lp_fast_exception_structure_passed"])
+            self.assertTrue(signal.metadata["lp_burst_trend_mode"])
+
+    def test_classify_delivery_lp_burst_zero_values_are_preserved(self) -> None:
+        engine = StrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+            metadata={
+                "lp_burst_fastlane_ready": True,
+                "lp_burst_event_count": 8,
+                "lp_burst_total_usd": 9000.0,
+                "lp_burst_max_single_usd": 7000.0,
+                "lp_burst_same_pool_continuity": 5,
+                "lp_burst_volume_surge_ratio": 3.2,
+                "lp_burst_action_intensity": 2.4,
+                "lp_burst_reserve_skew": 1.8,
+            },
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+            metadata={
+                "lp_burst_fastlane_ready": True,
+                "lp_burst_event_count": 7,
+                "lp_burst_total_usd": 8000.0,
+                "lp_burst_max_single_usd": 6000.0,
+                "lp_burst_same_pool_continuity": 4,
+                "lp_burst_volume_surge_ratio": 2.2,
+                "lp_burst_action_intensity": 1.4,
+                "lp_burst_reserve_skew": 0.8,
+            },
+        )
+
+        captured = self._capture_classify_locals(
+            engine,
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={
+                "lp_burst_fastlane_ready": True,
+                "lp_burst_event_count": 0,
+                "lp_burst_total_usd": 0.0,
+                "lp_burst_max_single_usd": 0.0,
+                "lp_burst_same_pool_continuity": 0,
+                "lp_burst_volume_surge_ratio": 0.0,
+                "lp_burst_action_intensity": 0.0,
+                "lp_burst_reserve_skew": 0.0,
+            },
+        )
+
+        self.assertEqual(0, captured["lp_burst_event_count"])
+        self.assertEqual(0.0, captured["lp_burst_total_usd"])
+        self.assertEqual(0.0, captured["lp_burst_max_single_usd"])
+        self.assertEqual(0, captured["lp_burst_same_pool_continuity"])
+        self.assertEqual(0.0, captured["lp_burst_volume_surge_ratio"])
+        self.assertEqual(0.0, captured["lp_burst_action_intensity"])
+        self.assertEqual(0.0, captured["lp_burst_reserve_skew"])
+
+    def test_classify_delivery_lp_burst_fastlane_ready_false_strings_do_not_override_gate_priority(self) -> None:
+        engine = StrategyEngine()
+        for raw_value in ("False", "0"):
+            event = self._event(
+                strategy_role="lp_pool",
+                intent_type="pool_buy_pressure",
+                usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+                pricing_confidence=0.9,
+                metadata={"lp_burst_fastlane_ready": True},
+            )
+            signal = self._signal(
+                intent_type="pool_buy_pressure",
+                quality_score=0.1,
+                metadata={"lp_burst_fastlane_ready": True},
+            )
+
+            captured = self._capture_classify_locals(
+                engine,
+                event,
+                signal,
+                {"strategy_role": "lp_pool"},
+                gate_metrics={"lp_burst_fastlane_ready": raw_value},
+            )
+            self.assertFalse(captured["lp_burst_fastlane_ready"])
 
 
 class RecordingLpStrategyEngine(StrategyEngine):
