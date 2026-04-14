@@ -26,6 +26,12 @@ from config import (
     DOWNSTREAM_EARLY_WARNING_ENABLE,
     DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE,
     DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ALLOWED_INTENTS,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ALLOWED_ROUTE_REASONS,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ENABLE,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_MAX_PER_WINDOW,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_MIN_USD,
+    EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_REQUIRE_ADJACENT_LABEL,
     LIQUIDATION_EXECUTION_MIN_SCORE,
     LIQUIDATION_RISK_MIN_SCORE,
     SMART_MONEY_CASE_WINDOW_SEC,
@@ -115,6 +121,22 @@ class FollowupTracker:
         self.downstream_early_warning_enabled = bool(DOWNSTREAM_EARLY_WARNING_ENABLE)
         self.downstream_early_warning_min_anchor_usd = float(DOWNSTREAM_EARLY_WARNING_MIN_ANCHOR_USD)
         self.downstream_early_warning_max_per_case = max(int(DOWNSTREAM_EARLY_WARNING_MAX_PER_CASE or 1), 1)
+        self.exchange_outflow_downstream_bridge_enabled = bool(EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ENABLE)
+        self.exchange_outflow_downstream_bridge_min_usd = float(EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_MIN_USD)
+        self.exchange_outflow_downstream_bridge_require_adjacent_label = bool(
+            EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_REQUIRE_ADJACENT_LABEL
+        )
+        self.exchange_outflow_downstream_bridge_allowed_intents = {
+            str(item or "").strip() for item in EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ALLOWED_INTENTS if item
+        }
+        self.exchange_outflow_downstream_bridge_allowed_route_reasons = {
+            str(item or "").strip() for item in EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_ALLOWED_ROUTE_REASONS if item
+        }
+        self.exchange_outflow_downstream_bridge_max_per_window = max(
+            int(EXCHANGE_OUTFLOW_DOWNSTREAM_BRIDGE_MAX_PER_WINDOW or 0),
+            0,
+        )
+        self._exchange_outflow_bridge_open_counts: dict[tuple[str, int], int] = defaultdict(int)
         self._cases: dict[str, BehaviorCase] = {}
         self._open_case_ids_by_watch: dict[str, set[str]] = defaultdict(set)
         self._open_case_ids_by_token: dict[str, set[str]] = defaultdict(set)
@@ -1299,7 +1321,15 @@ class FollowupTracker:
             "downstream_case_match_mode": "downstream_new_case_opened",
             "downstream_case_anchor_watch_address": str(event.address or "").lower(),
             "downstream_case_reused": False,
+            "downstream_bridge_candidate": bool(event.metadata.get("downstream_bridge_candidate")),
+            "downstream_bridge_applied": bool(event.metadata.get("downstream_bridge_applied")),
+            "downstream_bridge_reason": str(event.metadata.get("downstream_bridge_reason") or ""),
+            "downstream_bridge_anchor_source": str(event.metadata.get("downstream_bridge_anchor_source") or ""),
+            "downstream_bridge_counterparty_role": str(event.metadata.get("downstream_bridge_counterparty_role") or ""),
+            "downstream_bridge_counterparty_label": str(event.metadata.get("downstream_bridge_counterparty_label") or ""),
         }
+        if bool(behavior_case.metadata.get("downstream_bridge_applied")):
+            self._note_exchange_outflow_bridge_opened(str(event.address or "").lower(), int(event.ts or time.time()))
         behavior_case.summary = self._case_summary(behavior_case, event, watch_meta)
         behavior_case.followup_steps = self._followup_steps(behavior_case, event)
         self._cases[case_id] = behavior_case
@@ -2093,6 +2123,12 @@ class FollowupTracker:
         metadata.setdefault("downstream_case_match_mode", "")
         metadata.setdefault("downstream_case_anchor_watch_address", str(metadata.get("anchor_watch_address") or ""))
         metadata.setdefault("downstream_case_reused", False)
+        metadata.setdefault("downstream_bridge_candidate", False)
+        metadata.setdefault("downstream_bridge_applied", False)
+        metadata.setdefault("downstream_bridge_reason", "")
+        metadata.setdefault("downstream_bridge_anchor_source", "")
+        metadata.setdefault("downstream_bridge_counterparty_role", "")
+        metadata.setdefault("downstream_bridge_counterparty_label", "")
         metadata.setdefault("lifecycle_reason", "")
         return metadata
 
@@ -2186,6 +2222,8 @@ class FollowupTracker:
 
     def is_downstream_followup_anchor(self, event: Event, watch_meta: dict | None = None) -> bool:
         watch_meta = watch_meta or {}
+        bridge_state = self._evaluate_exchange_outflow_downstream_bridge(event, watch_meta=watch_meta)
+        self._apply_downstream_bridge_audit_fields(event, bridge_state)
         if not self.downstream_followup_enabled:
             return False
         if event.kind != "token_transfer" or str(event.side or "") != "流出":
@@ -2195,7 +2233,10 @@ class FollowupTracker:
 
         strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
         if not self._is_downstream_allowed_strategy_role(strategy_role):
-            return False
+            return bool(bridge_state.get("applied"))
+
+        if bool(bridge_state.get("applied")):
+            return True
 
         raw = event.metadata.get("raw") or {}
         downstream_address = self._downstream_counterparty_address(event)
@@ -2217,6 +2258,126 @@ class FollowupTracker:
 
         usd_value = float(event.usd_value or 0.0)
         return usd_value >= self._downstream_anchor_min_usd(event)
+
+    def _apply_downstream_bridge_audit_fields(self, event: Event, bridge_state: dict | None) -> dict:
+        bridge_state = bridge_state or {}
+        payload = {
+            "downstream_bridge_candidate": bool(bridge_state.get("candidate")),
+            "downstream_bridge_applied": bool(bridge_state.get("applied")),
+            "downstream_bridge_reason": str(bridge_state.get("reason") or ""),
+            "downstream_bridge_anchor_source": str(bridge_state.get("anchor_source") or ""),
+            "downstream_bridge_counterparty_role": str(bridge_state.get("counterparty_role") or ""),
+            "downstream_bridge_counterparty_label": str(bridge_state.get("counterparty_label") or ""),
+        }
+        event.metadata.update(payload)
+        return payload
+
+    def _evaluate_exchange_outflow_downstream_bridge(self, event: Event, watch_meta: dict | None = None) -> dict:
+        watch_meta = watch_meta or {}
+        strategy_role = str(watch_meta.get("strategy_role") or event.strategy_role or "unknown")
+        downstream_address = self._downstream_counterparty_address(event)
+        counterparty_meta = get_address_meta(downstream_address) if downstream_address else {}
+        counterparty_label = self._downstream_label(downstream_address, counterparty_meta) if downstream_address else ""
+        counterparty_role = self._exchange_outflow_bridge_counterparty_role(counterparty_meta)
+        route_reasons = {
+            str(event.metadata.get("routing_reason") or "").strip(),
+            str(event.metadata.get("observe_route_reason") or "").strip(),
+            str(event.metadata.get("primary_route_reason") or "").strip(),
+            str(event.delivery_reason or "").strip(),
+        }
+        route_reasons.discard("")
+        candidate = (
+            event.kind == "token_transfer"
+            and str(event.side or "") == "流出"
+            and is_exchange_strategy_role(strategy_role)
+            and (
+                str(event.intent_type or "") in self.exchange_outflow_downstream_bridge_allowed_intents
+                or bool(route_reasons & self.exchange_outflow_downstream_bridge_allowed_route_reasons)
+            )
+        )
+        state = {
+            "candidate": bool(candidate),
+            "applied": False,
+            "reason": "",
+            "anchor_source": "",
+            "counterparty_role": counterparty_role,
+            "counterparty_label": counterparty_label,
+        }
+        if not candidate:
+            return state
+        if not self.exchange_outflow_downstream_bridge_enabled:
+            state["reason"] = "exchange_outflow_bridge_disabled"
+            return state
+        if not downstream_address:
+            state["reason"] = "exchange_outflow_bridge_counterparty_missing"
+            return state
+        if bool((event.metadata.get("raw") or {}).get("possible_internal_transfer")):
+            state["reason"] = "exchange_outflow_bridge_internal_transfer_rejected"
+            return state
+        if float(event.usd_value or 0.0) < self.exchange_outflow_downstream_bridge_min_usd:
+            state["reason"] = "exchange_outflow_bridge_below_min_usd"
+            return state
+        if self._exchange_outflow_bridge_reject_exchange_counterparty(counterparty_meta):
+            state["reason"] = "exchange_outflow_bridge_counterparty_exchange_rejected"
+            return state
+        if self._is_protocol_or_router(counterparty_meta) or str(counterparty_meta.get("strategy_role") or "") == "lp_pool":
+            state["reason"] = "exchange_outflow_bridge_counterparty_not_trackable"
+            return state
+        if (
+            self.exchange_outflow_downstream_bridge_require_adjacent_label
+            and not self._is_exchange_outflow_bridge_adjacent_candidate(counterparty_meta, counterparty_label)
+        ):
+            state["reason"] = "exchange_outflow_bridge_adjacent_label_required"
+            return state
+        if self.exchange_outflow_downstream_bridge_max_per_window > 0:
+            key = (
+                str(event.address or "").lower(),
+                int(int(event.ts or time.time()) / max(self.downstream_followup_window_sec, 1)),
+            )
+            if self._exchange_outflow_bridge_open_counts.get(key, 0) >= self.exchange_outflow_downstream_bridge_max_per_window:
+                state["reason"] = "exchange_outflow_bridge_window_cap_reached"
+                return state
+        state["applied"] = True
+        state["reason"] = "exchange_outflow_bridge_allowed"
+        state["anchor_source"] = "exchange_outflow_bridge"
+        return state
+
+    def _exchange_outflow_bridge_reject_exchange_counterparty(self, counterparty_meta: dict) -> bool:
+        strategy_role = str(counterparty_meta.get("strategy_role") or "")
+        semantic_role = str(counterparty_meta.get("semantic_role") or "")
+        role = str(counterparty_meta.get("role") or "")
+        if strategy_role in {"exchange_hot_wallet", "exchange_cold_wallet", "exchange_deposit_wallet"}:
+            return True
+        if semantic_role == "exchange_hot_wallet" or role == "exchange":
+            return True
+        return False
+
+    def _is_exchange_outflow_bridge_adjacent_candidate(self, counterparty_meta: dict, counterparty_label: str) -> bool:
+        values = {
+            str(counterparty_meta.get("strategy_role") or "").lower(),
+            str(counterparty_meta.get("semantic_role") or "").lower(),
+            str(counterparty_meta.get("suspected_role") or "").lower(),
+            str(counterparty_meta.get("label") or "").lower(),
+            str(counterparty_meta.get("display") or "").lower(),
+            str(counterparty_label or "").lower(),
+        }
+        return any("exchange_adjacent" in value for value in values if value)
+
+    def _exchange_outflow_bridge_counterparty_role(self, counterparty_meta: dict) -> str:
+        for field in ("semantic_role", "strategy_role", "role", "suspected_role"):
+            value = str(counterparty_meta.get(field) or "").strip()
+            if value and value != "unknown":
+                return value
+        return "unknown"
+
+    def _note_exchange_outflow_bridge_opened(self, anchor_watch_address: str, ts: int) -> None:
+        if self.exchange_outflow_downstream_bridge_max_per_window <= 0:
+            return
+        key = (
+            str(anchor_watch_address or "").lower(),
+            int(int(ts or time.time()) / max(self.downstream_followup_window_sec, 1)),
+        )
+        self._exchange_outflow_bridge_open_counts[key] = int(self._exchange_outflow_bridge_open_counts.get(key, 0) or 0) + 1
 
     def _classify_downstream_followup_event(
         self,

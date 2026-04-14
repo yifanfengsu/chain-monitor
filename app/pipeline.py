@@ -1966,6 +1966,15 @@ class SignalPipeline:
             "stage": str(stage or getattr(behavior_case, "stage", "") or ""),
             "status": str(status or getattr(behavior_case, "status", "") or ""),
             "anchor_watch_address": str(metadata.get("anchor_watch_address") or ""),
+            "downstream_bridge_candidate": bool(metadata.get("downstream_bridge_candidate")),
+            "downstream_bridge_applied": bool(metadata.get("downstream_bridge_applied")),
+            "downstream_bridge_reason": str(metadata.get("downstream_bridge_reason") or ""),
+            "downstream_bridge_anchor_source": str(metadata.get("downstream_bridge_anchor_source") or ""),
+            "downstream_bridge_counterparty_role": str(metadata.get("downstream_bridge_counterparty_role") or ""),
+            "downstream_bridge_counterparty_label": str(metadata.get("downstream_bridge_counterparty_label") or ""),
+            "downstream_case_anchor_watch_address": str(metadata.get("downstream_case_anchor_watch_address") or ""),
+            "downstream_case_match_mode": str(metadata.get("downstream_case_match_mode") or ""),
+            "downstream_case_reused": metadata.get("downstream_case_reused"),
             "anchor_label": str(metadata.get("anchor_label") or ""),
             "downstream_address": str(metadata.get("downstream_address") or getattr(behavior_case, "watch_address", "") or ""),
             "downstream_label": str(metadata.get("downstream_label") or ""),
@@ -1989,6 +1998,9 @@ class SignalPipeline:
             "reason": str(reason or metadata.get("current_followup_reason") or metadata.get("lifecycle_reason") or ""),
             "hop": int(metadata.get("hop") or 1),
             "window_sec": int(metadata.get("window_sec") or 0),
+            "downstream_notification_cap": metadata.get("downstream_notification_cap"),
+            "downstream_notification_count": metadata.get("downstream_notification_count"),
+            "downstream_notification_cap_source": str(metadata.get("downstream_notification_cap_source") or ""),
             "delivery_class": str(getattr(signal, "delivery_class", "") or (event.delivery_class if event is not None else "") or ""),
         }
         signal_id = str(getattr(signal, "signal_id", "") or "")
@@ -2803,6 +2815,17 @@ class SignalPipeline:
         watch_meta = event_metadata.get("watch_meta") or {}
         pricing = event_metadata.get("pricing") or {}
         liquidation = event_metadata.get("liquidation") or {}
+        behavior_case = None
+        if self.followup_tracker is not None:
+            signal_case_id = str(getattr(signal, "case_id", "") or "")
+            event_case_id = str(event_metadata.get("downstream_case_id") or event.case_id or "")
+            for candidate_case_id in (signal_case_id, event_case_id):
+                if not candidate_case_id:
+                    continue
+                behavior_case = self.followup_tracker.get_case(candidate_case_id)
+                if behavior_case is not None:
+                    break
+        case_metadata = getattr(behavior_case, "metadata", {}) or {}
 
         def _first_value(*values):
             for value in values:
@@ -3853,11 +3876,65 @@ class SignalPipeline:
             "anchor_label": _text(event_metadata.get("anchor_label"), event_metadata.get("downstream_anchor_label")),
             "downstream_address": _text(event_metadata.get("downstream_address")),
             "downstream_label": _text(event_metadata.get("downstream_label"), event_metadata.get("downstream_object_label")),
+            "downstream_bridge_candidate": _bool_value(
+                event_metadata.get("downstream_bridge_candidate"),
+                signal_metadata.get("downstream_bridge_candidate"),
+                signal_context.get("downstream_bridge_candidate"),
+                case_metadata.get("downstream_bridge_candidate"),
+            ),
+            "downstream_bridge_applied": _bool_value(
+                event_metadata.get("downstream_bridge_applied"),
+                signal_metadata.get("downstream_bridge_applied"),
+                signal_context.get("downstream_bridge_applied"),
+                case_metadata.get("downstream_bridge_applied"),
+            ),
+            "downstream_bridge_reason": _text(
+                event_metadata.get("downstream_bridge_reason"),
+                signal_metadata.get("downstream_bridge_reason"),
+                signal_context.get("downstream_bridge_reason"),
+                case_metadata.get("downstream_bridge_reason"),
+            ),
+            "downstream_bridge_anchor_source": _text(
+                event_metadata.get("downstream_bridge_anchor_source"),
+                signal_metadata.get("downstream_bridge_anchor_source"),
+                signal_context.get("downstream_bridge_anchor_source"),
+                case_metadata.get("downstream_bridge_anchor_source"),
+            ),
+            "downstream_bridge_counterparty_role": _text(
+                event_metadata.get("downstream_bridge_counterparty_role"),
+                signal_metadata.get("downstream_bridge_counterparty_role"),
+                signal_context.get("downstream_bridge_counterparty_role"),
+                case_metadata.get("downstream_bridge_counterparty_role"),
+            ),
+            "downstream_bridge_counterparty_label": _text(
+                event_metadata.get("downstream_bridge_counterparty_label"),
+                signal_metadata.get("downstream_bridge_counterparty_label"),
+                signal_context.get("downstream_bridge_counterparty_label"),
+                case_metadata.get("downstream_bridge_counterparty_label"),
+            ),
             "downstream_case_id": _text(
                 event_metadata.get("downstream_case_id"),
                 signal_metadata.get("downstream_case_id"),
                 signal_context.get("downstream_case_id"),
                 watch_meta.get("downstream_case_id"),
+            ),
+            "downstream_case_anchor_watch_address": _text(
+                event_metadata.get("downstream_case_anchor_watch_address"),
+                signal_metadata.get("downstream_case_anchor_watch_address"),
+                signal_context.get("downstream_case_anchor_watch_address"),
+                case_metadata.get("downstream_case_anchor_watch_address"),
+            ),
+            "downstream_case_match_mode": _text(
+                event_metadata.get("downstream_case_match_mode"),
+                signal_metadata.get("downstream_case_match_mode"),
+                signal_context.get("downstream_case_match_mode"),
+                case_metadata.get("downstream_case_match_mode"),
+            ),
+            "downstream_case_reused": _bool_or_none(
+                event_metadata.get("downstream_case_reused"),
+                signal_metadata.get("downstream_case_reused"),
+                signal_context.get("downstream_case_reused"),
+                case_metadata.get("downstream_case_reused"),
             ),
             "downstream_followup_type": _text(event_metadata.get("downstream_followup_type")),
             "downstream_followup_label": _text(event_metadata.get("downstream_followup_label")),
@@ -4042,6 +4119,24 @@ class SignalPipeline:
                 event_metadata.get("emitted_notification_count"),
                 signal_metadata.get("emitted_notification_count"),
                 signal_context.get("emitted_notification_count"),
+            ),
+            "downstream_notification_cap": _int_value(
+                event_metadata.get("downstream_notification_cap"),
+                signal_metadata.get("downstream_notification_cap"),
+                signal_context.get("downstream_notification_cap"),
+                case_metadata.get("downstream_notification_cap"),
+            ),
+            "downstream_notification_count": _int_value(
+                event_metadata.get("downstream_notification_count"),
+                signal_metadata.get("downstream_notification_count"),
+                signal_context.get("downstream_notification_count"),
+                case_metadata.get("downstream_notification_count"),
+            ),
+            "downstream_notification_cap_source": _text(
+                event_metadata.get("downstream_notification_cap_source"),
+                signal_metadata.get("downstream_notification_cap_source"),
+                signal_context.get("downstream_notification_cap_source"),
+                case_metadata.get("downstream_notification_cap_source"),
             ),
             "last_notification_stage": _text(
                 event_metadata.get("last_notification_stage"),
@@ -4537,6 +4632,12 @@ class SignalPipeline:
         event.metadata["downstream_followup_next_hint"] = next_hint
         event.metadata["anchor_tx_hash"] = str(metadata.get("root_tx_hash") or behavior_case.root_tx_hash or "")
         event.metadata["anchor_watch_address"] = str(metadata.get("anchor_watch_address") or "")
+        event.metadata["downstream_bridge_candidate"] = bool(metadata.get("downstream_bridge_candidate"))
+        event.metadata["downstream_bridge_applied"] = bool(metadata.get("downstream_bridge_applied"))
+        event.metadata["downstream_bridge_reason"] = str(metadata.get("downstream_bridge_reason") or "")
+        event.metadata["downstream_bridge_anchor_source"] = str(metadata.get("downstream_bridge_anchor_source") or "")
+        event.metadata["downstream_bridge_counterparty_role"] = str(metadata.get("downstream_bridge_counterparty_role") or "")
+        event.metadata["downstream_bridge_counterparty_label"] = str(metadata.get("downstream_bridge_counterparty_label") or "")
         event.metadata["downstream_case_anchor_watch_address"] = str(
             metadata.get("downstream_case_anchor_watch_address") or metadata.get("anchor_watch_address") or ""
         )
@@ -5142,6 +5243,12 @@ class SignalPipeline:
             "anchor_watch_address": str(event.metadata.get("anchor_watch_address") or event.metadata.get("downstream_anchor_address") or ""),
             "anchor_label": str(event.metadata.get("anchor_label") or event.metadata.get("downstream_anchor_label") or ""),
             "anchor_tx_hash": str(event.metadata.get("anchor_tx_hash") or ""),
+            "downstream_bridge_candidate": bool(event.metadata.get("downstream_bridge_candidate")),
+            "downstream_bridge_applied": bool(event.metadata.get("downstream_bridge_applied")),
+            "downstream_bridge_reason": str(event.metadata.get("downstream_bridge_reason") or ""),
+            "downstream_bridge_anchor_source": str(event.metadata.get("downstream_bridge_anchor_source") or ""),
+            "downstream_bridge_counterparty_role": str(event.metadata.get("downstream_bridge_counterparty_role") or ""),
+            "downstream_bridge_counterparty_label": str(event.metadata.get("downstream_bridge_counterparty_label") or ""),
             "downstream_case_anchor_watch_address": str(event.metadata.get("downstream_case_anchor_watch_address") or ""),
             "downstream_case_match_mode": str(event.metadata.get("downstream_case_match_mode") or ""),
             "downstream_case_reused": bool(event.metadata.get("downstream_case_reused")),
