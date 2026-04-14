@@ -125,6 +125,7 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(("observe", "market_maker_non_execution_observe"), (delivery_class, delivery_reason))
+        # `market_maker_wallet` 归在 smart_money role group，下游消费的 legacy 关停标记是共享 key。
         self.assertTrue(signal.metadata.get("smart_money_legacy_non_exec_branch_disabled"))
 
     def test_unrelated_exchange_branch_behavior_is_unchanged(self) -> None:
@@ -146,6 +147,105 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(("drop", "exchange_transfer_drop"), (delivery_class, delivery_reason))
+
+    def test_abnormal_ratio_keeps_gate_metrics_zero_without_falling_back(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+            abnormal_ratio=9.0,
+        )
+
+        engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={"abnormal_ratio": 0.0},
+        )
+
+        self.assertEqual([0.0, 0.0], engine.captured_abnormal_ratios)
+
+    def test_abnormal_ratio_falls_back_to_signal_only_when_gate_metrics_missing(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+            abnormal_ratio=7.5,
+        )
+
+        engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={},
+        )
+
+        self.assertEqual([7.5, 7.5], engine.captured_abnormal_ratios)
+
+    def test_observe_exception_flags_preserve_false_values(self) -> None:
+        parsed = self.engine._observe_exception_flags(
+            {
+                "smart_money_non_exec_exception_applied": False,
+                "market_maker_observe_exception_applied": False,
+            }
+        )
+
+        self.assertEqual((False, "", False, ""), parsed)
+
+    def test_observe_exception_flags_parse_false_strings(self) -> None:
+        parsed_false = self.engine._observe_exception_flags(
+            {
+                "smart_money_non_exec_exception_applied": "False",
+                "market_maker_observe_exception_applied": "0",
+            }
+        )
+
+        self.assertEqual((False, "", False, ""), parsed_false)
+
+    def test_observe_exception_flags_parse_true_strings(self) -> None:
+        parsed_true = self.engine._observe_exception_flags(
+            {
+                "smart_money_non_exec_exception_applied": "True",
+                "market_maker_observe_exception_applied": "1",
+            }
+        )
+
+        self.assertEqual((True, "", True, ""), parsed_true)
+
+
+class RecordingLpStrategyEngine(StrategyEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.captured_abnormal_ratios: list[float] = []
+
+    def _allow_lp_prealert_observe(self, *args, **kwargs) -> bool:
+        return False
+
+    def _allow_lp_burst_directional_primary(self, *args, **kwargs) -> bool:
+        return False
+
+    def _allow_lp_first_hit_directional_primary_direct(self, *args, **kwargs) -> bool:
+        self.captured_abnormal_ratios.append(float(kwargs["abnormal_ratio"]))
+        return False
+
+    def _allow_lp_first_hit_directional_primary(self, *args, **kwargs) -> bool:
+        self.captured_abnormal_ratios.append(float(kwargs["abnormal_ratio"]))
+        return False
+
+    def _allow_lp_directional_early_observe(self, *args, **kwargs) -> bool:
+        return False
 
 
 if __name__ == "__main__":

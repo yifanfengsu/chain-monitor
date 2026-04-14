@@ -242,14 +242,30 @@ class StrategyEngine:
         self.smart_money_high_value_observe_min_resonance = float(STRATEGY_SMART_MONEY_HIGH_VALUE_OBSERVE_MIN_RESONANCE)
 
     @staticmethod
+    def _normalize_bool_flag(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return bool(value)
+
+    @staticmethod
     def _observe_exception_flags(
         gate_metrics: dict | None,
     ) -> tuple[bool, str, bool, str]:
         gate_metrics = gate_metrics or {}
         return (
-            bool(gate_metrics.get("smart_money_non_exec_exception_applied")),
+            StrategyEngine._normalize_bool_flag(gate_metrics.get("smart_money_non_exec_exception_applied")),
             str(gate_metrics.get("smart_money_non_exec_exception_reason") or ""),
-            bool(gate_metrics.get("market_maker_observe_exception_applied")),
+            StrategyEngine._normalize_bool_flag(gate_metrics.get("market_maker_observe_exception_applied")),
             str(gate_metrics.get("market_maker_observe_exception_reason") or ""),
         )
 
@@ -759,7 +775,14 @@ class StrategyEngine:
         lp_volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or event.metadata.get("lp_analysis", {}).get("pool_volume_surge_ratio") or 0.0)
         lp_same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or event.metadata.get("lp_analysis", {}).get("same_pool_continuity") or 0)
         lp_multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or event.metadata.get("lp_analysis", {}).get("multi_pool_resonance") or 0)
-        abnormal_ratio = float(gate_metrics.get("abnormal_ratio") or signal.abnormal_ratio or 0.0)
+        lp_action_intensity = float(gate_metrics.get("lp_action_intensity") or event.metadata.get("lp_analysis", {}).get("action_intensity") or 0.0)
+        lp_reserve_skew = float(gate_metrics.get("lp_reserve_skew") or event.metadata.get("lp_analysis", {}).get("reserve_skew") or 0.0)
+        abnormal_ratio_raw = None
+        if gate_metrics and "abnormal_ratio" in gate_metrics:
+            abnormal_ratio_raw = gate_metrics.get("abnormal_ratio")
+        elif hasattr(signal, "abnormal_ratio"):
+            abnormal_ratio_raw = signal.abnormal_ratio
+        abnormal_ratio = float(0.0 if abnormal_ratio_raw is None else abnormal_ratio_raw)
         lp_observe_exception_applied = bool(
             signal.metadata.get("lp_observe_exception_applied")
             or gate_metrics.get("lp_observe_exception_applied")
