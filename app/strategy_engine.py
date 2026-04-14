@@ -910,11 +910,14 @@ class StrategyEngine:
         elif "lp_burst_reserve_skew" in event.metadata:
             lp_burst_reserve_skew_raw = event.metadata.get("lp_burst_reserve_skew")
         lp_burst_reserve_skew = float(0.0 if lp_burst_reserve_skew_raw is None else lp_burst_reserve_skew_raw)
-        lp_trend_primary_pool = bool(
-            gate_metrics.get("lp_trend_primary_pool")
-            or signal.metadata.get("lp_trend_primary_pool")
-            or event.metadata.get("lp_trend_primary_pool")
-        )
+        lp_trend_primary_pool_raw = None
+        if gate_metrics and "lp_trend_primary_pool" in gate_metrics:
+            lp_trend_primary_pool_raw = gate_metrics.get("lp_trend_primary_pool")
+        elif "lp_trend_primary_pool" in signal.metadata:
+            lp_trend_primary_pool_raw = signal.metadata.get("lp_trend_primary_pool")
+        elif "lp_trend_primary_pool" in event.metadata:
+            lp_trend_primary_pool_raw = event.metadata.get("lp_trend_primary_pool")
+        lp_trend_primary_pool = self._normalize_bool_flag(lp_trend_primary_pool_raw)
         liquidation_stage = str(event.metadata.get("liquidation_stage") or signal.metadata.get("liquidation_stage") or "none")
         liquidation_score = float(event.metadata.get("liquidation_score") or signal.metadata.get("liquidation_score") or 0.0)
         liquidation_protocols = list(event.metadata.get("liquidation_protocols") or signal.metadata.get("liquidation_protocols") or [])

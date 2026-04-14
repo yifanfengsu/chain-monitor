@@ -703,6 +703,58 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
             )
             self.assertFalse(captured["lp_burst_fastlane_ready"])
 
+    def test_classify_delivery_lp_trend_primary_pool_false_strings_keep_gate_priority(self) -> None:
+        engine = StrategyEngine()
+        false_cases = [
+            ("False", True, True),
+            ("0", False, False),
+        ]
+        for raw_value, signal_value, event_value in false_cases:
+            event = self._event(
+                strategy_role="lp_pool",
+                intent_type="pool_buy_pressure",
+                usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+                pricing_confidence=0.9,
+                metadata={"lp_trend_primary_pool": event_value},
+            )
+            signal = self._signal(
+                intent_type="pool_buy_pressure",
+                quality_score=0.1,
+                metadata={"lp_trend_primary_pool": signal_value},
+            )
+
+            captured = self._capture_classify_locals(
+                engine,
+                event,
+                signal,
+                {"strategy_role": "lp_pool"},
+                gate_metrics={"lp_trend_primary_pool": raw_value},
+            )
+            self.assertFalse(captured["lp_trend_primary_pool"])
+
+    def test_classify_delivery_lp_trend_primary_pool_true_strings_parse_true(self) -> None:
+        engine = StrategyEngine()
+        for raw_value in ("True", "1"):
+            event = self._event(
+                strategy_role="lp_pool",
+                intent_type="pool_buy_pressure",
+                usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+                pricing_confidence=0.9,
+            )
+            signal = self._signal(
+                intent_type="pool_buy_pressure",
+                quality_score=0.1,
+            )
+
+            captured = self._capture_classify_locals(
+                engine,
+                event,
+                signal,
+                {"strategy_role": "lp_pool"},
+                gate_metrics={"lp_trend_primary_pool": raw_value},
+            )
+            self.assertTrue(captured["lp_trend_primary_pool"])
+
 
 class RecordingLpStrategyEngine(StrategyEngine):
     def __init__(self) -> None:
