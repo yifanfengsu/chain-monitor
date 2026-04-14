@@ -712,6 +712,7 @@ class StrategyEngine:
         market_maker = is_market_maker_strategy_role(strategy_role)
         intent_type = str(event.intent_type or signal.intent_type or "unknown_intent")
         confirmation_score = float(event.confirmation_score or signal.confirmation_score or 0.0)
+        pricing_confidence = float(getattr(event, "pricing_confidence", 0.0) or 0.0)
         resonance_score = float(gate_metrics.get("resonance_score") or signal.metadata.get("resonance_score") or 0.0)
         raw_quality_score = float(signal.metadata.get("raw_quality_score") or gate_metrics.get("quality_score") or signal.quality_score or 0.0)
         quality_score = float(signal.quality_score or gate_metrics.get("adjusted_quality_score") or gate_metrics.get("quality_score") or 0.0)

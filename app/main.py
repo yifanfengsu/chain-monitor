@@ -2,6 +2,7 @@ import asyncio
 from collections import defaultdict
 from pathlib import Path
 import time
+import traceback
 
 from address_intelligence import AddressIntelligenceManager
 from analyzer import BehaviorAnalyzer
@@ -313,6 +314,7 @@ async def handle_tx(raw_item):
 
     except Exception as e:
         print("处理交易出错:", e)
+        traceback.print_exc()
 
 
 async def main():
