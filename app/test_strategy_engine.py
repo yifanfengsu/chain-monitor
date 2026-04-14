@@ -217,6 +217,75 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
 
         self.assertEqual([0.0, 0.0], engine.captured_lp_action_intensity)
 
+    def test_lp_pool_volume_surge_ratio_keeps_gate_metrics_zero_without_falling_back(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+            metadata={"lp_analysis": {"pool_volume_surge_ratio": 8.0}},
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+        )
+
+        engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={"lp_pool_volume_surge_ratio": 0.0},
+        )
+
+        self.assertEqual([0.0, 0.0], engine.captured_lp_volume_surge_ratio)
+
+    def test_lp_same_pool_continuity_keeps_gate_metrics_zero_without_falling_back(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+            metadata={"lp_analysis": {"same_pool_continuity": 6}},
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+        )
+
+        engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={"lp_same_pool_continuity": 0},
+        )
+
+        self.assertEqual([0, 0], engine.captured_lp_same_pool_continuity)
+
+    def test_lp_multi_pool_resonance_keeps_gate_metrics_zero_without_falling_back(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="pool_buy_pressure",
+            usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+            pricing_confidence=0.9,
+            metadata={"lp_analysis": {"multi_pool_resonance": 7}},
+        )
+        signal = self._signal(
+            intent_type="pool_buy_pressure",
+            quality_score=0.1,
+        )
+
+        engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "lp_pool"},
+            gate_metrics={"lp_multi_pool_resonance": 0},
+        )
+
+        self.assertEqual([0.0, 0.0], engine.captured_route_continuation_scores[-2:])
+
     def test_lp_reserve_skew_keeps_gate_metrics_zero_without_falling_back(self) -> None:
         engine = RecordingLpStrategyEngine()
         event = self._event(
@@ -296,6 +365,52 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
 
         self.assertEqual([True, True], engine.captured_lp_observe_exception_applied[-2:])
 
+    def test_lp_prealert_applied_parses_false_strings(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        for raw_value in ("False", "0"):
+            event = self._event(
+                strategy_role="lp_pool",
+                intent_type="pool_buy_pressure",
+                usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+                pricing_confidence=0.9,
+            )
+            signal = self._signal(
+                intent_type="pool_buy_pressure",
+                quality_score=0.1,
+            )
+
+            engine.classify_delivery(
+                event,
+                signal,
+                {"strategy_role": "lp_pool"},
+                gate_metrics={"lp_prealert_applied": raw_value},
+            )
+
+        self.assertEqual([False, False], engine.captured_lp_prealert_applied[-2:])
+
+    def test_lp_prealert_applied_parses_true_strings(self) -> None:
+        engine = RecordingLpStrategyEngine()
+        for raw_value in ("True", "1"):
+            event = self._event(
+                strategy_role="lp_pool",
+                intent_type="pool_buy_pressure",
+                usd_value=max(engine.lp_notify_hard_min_usd + 1.0, 100_000.0),
+                pricing_confidence=0.9,
+            )
+            signal = self._signal(
+                intent_type="pool_buy_pressure",
+                quality_score=0.1,
+            )
+
+            engine.classify_delivery(
+                event,
+                signal,
+                {"strategy_role": "lp_pool"},
+                gate_metrics={"lp_prealert_applied": raw_value},
+            )
+
+        self.assertEqual([True, True], engine.captured_lp_prealert_applied[-2:])
+
     def test_observe_exception_flags_preserve_false_values(self) -> None:
         parsed = self.engine._observe_exception_flags(
             {
@@ -331,11 +446,16 @@ class RecordingLpStrategyEngine(StrategyEngine):
     def __init__(self) -> None:
         super().__init__()
         self.captured_abnormal_ratios: list[float] = []
+        self.captured_lp_volume_surge_ratio: list[float] = []
+        self.captured_lp_same_pool_continuity: list[int] = []
         self.captured_lp_action_intensity: list[float] = []
         self.captured_lp_reserve_skew: list[float] = []
         self.captured_lp_observe_exception_applied: list[bool] = []
+        self.captured_lp_prealert_applied: list[bool] = []
+        self.captured_route_continuation_scores: list[float] = []
 
     def _allow_lp_prealert_observe(self, *args, **kwargs) -> bool:
+        self.captured_lp_prealert_applied.append(bool(kwargs["lp_prealert_applied"]))
         return False
 
     def _allow_lp_burst_directional_primary(self, *args, **kwargs) -> bool:
@@ -343,12 +463,16 @@ class RecordingLpStrategyEngine(StrategyEngine):
 
     def _allow_lp_first_hit_directional_primary_direct(self, *args, **kwargs) -> bool:
         self.captured_abnormal_ratios.append(float(kwargs["abnormal_ratio"]))
+        self.captured_lp_volume_surge_ratio.append(float(kwargs["lp_volume_surge_ratio"]))
+        self.captured_lp_same_pool_continuity.append(int(kwargs["lp_same_pool_continuity"]))
         self.captured_lp_action_intensity.append(float(kwargs["lp_action_intensity"]))
         self.captured_lp_reserve_skew.append(float(kwargs["lp_reserve_skew"]))
         return False
 
     def _allow_lp_first_hit_directional_primary(self, *args, **kwargs) -> bool:
         self.captured_abnormal_ratios.append(float(kwargs["abnormal_ratio"]))
+        self.captured_lp_volume_surge_ratio.append(float(kwargs["lp_volume_surge_ratio"]))
+        self.captured_lp_same_pool_continuity.append(int(kwargs["lp_same_pool_continuity"]))
         self.captured_lp_action_intensity.append(float(kwargs["lp_action_intensity"]))
         self.captured_lp_reserve_skew.append(float(kwargs["lp_reserve_skew"]))
         self.captured_lp_observe_exception_applied.append(bool(kwargs["lp_observe_exception_applied"]))
@@ -356,6 +480,10 @@ class RecordingLpStrategyEngine(StrategyEngine):
 
     def _allow_lp_directional_early_observe(self, *args, **kwargs) -> bool:
         return False
+
+    def _role_stage_route(self, **kwargs):
+        self.captured_route_continuation_scores.append(float(kwargs["continuation_score"]))
+        return super()._role_stage_route(**kwargs)
 
 
 if __name__ == "__main__":

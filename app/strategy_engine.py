@@ -772,9 +772,24 @@ class StrategyEngine:
         size_expansion_ratio = 1.0
         explicit_candidate_intent = False
         context_supported = False
-        lp_volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or event.metadata.get("lp_analysis", {}).get("pool_volume_surge_ratio") or 0.0)
-        lp_same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or event.metadata.get("lp_analysis", {}).get("same_pool_continuity") or 0)
-        lp_multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or event.metadata.get("lp_analysis", {}).get("multi_pool_resonance") or 0)
+        lp_volume_surge_ratio_raw = None
+        if gate_metrics and "lp_pool_volume_surge_ratio" in gate_metrics:
+            lp_volume_surge_ratio_raw = gate_metrics.get("lp_pool_volume_surge_ratio")
+        else:
+            lp_volume_surge_ratio_raw = event.metadata.get("lp_analysis", {}).get("pool_volume_surge_ratio")
+        lp_volume_surge_ratio = float(0.0 if lp_volume_surge_ratio_raw is None else lp_volume_surge_ratio_raw)
+        lp_same_pool_continuity_raw = None
+        if gate_metrics and "lp_same_pool_continuity" in gate_metrics:
+            lp_same_pool_continuity_raw = gate_metrics.get("lp_same_pool_continuity")
+        else:
+            lp_same_pool_continuity_raw = event.metadata.get("lp_analysis", {}).get("same_pool_continuity")
+        lp_same_pool_continuity = int(0 if lp_same_pool_continuity_raw is None else lp_same_pool_continuity_raw)
+        lp_multi_pool_resonance_raw = None
+        if gate_metrics and "lp_multi_pool_resonance" in gate_metrics:
+            lp_multi_pool_resonance_raw = gate_metrics.get("lp_multi_pool_resonance")
+        else:
+            lp_multi_pool_resonance_raw = event.metadata.get("lp_analysis", {}).get("multi_pool_resonance")
+        lp_multi_pool_resonance = int(0 if lp_multi_pool_resonance_raw is None else lp_multi_pool_resonance_raw)
         lp_action_intensity_raw = None
         if gate_metrics and "lp_action_intensity" in gate_metrics:
             lp_action_intensity_raw = gate_metrics.get("lp_action_intensity")
@@ -799,11 +814,14 @@ class StrategyEngine:
         elif gate_metrics and "lp_observe_exception_applied" in gate_metrics:
             lp_observe_exception_applied_raw = gate_metrics.get("lp_observe_exception_applied")
         lp_observe_exception_applied = self._normalize_bool_flag(lp_observe_exception_applied_raw)
-        lp_prealert_applied = bool(
-            signal.metadata.get("lp_prealert_applied")
-            or gate_metrics.get("lp_prealert_applied")
-            or event.metadata.get("lp_prealert_applied")
-        )
+        lp_prealert_applied_raw = None
+        if "lp_prealert_applied" in signal.metadata:
+            lp_prealert_applied_raw = signal.metadata.get("lp_prealert_applied")
+        elif gate_metrics and "lp_prealert_applied" in gate_metrics:
+            lp_prealert_applied_raw = gate_metrics.get("lp_prealert_applied")
+        elif "lp_prealert_applied" in event.metadata:
+            lp_prealert_applied_raw = event.metadata.get("lp_prealert_applied")
+        lp_prealert_applied = self._normalize_bool_flag(lp_prealert_applied_raw)
         lp_observe_exception_reason = str(
             signal.metadata.get("lp_observe_exception_reason")
             or gate_metrics.get("lp_observe_exception_reason")
