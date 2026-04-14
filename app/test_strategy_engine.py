@@ -60,6 +60,54 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
             metadata=metadata or {},
         )
 
+    def _decide_lp(
+        self,
+        gate_metrics: dict | None = None,
+        *,
+        event_metadata: dict | None = None,
+    ) -> tuple[Event, Signal]:
+        engine = StrategyEngine(
+            min_confidence=0.0,
+            min_address_score=0.0,
+            min_token_score=0.0,
+            min_behavior_confidence=0.0,
+            require_non_normal_behavior=False,
+        )
+        event = Event(
+            tx_hash="0xdecide",
+            address="0xlp",
+            token="PEPE",
+            amount=1.0,
+            side="买入",
+            usd_value=150_000.0,
+            kind="swap",
+            ts=1,
+            intent_type="pool_buy_pressure",
+            intent_stage="confirmed",
+            confirmation_score=0.9,
+            pricing_status="priced",
+            pricing_confidence=0.9,
+            strategy_role="lp_pool",
+            metadata=event_metadata or {},
+        )
+        signal = engine.decide(
+            event,
+            {"strategy_role": "lp_pool"},
+            {"behavior_type": "aggressive", "confidence": 1.0, "reason": "unit_test"},
+            {"score": 1.0, "grade": "A"},
+            {"score": 1.0, "grade": "A"},
+            gate_metrics={
+                "cooldown_key": "lp:test",
+                "quality_score": 0.9,
+                "adjusted_quality_score": 0.9,
+                "resonance_score": 0.9,
+                "dynamic_min_usd": 0.0,
+                **(gate_metrics or {}),
+            },
+        )
+        self.assertIsNotNone(signal)
+        return event, signal
+
     def test_classify_delivery_missing_observe_exception_keys_does_not_raise(self) -> None:
         event = self._event(
             strategy_role="smart_money_wallet",
@@ -440,6 +488,64 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual((True, "", True, ""), parsed_true)
+
+    def test_decide_lp_observe_exception_applied_parses_false_strings(self) -> None:
+        for raw_value in ("False", "0"):
+            _, signal = self._decide_lp(
+                {
+                    "lp_observe_exception_applied": raw_value,
+                }
+            )
+            self.assertFalse(signal.metadata["lp_observe_exception_applied"])
+
+    def test_decide_lp_observe_exception_applied_parses_true_strings(self) -> None:
+        for raw_value in ("True", "1"):
+            _, signal = self._decide_lp(
+                {
+                    "lp_observe_exception_applied": raw_value,
+                }
+            )
+            self.assertTrue(signal.metadata["lp_observe_exception_applied"])
+
+    def test_decide_lp_prealert_candidate_parses_false_strings(self) -> None:
+        for raw_value in ("False", "0"):
+            _, signal = self._decide_lp(
+                {
+                    "lp_prealert_candidate": raw_value,
+                }
+            )
+            self.assertFalse(signal.metadata["lp_prealert_candidate"])
+
+    def test_decide_lp_prealert_applied_parses_false_strings_and_metadata_writeback(self) -> None:
+        for raw_value in ("False", "0"):
+            event, signal = self._decide_lp(
+                {
+                    "lp_prealert_applied": raw_value,
+                }
+            )
+            self.assertFalse(signal.metadata["lp_prealert_applied"])
+            self.assertFalse(event.metadata["lp_prealert_applied"])
+
+    def test_decide_lp_burst_zero_values_are_preserved(self) -> None:
+        _, signal = self._decide_lp(
+            {
+                "lp_burst_event_count": 0,
+                "lp_burst_total_usd": 0.0,
+                "lp_burst_max_single_usd": 0.0,
+                "lp_burst_same_pool_continuity": 0,
+                "lp_burst_volume_surge_ratio": 0.0,
+                "lp_burst_action_intensity": 0.0,
+                "lp_burst_reserve_skew": 0.0,
+            }
+        )
+
+        self.assertEqual(0, signal.metadata["lp_burst_event_count"])
+        self.assertEqual(0.0, signal.metadata["lp_burst_total_usd"])
+        self.assertEqual(0.0, signal.metadata["lp_burst_max_single_usd"])
+        self.assertEqual(0, signal.metadata["lp_burst_same_pool_continuity"])
+        self.assertEqual(0.0, signal.metadata["lp_burst_volume_surge_ratio"])
+        self.assertEqual(0.0, signal.metadata["lp_burst_action_intensity"])
+        self.assertEqual(0.0, signal.metadata["lp_burst_reserve_skew"])
 
 
 class RecordingLpStrategyEngine(StrategyEngine):

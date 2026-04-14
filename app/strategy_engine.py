@@ -320,18 +320,22 @@ class StrategyEngine:
         lp_action_intensity = float(gate_metrics.get("lp_action_intensity") or 0.0)
         lp_reserve_skew = float(gate_metrics.get("lp_reserve_skew") or 0.0)
         abnormal_ratio = float(gate_metrics.get("abnormal_ratio") or 0.0)
-        lp_observe_exception_applied = bool(gate_metrics.get("lp_observe_exception_applied"))
+        lp_observe_exception_applied = self._normalize_bool_flag(gate_metrics.get("lp_observe_exception_applied"))
         lp_observe_exception_reason = str(gate_metrics.get("lp_observe_exception_reason") or "")
         lp_observe_threshold_ratio = float(gate_metrics.get("lp_observe_threshold_ratio") or 0.0)
         lp_observe_below_min_gap = float(gate_metrics.get("lp_observe_below_min_gap") or 0.0)
-        lp_prealert_candidate = bool(
-            gate_metrics.get("lp_prealert_candidate")
-            or event.metadata.get("lp_prealert_candidate")
-        )
-        lp_prealert_applied = bool(
-            gate_metrics.get("lp_prealert_applied")
-            or event.metadata.get("lp_prealert_applied")
-        )
+        lp_prealert_candidate_raw = None
+        if "lp_prealert_candidate" in gate_metrics:
+            lp_prealert_candidate_raw = gate_metrics.get("lp_prealert_candidate")
+        elif "lp_prealert_candidate" in event.metadata:
+            lp_prealert_candidate_raw = event.metadata.get("lp_prealert_candidate")
+        lp_prealert_candidate = self._normalize_bool_flag(lp_prealert_candidate_raw)
+        lp_prealert_applied_raw = None
+        if "lp_prealert_applied" in gate_metrics:
+            lp_prealert_applied_raw = gate_metrics.get("lp_prealert_applied")
+        elif "lp_prealert_applied" in event.metadata:
+            lp_prealert_applied_raw = event.metadata.get("lp_prealert_applied")
+        lp_prealert_applied = self._normalize_bool_flag(lp_prealert_applied_raw)
         lp_fast_exception_applied = bool(gate_metrics.get("lp_fast_exception_applied"))
         lp_fast_exception_reason = str(gate_metrics.get("lp_fast_exception_reason") or "")
         lp_fast_exception_threshold_ratio = float(gate_metrics.get("lp_fast_exception_threshold_ratio") or 0.0)
@@ -341,13 +345,20 @@ class StrategyEngine:
         lp_burst_fastlane_ready = bool(gate_metrics.get("lp_burst_fastlane_ready"))
         lp_burst_fastlane_reason = str(gate_metrics.get("lp_burst_fastlane_reason") or "")
         lp_burst_window_sec = int(gate_metrics.get("lp_burst_window_sec") or 0)
-        lp_burst_event_count = int(gate_metrics.get("lp_burst_event_count") or 0)
-        lp_burst_total_usd = float(gate_metrics.get("lp_burst_total_usd") or 0.0)
-        lp_burst_max_single_usd = float(gate_metrics.get("lp_burst_max_single_usd") or 0.0)
-        lp_burst_same_pool_continuity = int(gate_metrics.get("lp_burst_same_pool_continuity") or 0)
-        lp_burst_volume_surge_ratio = float(gate_metrics.get("lp_burst_volume_surge_ratio") or 0.0)
-        lp_burst_action_intensity = float(gate_metrics.get("lp_burst_action_intensity") or 0.0)
-        lp_burst_reserve_skew = float(gate_metrics.get("lp_burst_reserve_skew") or 0.0)
+        lp_burst_event_count_raw = gate_metrics.get("lp_burst_event_count") if "lp_burst_event_count" in gate_metrics else None
+        lp_burst_event_count = int(0 if lp_burst_event_count_raw is None else lp_burst_event_count_raw)
+        lp_burst_total_usd_raw = gate_metrics.get("lp_burst_total_usd") if "lp_burst_total_usd" in gate_metrics else None
+        lp_burst_total_usd = float(0.0 if lp_burst_total_usd_raw is None else lp_burst_total_usd_raw)
+        lp_burst_max_single_usd_raw = gate_metrics.get("lp_burst_max_single_usd") if "lp_burst_max_single_usd" in gate_metrics else None
+        lp_burst_max_single_usd = float(0.0 if lp_burst_max_single_usd_raw is None else lp_burst_max_single_usd_raw)
+        lp_burst_same_pool_continuity_raw = gate_metrics.get("lp_burst_same_pool_continuity") if "lp_burst_same_pool_continuity" in gate_metrics else None
+        lp_burst_same_pool_continuity = int(0 if lp_burst_same_pool_continuity_raw is None else lp_burst_same_pool_continuity_raw)
+        lp_burst_volume_surge_ratio_raw = gate_metrics.get("lp_burst_volume_surge_ratio") if "lp_burst_volume_surge_ratio" in gate_metrics else None
+        lp_burst_volume_surge_ratio = float(0.0 if lp_burst_volume_surge_ratio_raw is None else lp_burst_volume_surge_ratio_raw)
+        lp_burst_action_intensity_raw = gate_metrics.get("lp_burst_action_intensity") if "lp_burst_action_intensity" in gate_metrics else None
+        lp_burst_action_intensity = float(0.0 if lp_burst_action_intensity_raw is None else lp_burst_action_intensity_raw)
+        lp_burst_reserve_skew_raw = gate_metrics.get("lp_burst_reserve_skew") if "lp_burst_reserve_skew" in gate_metrics else None
+        lp_burst_reserve_skew = float(0.0 if lp_burst_reserve_skew_raw is None else lp_burst_reserve_skew_raw)
         lp_trend_sensitivity_mode = bool(gate_metrics.get("lp_trend_sensitivity_mode"))
         lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool"))
         lp_directional_side = str(gate_metrics.get("lp_directional_side") or "")
@@ -390,7 +401,7 @@ class StrategyEngine:
             "role_priority_rank": role_priority_rank,
             "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
             "gate_relaxed_by_role": str(gate_metrics.get("gate_relaxed_by_role") or event.metadata.get("gate_relaxed_by_role") or ""),
-            "lp_prealert_applied": bool(lp_prealert_applied or event.metadata.get("lp_prealert_applied")),
+            "lp_prealert_applied": lp_prealert_applied,
         })
 
         def reject(
