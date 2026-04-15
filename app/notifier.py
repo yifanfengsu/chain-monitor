@@ -25,6 +25,7 @@ MESSAGE_VARIANTS = {
     "followup",
     "liquidation_risk",
     "liquidation_execution",
+    "market_maker_primary",
     "market_maker_observe",
     "smart_money_primary",
     "smart_money_observe",
@@ -118,8 +119,14 @@ def _stage_role_line(signal: Signal, context: dict) -> str:
         or signal.metadata.get("role_priority_tier")
         or ""
     ).strip()
+    strategy_role = str(
+        context.get("strategy_role")
+        or signal.metadata.get("strategy_role")
+        or ""
+    ).strip()
+    role_group = strategy_role_group(strategy_role)
     role_label = {
-        "tier1": "T1 Smart Money",
+        "tier1": "T1 Market Maker" if role_group == "market_maker" else "T1 Smart Money",
         "tier2": "T2 LP",
         "tier3": "T3 Exchange",
         "tier4": "T4 Other",
@@ -154,7 +161,7 @@ def _select_message_variant(signal: Signal, event: Event, context: dict) -> str:
         or ""
     ).strip()
     smart_money_variant = _smart_money_variant(signal, event, context)
-    if variant in {"smart_money_primary", "smart_money_observe", "market_maker_observe"}:
+    if variant in {"smart_money_primary", "smart_money_observe", "market_maker_primary", "market_maker_observe"}:
         return smart_money_variant or "alert"
     if variant in MESSAGE_VARIANTS:
         return variant
@@ -215,7 +222,13 @@ def _smart_money_variant(signal: Signal, event: Event, context: dict) -> str:
     if delivery_reason not in smart_money_reasons or not is_execution:
         return ""
 
-    style_variant = str(context.get("smart_money_style_variant") or signal.metadata.get("smart_money_style_variant") or "").strip()
+    style_variant = str(
+        context.get("smart_money_style_variant")
+        or signal.metadata.get("smart_money_style_variant")
+        or ("market_maker" if role_group == "market_maker" else "smart_money" if role_group == "smart_money" else "")
+    ).strip()
+    if style_variant == "market_maker" and delivery_class == "primary":
+        return "market_maker_primary"
     if delivery_class == "primary" and is_execution:
         return "smart_money_primary"
     if style_variant == "market_maker":
@@ -282,6 +295,22 @@ def _evidence_brief(context: dict) -> str:
 
 def _action_hint(context: dict) -> str:
     return str(context.get("action_hint") or context.get("followup_summary") or "观察后续是否继续确认")
+
+
+def _market_maker_fact_brief(signal: Signal, context: dict, event: Event) -> str:
+    return str(context.get("market_maker_fact_brief") or _fact_brief(signal, context, event))
+
+
+def _market_maker_explanation_brief(context: dict, event: Event) -> str:
+    return str(context.get("market_maker_explanation_brief") or _explanation_brief(context, event))
+
+
+def _market_maker_evidence_brief(context: dict) -> str:
+    return str(context.get("market_maker_evidence_brief") or _evidence_brief(context))
+
+
+def _market_maker_action_hint(context: dict) -> str:
+    return str(context.get("market_maker_action_hint") or _action_hint(context))
 
 
 def _update_brief(context: dict) -> str:
@@ -408,8 +437,10 @@ def _header_for_variant(signal: Signal, context: dict, variant: str, compact: bo
         return "🎯 Smart Money 执行"
     if variant == "smart_money_observe":
         return "🧠 Smart Money 执行观察"
+    if variant == "market_maker_primary":
+        return "🏦 Market Maker 库存执行"
     if variant == "market_maker_observe":
-        return "🏦 Market Maker 执行观察"
+        return "🏦 Market Maker 库存观察"
     if variant == "lp_directional":
         intent_type = str(getattr(signal, "intent_type", "") or "")
         if intent_type == "pool_buy_pressure":
@@ -571,19 +602,35 @@ def _smart_money_observe_message(signal: Signal, event: Event, context: dict, ra
     return _join_lines(lines)
 
 
+def _market_maker_primary_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+    lines = [
+        _header_for_variant(signal, context, "market_maker_primary"),
+        _stage_role_line(signal, context),
+        f"对象：{_object_label(signal, context)}",
+        f"库存动作：{_market_maker_fact_brief(signal, context, event)}",
+        f"金额：{_usd_value_text(signal.usd_value)}",
+        f"路径：{_path_line(context, raw)}",
+        f"库存语境：{_market_maker_explanation_brief(context, event)}",
+        f"证据：{_market_maker_evidence_brief(context)}",
+        f"继续看：{_market_maker_action_hint(context)}",
+        _tx_line(signal),
+    ]
+    return _join_lines(lines)
+
+
 def _market_maker_observe_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     lines = [
         _header_for_variant(signal, context, "market_maker_observe"),
         _stage_role_line(signal, context),
         f"对象：{_object_label(signal, context)}",
-        f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
-        f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
-        f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
+        f"库存动作：{_market_maker_fact_brief(signal, context, event)}",
+        f"当前更像：{_market_maker_explanation_brief(context, event)}",
+        f"证据：{_market_maker_evidence_brief(context)}",
         f"金额：{_usd_value_text(signal.usd_value)}",
         f"路径：{_path_line(context, raw)}",
         f"共振/确认：{context.get('resonance_label') or '单地址孤立'}｜{context.get('confirmation_label') or '弱证据'}",
-        f"为什么值得观察：{context.get('smart_money_observe_label') or '做市执行观察路径'}",
-        f"继续看：{context.get('smart_money_action_hint') or _action_hint(context)}",
+        f"为什么值得观察：{context.get('market_maker_observe_label') or '库存管理 / 流动性供给观察路径'}",
+        f"继续看：{_market_maker_action_hint(context)}",
         _tx_line(signal),
     ]
     return _join_lines(lines)
@@ -653,6 +700,16 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             _tx_line(signal, compact=True),
         ]
         return _join_lines(lines)
+    if variant == "market_maker_primary":
+        lines = [
+            _header_for_variant(signal, context, "market_maker_primary", compact=True),
+            _stage_role_line(signal, context),
+            f"对象：{_object_label(signal, context)}",
+            f"库存动作：{_market_maker_fact_brief(signal, context, event)}",
+            f"证据：{_market_maker_evidence_brief(context)}",
+            _tx_line(signal, compact=True),
+        ]
+        return _join_lines(lines)
     if variant == "smart_money_observe":
         lines = [
             _header_for_variant(signal, context, "smart_money_observe", compact=True),
@@ -668,9 +725,9 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
             _header_for_variant(signal, context, "market_maker_observe", compact=True),
             _stage_role_line(signal, context),
             f"对象：{_object_label(signal, context)}",
-            f"执行：{context.get('smart_money_fact_brief') or _fact_brief(signal, context, event)}",
-            f"当前更像：{context.get('smart_money_explanation_brief') or _explanation_brief(context, event)}",
-            f"证据：{context.get('smart_money_evidence_brief') or _evidence_brief(context)}",
+            f"库存动作：{_market_maker_fact_brief(signal, context, event)}",
+            f"当前更像：{_market_maker_explanation_brief(context, event)}",
+            f"证据：{_market_maker_evidence_brief(context)}",
             _tx_line(signal, compact=True),
         ]
         return _join_lines(lines)
@@ -702,6 +759,8 @@ def _long_message(signal: Signal, event: Event, context: dict, raw: dict) -> str
         return _liquidation_message(signal, event, context, raw)
     if variant == "smart_money_primary":
         return _smart_money_primary_message(signal, event, context, raw)
+    if variant == "market_maker_primary":
+        return _market_maker_primary_message(signal, event, context, raw)
     if variant == "smart_money_observe":
         return _smart_money_observe_message(signal, event, context, raw)
     if variant == "market_maker_observe":

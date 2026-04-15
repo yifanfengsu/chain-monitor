@@ -220,6 +220,23 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
         self.assertTrue(signal.metadata.get("market_maker_legacy_inventory_branch_disabled"))
         self.assertFalse(signal.metadata.get("smart_money_legacy_non_exec_branch_disabled"))
 
+    def test_market_maker_primary_message_variant_stays_independent(self) -> None:
+        variant = self.engine._message_variant_for_delivery(
+            event=self._event(
+                strategy_role="market_maker_wallet",
+                intent_type="swap_execution",
+                kind="swap",
+            ),
+            signal=self._signal(
+                intent_type="swap_execution",
+                quality_score=0.9,
+            ),
+            delivery_class="primary",
+            reason="market_maker_execution_primary",
+        )
+
+        self.assertEqual("market_maker_primary", variant)
+
     def test_legacy_lp_directional_keys_are_canonicalized_to_pool_semantics(self) -> None:
         interpreter = SignalInterpreter()
         event = self._event(

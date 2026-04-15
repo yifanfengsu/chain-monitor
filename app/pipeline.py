@@ -3877,6 +3877,22 @@ class SignalPipeline:
                 event_metadata.get("market_maker_inventory_context"),
                 signal_metadata.get("market_maker_inventory_context"),
             ),
+            "market_maker_fact_brief": _text(
+                signal_context.get("market_maker_fact_brief"),
+                signal_metadata.get("market_maker_fact_brief"),
+            ),
+            "market_maker_explanation_brief": _text(
+                signal_context.get("market_maker_explanation_brief"),
+                signal_metadata.get("market_maker_explanation_brief"),
+            ),
+            "market_maker_evidence_brief": _text(
+                signal_context.get("market_maker_evidence_brief"),
+                signal_metadata.get("market_maker_evidence_brief"),
+            ),
+            "market_maker_action_hint": _text(
+                signal_context.get("market_maker_action_hint"),
+                signal_metadata.get("market_maker_action_hint"),
+            ),
             "gate_exception_passed": _bool_value(gate_metrics.get("gate_exception_passed")),
             "smart_money_style_variant": _text(
                 signal_context.get("smart_money_style_variant"),

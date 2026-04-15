@@ -2343,9 +2343,10 @@ class StrategyEngine:
         if reason in {
             "smart_money_execution_primary",
             "smart_money_continuous_execution_primary",
-            "market_maker_execution_primary",
         }:
             return "smart_money_primary"
+        if reason == "market_maker_execution_primary":
+            return "market_maker_primary"
         if reason == "market_maker_execution_observe" and delivery_class == "observe":
             return "market_maker_observe"
         if reason == "smart_money_execution_observe" and delivery_class == "observe":

@@ -233,5 +233,105 @@ class LpSweepNotifierTests(unittest.TestCase):
         self.assertEqual("买方清扫", context.get("headline_label"))
 
 
+class MarketMakerNotifierFormattingTests(unittest.TestCase):
+    def _event(self, *, delivery_reason: str) -> Event:
+        return Event(
+            tx_hash="0xmaker1234567890",
+            address="0xmaker",
+            token="PEPE",
+            amount=1.0,
+            side="买入",
+            usd_value=150_000.0,
+            kind="swap",
+            ts=1_710_000_000,
+            intent_type="swap_execution",
+            intent_stage="confirmed",
+            intent_confidence=0.95,
+            confirmation_score=0.86,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            usd_value_available=True,
+            strategy_role="market_maker_wallet",
+            delivery_reason=delivery_reason,
+            metadata={"raw": {"from": "0xmaker", "to": "0xpool"}},
+        )
+
+    def _signal(self, *, delivery_class: str, delivery_reason: str) -> Signal:
+        return Signal(
+            type="swap_execution",
+            confidence=0.92,
+            priority=1,
+            tier="Tier 1",
+            address="0xmaker",
+            token="PEPE",
+            tx_hash="0xmaker1234567890",
+            usd_value=150_000.0,
+            reason="unit_test",
+            quality_score=0.9,
+            semantic="execution",
+            intent_type="swap_execution",
+            intent_stage="confirmed",
+            confirmation_score=0.86,
+            information_level="high",
+            abnormal_ratio=2.0,
+            pricing_confidence=0.96,
+            delivery_class=delivery_class,
+            delivery_reason=delivery_reason,
+            metadata={
+                "is_real_execution": True,
+                "strategy_role": "market_maker_wallet",
+                "role_priority_tier": "tier1",
+            },
+            context={
+                "message_variant": "smart_money_primary" if delivery_class == "primary" else "smart_money_observe",
+                "smart_money_style_variant": "market_maker",
+                "object_label": "Maker Desk",
+                "path_label": "Maker Desk -> PEPE/USDC Pool",
+                "resonance_label": "库存回补共振",
+                "confirmation_label": "库存确认",
+                "market_maker_fact_brief": "库存对冲｜$150,000",
+                "market_maker_explanation_brief": "更像库存管理 / 流动性供给，不按主观建仓解读。",
+                "market_maker_evidence_brief": "双边补货｜库存语境",
+                "market_maker_action_hint": "继续看库存是否回补完成。",
+                "market_maker_observe_label": "库存管理 / 流动性供给观察路径",
+                "smart_money_fact_brief": "SHOULD_NOT_USE_SM_FACT",
+                "smart_money_explanation_brief": "SHOULD_NOT_USE_SM_EXPLANATION",
+                "smart_money_evidence_brief": "SHOULD_NOT_USE_SM_EVIDENCE",
+                "smart_money_action_hint": "SHOULD_NOT_USE_SM_ACTION",
+            },
+        )
+
+    def test_market_maker_primary_message_uses_market_maker_fields(self) -> None:
+        event = self._event(delivery_reason="market_maker_execution_primary")
+        signal = self._signal(delivery_class="primary", delivery_reason="market_maker_execution_primary")
+
+        message = format_signal_message(signal, event)
+
+        self.assertIn("🏦 Market Maker 库存执行", message)
+        self.assertIn("阶段：Primary｜T1 Market Maker｜P3", message)
+        self.assertIn("库存动作：库存对冲｜$150,000", message)
+        self.assertIn("库存语境：更像库存管理 / 流动性供给，不按主观建仓解读。", message)
+        self.assertIn("证据：双边补货｜库存语境", message)
+        self.assertIn("继续看：继续看库存是否回补完成。", message)
+        self.assertNotIn("Smart Money", message)
+        self.assertNotIn("SHOULD_NOT_USE_SM_", message)
+
+    def test_market_maker_observe_message_uses_market_maker_fields(self) -> None:
+        event = self._event(delivery_reason="market_maker_execution_observe")
+        signal = self._signal(delivery_class="observe", delivery_reason="market_maker_execution_observe")
+
+        message = format_signal_message(signal, event)
+
+        self.assertIn("🏦 Market Maker 库存观察", message)
+        self.assertIn("阶段：Observe｜T1 Market Maker｜P3", message)
+        self.assertIn("库存动作：库存对冲｜$150,000", message)
+        self.assertIn("当前更像：更像库存管理 / 流动性供给，不按主观建仓解读。", message)
+        self.assertIn("证据：双边补货｜库存语境", message)
+        self.assertIn("为什么值得观察：库存管理 / 流动性供给观察路径", message)
+        self.assertIn("继续看：继续看库存是否回补完成。", message)
+        self.assertNotIn("Smart Money", message)
+        self.assertNotIn("SHOULD_NOT_USE_SM_", message)
+
+
 if __name__ == "__main__":
     unittest.main()

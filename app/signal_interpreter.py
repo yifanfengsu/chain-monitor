@@ -200,6 +200,7 @@ class SignalInterpreter:
             evidence_brief=evidence_brief,
             action_hint=action_hint,
         )
+        market_maker_display_context = self._market_maker_display_context(smart_money_context)
         if smart_money_context["active"] and message_variant == "alert":
             message_variant = smart_money_context["message_variant"]
 
@@ -401,6 +402,7 @@ class SignalInterpreter:
             "smart_money_evidence_brief": smart_money_context["evidence_brief"],
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
+            **market_maker_display_context,
             "downstream_followup_active": downstream_followup_active,
             "downstream_followup_stage": downstream_followup_stage,
             "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
@@ -432,6 +434,7 @@ class SignalInterpreter:
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "smart_money_style_variant": smart_money_context["style_variant"],
             "smart_money_observe_label": smart_money_context["observe_label"],
+            **market_maker_display_context,
             **lp_trend_display,
         })
         signal.metadata["summary"].update({
@@ -504,6 +507,7 @@ class SignalInterpreter:
             "smart_money_evidence_brief": smart_money_context["evidence_brief"],
             "smart_money_action_hint": smart_money_context["action_hint"],
             "smart_money_style_variant": smart_money_context["style_variant"],
+            **market_maker_display_context,
             "downstream_followup_active": downstream_followup_active,
             "downstream_followup_stage": downstream_followup_stage,
             "downstream_anchor_label": str(event.metadata.get("downstream_anchor_label") or ""),
@@ -1266,7 +1270,7 @@ class SignalInterpreter:
                 return "alert"
             if strategy_role == "market_maker_wallet":
                 if str(signal.delivery_class or "") == "primary":
-                    return "smart_money_primary"
+                    return "market_maker_primary"
                 return "market_maker_observe"
             if str(signal.delivery_class or "") == "primary":
                 return "smart_money_primary"
@@ -1328,6 +1332,16 @@ class SignalInterpreter:
         quality_score = float(gate_metrics.get("adjusted_quality_score") or signal.quality_score or 0.0)
         confirmation_score = float(event.confirmation_score or gate_metrics.get("confirmation_score") or 0.0)
         resonance_score = float(gate_metrics.get("resonance_score") or 0.0)
+        inventory_context = bool(
+            gate_metrics.get("market_maker_inventory_context")
+            or signal.metadata.get("market_maker_inventory_context")
+            or event.metadata.get("market_maker_inventory_context")
+        )
+        context_confirmed = bool(
+            gate_metrics.get("market_maker_context_confirmed")
+            or signal.metadata.get("market_maker_context_confirmed")
+            or event.metadata.get("market_maker_context_confirmed")
+        )
         exception_applied = bool(
             gate_metrics.get("market_maker_observe_exception_applied")
             or gate_metrics.get("smart_money_non_exec_exception_applied")
@@ -1337,10 +1351,13 @@ class SignalInterpreter:
         observe_label = "Smart Money 执行观察雷达"
         message_variant = "smart_money_primary" if delivery_class == "primary" else "smart_money_observe"
         if style_variant == "market_maker":
-            observe_label = "Market Maker 执行观察雷达"
-            if delivery_class != "primary":
-                message_variant = "market_maker_observe"
-            sm_explanation = "已看到做市地址真实执行，当前更适合继续看是否形成连续执行、方向切换或跨地址共振。"
+            observe_label = "Market Maker 库存观察雷达"
+            message_variant = "market_maker_primary" if delivery_class == "primary" else "market_maker_observe"
+            sm_explanation = (
+                "已看到做市地址真实执行，当前先按库存管理 / 流动性供给语境跟踪。"
+                if delivery_class == "primary"
+                else "已看到做市地址真实执行，但当前更像库存管理 / 流动性供给链路，先继续观察确认。"
+            )
         else:
             sm_explanation = (
                 "已看到更强的聪明钱真实执行，当前优先按执行路径跟踪。"
@@ -1357,11 +1374,15 @@ class SignalInterpreter:
             evidence_items.append(f"共振 {resonance_score:.2f}")
         if quality_score >= 0.60:
             evidence_items.append(f"质量 {quality_score:.2f}")
+        if style_variant == "market_maker" and inventory_context:
+            evidence_items.append("库存语境")
+        if style_variant == "market_maker" and context_confirmed:
+            evidence_items.append("做市确认")
         if exception_applied:
             evidence_items.append("gate 例外保留")
 
         sm_action_hint = (
-            "继续看同 token 是否连续换手、是否出现跨地址共振，或是否进一步放大执行强度。"
+            "继续看同 token 是否出现连续库存回补、报价切换或跨地址共振。"
             if style_variant == "market_maker"
             else "继续看是否出现连续执行、同地址放量或多聪明钱共振。"
         )
@@ -1375,6 +1396,23 @@ class SignalInterpreter:
             "evidence_brief": "｜".join(evidence_items[:4]) if evidence_items else evidence_brief,
             "action_hint": sm_action_hint,
             "style_variant": style_variant,
+        }
+
+    def _market_maker_display_context(self, smart_money_context: dict) -> dict:
+        if str(smart_money_context.get("style_variant") or "") != "market_maker":
+            return {
+                "market_maker_observe_label": "",
+                "market_maker_fact_brief": "",
+                "market_maker_explanation_brief": "",
+                "market_maker_evidence_brief": "",
+                "market_maker_action_hint": "",
+            }
+        return {
+            "market_maker_observe_label": smart_money_context.get("observe_label", ""),
+            "market_maker_fact_brief": smart_money_context.get("fact_brief", ""),
+            "market_maker_explanation_brief": smart_money_context.get("explanation_brief", ""),
+            "market_maker_evidence_brief": smart_money_context.get("evidence_brief", ""),
+            "market_maker_action_hint": smart_money_context.get("action_hint", ""),
         }
 
     def _canonicalize_pool_semantics(self, event: Event, signal: Signal) -> None:

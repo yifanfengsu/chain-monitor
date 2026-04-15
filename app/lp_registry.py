@@ -257,8 +257,19 @@ def _normalize_pool(item: dict) -> dict | None:
     }
 
 
-with LP_POOLS_PATH.open(encoding="utf-8") as fp:
-    LP_POOL_BOOK = json.load(fp)
+def _load_lp_pool_book():
+    try:
+        with LP_POOLS_PATH.open(encoding="utf-8") as fp:
+            return json.load(fp)
+    except FileNotFoundError:
+        print(f"Warning: {LP_POOLS_PATH.name} missing; using empty LP pool book.")
+        return []
+    except json.JSONDecodeError as exc:
+        print(f"Warning: {LP_POOLS_PATH.name} invalid JSON; using empty LP pool book ({exc.msg}).")
+        return []
+
+
+LP_POOL_BOOK = _load_lp_pool_book()
 
 
 LP_POOLS = {}

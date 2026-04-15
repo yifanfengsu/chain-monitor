@@ -6,9 +6,39 @@ from state_manager import is_runtime_adjacent_watch_active, maybe_get_runtime_ad
 
 # 地址簿路径：固定定位到项目根目录 data/addresses.json，避免受 cwd 影响。
 ADDRESS_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "addresses.json"
-with ADDRESS_BOOK_PATH.open(encoding="utf-8") as f:
-    # 地址簿是元信息中心：展示语义、策略语义、解释语义都从这里衍生。
-    ADDRESS_BOOK = json.load(f)
+
+
+def _load_address_book():
+    try:
+        with ADDRESS_BOOK_PATH.open(encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Warning: {ADDRESS_BOOK_PATH.name} missing; using empty address book.")
+        return {}
+    except json.JSONDecodeError as exc:
+        print(f"Warning: {ADDRESS_BOOK_PATH.name} invalid JSON; using empty address book ({exc.msg}).")
+        return {}
+
+
+def _address_book_items(address_book):
+    if isinstance(address_book, dict):
+        items = []
+        for address, payload in address_book.items():
+            if isinstance(payload, dict):
+                item = dict(payload)
+                item.setdefault("address", address)
+                items.append(item)
+                continue
+            if payload:
+                items.append({"address": str(address), "label": str(payload)})
+        return items
+    if isinstance(address_book, list):
+        return address_book
+    return []
+
+
+# 公开仓库允许缺失私有地址簿，缺失时回退为空结构。
+ADDRESS_BOOK = _load_address_book()
 
 
 CATEGORY_LABELS = {
@@ -256,7 +286,7 @@ def build_address_labels(address_book):
     """构建 address -> label 的快捷索引。"""
     labels = {}
 
-    for item in address_book:
+    for item in _address_book_items(address_book):
         if isinstance(item, dict) and item.get("address"):
             labels[item["address"].lower()] = item.get("label", item["address"])
 
@@ -267,7 +297,7 @@ def build_address_meta(address_book):
     """构建 address -> 元信息（展示 / 策略 / 解释语义）索引。"""
     meta = {}
 
-    for item in address_book:
+    for item in _address_book_items(address_book):
         if not (isinstance(item, dict) and item.get("address")):
             continue
 
@@ -311,7 +341,7 @@ def extract_watch_addresses(address_book, active_only=False):
     """提取监控地址集合，可选择仅提取已启用地址。"""
     addresses = set()
 
-    for item in address_book:
+    for item in _address_book_items(address_book):
         if isinstance(item, str):
             if active_only:
                 continue
