@@ -3,11 +3,13 @@ from dataclasses import dataclass
 from config import (
     INTERPRETER_ABNORMAL_MULTIPLIER,
     INTERPRETER_CONTINUOUS_WINDOW_SEC,
+    QUALITY_GATE_MIN_PRICE_IMPACT_RATIO,
 )
 from constants import ETH_EQUIVALENT_CONTRACTS, STABLE_TOKEN_CONTRACTS
 from filter import format_address_label, get_address_meta, shorten_address
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
+from signal_quality_gate import LP_SWEEP_SEMANTIC_SUBTYPES, detect_lp_liquidity_sweep
 
 
 LP_INTENTS = {
@@ -154,6 +156,7 @@ class SignalInterpreter:
         message_variant = self._message_variant(event, signal, lp_event, watch_meta)
         object_label = actor_label
         pool_label = self._pool_label(event, raw, actor_label)
+        pair_label = self._pair_label(event, raw, pool_label)
         headline_label = self._headline_label(directional_bias, trade_value_label, intent_label)
         fact_brief = self._fact_brief(event, fact_label)
         explanation_brief = self._explanation_brief(event, intent_detail, market_implication)
@@ -176,6 +179,17 @@ class SignalInterpreter:
         lp_trend_display = self._lp_trend_display(event, signal)
         observe_or_primary_label = "主推送" if str(signal.delivery_class or "") == "primary" else "观察级"
         liquidation_meta = self._liquidation_meta(event)
+        sweep_meta = self._lp_sweep_meta(event, gate_metrics)
+        if lp_event and sweep_meta["detected"] and not liquidation_meta["active"]:
+            semantic = "pool_trade_pressure"
+            action_label = self._lp_sweep_action_label(event, sweep_meta)
+            fact_label = self._lp_sweep_fact_label(event, pair_label, sweep_meta)
+            intent_detail = self._lp_sweep_intent_detail(event, sweep_meta)
+            market_implication = self._lp_sweep_market_implication(event, sweep_meta)
+            fact_brief = self._fact_brief(event, fact_label)
+            explanation_brief = self._explanation_brief(event, intent_detail, market_implication)
+            lp_action_brief = action_label
+            lp_meaning_brief = self._lp_sweep_meaning_brief(event, sweep_meta)
         smart_money_context = self._smart_money_context(
             event=event,
             signal=signal,
@@ -257,12 +271,36 @@ class SignalInterpreter:
             lp_action_brief = action_label
             lp_meaning_brief = market_implication
 
+        market_state_label = headline_label
+        if not downstream_followup_active and (lp_event or liquidation_meta["active"]):
+            market_state_label = self._market_state_label(event, liquidation_meta, sweep_meta)
+            headline_label = market_state_label
+            evidence_brief = self._compact_evidence_brief(
+                event=event,
+                gate_metrics=gate_metrics,
+                liquidation_meta=liquidation_meta,
+                sweep_meta=sweep_meta,
+                confirmation_label=confirmation_label,
+                abnormal_label=abnormal_label,
+                resonance_label=resonance_label,
+                continuous_label=continuous_label,
+            )
+
+        event.metadata.update({
+            "semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_detected": bool(sweep_meta.get("detected")),
+            "market_state_label": str(market_state_label or ""),
+        })
         signal.semantic = semantic
         signal.core_action = action_label
         signal.context = {
             "actor_label": actor_label,
             "object_label": object_label,
             "pool_label": pool_label,
+            "pair_label": pair_label,
             "role_summary": role_display,
             "role_display": role_display,
             "role_label": watch_meta.get("role_label", "未分类"),
@@ -324,6 +362,7 @@ class SignalInterpreter:
             "case_notification_reason": case_notification_reason,
             "notification_stage_label": notification_stage_label,
             "message_variant": message_variant,
+            "market_state_label": market_state_label,
             "headline_label": headline_label,
             "fact_brief": fact_brief,
             "explanation_brief": explanation_brief,
@@ -347,6 +386,10 @@ class SignalInterpreter:
             "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
             "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
             "observe_or_primary_label": observe_or_primary_label,
+            "semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "liquidation_stage": liquidation_meta["stage"],
             "liquidation_score": liquidation_meta["score"],
             "liquidation_side": liquidation_meta["side"],
@@ -381,6 +424,12 @@ class SignalInterpreter:
         signal.metadata.setdefault("summary", {})
         signal.metadata.update({
             "message_variant": message_variant,
+            "market_state_label": market_state_label,
+            "pair_label": pair_label,
+            "semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "smart_money_style_variant": smart_money_context["style_variant"],
             "smart_money_observe_label": smart_money_context["observe_label"],
             **lp_trend_display,
@@ -418,6 +467,7 @@ class SignalInterpreter:
             "case_notification_reason": case_notification_reason,
             "notification_stage_label": notification_stage_label,
             "message_variant": message_variant,
+            "market_state_label": market_state_label,
             "headline_label": headline_label,
             "fact_brief": fact_brief,
             "explanation_brief": explanation_brief,
@@ -426,6 +476,7 @@ class SignalInterpreter:
             "update_brief": update_brief,
             "object_label": object_label,
             "pool_label": pool_label,
+            "pair_label": pair_label,
             "lp_action_brief": lp_action_brief,
             "lp_meaning_brief": lp_meaning_brief,
             "lp_volume_surge_label": lp_volume_surge_label,
@@ -443,6 +494,10 @@ class SignalInterpreter:
             "lp_burst_fastlane_reason": str(event.metadata.get("lp_burst_fastlane_reason") or signal.metadata.get("lp_burst_fastlane_reason") or ""),
             "lp_burst_delivery_class": str(event.metadata.get("lp_burst_delivery_class") or signal.metadata.get("lp_burst_delivery_class") or ""),
             "observe_or_primary_label": observe_or_primary_label,
+            "semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
+            "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "smart_money_observe_label": smart_money_context["observe_label"],
             "smart_money_fact_brief": smart_money_context["fact_brief"],
             "smart_money_explanation_brief": smart_money_context["explanation_brief"],
@@ -1469,6 +1524,210 @@ class SignalInterpreter:
                 unique.append(text)
         return unique
 
+    def _first_present(self, *values):
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
+    def _pair_label(self, event: Event, raw: dict, pool_label: str) -> str:
+        lp_context = raw.get("lp_context") or {}
+        return str(
+            lp_context.get("pair_label")
+            or event.metadata.get("pair_label")
+            or pool_label
+            or "LP Pool"
+        )
+
+    def _lp_sweep_meta(self, event: Event, gate_metrics: dict) -> dict:
+        semantic_subtype = str(
+            self._first_present(
+                gate_metrics.get("lp_semantic_subtype"),
+                gate_metrics.get("semantic_subtype"),
+                event.metadata.get("lp_semantic_subtype"),
+                event.metadata.get("semantic_subtype"),
+                "",
+            )
+            or ""
+        )
+        sweep_confidence = str(
+            self._first_present(
+                gate_metrics.get("lp_sweep_confidence"),
+                event.metadata.get("lp_sweep_confidence"),
+                event.metadata.get("sweep_confidence"),
+                "",
+            )
+            or ""
+        )
+        detected_value = self._first_present(
+            gate_metrics.get("lp_sweep_detected"),
+            event.metadata.get("lp_sweep_detected"),
+            None,
+        )
+        if semantic_subtype or detected_value is not None:
+            detected = bool(detected_value) or semantic_subtype in LP_SWEEP_SEMANTIC_SUBTYPES
+            display_label = "买方清扫" if semantic_subtype == "buy_side_liquidity_sweep" else "卖方清扫" if semantic_subtype == "sell_side_liquidity_sweep" else ""
+            return {
+                "detected": detected,
+                "semantic_subtype": semantic_subtype,
+                "sweep_confidence": sweep_confidence or ("likely" if detected else ""),
+                "display_label": display_label,
+            }
+
+        lp_analysis = event.metadata.get("lp_analysis") or {}
+        lp_burst = event.metadata.get("lp_burst") or {}
+        detected = detect_lp_liquidity_sweep(
+            event=event,
+            reserve_skew=float(self._first_present(gate_metrics.get("lp_reserve_skew"), lp_analysis.get("reserve_skew"), 0.0) or 0.0),
+            action_intensity=float(self._first_present(gate_metrics.get("lp_action_intensity"), lp_analysis.get("action_intensity"), 0.0) or 0.0),
+            same_pool_continuity=int(self._first_present(gate_metrics.get("lp_same_pool_continuity"), lp_analysis.get("same_pool_continuity"), 0) or 0),
+            multi_pool_resonance=int(self._first_present(gate_metrics.get("lp_multi_pool_resonance"), lp_analysis.get("multi_pool_resonance"), 0) or 0),
+            pool_volume_surge_ratio=float(self._first_present(gate_metrics.get("lp_pool_volume_surge_ratio"), lp_analysis.get("pool_volume_surge_ratio"), 0.0) or 0.0),
+            lp_burst_event_count=int(self._first_present(gate_metrics.get("lp_burst_event_count"), lp_burst.get("lp_burst_event_count"), 0) or 0),
+            lp_burst_window_sec=int(self._first_present(gate_metrics.get("lp_burst_window_sec"), lp_burst.get("lp_burst_window_sec"), 0) or 0),
+            price_impact_ratio=float(self._first_present(gate_metrics.get("price_impact_ratio"), event.metadata.get("price_impact_ratio"), 0.0) or 0.0),
+            min_price_impact_ratio=float(self._first_present(gate_metrics.get("lp_sweep_min_price_impact_ratio"), QUALITY_GATE_MIN_PRICE_IMPACT_RATIO) or QUALITY_GATE_MIN_PRICE_IMPACT_RATIO),
+            liquidation_stage=str(self._first_present(gate_metrics.get("liquidation_stage"), event.metadata.get("liquidation_stage"), "none") or "none"),
+        )
+        return {
+            "detected": bool(detected.get("detected")),
+            "semantic_subtype": str(detected.get("semantic_subtype") or ""),
+            "sweep_confidence": str(detected.get("sweep_confidence") or ""),
+            "display_label": str(detected.get("display_label") or ""),
+        }
+
+    def _lp_sweep_action_label(self, event: Event, sweep_meta: dict) -> str:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return "买方清扫｜主动 swap 快速吃掉近价卖盘深度"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return "卖方清扫｜主动 swap 快速吃掉近价买盘深度"
+        return self._lp_action_brief(event, "", "")
+
+    def _lp_sweep_fact_label(self, event: Event, pair_label: str, sweep_meta: dict) -> str:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return f"{pair_label} 出现推断型买方清扫：主动 swap 在短时快速吃掉近价卖盘流动性"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return f"{pair_label} 出现推断型卖方清扫：主动 swap 在短时快速吃掉近价买盘流动性"
+        return pair_label
+
+    def _lp_sweep_intent_detail(self, event: Event, sweep_meta: dict) -> str:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型买方清扫；这不是撤池，也不等于 LP 主体看多。"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型卖方清扫；这不是撤池，也不等于 LP 主体看空。"
+        return self._intent_detail(event, True)
+
+    def _lp_sweep_market_implication(self, event: Event, sweep_meta: dict) -> str:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return "更接近短线主动买盘清扫近价深度并带来明显冲击，短线偏多；本质是成交冲击，不是 LP 主体方向。"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return "更接近短线主动卖盘清扫近价深度并带来明显冲击，短线偏空；本质是成交冲击，不是 LP 主体方向。"
+        return self._market_implication(event, "", 1, 0.0, True)
+
+    def _lp_sweep_meaning_brief(self, event: Event, sweep_meta: dict) -> str:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return "推断型｜主动买盘快速吃掉近价流动性并带来冲击，不等于 LP 主体看多"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return "推断型｜主动卖盘快速吃掉近价流动性并带来冲击，不等于 LP 主体看空"
+        return self._lp_meaning_brief(event, "", "")
+
+    def _market_state_label(self, event: Event, liquidation_meta: dict, sweep_meta: dict) -> str:
+        if liquidation_meta["stage"] == "execution":
+            return "疑似清算执行"
+        if liquidation_meta["stage"] == "risk":
+            return "疑似清算风险"
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            return "买方清扫"
+        if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            return "卖方清扫"
+        if event.intent_type == "pool_buy_pressure":
+            return "持续买压"
+        if event.intent_type == "pool_sell_pressure":
+            return "持续卖压"
+        if event.intent_type == "liquidity_addition":
+            return "流动性补充"
+        if event.intent_type == "liquidity_removal":
+            return "流动性抽离"
+        if event.intent_type == "pool_rebalance":
+            return "池子再平衡"
+        return self.INTENT_LABELS.get(str(event.intent_type or "unknown_intent"), "意图未明")
+
+    def _compact_evidence_brief(
+        self,
+        *,
+        event: Event,
+        gate_metrics: dict,
+        liquidation_meta: dict,
+        sweep_meta: dict,
+        confirmation_label: str,
+        abnormal_label: str,
+        resonance_label: str,
+        continuous_label: str,
+    ) -> str:
+        if liquidation_meta["active"]:
+            return self._liquidation_evidence_pack(liquidation_meta)
+        if str(event.intent_type or "") in LP_INTENTS:
+            return self._lp_evidence_pack(event, gate_metrics, sweep_meta)
+        return self._evidence_brief(
+            confirmation_label=confirmation_label,
+            abnormal_label=abnormal_label,
+            resonance_label=resonance_label,
+            continuous_label=continuous_label,
+        )
+
+    def _lp_evidence_pack(self, event: Event, gate_metrics: dict, sweep_meta: dict) -> str:
+        lp_analysis = event.metadata.get("lp_analysis") or {}
+        lp_burst = event.metadata.get("lp_burst") or {}
+        same_pool_continuity = int(self._first_present(gate_metrics.get("lp_same_pool_continuity"), lp_analysis.get("same_pool_continuity"), 0) or 0)
+        multi_pool_resonance = int(self._first_present(gate_metrics.get("lp_multi_pool_resonance"), lp_analysis.get("multi_pool_resonance"), 0) or 0)
+        pool_volume_surge_ratio = float(self._first_present(gate_metrics.get("lp_pool_volume_surge_ratio"), lp_analysis.get("pool_volume_surge_ratio"), 0.0) or 0.0)
+        lp_burst_event_count = int(self._first_present(gate_metrics.get("lp_burst_event_count"), lp_burst.get("lp_burst_event_count"), 0) or 0)
+        lp_burst_window_sec = int(self._first_present(gate_metrics.get("lp_burst_window_sec"), lp_burst.get("lp_burst_window_sec"), 0) or 0)
+        price_impact_ratio = float(self._first_present(gate_metrics.get("price_impact_ratio"), event.metadata.get("price_impact_ratio"), 0.0) or 0.0)
+        primary_pool = bool(self._first_present(gate_metrics.get("lp_trend_primary_pool"), event.metadata.get("lp_trend_primary_pool"), False))
+
+        tokens = []
+        if primary_pool and event.intent_type in {"liquidity_addition", "liquidity_removal"}:
+            tokens.append("主池")
+        if event.intent_type == "liquidity_removal":
+            tokens.extend(["深度下降", "风险升高"])
+        elif event.intent_type == "liquidity_addition":
+            tokens.append("深度补充")
+        if lp_burst_event_count >= 3 and lp_burst_window_sec > 0:
+            tokens.append(f"{lp_burst_window_sec}s {lp_burst_event_count}笔")
+        if same_pool_continuity >= 1:
+            tokens.append(f"同池连续{same_pool_continuity + 1}")
+        if multi_pool_resonance >= 2:
+            tokens.append(f"跨池{multi_pool_resonance}")
+        if pool_volume_surge_ratio >= 1.2:
+            tokens.append(f"放量{pool_volume_surge_ratio:.1f}x")
+        if sweep_meta["detected"] and price_impact_ratio > 0:
+            tokens.append(f"冲击{price_impact_ratio:.2%}")
+
+        deduped = self._dedup_text(tokens)
+        if deduped:
+            return "｜".join(deduped[:4])
+        return self._evidence_brief("规则型初判", "无历史基线", "单池孤立", "单笔")
+
+    def _liquidation_evidence_pack(self, liquidation_meta: dict) -> str:
+        tokens = []
+        protocols = list(liquidation_meta.get("protocols") or [])
+        if protocols:
+            tokens.append(f"{protocols[0]} 命中")
+        side = str(liquidation_meta.get("side") or "")
+        if side == "long_flush":
+            tokens.append("卖压释放")
+            tokens.append("短线偏空")
+        elif side == "short_squeeze":
+            tokens.append("买压释放")
+            tokens.append("短线偏多")
+        if liquidation_meta.get("stage") == "execution":
+            tokens.insert(1 if tokens else 0, "执行级")
+        else:
+            tokens.append("风险升高")
+        deduped = self._dedup_text(tokens)
+        return "｜".join(deduped[:4]) or "协议线索｜风险升高"
+
     def _headline_label(self, directional_bias: str, trade_value_label: str, intent_label: str) -> str:
         parts = [str(trade_value_label or "").strip(), str(directional_bias or "").strip(), str(intent_label or "").strip()]
         return "｜".join([part for part in parts if part])
@@ -1730,26 +1989,26 @@ class SignalInterpreter:
 
     def _lp_action_brief(self, event: Event, action_label: str, fact_label: str) -> str:
         if event.intent_type == "pool_buy_pressure":
-            return "池子买压｜稳定币流入、标的流出"
+            return "持续买压｜稳定币流入、标的流出"
         if event.intent_type == "pool_sell_pressure":
-            return "池子卖压｜标的流入、稳定币流出"
+            return "持续卖压｜标的流入、稳定币流出"
         if event.intent_type == "liquidity_addition":
-            return "流动性增加｜双边资产同步增加"
+            return "流动性补充｜双边资产同步增加"
         if event.intent_type == "liquidity_removal":
-            return "流动性减少｜双边资产同步减少"
+            return "流动性抽离｜双边资产同步减少"
         if event.intent_type == "pool_rebalance":
             return "池子再平衡｜库存结构调整"
         return action_label or fact_label
 
     def _lp_meaning_brief(self, event: Event, intent_detail: str, market_implication: str) -> str:
         if event.intent_type == "pool_buy_pressure":
-            return "更接近市场主动买入"
+            return "更接近市场主动买入延续，不等于 LP 主体看多"
         if event.intent_type == "pool_sell_pressure":
-            return "更接近市场主动卖出"
+            return "更接近市场主动卖出延续，不等于 LP 主体看空"
         if event.intent_type == "liquidity_addition":
             return "更接近池子补充深度"
         if event.intent_type == "liquidity_removal":
-            return "更接近池子撤出深度"
+            return "更接近池子撤出深度，后续冲击风险可能抬升"
         if event.intent_type == "pool_rebalance":
             return "更接近池子库存再平衡"
         return intent_detail or market_implication

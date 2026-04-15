@@ -32,6 +32,12 @@ MESSAGE_VARIANTS = {
     "lp_liquidity",
     "alert",
 }
+BRIEF_BY_DEFAULT_VARIANTS = {
+    "lp_directional",
+    "lp_liquidity",
+    "liquidation_risk",
+    "liquidation_execution",
+}
 
 
 async def send(msg) -> bool:
@@ -81,7 +87,20 @@ def _resolve_template(signal: Signal) -> str:
     context = signal.context or {}
     metadata = signal.metadata or {}
     template = context.get("message_template") or metadata.get("message_template") or DEFAULT_MESSAGE_TEMPLATE
-    return "short" if str(template).lower() == "short" else "long"
+    normalized = str(template).strip().lower()
+    if normalized in {"headline", "brief"}:
+        return "brief"
+    if normalized == "short":
+        return "short"
+    if normalized == "debug":
+        return "debug"
+    return "long"
+
+
+def _message_template_overridden(signal: Signal) -> bool:
+    context = signal.context or {}
+    metadata = signal.metadata or {}
+    return bool(context.get("message_template") or metadata.get("message_template"))
 
 
 def _priority_text(context: dict) -> str:
@@ -228,8 +247,16 @@ def _pool_label(signal: Signal, context: dict) -> str:
     return str(context.get("pool_label") or context.get("object_label") or context.get("actor_label") or signal.address)
 
 
+def _pair_label(signal: Signal, context: dict) -> str:
+    return str(context.get("pair_label") or context.get("pool_label") or _pool_label(signal, context))
+
+
 def _headline_label(context: dict, event: Event) -> str:
     return str(context.get("headline_label") or context.get("conclusion_label") or event.intent_type or "意图未明")
+
+
+def _market_state_label(context: dict, event: Event) -> str:
+    return str(context.get("market_state_label") or _headline_label(context, event))
 
 
 def _fact_brief(signal: Signal, context: dict, event: Event) -> str:
@@ -339,9 +366,9 @@ def _followup_explanation_prefix(signal: Signal, event: Event, context: dict) ->
 def _lp_direction_field(signal: Signal, context: dict) -> str:
     intent_type = str(getattr(signal, "intent_type", "") or "")
     if intent_type == "pool_buy_pressure":
-        return str(context.get("lp_action_brief") or "池子买压｜稳定币流入、标的流出")
+        return str(context.get("lp_action_brief") or "持续买压｜稳定币流入、标的流出")
     if intent_type == "pool_sell_pressure":
-        return str(context.get("lp_action_brief") or "池子卖压｜标的流入、稳定币流出")
+        return str(context.get("lp_action_brief") or "持续卖压｜标的流入、稳定币流出")
     return str(context.get("lp_action_brief") or context.get("action_label") or signal.type)
 
 
@@ -562,6 +589,23 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
     return _join_lines(lines)
 
 
+def _brief_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
+    del raw
+    variant = _select_message_variant(signal, event, context)
+    label = _pair_label(signal, context) if variant in BRIEF_BY_DEFAULT_VARIANTS else _object_label(signal, context)
+    line1 = f"{label}｜{_market_state_label(context, event)}｜{_usd_value_text(signal.usd_value)}"
+    line2 = str(
+        context.get("evidence_brief")
+        or context.get("fact_brief")
+        or context.get("lp_meaning_brief")
+        or _evidence_brief(context)
+    )
+    lines = [line1, line2]
+    if str(signal.delivery_class or "").strip().lower() == "primary":
+        lines.append(_tx_line(signal, compact=True))
+    return _join_lines(lines)
+
+
 def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     variant = _select_message_variant(signal, event, context)
     if variant == "downstream_followup":
@@ -594,43 +638,11 @@ def _short_message(signal: Signal, event: Event, context: dict, raw: dict) -> st
         ]
         return _join_lines(lines)
     if variant == "lp_directional":
-        lines = [
-            _header_for_variant(signal, context, "lp_directional", compact=True),
-            _stage_role_line(signal, context),
-            f"池子：{_pool_label(signal, context)}",
-            f"方向：{_lp_direction_field(signal, context)}",
-            _lp_trend_slot_line(context),
-            _lp_trend_mode_line(context),
-            _lp_burst_line(signal, context),
-            f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
-            f"证据：{_evidence_brief(context)}",
-            _tx_line(signal, compact=True),
-        ]
-        return _join_lines(lines)
+        return _brief_message(signal, event, context, raw)
     if variant == "lp_liquidity":
-        lines = [
-            _header_for_variant(signal, context, "lp_liquidity", compact=True),
-            _stage_role_line(signal, context),
-            f"池子：{_pool_label(signal, context)}",
-            f"动作：{context.get('lp_action_brief') or signal.type}",
-            f"结构：{_lp_liquidity_structure(context)}",
-            f"含义：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
-            f"证据：{_evidence_brief(context)}",
-            _tx_line(signal, compact=True),
-        ]
-        return _join_lines(lines)
+        return _brief_message(signal, event, context, raw)
     if variant in {"liquidation_risk", "liquidation_execution"}:
-        lines = [
-            _header_for_variant(signal, context, variant, compact=True),
-            _stage_role_line(signal, context),
-            f"池子：{_pool_label(signal, context)}",
-            f"动作：{context.get('lp_action_brief') or _headline_label(context, event)}",
-            f"命中协议：{'/'.join(list(context.get('liquidation_protocols') or [])[:2]) or '未命中'}",
-            f"当前解释：{context.get('lp_meaning_brief') or _explanation_brief(context, event)}",
-            f"证据：{_evidence_brief(context)}",
-            _tx_line(signal, compact=True),
-        ]
-        return _join_lines(lines)
+        return _brief_message(signal, event, context, raw)
     if variant == "smart_money_primary":
         lines = [
             _header_for_variant(signal, context, "smart_money_primary", compact=True),
@@ -701,7 +713,17 @@ def format_signal_message(signal: Signal, event: Event) -> str:
     raw = event.metadata.get("raw") or {}
     context = signal.context or {}
     template = _resolve_template(signal)
+    variant = _select_message_variant(signal, event, context)
 
+    if (
+        template == "long"
+        and not _message_template_overridden(signal)
+        and variant in BRIEF_BY_DEFAULT_VARIANTS
+    ):
+        template = "brief"
+
+    if template == "brief":
+        return _brief_message(signal, event, context, raw)
     if template == "short":
         return _short_message(signal, event, context, raw)
     return _long_message(signal, event, context, raw)

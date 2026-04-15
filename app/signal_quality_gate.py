@@ -27,6 +27,12 @@ from config import (
     LP_PREALERT_PRIMARY_TREND_MIN_MATCHES,
     LP_PREALERT_MIN_PRICING_CONFIDENCE,
     LP_PREALERT_MIN_RESERVE_SKEW,
+    LP_SWEEP_MAX_BURST_WINDOW_SEC,
+    LP_SWEEP_MIN_ACTION_INTENSITY,
+    LP_SWEEP_MIN_BURST_EVENT_COUNT,
+    LP_SWEEP_MIN_RESERVE_SKEW,
+    LP_SWEEP_MIN_SAME_POOL_CONTINUITY,
+    LP_SWEEP_MIN_VOLUME_SURGE_RATIO,
     LP_BUY_OBSERVE_THRESHOLD_RATIO_FLOOR,
     LP_BUY_TREND_BURST_MIN_ACTION_INTENSITY,
     LP_BUY_TREND_BURST_MIN_VOLUME_SURGE_RATIO,
@@ -111,6 +117,89 @@ EXCHANGE_STRICT_ROLES = {
     "exchange_trading_wallet",
 }
 LP_FAST_EXCEPTION_GATE_VERSION = "lp_directional_trend_state_v4"
+LP_SWEEP_SEMANTIC_SUBTYPES = {
+    "buy_side_liquidity_sweep",
+    "sell_side_liquidity_sweep",
+}
+
+
+def detect_lp_liquidity_sweep(
+    *,
+    event: Event,
+    reserve_skew: float,
+    action_intensity: float,
+    same_pool_continuity: int,
+    multi_pool_resonance: int,
+    pool_volume_surge_ratio: float,
+    lp_burst_event_count: int,
+    lp_burst_window_sec: int,
+    price_impact_ratio: float,
+    min_price_impact_ratio: float,
+    liquidation_stage: str,
+) -> dict:
+    intent_type = str(event.intent_type or "")
+    if event.kind != "swap":
+        return {
+            "detected": False,
+            "semantic_subtype": "",
+            "sweep_confidence": "",
+            "display_label": "",
+            "reason": "non_swap_event",
+        }
+    if intent_type not in {"pool_buy_pressure", "pool_sell_pressure"}:
+        return {
+            "detected": False,
+            "semantic_subtype": "",
+            "sweep_confidence": "",
+            "display_label": "",
+            "reason": "non_directional_lp_intent",
+        }
+    if str(liquidation_stage or "none") == "execution":
+        return {
+            "detected": False,
+            "semantic_subtype": "",
+            "sweep_confidence": "",
+            "display_label": "",
+            "reason": "liquidation_execution_priority",
+        }
+
+    burst_like = (
+        pool_volume_surge_ratio >= LP_SWEEP_MIN_VOLUME_SURGE_RATIO
+        or same_pool_continuity >= LP_SWEEP_MIN_SAME_POOL_CONTINUITY
+        or (
+            lp_burst_event_count >= LP_SWEEP_MIN_BURST_EVENT_COUNT
+            and lp_burst_window_sec > 0
+            and lp_burst_window_sec <= LP_SWEEP_MAX_BURST_WINDOW_SEC
+        )
+    )
+    structure_ready = (
+        reserve_skew >= LP_SWEEP_MIN_RESERVE_SKEW
+        and action_intensity >= LP_SWEEP_MIN_ACTION_INTENSITY
+        and burst_like
+        and price_impact_ratio >= float(min_price_impact_ratio or 0.0)
+    )
+    if not structure_ready:
+        return {
+            "detected": False,
+            "semantic_subtype": "",
+            "sweep_confidence": "",
+            "display_label": "",
+            "reason": "lp_sweep_structure_not_met",
+        }
+
+    del multi_pool_resonance
+    semantic_subtype = (
+        "buy_side_liquidity_sweep"
+        if intent_type == "pool_buy_pressure"
+        else "sell_side_liquidity_sweep"
+    )
+    return {
+        "detected": True,
+        "semantic_subtype": semantic_subtype,
+        "sweep_confidence": "likely",
+        "display_label": "买方清扫" if semantic_subtype == "buy_side_liquidity_sweep" else "卖方清扫",
+        "reason": "swap_short_window_liquidity_consumption",
+    }
 
 
 @dataclass
@@ -565,6 +654,28 @@ class SignalQualityGate:
             "lp_continuity_filtered_by_min_usd": int(lp_analysis.get("lp_continuity_filtered_by_min_usd") or 0),
             "lp_resonance_filtered_by_min_usd": int(lp_analysis.get("lp_resonance_filtered_by_min_usd") or 0),
         }
+        lp_sweep_meta = detect_lp_liquidity_sweep(
+            event=event,
+            reserve_skew=reserve_skew,
+            action_intensity=action_intensity,
+            same_pool_continuity=same_pool_continuity,
+            multi_pool_resonance=multi_pool_resonance,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            lp_burst_event_count=lp_burst_event_count,
+            lp_burst_window_sec=lp_burst_window_sec,
+            price_impact_ratio=price_impact_ratio,
+            min_price_impact_ratio=self.min_price_impact_ratio,
+            liquidation_stage=liquidation_stage,
+        )
+        metrics.update({
+            "lp_semantic_subtype": str(lp_sweep_meta.get("semantic_subtype") or ""),
+            "semantic_subtype": str(lp_sweep_meta.get("semantic_subtype") or ""),
+            "lp_sweep_detected": bool(lp_sweep_meta.get("detected")),
+            "lp_sweep_confidence": str(lp_sweep_meta.get("sweep_confidence") or ""),
+            "lp_sweep_display_label": str(lp_sweep_meta.get("display_label") or ""),
+            "lp_sweep_reason": str(lp_sweep_meta.get("reason") or ""),
+            "lp_sweep_min_price_impact_ratio": float(self.min_price_impact_ratio),
+        })
         lp_burst_fastlane_ready, lp_burst_fastlane_reason = self._allow_lp_burst_fastlane_exception(
             event=event,
             lp_event=lp_event,
