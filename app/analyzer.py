@@ -125,14 +125,14 @@ class BehaviorAnalyzer:
                 consecutive_sell = self._count_consecutive_swaps(recent, side="卖出")
                 if event.side == "买入" and consecutive_buy >= max(self.min_consecutive_count - 1, 2):
                     return {
-                        "behavior_type": "accumulation",
+                        "behavior_type": "pool_buy_pressure",
                         "confidence": min(0.92, 0.68 + 0.06 * consecutive_buy),
                         "window_sec": self.window_sec,
                         "reason": f"同池连续买压 {consecutive_buy} 笔",
                     }
                 if event.side == "卖出" and consecutive_sell >= max(self.min_consecutive_count - 1, 2):
                     return {
-                        "behavior_type": "distribution",
+                        "behavior_type": "pool_sell_pressure",
                         "confidence": min(0.92, 0.68 + 0.06 * consecutive_sell),
                         "window_sec": self.window_sec,
                         "reason": f"同池连续卖压 {consecutive_sell} 笔",

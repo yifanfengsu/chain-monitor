@@ -2094,6 +2094,13 @@ class SignalPipeline:
                 or signal_context.get("smart_money_delivery_policy_reason")
                 or ("smart_money_execution_only_allowed" if allowed else "smart_money_execution_only_blocked")
             )
+        if role_group == "market_maker":
+            return str(
+                event_metadata.get("market_maker_delivery_policy_reason")
+                or signal_metadata.get("market_maker_delivery_policy_reason")
+                or signal_context.get("market_maker_delivery_policy_reason")
+                or ("market_maker_execution_only_allowed" if allowed else "market_maker_execution_only_blocked")
+            )
         stage_budget_reason = str(
             event_metadata.get("stage_budget_reason")
             or signal_metadata.get("stage_budget_reason")
@@ -3770,11 +3777,13 @@ class SignalPipeline:
             "value_weight_multiplier": _num(gate_metrics.get("value_weight_multiplier")),
             "role_group_value_bonus": _num(gate_metrics.get("role_group_value_bonus")),
             "smart_money_value_bonus": _num(gate_metrics.get("smart_money_value_bonus")),
+            "market_maker_value_bonus": _num(gate_metrics.get("market_maker_value_bonus")),
             "smart_money_non_exec_exception_applied": _bool_value(gate_metrics.get("smart_money_non_exec_exception_applied")),
             "smart_money_non_exec_exception_reason": _text(gate_metrics.get("smart_money_non_exec_exception_reason")),
             "smart_money_non_exec_threshold_ratio": _num(gate_metrics.get("smart_money_non_exec_threshold_ratio")),
             "smart_money_non_exec_quality_gap": _num(gate_metrics.get("smart_money_non_exec_quality_gap")),
             "smart_money_non_exec_value_bonus": _num(gate_metrics.get("smart_money_non_exec_value_bonus")),
+            "market_maker_non_exec_value_bonus": _num(gate_metrics.get("market_maker_non_exec_value_bonus")),
             "smart_money_execution_only_mode": _bool_value(
                 event_metadata.get("smart_money_execution_only_mode"),
                 signal_metadata.get("smart_money_execution_only_mode"),
@@ -3795,6 +3804,11 @@ class SignalPipeline:
                 signal_metadata.get("smart_money_delivery_policy_mode"),
                 signal_context.get("smart_money_delivery_policy_mode"),
             ),
+            "smart_money_delivery_policy_reason": _text(
+                event_metadata.get("smart_money_delivery_policy_reason"),
+                signal_metadata.get("smart_money_delivery_policy_reason"),
+                signal_context.get("smart_money_delivery_policy_reason"),
+            ),
             "smart_money_delivery_policy_hard_whitelist_applied": _bool_value(
                 event_metadata.get("smart_money_delivery_policy_hard_whitelist_applied"),
                 signal_metadata.get("smart_money_delivery_policy_hard_whitelist_applied"),
@@ -3810,6 +3824,31 @@ class SignalPipeline:
                 signal_metadata.get("market_maker_execution_only_mode"),
                 signal_context.get("market_maker_execution_only_mode"),
             ),
+            "market_maker_legacy_inventory_branch_disabled": _bool_value(
+                event_metadata.get("market_maker_legacy_inventory_branch_disabled"),
+                signal_metadata.get("market_maker_legacy_inventory_branch_disabled"),
+                signal_context.get("market_maker_legacy_inventory_branch_disabled"),
+            ),
+            "market_maker_delivery_policy_mode": _text(
+                event_metadata.get("market_maker_delivery_policy_mode"),
+                signal_metadata.get("market_maker_delivery_policy_mode"),
+                signal_context.get("market_maker_delivery_policy_mode"),
+            ),
+            "market_maker_delivery_policy_reason": _text(
+                event_metadata.get("market_maker_delivery_policy_reason"),
+                signal_metadata.get("market_maker_delivery_policy_reason"),
+                signal_context.get("market_maker_delivery_policy_reason"),
+            ),
+            "market_maker_delivery_policy_hard_whitelist_applied": _bool_value(
+                event_metadata.get("market_maker_delivery_policy_hard_whitelist_applied"),
+                signal_metadata.get("market_maker_delivery_policy_hard_whitelist_applied"),
+                signal_context.get("market_maker_delivery_policy_hard_whitelist_applied"),
+            ),
+            "market_maker_allowed_reason_whitelist": _first_value(
+                event_metadata.get("market_maker_allowed_reason_whitelist"),
+                signal_metadata.get("market_maker_allowed_reason_whitelist"),
+                signal_context.get("market_maker_allowed_reason_whitelist"),
+            ) or [],
             "market_maker_observe_exception_applied": _bool_value(
                 gate_metrics.get("market_maker_observe_exception_applied"),
                 signal_metadata.get("market_maker_observe_exception_applied"),
@@ -3825,6 +3864,18 @@ class SignalPipeline:
             "market_maker_quality_gap": _num(
                 gate_metrics.get("market_maker_quality_gap"),
                 signal_metadata.get("market_maker_quality_gap"),
+            ),
+            "market_maker_context_confirmed": _bool_value(
+                event_metadata.get("market_maker_context_confirmed"),
+                signal_metadata.get("market_maker_context_confirmed"),
+            ),
+            "market_maker_context_strength": _int_value(
+                event_metadata.get("market_maker_context_strength"),
+                signal_metadata.get("market_maker_context_strength"),
+            ),
+            "market_maker_inventory_context": _bool_value(
+                event_metadata.get("market_maker_inventory_context"),
+                signal_metadata.get("market_maker_inventory_context"),
             ),
             "gate_exception_passed": _bool_value(gate_metrics.get("gate_exception_passed")),
             "smart_money_style_variant": _text(

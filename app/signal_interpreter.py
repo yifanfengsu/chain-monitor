@@ -6,6 +6,7 @@ from config import (
 )
 from constants import ETH_EQUIVALENT_CONTRACTS, STABLE_TOKEN_CONTRACTS
 from filter import format_address_label, get_address_meta, shorten_address
+from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
 
 
@@ -76,11 +77,11 @@ class SignalInterpreter:
         "internal_rebalance": "Internal_Rebalance",
         "active_trade": "Active_Trade",
         "swap_flow": "Swap_Flow",
-        "lp_buy_pressure": "LP_Buy_Pressure",
-        "lp_sell_pressure": "LP_Sell_Pressure",
-        "lp_liquidity_add": "LP_Liquidity_Add",
-        "lp_liquidity_remove": "LP_Liquidity_Remove",
-        "lp_rebalance": "LP_Rebalance",
+        "pool_buy_pressure": "Pool_Buy_Pressure",
+        "pool_sell_pressure": "Pool_Sell_Pressure",
+        "liquidity_addition": "Liquidity_Addition",
+        "liquidity_removal": "Liquidity_Removal",
+        "pool_rebalance": "Pool_Rebalance",
     }
 
     def __init__(
@@ -104,6 +105,7 @@ class SignalInterpreter:
     ) -> InterpretationDecision:
         gate_metrics = gate_metrics or {}
         watch_meta = watch_meta or get_address_meta(event.address)
+        self._canonicalize_pool_semantics(event, signal)
         raw = event.metadata.get("raw") or {}
         lp_event = self._is_lp_event(event, watch_meta, raw)
         counterparty_meta = self._resolve_counterparty_meta(event, watch_context)
@@ -1320,6 +1322,17 @@ class SignalInterpreter:
             "style_variant": style_variant,
         }
 
+    def _canonicalize_pool_semantics(self, event: Event, signal: Signal) -> None:
+        canonical_intent = canonicalize_pool_semantic_key(event.intent_type)
+        if canonical_intent:
+            event.intent_type = canonical_intent
+        canonical_signal_type = canonicalize_pool_semantic_key(signal.type)
+        if canonical_signal_type:
+            signal.type = canonical_signal_type
+        canonical_signal_intent = canonicalize_pool_semantic_key(signal.intent_type)
+        if canonical_signal_intent:
+            signal.intent_type = canonical_signal_intent
+
     def _liquidation_meta(self, event: Event) -> dict:
         return {
             "active": str(event.metadata.get("liquidation_stage") or "none") in {"risk", "execution"},
@@ -1821,5 +1834,5 @@ class SignalInterpreter:
         return quote_text, token_text
 
     def _signal_type_label(self, signal_type: str | None) -> str:
-        normalized = str(signal_type or "")
+        normalized = canonicalize_pool_semantic_key(signal_type)
         return self.SIGNAL_TYPE_LABELS.get(normalized, normalized or "Unknown_Signal")

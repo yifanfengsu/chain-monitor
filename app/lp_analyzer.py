@@ -3,10 +3,37 @@ from config import LP_STRUCTURE_MIN_USD_PER_EVENT
 from models import Event
 
 
+POOL_CANONICAL_SEMANTIC_KEYS = {
+    "pool_buy_pressure",
+    "pool_sell_pressure",
+    "liquidity_addition",
+    "liquidity_removal",
+    "pool_rebalance",
+    "pool_noise",
+}
+POOL_SEMANTIC_KEY_ALIASES = {
+    "lp_buy_pressure": "pool_buy_pressure",
+    "LP_Buy_Pressure": "pool_buy_pressure",
+    "lp_sell_pressure": "pool_sell_pressure",
+    "LP_Sell_Pressure": "pool_sell_pressure",
+    "lp_liquidity_add": "liquidity_addition",
+    "LP_Liquidity_Add": "liquidity_addition",
+    "lp_liquidity_remove": "liquidity_removal",
+    "LP_Liquidity_Remove": "liquidity_removal",
+    "lp_rebalance": "pool_rebalance",
+    "LP_Rebalance": "pool_rebalance",
+}
 LP_BUY_INTENTS = {"pool_buy_pressure"}
 LP_SELL_INTENTS = {"pool_sell_pressure"}
 LP_LIQUIDITY_INTENTS = {"liquidity_addition", "liquidity_removal", "pool_rebalance", "pool_noise"}
 LP_ALL_INTENTS = LP_BUY_INTENTS | LP_SELL_INTENTS | LP_LIQUIDITY_INTENTS
+
+
+def canonicalize_pool_semantic_key(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    return POOL_SEMANTIC_KEY_ALIASES.get(normalized, normalized)
 
 
 def _is_stable(token_contract: str | None, token_symbol: str | None) -> bool:
@@ -27,7 +54,7 @@ def _display_symbol(symbol: str | None) -> str:
 
 
 class LPAnalyzer:
-    """LP 池子专用解析与意图确认逻辑。"""
+    """LP 池子专用解析与意图确认逻辑，描述池子 order-flow / 流动性结构。"""
 
     def __init__(self) -> None:
         self.structure_min_usd_per_event = float(LP_STRUCTURE_MIN_USD_PER_EVENT)
@@ -50,6 +77,7 @@ class LPAnalyzer:
         base_flow = flows.get(base_token)
         quote_flow = flows.get(quote_token)
         if base_flow is None or quote_flow is None:
+            # TODO: CLMM position manager 路径需要独立 parser；当前只覆盖双腿 transfer 可见的池子结构流。
             missing_legs = []
             if base_flow is None:
                 missing_legs.append("base_leg")

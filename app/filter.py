@@ -140,10 +140,12 @@ EXCHANGE_STRATEGY_ROLES = {
     "exchange_deposit_wallet",
     "exchange_trading_wallet",
 }
+MARKET_MAKER_STRATEGY_ROLES = {
+    "market_maker_wallet",
+}
 SMART_MONEY_STRATEGY_ROLES = {
     "smart_money_wallet",
     "alpha_wallet",
-    "market_maker_wallet",
     "celebrity_wallet",
 }
 PRIORITY_SMART_MONEY_STRATEGY_ROLES = {
@@ -803,7 +805,7 @@ def is_priority_smart_money_strategy_role(strategy_role: str | None) -> bool:
 
 
 def is_market_maker_strategy_role(strategy_role: str | None) -> bool:
-    return str(strategy_role or "unknown") == "market_maker_wallet"
+    return str(strategy_role or "unknown") in MARKET_MAKER_STRATEGY_ROLES
 
 
 def is_lp_strategy_role(strategy_role: str | None) -> bool:
@@ -816,6 +818,8 @@ def strategy_role_group(strategy_role: str | None) -> str:
         return "lp_pool"
     if is_exchange_strategy_role(normalized):
         return "exchange"
+    if is_market_maker_strategy_role(normalized):
+        return "market_maker"
     if is_smart_money_strategy_role(normalized):
         return "smart_money"
     return "other"

@@ -129,15 +129,34 @@ LP_PREALERT_INTENTS = {
 }
 SMART_MONEY_ALLOWED_REASON_WHITELIST = sorted(
     [
-        "market_maker_execution_observe",
-        "market_maker_execution_primary",
         "smart_money_execution_observe",
         "smart_money_execution_primary",
         "smart_money_continuous_execution_primary",
     ]
 )
+MARKET_MAKER_ALLOWED_REASON_WHITELIST = sorted(
+    [
+        "market_maker_execution_observe",
+        "market_maker_execution_primary",
+    ]
+)
+SMART_MONEY_NON_EXECUTION_INTENTS = {
+    "pure_transfer",
+    "internal_rebalance",
+    "possible_buy_preparation",
+    "possible_sell_preparation",
+}
+MARKET_MAKER_NON_EXECUTION_INTENTS = SMART_MONEY_NON_EXECUTION_INTENTS | {
+    "market_making_inventory_move",
+}
+MARKET_MAKER_INVENTORY_BEHAVIORS = {
+    "inventory_management",
+    "inventory_shift",
+    "inventory_expansion",
+    "inventory_distribution",
+}
 ROLE_PRIORITY_TIER_LABELS = {
-    "tier1": "smart_money_priority",
+    "tier1": "priority_watch",
     "tier2": "lp_pool",
     "tier3": "exchange",
     "tier4": "other",
@@ -297,7 +316,8 @@ class StrategyEngine:
         market_maker = is_market_maker_strategy_role(strategy_role)
         behavior_type = str(behavior.get("behavior_type") or "normal")
         behavior_conf = float(behavior.get("confidence") or 0.0)
-        address_score_value = float(address_score.get("score") or 0.0)
+        address_score_value = float(address_score.get("alpha_score") or address_score.get("score") or 0.0)
+        address_structure_score = float(address_score.get("structure_score") or address_score.get("score") or 0.0)
         token_score_value = float(token_score.get("score") or token_score.get("token_quality_score") or 0.0)
         intent_type = str(event.intent_type or "unknown_intent")
         intent_confidence = float(event.intent_confidence or 0.0)
@@ -377,6 +397,22 @@ class StrategyEngine:
         ) = self._observe_exception_flags(gate_metrics)
         market_maker_threshold_ratio = float(gate_metrics.get("market_maker_threshold_ratio") or 0.0)
         market_maker_quality_gap = float(gate_metrics.get("market_maker_quality_gap") or 0.0)
+        market_maker_inventory_context = bool(
+            market_maker
+            and (
+                intent_type == "market_making_inventory_move"
+                or behavior_type in MARKET_MAKER_INVENTORY_BEHAVIORS
+            )
+        )
+        market_maker_context_strength = self._market_maker_context_strength(
+            is_real_execution=is_real_execution,
+            confirmation_score=confirmation_score,
+            resonance_score=resonance_score,
+            behavior_type=behavior_type,
+            inventory_context=market_maker_inventory_context,
+            observe_exception_applied=market_maker_observe_exception_applied,
+        )
+        market_maker_context_confirmed = bool(market_maker and market_maker_context_strength >= 1)
         is_lp_below_min_usd_exception_candidate = self._allow_lp_below_min_usd_observe_exception(
             role_group=role_group,
             intent_type=intent_type,
@@ -394,7 +430,22 @@ class StrategyEngine:
             quality_score=quality_score,
             relative_address_size=relative_address_size,
             smart_money_non_exec_exception_applied=smart_money_non_exec_exception_applied,
+        )
+        market_maker_observe_boost_candidate = self._allow_market_maker_non_exec_signal_exception(
+            event=event,
+            role_group=role_group,
+            strategy_role=strategy_role,
+            pricing_status=pricing_status,
+            pricing_confidence=pricing_confidence,
+            confirmation_score=confirmation_score,
+            resonance_score=resonance_score,
+            quality_score=quality_score,
+            relative_address_size=relative_address_size,
+            market_maker_context_confirmed=market_maker_context_confirmed,
             market_maker_observe_exception_applied=market_maker_observe_exception_applied,
+        )
+        observe_boost_candidate = bool(
+            smart_money_observe_boost_candidate or market_maker_observe_boost_candidate
         )
         event.metadata.update({
             "role_priority_tier": role_priority_tier,
@@ -402,6 +453,9 @@ class StrategyEngine:
             "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
             "gate_relaxed_by_role": str(gate_metrics.get("gate_relaxed_by_role") or event.metadata.get("gate_relaxed_by_role") or ""),
             "lp_prealert_applied": lp_prealert_applied,
+            "market_maker_inventory_context": market_maker_inventory_context,
+            "market_maker_context_strength": market_maker_context_strength,
+            "market_maker_context_confirmed": market_maker_context_confirmed,
         })
 
         def reject(
@@ -491,7 +545,7 @@ class StrategyEngine:
             and confirmation_score < 0.5
             and quality_score < 0.78
             and not market_maker_observe_exception_applied
-            and not smart_money_observe_boost_candidate
+            and not observe_boost_candidate
         ):
             reject("strategy_observe_behavior_below_min")
             return None
@@ -502,7 +556,7 @@ class StrategyEngine:
             and relative_address_size < 2.4
             and not (priority_smart_money and is_real_execution)
             and not market_maker_observe_exception_applied
-            and not smart_money_observe_boost_candidate
+            and not observe_boost_candidate
         ):
             reject("strategy_observe_quality_below_min")
             return None
@@ -514,7 +568,7 @@ class StrategyEngine:
             and not is_real_execution
             and role_group != "lp_pool"
             and not market_maker_observe_exception_applied
-            and not smart_money_observe_boost_candidate
+            and not observe_boost_candidate
         ):
             reject("strategy_observe_quality_below_min")
             return None
@@ -524,7 +578,7 @@ class StrategyEngine:
             and confirmation_score < 0.38
             and resonance_score < 0.35
             and quality_score < 0.8
-            and role_group not in {"smart_money", "exchange"}
+            and role_group not in {"smart_money", "market_maker", "exchange"}
         ):
             reject("strategy_observe_intent_not_supported")
             return None
@@ -607,6 +661,8 @@ class StrategyEngine:
             min_confidence = min(min_confidence, 0.62)
         if smart_money_observe_boost_candidate:
             min_confidence = min(min_confidence, 0.38)
+        if market_maker_observe_boost_candidate:
+            min_confidence = min(min_confidence, 0.52)
         if confidence < min_confidence:
             reject(
                 "strategy_lp_threshold_not_met" if role_group == "lp_pool" else (
@@ -614,12 +670,16 @@ class StrategyEngine:
                 ),
                 observe_candidate_reason=(
                     "lp_prealert_candidate" if lp_prealert_applied else (
-                        "market_maker_non_execution_observe" if market_maker and smart_money_observe_boost_candidate else (
+                        "market_maker_non_execution_observe" if market_maker_observe_boost_candidate else (
                             "smart_money_non_execution_observe" if smart_money_observe_boost_candidate else ""
                         )
                     )
                 ),
-                observe_relaxed_by_role="tier1_smart_money_high_value" if smart_money_observe_boost_candidate else "",
+                observe_relaxed_by_role=(
+                    "tier1_market_maker_high_value" if market_maker_observe_boost_candidate else (
+                        "tier1_smart_money_high_value" if smart_money_observe_boost_candidate else ""
+                    )
+                ),
             )
             return None
 
@@ -682,6 +742,8 @@ class StrategyEngine:
             metadata={
                 "base_threshold_usd": round(base_threshold, 2),
                 "address_grade": address_score.get("grade"),
+                "address_alpha_score": round(address_score_value, 2),
+                "address_structure_score": round(address_structure_score, 2),
                 "token_grade": token_score.get("grade"),
                 "behavior_reason": behavior.get("reason"),
                 "intent_confidence": round(intent_confidence, 3),
@@ -738,6 +800,10 @@ class StrategyEngine:
                 "market_maker_threshold_ratio": round(market_maker_threshold_ratio, 3),
                 "market_maker_quality_gap": round(market_maker_quality_gap, 3),
                 "market_maker_delivery_cap": "observe_only" if market_maker_observe_exception_applied else "",
+                "market_maker_inventory_context": market_maker_inventory_context,
+                "market_maker_context_strength": market_maker_context_strength,
+                "market_maker_context_confirmed": market_maker_context_confirmed,
+                "market_maker_non_exec_boost_candidate": market_maker_observe_boost_candidate,
                 "liquidation_stage": str(event.metadata.get("liquidation_stage") or "none"),
                 "liquidation_score": round(float(event.metadata.get("liquidation_score") or 0.0), 3),
                 "liquidation_side": str(event.metadata.get("liquidation_side") or "unknown"),
@@ -844,6 +910,39 @@ class StrategyEngine:
             market_maker_observe_exception_applied,
             market_maker_observe_exception_reason,
         ) = self._observe_exception_flags(gate_metrics)
+        market_maker_inventory_context = self._normalize_bool_flag(
+            signal.metadata.get("market_maker_inventory_context")
+            or event.metadata.get("market_maker_inventory_context")
+        ) or (
+            market_maker
+            and (
+                intent_type == "market_making_inventory_move"
+                or str(getattr(event, "behavior_type", "") or signal.behavior_type or "") in MARKET_MAKER_INVENTORY_BEHAVIORS
+            )
+        )
+        market_maker_context_strength_raw = (
+            signal.metadata.get("market_maker_context_strength")
+            or event.metadata.get("market_maker_context_strength")
+            or 0
+        )
+        try:
+            market_maker_context_strength = int(market_maker_context_strength_raw)
+        except (TypeError, ValueError):
+            market_maker_context_strength = 0
+        if market_maker and market_maker_context_strength <= 0:
+            market_maker_context_strength = self._market_maker_context_strength(
+                is_real_execution=is_real_execution,
+                confirmation_score=confirmation_score,
+                resonance_score=resonance_score,
+                behavior_type=str(getattr(event, "behavior_type", "") or signal.behavior_type or ""),
+                inventory_context=market_maker_inventory_context,
+                observe_exception_applied=market_maker_observe_exception_applied,
+            )
+        market_maker_context_confirmed = self._normalize_bool_flag(
+            signal.metadata.get("market_maker_context_confirmed")
+            or event.metadata.get("market_maker_context_confirmed")
+            or (market_maker and market_maker_context_strength >= 1)
+        )
         lp_burst_fastlane_ready_raw = None
         if gate_metrics and "lp_burst_fastlane_ready" in gate_metrics:
             lp_burst_fastlane_ready_raw = gate_metrics.get("lp_burst_fastlane_ready")
@@ -932,7 +1031,20 @@ class StrategyEngine:
         )
         possible_keeper_executor = bool(gate_metrics.get("possible_keeper_executor"))
         possible_vault_or_auction = bool(gate_metrics.get("possible_vault_or_auction"))
-        if role_group == "smart_money":
+        if role_group == "market_maker":
+            continuation_score = float(max(same_side_addresses, market_maker_context_strength, 1 if market_maker_context_confirmed else 0))
+            size_expansion_ratio = max(
+                float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
+                1.0,
+            )
+            explicit_candidate_intent = is_real_execution or market_maker_inventory_context or intent_type in {"possible_buy_preparation", "possible_sell_preparation"}
+            context_supported = bool(
+                market_maker_context_confirmed
+                or market_maker_observe_exception_applied
+                or same_side_addresses >= 1
+                or resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE
+            )
+        elif role_group == "smart_money":
             continuation_score = max(
                 float(smart_money_execution_count),
                 2.0 if smart_money_same_actor_continuation else 0.0,
@@ -1367,36 +1479,75 @@ class StrategyEngine:
                 )
             return self._apply_delivery(event, signal, "drop", "exchange_observe_drop")
 
-        if role_group == "smart_money":
+        if role_group == "market_maker":
             if is_real_execution:
-                if market_maker:
-                    strict_market_maker_primary = bool(MARKET_MAKER_PRIMARY_STRICT)
-                    if (
-                        smart_money_case_confirmed
+                strict_market_maker_primary = bool(MARKET_MAKER_PRIMARY_STRICT)
+                if primary_route["qualified"] and (
+                    (
+                        market_maker_context_confirmed
                         and intent_confirmed
                         and confirmation_score >= (0.76 if strict_market_maker_primary else 0.72)
                         and quality_score >= (0.84 if strict_market_maker_primary else 0.82)
-                    ) or (
+                    )
+                    or (
                         confirmation_score >= (0.86 if strict_market_maker_primary else 0.82)
                         and quality_score >= (0.88 if strict_market_maker_primary else 0.84)
                         and resonance_score >= (0.54 if strict_market_maker_primary else 0.50)
-                        and smart_money_execution_count >= 2
-                    ):
-                        return self._apply_delivery(
-                            event,
-                            signal,
-                            "primary",
-                            "market_maker_execution_primary",
-                        )
-                    if (
-                        confirmation_score >= MARKET_MAKER_OBSERVE_MIN_CONFIRMATION
-                        or resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE
-                        or quality_score >= max(MARKET_MAKER_OBSERVE_GATE_FLOOR + 0.10, 0.69)
-                        or smart_money_case_confirmed
-                    ):
-                        return self._apply_delivery(event, signal, "observe", "market_maker_execution_observe")
-                    return self._apply_delivery(event, signal, "observe", "market_maker_execution_observe")
+                        and continuation_score >= 1.0
+                    )
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "primary",
+                        "market_maker_execution_primary",
+                        route_context=primary_route,
+                    )
+                if (
+                    observe_route["qualified"]
+                    or market_maker_context_confirmed
+                    or market_maker_observe_exception_applied
+                    or confirmation_score >= MARKET_MAKER_OBSERVE_MIN_CONFIRMATION
+                    or resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE
+                    or quality_score >= max(MARKET_MAKER_OBSERVE_GATE_FLOOR + 0.10, 0.69)
+                ):
+                    return self._apply_delivery(
+                        event,
+                        signal,
+                        "observe",
+                        "market_maker_execution_observe",
+                        route_context=observe_route,
+                    )
+                return self._apply_delivery(event, signal, "observe", "market_maker_execution_observe")
+            if self._allow_market_maker_high_value_non_execution_observe(
+                event=event,
+                signal=signal,
+                confirmation_score=confirmation_score,
+                quality_score=quality_score,
+                resonance_score=resonance_score,
+                pricing_confidence=pricing_confidence,
+                market_maker_context_confirmed=market_maker_context_confirmed,
+                market_maker_inventory_context=market_maker_inventory_context,
+                same_side_addresses=same_side_addresses,
+                observe_route=observe_route,
+                market_maker_observe_exception_applied=market_maker_observe_exception_applied,
+            ):
+                return self._apply_delivery(
+                    event,
+                    signal,
+                    "observe",
+                    "market_maker_non_execution_observe",
+                    route_context=observe_route,
+                )
+            return self._drop_smart_money_non_execution(
+                event,
+                signal,
+                market_maker=True,
+                reason="market_maker_non_execution_archived",
+            )
 
+        if role_group == "smart_money":
+            if is_real_execution:
                 if (
                     smart_money_case_confirmed
                     or case_stage == "execution_followup_confirmed"
@@ -1442,31 +1593,24 @@ class StrategyEngine:
                 resonance_score=resonance_score,
                 pricing_confidence=pricing_confidence,
                 priority_smart_money=priority_smart_money,
-                market_maker=market_maker,
                 smart_money_case_confirmed=smart_money_case_confirmed,
                 smart_money_same_actor_continuation=smart_money_same_actor_continuation,
                 same_side_smart_money_addresses=same_side_smart_money_addresses,
                 observe_route=observe_route,
                 smart_money_non_exec_exception_applied=smart_money_non_exec_exception_applied,
-                market_maker_observe_exception_applied=market_maker_observe_exception_applied,
             ):
                 return self._apply_delivery(
                     event,
                     signal,
                     "observe",
-                    "market_maker_non_execution_observe" if market_maker else "smart_money_non_execution_observe",
+                    "smart_money_non_execution_observe",
                     route_context=observe_route,
                 )
-            archive_reason = (
-                "market_maker_non_execution_archived"
-                if market_maker else
-                "smart_money_non_execution_archived"
-            )
             return self._drop_smart_money_non_execution(
                 event,
                 signal,
-                market_maker=market_maker,
-                reason=archive_reason,
+                market_maker=False,
+                reason="smart_money_non_execution_archived",
             )
 
         if is_real_execution:
@@ -1513,24 +1657,16 @@ class StrategyEngine:
         resonance_score: float,
         pricing_confidence: float,
         priority_smart_money: bool,
-        market_maker: bool,
         smart_money_case_confirmed: bool,
         smart_money_same_actor_continuation: bool,
         same_side_smart_money_addresses: int,
         observe_route: dict,
         smart_money_non_exec_exception_applied: bool,
-        market_maker_observe_exception_applied: bool,
     ) -> bool:
         intent_type = str(event.intent_type or signal.intent_type or "")
-        if intent_type not in {
-            "pure_transfer",
-            "internal_rebalance",
-            "market_making_inventory_move",
-            "possible_buy_preparation",
-            "possible_sell_preparation",
-        }:
+        if intent_type not in SMART_MONEY_NON_EXECUTION_INTENTS:
             return False
-        if not (priority_smart_money or market_maker):
+        if not priority_smart_money:
             return False
         if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
             return False
@@ -1552,11 +1688,78 @@ class StrategyEngine:
             strength_hits += 1
         if observe_route.get("qualified"):
             strength_hits += 1
-        if smart_money_non_exec_exception_applied or market_maker_observe_exception_applied:
+        if smart_money_non_exec_exception_applied:
             strength_hits += 1
 
-        minimum_hits = 1 if (smart_money_non_exec_exception_applied or market_maker_observe_exception_applied) else (1 if market_maker else 2)
+        minimum_hits = 1 if smart_money_non_exec_exception_applied else 2
         return strength_hits >= minimum_hits
+
+    def _allow_market_maker_high_value_non_execution_observe(
+        self,
+        *,
+        event: Event,
+        signal: Signal,
+        confirmation_score: float,
+        quality_score: float,
+        resonance_score: float,
+        pricing_confidence: float,
+        market_maker_context_confirmed: bool,
+        market_maker_inventory_context: bool,
+        same_side_addresses: int,
+        observe_route: dict,
+        market_maker_observe_exception_applied: bool,
+    ) -> bool:
+        intent_type = str(event.intent_type or signal.intent_type or "")
+        if intent_type not in MARKET_MAKER_NON_EXECUTION_INTENTS:
+            return False
+        if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
+            return False
+        if pricing_confidence < 0.62:
+            return False
+        if quality_score < max(self.smart_money_high_value_observe_min_quality - 0.02, 0.60):
+            return False
+
+        strength_hits = 0
+        if confirmation_score >= MARKET_MAKER_OBSERVE_MIN_CONFIRMATION:
+            strength_hits += 1
+        if resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE:
+            strength_hits += 1
+        if market_maker_context_confirmed:
+            strength_hits += 1
+        if market_maker_inventory_context:
+            strength_hits += 1
+        if same_side_addresses >= 1:
+            strength_hits += 1
+        if observe_route.get("qualified"):
+            strength_hits += 1
+        if market_maker_observe_exception_applied:
+            strength_hits += 1
+
+        minimum_hits = 1 if market_maker_observe_exception_applied else 2
+        return strength_hits >= minimum_hits
+
+    def _market_maker_context_strength(
+        self,
+        *,
+        is_real_execution: bool,
+        confirmation_score: float,
+        resonance_score: float,
+        behavior_type: str,
+        inventory_context: bool,
+        observe_exception_applied: bool,
+    ) -> int:
+        hits = 0
+        if is_real_execution:
+            hits += 1
+        if confirmation_score >= MARKET_MAKER_OBSERVE_MIN_CONFIRMATION:
+            hits += 1
+        if resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE:
+            hits += 1
+        if behavior_type in MARKET_MAKER_INVENTORY_BEHAVIORS or inventory_context:
+            hits += 1
+        if observe_exception_applied:
+            hits += 1
+        return hits
 
     def _allow_smart_money_non_exec_signal_exception(
         self,
@@ -1571,19 +1774,12 @@ class StrategyEngine:
         quality_score: float,
         relative_address_size: float,
         smart_money_non_exec_exception_applied: bool,
-        market_maker_observe_exception_applied: bool,
     ) -> bool:
         if role_group != "smart_money":
             return False
-        if strategy_role not in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
+        if strategy_role not in {"smart_money_wallet", "alpha_wallet", "celebrity_wallet"}:
             return False
-        if str(event.intent_type or "") not in {
-            "pure_transfer",
-            "internal_rebalance",
-            "market_making_inventory_move",
-            "possible_buy_preparation",
-            "possible_sell_preparation",
-        }:
+        if str(event.intent_type or "") not in SMART_MONEY_NON_EXECUTION_INTENTS:
             return False
         if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.62:
             return False
@@ -1598,7 +1794,45 @@ class StrategyEngine:
             strength_hits += 1
         if relative_address_size >= 1.08:
             strength_hits += 1
-        if smart_money_non_exec_exception_applied or market_maker_observe_exception_applied:
+        if smart_money_non_exec_exception_applied:
+            strength_hits += 1
+        return strength_hits >= 1
+
+    def _allow_market_maker_non_exec_signal_exception(
+        self,
+        *,
+        event: Event,
+        role_group: str,
+        strategy_role: str,
+        pricing_status: str,
+        pricing_confidence: float,
+        confirmation_score: float,
+        resonance_score: float,
+        quality_score: float,
+        relative_address_size: float,
+        market_maker_context_confirmed: bool,
+        market_maker_observe_exception_applied: bool,
+    ) -> bool:
+        if role_group != "market_maker":
+            return False
+        if strategy_role != "market_maker_wallet":
+            return False
+        if str(event.intent_type or "") not in MARKET_MAKER_NON_EXECUTION_INTENTS:
+            return False
+        if pricing_status in {"unknown", "unavailable"} or pricing_confidence < 0.62:
+            return False
+        if float(event.usd_value or 0.0) < self.smart_money_high_value_observe_min_usd:
+            return False
+        if quality_score < max(self.smart_money_high_value_observe_min_quality - 0.02, 0.60):
+            return False
+        strength_hits = 0
+        if confirmation_score >= max(MARKET_MAKER_OBSERVE_MIN_CONFIRMATION - 0.04, 0.32):
+            strength_hits += 1
+        if resonance_score >= max(MARKET_MAKER_OBSERVE_MIN_RESONANCE - 0.04, 0.18):
+            strength_hits += 1
+        if relative_address_size >= 1.08:
+            strength_hits += 1
+        if market_maker_context_confirmed or market_maker_observe_exception_applied:
             strength_hits += 1
         return strength_hits >= 1
 
@@ -1941,6 +2175,7 @@ class StrategyEngine:
             or event.metadata.get("role_priority_rank")
             or self._role_priority_rank(event.strategy_role)
         )
+        delivery_role_group = strategy_role_group(event.strategy_role)
         payload = {
             "delivery_class": delivery_class,
             "delivery_reason": reason,
@@ -1953,6 +2188,8 @@ class StrategyEngine:
             "strategy_reject_reason": self._strategy_reject_reason(reason) if delivery_class == "drop" else "",
             "observe_candidate_reason": reason if delivery_class == "observe" else "",
             "observe_relaxed_by_role": self._observe_relaxed_by_role(reason, delivery_class),
+            "role_group": delivery_role_group,
+            "strategy_role": str(event.strategy_role or ""),
             "role_priority_tier": role_priority_tier,
             "role_priority_rank": role_priority_rank,
             "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
@@ -1993,8 +2230,10 @@ class StrategyEngine:
                 "lp_route_priority_source": lp_route_priority_source,
                 "lp_route_semantics": lp_route_semantics,
             })
-        if strategy_role_group(event.strategy_role) == "smart_money":
+        if delivery_role_group == "smart_money":
             payload["smart_money_legacy_non_exec_branch_disabled"] = True
+        elif delivery_role_group == "market_maker":
+            payload["market_maker_legacy_inventory_branch_disabled"] = True
         if reason.startswith("lp_burst_directional_"):
             payload.update({
                 "lp_burst_fastlane_applied": True,
@@ -2058,11 +2297,21 @@ class StrategyEngine:
             "market_maker_execution_only_mode": bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY),
             "execution_required_but_missing": True,
             "execution_only_archive_reason": str(reason or ""),
-            "smart_money_legacy_non_exec_branch_disabled": True,
-            "smart_money_delivery_policy_mode": "execution_whitelist_only",
-            "smart_money_delivery_policy_hard_whitelist_applied": True,
-            "smart_money_allowed_reason_whitelist": list(SMART_MONEY_ALLOWED_REASON_WHITELIST),
         }
+        if market_maker:
+            payload.update({
+                "market_maker_legacy_inventory_branch_disabled": True,
+                "market_maker_delivery_policy_mode": "execution_whitelist_only",
+                "market_maker_delivery_policy_hard_whitelist_applied": True,
+                "market_maker_allowed_reason_whitelist": list(MARKET_MAKER_ALLOWED_REASON_WHITELIST),
+            })
+        else:
+            payload.update({
+                "smart_money_legacy_non_exec_branch_disabled": True,
+                "smart_money_delivery_policy_mode": "execution_whitelist_only",
+                "smart_money_delivery_policy_hard_whitelist_applied": True,
+                "smart_money_allowed_reason_whitelist": list(SMART_MONEY_ALLOWED_REASON_WHITELIST),
+            })
         event.metadata.update(payload)
         signal.metadata.update(payload)
         signal.context.update(payload)
@@ -2136,7 +2385,9 @@ class StrategyEngine:
         if delivery_class != "observe":
             return ""
         normalized = str(reason or "")
-        if normalized in {"smart_money_non_execution_observe", "market_maker_non_execution_observe"}:
+        if normalized == "market_maker_non_execution_observe":
+            return "tier1_market_maker_high_value"
+        if normalized == "smart_money_non_execution_observe":
             return "tier1_smart_money_high_value"
         if normalized in {"lp_directional_prealert_observe", "lp_liquidity_prealert_observe"}:
             return "tier2_lp_prealert"
@@ -2257,11 +2508,11 @@ class StrategyEngine:
             "swap_execution": "active_trade",
             "exchange_deposit_candidate": "exchange_deposit_flow",
             "exchange_withdraw_candidate": "exchange_withdraw_flow",
-            "pool_buy_pressure": "lp_buy_pressure",
-            "pool_sell_pressure": "lp_sell_pressure",
-            "liquidity_addition": "lp_liquidity_add",
-            "liquidity_removal": "lp_liquidity_remove",
-            "pool_rebalance": "lp_rebalance",
+            "pool_buy_pressure": "pool_buy_pressure",
+            "pool_sell_pressure": "pool_sell_pressure",
+            "liquidity_addition": "liquidity_addition",
+            "liquidity_removal": "liquidity_removal",
+            "pool_rebalance": "pool_rebalance",
             "internal_rebalance": "internal_rebalance",
             "market_making_inventory_move": "inventory_rebalance",
             "possible_sell_preparation": "sell_preparation",
@@ -2285,7 +2536,7 @@ class StrategyEngine:
         liquidation_stage = str(event.metadata.get("liquidation_stage") or gate_metrics.get("liquidation_stage") or "none")
         liquidation_score = float(event.metadata.get("liquidation_score") or gate_metrics.get("liquidation_score") or 0.0)
 
-        if role_group == "smart_money" and self._is_real_execution(event, intent_type):
+        if role_group in {"smart_money", "market_maker"} and self._is_real_execution(event, intent_type):
             return "high" if confirmation_score >= 0.56 else "medium"
         if liquidation_stage == "execution":
             return "high" if liquidation_score >= LIQUIDATION_EXECUTION_MIN_SCORE else "medium"
@@ -2370,6 +2621,8 @@ class StrategyEngine:
 
         if role_group == "smart_money" and is_real_execution:
             conf += 0.03
+        if role_group == "market_maker" and is_real_execution:
+            conf += 0.02
         if role_group == "exchange" and not is_real_execution:
             conf -= 0.02
 
@@ -2461,6 +2714,8 @@ class StrategyEngine:
             return 1
         if role_group == "smart_money" and is_real_execution and confirmation_score >= 0.58:
             return 1 if tier == "Tier 1" else 2
+        if role_group == "market_maker" and is_real_execution and confirmation_score >= 0.62:
+            return 2 if tier in {"Tier 1", "Tier 2"} else 3
         if tier in {"Tier 1", "Tier 2"} and information_level in {"high", "medium"}:
             if (
                 confirmation_score >= 0.5

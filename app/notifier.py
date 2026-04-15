@@ -7,7 +7,8 @@ from config import (
     CHAT_ID,
     TELEGRAM_BOT_TOKEN,
 )
-from filter import format_address_label, is_smart_money_strategy_role, strategy_role_group
+from filter import format_address_label, strategy_role_group
+from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -161,7 +162,10 @@ def _is_smart_money_primary(signal: Signal, event: Event) -> bool:
         return False
     if bool(signal.metadata.get("smart_money_case")):
         return True
-    return is_smart_money_strategy_role(event.strategy_role) and str(event.intent_type or "") == "swap_execution"
+    return (
+        strategy_role_group(event.strategy_role) in {"smart_money", "market_maker"}
+        and str(event.intent_type or "") == "swap_execution"
+    )
 
 
 def _smart_money_variant(signal: Signal, event: Event, context: dict) -> str:
@@ -173,7 +177,7 @@ def _smart_money_variant(signal: Signal, event: Event, context: dict) -> str:
         or signal.metadata.get("strategy_role")
         or event.strategy_role
     )
-    if role_group != "smart_money":
+    if role_group not in {"smart_money", "market_maker"}:
         return ""
 
     delivery_reason = str(signal.delivery_reason or event.delivery_reason or "")
@@ -703,6 +707,7 @@ def format_signal_message(signal: Signal, event: Event) -> str:
     return _long_message(signal, event, context, raw)
 
 def _signal_type_display(signal: Signal) -> str:
+    normalized = canonicalize_pool_semantic_key(signal.type)
     mapping = {
         "exchange_deposit_flow": "Exchange_Inflow",
         "exchange_withdraw_flow": "Exchange_Outflow",
@@ -713,13 +718,13 @@ def _signal_type_display(signal: Signal) -> str:
         "internal_rebalance": "Internal_Rebalance",
         "active_trade": "Active_Trade",
         "swap_flow": "Swap_Flow",
-        "lp_buy_pressure": "LP_Buy_Pressure",
-        "lp_sell_pressure": "LP_Sell_Pressure",
-        "lp_liquidity_add": "LP_Liquidity_Add",
-        "lp_liquidity_remove": "LP_Liquidity_Remove",
-        "lp_rebalance": "LP_Rebalance",
+        "pool_buy_pressure": "Pool_Buy_Pressure",
+        "pool_sell_pressure": "Pool_Sell_Pressure",
+        "liquidity_addition": "Liquidity_Addition",
+        "liquidity_removal": "Liquidity_Removal",
+        "pool_rebalance": "Pool_Rebalance",
     }
-    return mapping.get(str(signal.type or ""), str(signal.type or "Unknown_Signal"))
+    return mapping.get(normalized, normalized or "Unknown_Signal")
 
 
 def _direction_display(event: Event, context: dict, raw: dict) -> str:
@@ -739,15 +744,15 @@ def _direction_display(event: Event, context: dict, raw: dict) -> str:
 
     signal_type = str(context.get("signal_type_label") or "")
     side = str(event.side or raw.get("direction") or "")
-    if signal_type == "LP_Buy_Pressure" or side == "池子买压":
+    if signal_type in {"Pool_Buy_Pressure", "LP_Buy_Pressure"} or side == "池子买压":
         return f"BUY PRESSURE → {role_display}"
-    if signal_type == "LP_Sell_Pressure" or side == "池子卖压":
+    if signal_type in {"Pool_Sell_Pressure", "LP_Sell_Pressure"} or side == "池子卖压":
         return f"SELL PRESSURE → {role_display}"
-    if signal_type == "LP_Liquidity_Add" or side == "增加流动性":
+    if signal_type in {"Liquidity_Addition", "LP_Liquidity_Add"} or side == "增加流动性":
         return f"LIQUIDITY ADD → {role_display}"
-    if signal_type == "LP_Liquidity_Remove" or side == "减少流动性":
+    if signal_type in {"Liquidity_Removal", "LP_Liquidity_Remove"} or side == "减少流动性":
         return f"LIQUIDITY REMOVE → {role_display}"
-    if signal_type == "LP_Rebalance" or side == "池子再平衡":
+    if signal_type in {"Pool_Rebalance", "LP_Rebalance"} or side == "池子再平衡":
         return f"REBALANCE → {role_display}"
     if side in {"流入", "买入"}:
         return f"IN → {role_display}"

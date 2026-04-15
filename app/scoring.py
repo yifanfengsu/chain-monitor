@@ -1,5 +1,5 @@
 class AddressScorer:
-    """地址长期质量评分：输出 score(0~100) 与等级 A/B/C。"""
+    """地址长期质量评分：保留 legacy score，并显式拆出 alpha / structure 两条分数。"""
 
     CATEGORY_BASE_SCORE = {
         "smart_money": 72,
@@ -42,6 +42,44 @@ class AddressScorer:
         "arbitrage_bot": -12,
         "user_watch": 0,
         "unknown": 0,
+    }
+    ALPHA_ROLE_ADJUSTMENT = {
+        "market_maker_wallet": -12,
+        "lp_pool": -14,
+        "exchange_hot_wallet": -4,
+        "exchange_deposit_wallet": -4,
+        "exchange_trading_wallet": -3,
+        "protocol_treasury": -3,
+    }
+    STRUCTURE_ROLE_ADJUSTMENT = {
+        "market_maker_wallet": 12,
+        "lp_pool": 16,
+        "exchange_hot_wallet": 6,
+        "exchange_deposit_wallet": 5,
+        "exchange_trading_wallet": 5,
+        "protocol_treasury": 4,
+    }
+    ALPHA_BEHAVIOR_ADJUSTMENT = {
+        "inventory_management": -8,
+        "inventory_shift": -10,
+        "inventory_expansion": -8,
+        "inventory_distribution": -8,
+        "pool_buy_pressure": -6,
+        "pool_sell_pressure": -6,
+        "liquidity_addition": -4,
+        "liquidity_removal": -4,
+        "pool_rebalance": -4,
+    }
+    STRUCTURE_BEHAVIOR_ADJUSTMENT = {
+        "inventory_management": 8,
+        "inventory_shift": 10,
+        "inventory_expansion": 9,
+        "inventory_distribution": 9,
+        "pool_buy_pressure": 8,
+        "pool_sell_pressure": 8,
+        "liquidity_addition": 6,
+        "liquidity_removal": 6,
+        "pool_rebalance": 7,
     }
 
     def score(self, meta: dict, snapshot: dict, behavior: dict) -> dict:
@@ -108,17 +146,31 @@ class AddressScorer:
         if strategy_role.startswith("exchange_") and trade_frequency_1h > 20.0:
             score -= 4.0
 
-        score = max(0.0, min(100.0, score))
-        grade = self._grade(score)
+        legacy_score = max(0.0, min(100.0, score))
+        alpha_score = legacy_score
+        alpha_score += float(self.ALPHA_ROLE_ADJUSTMENT.get(strategy_role, 0.0))
+        alpha_score += float(self.ALPHA_BEHAVIOR_ADJUSTMENT.get(behavior_type, 0.0))
+
+        structure_score = legacy_score
+        structure_score += float(self.STRUCTURE_ROLE_ADJUSTMENT.get(strategy_role, 0.0))
+        structure_score += float(self.STRUCTURE_BEHAVIOR_ADJUSTMENT.get(behavior_type, 0.0))
+
+        alpha_score = max(0.0, min(100.0, alpha_score))
+        structure_score = max(0.0, min(100.0, structure_score))
+        grade = self._grade(legacy_score)
 
         return {
-            "score": round(score, 2),
+            "score": round(legacy_score, 2),
+            "alpha_score": round(alpha_score, 2),
+            "structure_score": round(structure_score, 2),
             "grade": grade,
             "factors": {
                 "category": category,
                 "priority": priority,
                 "strategy_role": strategy_role,
                 "behavior_type": behavior_type,
+                "legacy_score_model": "mixed_v1",
+                "score_split_model": "alpha_structure_v1",
                 "recent_count": recent_count,
                 "trade_frequency_1h": round(trade_frequency_1h, 3),
                 "avg_usd": round(avg_usd, 2),

@@ -337,17 +337,8 @@ def _is_inventory_style_internal(from_meta: dict, to_meta: dict) -> bool:
         return False
     if from_meta["is_watch_address"] and to_meta["is_watch_address"]:
         return True
-
-    same_strategy = from_meta.get("strategy_role") == to_meta.get("strategy_role")
-    inventory_roles = {
-        "exchange_hot_wallet",
-        "exchange_deposit_wallet",
-        "exchange_trading_wallet",
-        "treasury_issuer",
-        "market_maker_wallet",
-        "protocol_treasury",
-    }
-    return same_strategy and from_meta.get("strategy_role") in inventory_roles
+    # 没有实体级别证据时，不再仅凭“同类角色”把转账解释成内部调拨。
+    return False
 
 
 def _normalize_symbol(symbol: str | None) -> str:

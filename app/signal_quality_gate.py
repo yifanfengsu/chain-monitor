@@ -250,7 +250,8 @@ class SignalQualityGate:
         token = (event.token or "").lower()
         behavior_type = behavior.get("behavior_type", "normal")
         behavior_conf = float(behavior.get("confidence") or 0.0)
-        address_score_value = float(address_score.get("score") or 0.0)
+        address_score_value = float(address_score.get("alpha_score") or address_score.get("score") or 0.0)
+        address_structure_score = float(address_score.get("structure_score") or address_score.get("score") or 0.0)
         token_score_value = float(token_score.get("score") or token_score.get("token_quality_score") or 0.0)
         pricing_status = str(event.pricing_status or "unknown")
         pricing_confidence = float(event.pricing_confidence or 0.0)
@@ -396,6 +397,8 @@ class SignalQualityGate:
             "behavior_type": behavior_type,
             "behavior_confidence": behavior_conf,
             "address_score": address_score_value,
+            "address_alpha_score": address_score_value,
+            "address_structure_score": address_structure_score,
             "token_score": token_score_value,
             "pricing_status": pricing_status,
             "pricing_source": event.pricing_source,
@@ -538,6 +541,8 @@ class SignalQualityGate:
             "role_group_value_bonus": 0.0,
             "smart_money_value_bonus": 0.0,
             "smart_money_non_exec_value_bonus": 0.0,
+            "market_maker_value_bonus": 0.0,
+            "market_maker_non_exec_value_bonus": 0.0,
             "quality_score": 0.0,
             "adjusted_quality_score": 0.0,
             "smart_money_non_exec_exception_applied": False,
@@ -592,6 +597,20 @@ class SignalQualityGate:
                 and relative_address_size < (1.18 if market_maker else 1.08)
             ):
                 return GateDecision(False, "smart_money_non_execution_weak", 0.0, "DROP", self.score_threshold, metrics)
+        if role_group == "market_maker" and not is_real_execution:
+            if (
+                event.intent_type in {"pure_transfer", "unknown_intent", "internal_rebalance"}
+                and float(event.confirmation_score or 0.0) < 0.38
+                and resonance_score < 0.24
+                and relative_address_size < 1.18
+                and behavior_type not in {
+                    "inventory_management",
+                    "inventory_shift",
+                    "inventory_expansion",
+                    "inventory_distribution",
+                }
+            ):
+                return GateDecision(False, "market_maker_non_execution_weak", 0.0, "DROP", self.score_threshold, metrics)
 
         if role_group == "exchange" and not is_real_execution:
             if (
@@ -806,7 +825,7 @@ class SignalQualityGate:
             token_net_flow_5m=net_flow_5m,
             token_net_flow_1h=net_flow_1h,
         )
-        role_group_value_bonus, smart_money_value_bonus, value_weight_multiplier = self._role_group_value_bonus(
+        role_group_value_bonus, role_specific_value_bonus, value_weight_multiplier = self._role_group_value_bonus(
             event=event,
             role_group=role_group,
             strategy_role=strategy_role,
@@ -885,8 +904,10 @@ class SignalQualityGate:
             "quality_tier": quality_tier,
             "value_weight_multiplier": round(value_weight_multiplier, 3),
             "role_group_value_bonus": round(role_group_value_bonus, 3),
-            "smart_money_value_bonus": round(smart_money_value_bonus, 3),
-            "smart_money_non_exec_value_bonus": round(smart_money_value_bonus, 3),
+            "smart_money_value_bonus": round(role_specific_value_bonus if role_group == "smart_money" else 0.0, 3),
+            "smart_money_non_exec_value_bonus": round(role_specific_value_bonus if role_group == "smart_money" else 0.0, 3),
+            "market_maker_value_bonus": round(role_specific_value_bonus if role_group == "market_maker" else 0.0, 3),
+            "market_maker_non_exec_value_bonus": round(role_specific_value_bonus if role_group == "market_maker" else 0.0, 3),
         })
 
         if not self.state_manager.can_emit_signal_by_key(cooldown_key, int(event.ts), cooldown_sec):
@@ -925,7 +946,7 @@ class SignalQualityGate:
                 touched_watch_addresses_count=len(raw.get("touched_watch_addresses") or event.metadata.get("touched_watch_addresses") or []),
                 adjusted_quality_score=adjusted_quality_score,
                 quality_threshold=quality_threshold,
-                smart_money_value_bonus=smart_money_value_bonus,
+                market_maker_value_bonus=role_specific_value_bonus if role_group == "market_maker" else 0.0,
             )
             allow_smart_money_exception, exception_reason = self._allow_smart_money_non_exec_exception(
                 event=event,
@@ -947,7 +968,7 @@ class SignalQualityGate:
                 stable_non_swap_filtered=bool(metrics.get("stable_non_swap_filtered_flag")),
                 adjusted_quality_score=adjusted_quality_score,
                 quality_threshold=quality_threshold,
-                smart_money_value_bonus=smart_money_value_bonus,
+                smart_money_value_bonus=role_specific_value_bonus if role_group == "smart_money" else 0.0,
             )
             allow_lp_quality_exception, lp_quality_exception_reason = self._allow_lp_prealert_observe_gate_exception(
                 event=event,
@@ -971,8 +992,6 @@ class SignalQualityGate:
                 metrics["gate_relaxed_by_role"] = "tier1_market_maker_high_value"
                 metrics["market_maker_observe_exception_applied"] = True
                 metrics["market_maker_observe_exception_reason"] = market_maker_exception_reason
-                metrics["smart_money_non_exec_exception_applied"] = True
-                metrics["smart_money_non_exec_exception_reason"] = market_maker_exception_reason
                 adjusted_quality_score = self._clamp(
                     max(adjusted_quality_score, self.market_maker_observe_gate_floor),
                     0.0,
@@ -1099,6 +1118,8 @@ class SignalQualityGate:
             min_usd *= 0.72
         elif is_market_maker_strategy_role(strategy_role) and intent_type == "swap_execution":
             min_usd *= 0.94
+        elif is_market_maker_strategy_role(strategy_role) and intent_type in {"pure_transfer", "unknown_intent"}:
+            min_usd *= 1.08
         elif is_smart_money_strategy_role(strategy_role) and intent_type in {"pure_transfer", "unknown_intent"}:
             min_usd *= 1.12
 
@@ -1674,20 +1695,48 @@ class SignalQualityGate:
 
         if role_group == "smart_money":
             if (
-                str(event.intent_type or "") in {"pure_transfer", "internal_rebalance", "market_making_inventory_move"}
-                and strategy_role in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}
+                str(event.intent_type or "") in {"pure_transfer", "internal_rebalance", "possible_buy_preparation", "possible_sell_preparation"}
+                and strategy_role in {"smart_money_wallet", "alpha_wallet", "celebrity_wallet"}
                 and threshold_ratio >= self.smart_money_value_threshold_ratio
                 and usd_value >= dynamic_min_usd * self.smart_money_value_threshold_ratio
                 and token_score >= 28.0
                 and behavior_confidence >= 0.38
             ):
-                bonus_cap = self.market_maker_observe_value_bonus_max if strategy_role == "market_maker_wallet" else self.smart_money_value_bonus_max
-                strength_base = 2.2 if strategy_role == "market_maker_wallet" else 2.5
-                strength = self._clamp((threshold_ratio - self.smart_money_value_threshold_ratio) / strength_base, 0.0, 1.0)
-                bonus = bonus_cap * (0.45 + 0.55 * strength)
+                strength = self._clamp((threshold_ratio - self.smart_money_value_threshold_ratio) / 2.5, 0.0, 1.0)
+                bonus = self.smart_money_value_bonus_max * (0.45 + 0.55 * strength)
                 return round(bonus, 3), round(bonus, 3), round(1.0 + bonus * 4.0, 3)
             if is_real_execution and threshold_ratio >= 1.40:
                 bonus = min(0.03, self.smart_money_value_bonus_max * 0.40)
+                return round(bonus, 3), 0.0, round(1.0 + bonus * 4.0, 3)
+
+        if role_group == "market_maker":
+            if (
+                str(event.intent_type or "") in {
+                    "market_making_inventory_move",
+                    "internal_rebalance",
+                    "pure_transfer",
+                    "possible_buy_preparation",
+                    "possible_sell_preparation",
+                }
+                and strategy_role == "market_maker_wallet"
+                and threshold_ratio >= self.market_maker_high_value_gate_threshold_ratio
+                and usd_value >= dynamic_min_usd * self.market_maker_high_value_gate_threshold_ratio
+                and token_score >= 24.0
+                and (
+                    behavior_confidence >= 0.34
+                    or confirmation_score >= self.market_maker_observe_min_confirmation
+                    or resonance_score >= self.market_maker_observe_min_resonance
+                )
+            ):
+                strength = self._clamp(
+                    (threshold_ratio - self.market_maker_high_value_gate_threshold_ratio) / 2.2,
+                    0.0,
+                    1.0,
+                )
+                bonus = self.market_maker_observe_value_bonus_max * (0.45 + 0.55 * strength)
+                return round(bonus, 3), round(bonus, 3), round(1.0 + bonus * 4.0, 3)
+            if is_real_execution and threshold_ratio >= 1.25:
+                bonus = min(0.02, self.market_maker_observe_value_bonus_max * 0.30)
                 return round(bonus, 3), 0.0, round(1.0 + bonus * 4.0, 3)
 
         if role_group == "lp_pool":
@@ -1756,12 +1805,11 @@ class SignalQualityGate:
     ) -> tuple[bool, str]:
         if role_group != "smart_money":
             return False, ""
-        if strategy_role not in {"smart_money_wallet", "alpha_wallet", "market_maker_wallet", "celebrity_wallet"}:
+        if strategy_role not in {"smart_money_wallet", "alpha_wallet", "celebrity_wallet"}:
             return False, ""
         if str(event.intent_type or "") not in {
             "pure_transfer",
             "internal_rebalance",
-            "market_making_inventory_move",
             "possible_buy_preparation",
             "possible_sell_preparation",
         }:
@@ -1789,10 +1837,6 @@ class SignalQualityGate:
         if max(confirmation_score, resonance_score, intent_confidence) < 0.30:
             return False, ""
 
-        if strategy_role == "market_maker_wallet":
-            if confirmation_score < 0.38 and resonance_score < 0.24 and intent_confidence < 0.42:
-                return False, ""
-            return True, "market_maker_non_exec_value_exception"
         if (
             confirmation_score >= 0.34
             or resonance_score >= 0.22
@@ -1823,7 +1867,7 @@ class SignalQualityGate:
         touched_watch_addresses_count: int,
         adjusted_quality_score: float,
         quality_threshold: float,
-        smart_money_value_bonus: float,
+        market_maker_value_bonus: float,
     ) -> tuple[bool, str]:
         if strategy_role != "market_maker_wallet":
             return False, ""
@@ -1876,7 +1920,7 @@ class SignalQualityGate:
             strength_hits += 1
         if intent_confidence >= 0.56:
             strength_hits += 1
-        if smart_money_value_bonus > 0:
+        if market_maker_value_bonus > 0:
             strength_hits += 1
 
         if strength_hits < 1:

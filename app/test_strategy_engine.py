@@ -1,7 +1,10 @@
 import sys
 import unittest
 
+from filter import strategy_role_group
 from models import Event, Signal
+from processor import _is_inventory_style_internal
+from signal_interpreter import SignalInterpreter
 from strategy_engine import StrategyEngine
 
 
@@ -162,6 +165,9 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
 
         self.assertEqual(("drop", "smart_money_non_execution_archived"), (delivery_class, delivery_reason))
 
+    def test_strategy_role_group_market_maker_is_independent(self) -> None:
+        self.assertEqual("market_maker", strategy_role_group("market_maker_wallet"))
+
     def test_classify_delivery_smart_money_non_exec_exception_continues_to_observe(self) -> None:
         event = self._event(
             strategy_role="smart_money_wallet",
@@ -185,6 +191,7 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
 
         self.assertEqual(("observe", "smart_money_non_execution_observe"), (delivery_class, delivery_reason))
         self.assertTrue(signal.metadata.get("smart_money_legacy_non_exec_branch_disabled"))
+        self.assertFalse(signal.metadata.get("market_maker_legacy_inventory_branch_disabled"))
 
     def test_classify_delivery_market_maker_observe_exception_continues_to_observe(self) -> None:
         event = self._event(
@@ -204,12 +211,78 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
             gate_metrics={
                 "market_maker_observe_exception_applied": True,
                 "market_maker_observe_exception_reason": "unit_test_mm_exception",
+                "market_maker_context_confirmed": True,
             },
         )
 
         self.assertEqual(("observe", "market_maker_non_execution_observe"), (delivery_class, delivery_reason))
-        # `market_maker_wallet` 归在 smart_money role group，下游消费的 legacy 关停标记是共享 key。
-        self.assertTrue(signal.metadata.get("smart_money_legacy_non_exec_branch_disabled"))
+        self.assertEqual("market_maker", signal.metadata.get("role_group"))
+        self.assertTrue(signal.metadata.get("market_maker_legacy_inventory_branch_disabled"))
+        self.assertFalse(signal.metadata.get("smart_money_legacy_non_exec_branch_disabled"))
+
+    def test_legacy_lp_directional_keys_are_canonicalized_to_pool_semantics(self) -> None:
+        interpreter = SignalInterpreter()
+        event = self._event(
+            strategy_role="lp_pool",
+            intent_type="LP_Buy_Pressure",
+            kind="swap",
+            confirmation_score=0.8,
+            metadata={"raw": {}},
+        )
+        signal = self._signal(
+            intent_type="LP_Buy_Pressure",
+            quality_score=0.8,
+        )
+        signal.type = "LP_Buy_Pressure"
+        signal.intent_type = "LP_Buy_Pressure"
+
+        interpreter.interpret(
+            event,
+            signal,
+            {"behavior_type": "pool_buy_pressure", "confidence": 0.8, "reason": "legacy_lp_key"},
+            {"strategy_role": "lp_pool"},
+            {},
+            {"recent": []},
+            {},
+            gate_metrics={},
+        )
+
+        self.assertEqual("pool_buy_pressure", event.intent_type)
+        self.assertEqual("pool_buy_pressure", signal.type)
+        self.assertEqual("pool_buy_pressure", signal.intent_type)
+        self.assertEqual("Pool_Buy_Pressure", signal.context.get("signal_type_label"))
+
+    def test_inventory_style_internal_does_not_use_same_market_maker_role_alone(self) -> None:
+        self.assertFalse(
+            _is_inventory_style_internal(
+                {
+                    "address": "0xaaa",
+                    "is_watch_address": False,
+                    "strategy_role": "market_maker_wallet",
+                },
+                {
+                    "address": "0xbbb",
+                    "is_watch_address": False,
+                    "strategy_role": "market_maker_wallet",
+                },
+            )
+        )
+
+    def test_inventory_style_internal_still_accepts_both_watch_addresses(self) -> None:
+        self.assertTrue(
+            _is_inventory_style_internal(
+                {
+                    "address": "0xaaa",
+                    "is_watch_address": True,
+                    "strategy_role": "market_maker_wallet",
+                },
+                {
+                    "address": "0xbbb",
+                    "is_watch_address": True,
+                    "strategy_role": "market_maker_wallet",
+                },
+            )
+        )
 
     def test_unrelated_exchange_branch_behavior_is_unchanged(self) -> None:
         event = self._event(

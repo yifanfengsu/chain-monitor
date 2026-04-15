@@ -32,19 +32,24 @@ from filter import strategy_role_group
 
 SMART_MONEY_LEGACY_OBSERVE_REASONS = {
     "smart_money_transfer_observe",
-    "market_maker_inventory_observe",
-    "market_maker_inventory_shift_observe",
-    "market_maker_non_execution_observe",
     "smart_money_non_execution_observe",
 }
 SMART_MONEY_EXECUTION_DELIVERY_REASONS = {
-    "market_maker_execution_observe",
-    "market_maker_execution_primary",
     "smart_money_execution_observe",
     "smart_money_execution_primary",
     "smart_money_continuous_execution_primary",
 }
 SMART_MONEY_OBSERVE_DELIVERY_REASONS = SMART_MONEY_EXECUTION_DELIVERY_REASONS | SMART_MONEY_LEGACY_OBSERVE_REASONS
+MARKET_MAKER_LEGACY_OBSERVE_REASONS = {
+    "market_maker_inventory_observe",
+    "market_maker_inventory_shift_observe",
+    "market_maker_non_execution_observe",
+}
+MARKET_MAKER_EXECUTION_DELIVERY_REASONS = {
+    "market_maker_execution_observe",
+    "market_maker_execution_primary",
+}
+MARKET_MAKER_OBSERVE_DELIVERY_REASONS = MARKET_MAKER_EXECUTION_DELIVERY_REASONS | MARKET_MAKER_LEGACY_OBSERVE_REASONS
 EXCHANGE_STRONG_OBSERVE_ALLOWED_INTENTS = {
     "exchange_deposit_candidate",
     "exchange_withdraw_candidate",
@@ -277,7 +282,6 @@ def _smart_money_policy_metadata(
     *,
     allowed: bool,
     reason: str,
-    market_maker: bool,
     execution_required_but_missing: bool,
 ) -> None:
     existing_archive_reason = str(
@@ -296,8 +300,47 @@ def _smart_money_policy_metadata(
             else SMART_MONEY_EXECUTION_DELIVERY_REASONS
         ),
         "smart_money_execution_only_mode": bool(SMART_MONEY_NOTIFY_EXECUTION_ONLY),
-        "market_maker_execution_only_mode": bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY),
         "smart_money_legacy_non_exec_branch_disabled": True,
+        "execution_required_but_missing": bool(
+            execution_required_but_missing
+            or getattr(event, "metadata", {}).get("execution_required_but_missing")
+            or getattr(signal, "metadata", {}).get("execution_required_but_missing")
+        ),
+        "execution_only_archive_reason": str(
+            existing_archive_reason
+            or (reason if (not allowed or execution_required_but_missing) else "")
+        ),
+    }
+    getattr(event, "metadata", {}).update(payload)
+    getattr(signal, "metadata", {}).update(payload)
+    getattr(signal, "context", {}).update(payload)
+
+
+def _market_maker_policy_metadata(
+    event,
+    signal,
+    *,
+    allowed: bool,
+    reason: str,
+    execution_required_but_missing: bool,
+) -> None:
+    existing_archive_reason = str(
+        getattr(event, "metadata", {}).get("execution_only_archive_reason")
+        or getattr(signal, "metadata", {}).get("execution_only_archive_reason")
+        or ""
+    )
+    payload = {
+        "market_maker_delivery_policy_allowed": bool(allowed),
+        "market_maker_delivery_policy_reason": str(reason or ""),
+        "market_maker_delivery_policy_mode": "execution_whitelist_only",
+        "market_maker_delivery_policy_hard_whitelist_applied": True,
+        "market_maker_allowed_reason_whitelist": sorted(
+            MARKET_MAKER_OBSERVE_DELIVERY_REASONS
+            if not bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY)
+            else MARKET_MAKER_EXECUTION_DELIVERY_REASONS
+        ),
+        "market_maker_execution_only_mode": bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY),
+        "market_maker_legacy_inventory_branch_disabled": True,
         "execution_required_but_missing": bool(
             execution_required_but_missing
             or getattr(event, "metadata", {}).get("execution_required_but_missing")
@@ -316,13 +359,6 @@ def _smart_money_policy_metadata(
 def _allow_smart_money_delivery(event, signal, delivery_class: str) -> bool:
     event_metadata = getattr(event, "metadata", {}) or {}
     signal_metadata = getattr(signal, "metadata", {}) or {}
-    strategy_role = str(
-        signal_metadata.get("strategy_role")
-        or event_metadata.get("watch_meta", {}).get("strategy_role")
-        or getattr(event, "strategy_role", "")
-        or ""
-    )
-    market_maker = strategy_role == "market_maker_wallet"
     delivery_reason = str(
         getattr(signal, "delivery_reason", "")
         or getattr(event, "delivery_reason", "")
@@ -339,54 +375,35 @@ def _allow_smart_money_delivery(event, signal, delivery_class: str) -> bool:
             event,
             signal,
             allowed=True,
-            reason="market_maker_non_execution_observe_allowed" if market_maker else "smart_money_non_execution_observe_allowed",
-            market_maker=market_maker,
+            reason="smart_money_non_execution_observe_allowed",
             execution_required_but_missing=False,
         )
         return True
 
     if delivery_reason not in SMART_MONEY_EXECUTION_DELIVERY_REASONS:
-        reason = (
-            "market_maker_execution_whitelist_reason_not_allowed"
-            if market_maker else
-            "smart_money_execution_whitelist_reason_not_allowed"
-        )
         _smart_money_policy_metadata(
             event,
             signal,
             allowed=False,
-            reason=reason,
-            market_maker=market_maker,
+            reason="smart_money_execution_whitelist_reason_not_allowed",
             execution_required_but_missing=not is_execution,
         )
         return False
     if delivery_class not in {"primary", "observe"}:
-        reason = (
-            "market_maker_execution_whitelist_non_emittable_delivery_class"
-            if market_maker else
-            "smart_money_execution_whitelist_non_emittable_delivery_class"
-        )
         _smart_money_policy_metadata(
             event,
             signal,
             allowed=False,
-            reason=reason,
-            market_maker=market_maker,
+            reason="smart_money_execution_whitelist_non_emittable_delivery_class",
             execution_required_but_missing=not is_execution,
         )
         return False
     if not is_execution:
-        reason = (
-            "market_maker_execution_whitelist_requires_execution"
-            if market_maker else
-            "smart_money_execution_whitelist_requires_execution"
-        )
         _smart_money_policy_metadata(
             event,
             signal,
             allowed=False,
-            reason=reason,
-            market_maker=market_maker,
+            reason="smart_money_execution_whitelist_requires_execution",
             execution_required_but_missing=True,
         )
         return False
@@ -394,8 +411,66 @@ def _allow_smart_money_delivery(event, signal, delivery_class: str) -> bool:
         event,
         signal,
         allowed=True,
-        reason="market_maker_execution_whitelist_allowed" if market_maker else "smart_money_execution_whitelist_allowed",
-        market_maker=market_maker,
+        reason="smart_money_execution_whitelist_allowed",
+        execution_required_but_missing=False,
+    )
+    return True
+
+
+def _allow_market_maker_delivery(event, signal, delivery_class: str) -> bool:
+    delivery_reason = str(
+        getattr(signal, "delivery_reason", "")
+        or getattr(event, "delivery_reason", "")
+        or ""
+    )
+    is_execution = _is_real_execution(event, signal)
+
+    if (
+        delivery_class == "observe"
+        and not bool(MARKET_MAKER_NOTIFY_EXECUTION_ONLY)
+        and delivery_reason in MARKET_MAKER_LEGACY_OBSERVE_REASONS
+    ):
+        _market_maker_policy_metadata(
+            event,
+            signal,
+            allowed=True,
+            reason="market_maker_non_execution_observe_allowed",
+            execution_required_but_missing=False,
+        )
+        return True
+
+    if delivery_reason not in MARKET_MAKER_EXECUTION_DELIVERY_REASONS:
+        _market_maker_policy_metadata(
+            event,
+            signal,
+            allowed=False,
+            reason="market_maker_execution_whitelist_reason_not_allowed",
+            execution_required_but_missing=not is_execution,
+        )
+        return False
+    if delivery_class not in {"primary", "observe"}:
+        _market_maker_policy_metadata(
+            event,
+            signal,
+            allowed=False,
+            reason="market_maker_execution_whitelist_non_emittable_delivery_class",
+            execution_required_but_missing=not is_execution,
+        )
+        return False
+    if not is_execution:
+        _market_maker_policy_metadata(
+            event,
+            signal,
+            allowed=False,
+            reason="market_maker_execution_whitelist_requires_execution",
+            execution_required_but_missing=True,
+        )
+        return False
+    _market_maker_policy_metadata(
+        event,
+        signal,
+        allowed=True,
+        reason="market_maker_execution_whitelist_allowed",
         execution_required_but_missing=False,
     )
     return True
@@ -528,6 +603,8 @@ def can_emit_delivery_notification(event, signal) -> bool:
     )
     if role_group == "smart_money":
         return _allow_smart_money_delivery(event, signal, delivery_class) and _allow_stage_budget(event, signal)
+    if role_group == "market_maker":
+        return _allow_market_maker_delivery(event, signal, delivery_class) and _allow_stage_budget(event, signal)
     if delivery_class == "primary":
         return _allow_stage_budget(event, signal)
     if delivery_class != "observe":
