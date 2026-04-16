@@ -155,6 +155,7 @@ MARKET_MAKER_INVENTORY_BEHAVIORS = {
     "inventory_expansion",
     "inventory_distribution",
 }
+CLMM_PARTIAL_SUPPORT_INTENT = "clmm_partial_support_observation"
 ROLE_PRIORITY_TIER_LABELS = {
     "tier1": "priority_watch",
     "tier2": "lp_pool",
@@ -299,11 +300,14 @@ class StrategyEngine:
     ) -> Signal | None:
         gate_metrics = gate_metrics or {}
         usd_value = float(event.usd_value or 0.0)
-        if usd_value <= 0:
+        clmm_partial_support = self._is_clmm_partial_support_event(event)
+        if usd_value <= 0 and not clmm_partial_support:
             event.metadata["strategy_reject_reason"] = "strategy_observe_quality_below_min"
             return None
 
         cooldown_key = str(gate_metrics.get("cooldown_key") or "")
+        if not cooldown_key and clmm_partial_support:
+            cooldown_key = f"clmm_partial:{str(event.address or '').lower()}:{str(event.tx_hash or '').lower()}"
         if not cooldown_key:
             event.metadata["strategy_reject_reason"] = "strategy_observe_role_not_allowed"
             return None
@@ -457,6 +461,62 @@ class StrategyEngine:
             "market_maker_context_strength": market_maker_context_strength,
             "market_maker_context_confirmed": market_maker_context_confirmed,
         })
+
+        if clmm_partial_support:
+            confidence = max(0.40, min(0.48, float(event.intent_confidence or 0.0) or 0.44))
+            return Signal(
+                type="clmm_partial_support_signal",
+                confidence=round(confidence, 3),
+                priority=3,
+                tier="Tier 4",
+                address=event.address,
+                token=event.token,
+                tx_hash=event.tx_hash,
+                usd_value=round(float(event.usd_value or 0.0), 2),
+                reason=(
+                    f"partial_support:{event.metadata.get('clmm_manager_protocol') or ''}:"
+                    f"{event.metadata.get('clmm_partial_reason') or ''}"
+                ),
+                behavior_type="clmm_partial_support",
+                address_score=address_score_value,
+                token_score=token_score_value,
+                quality_score=max(quality_score, 0.40),
+                semantic="clmm_partial_support",
+                intent_type=intent_type,
+                intent_stage="weak",
+                confirmation_score=round(max(float(event.confirmation_score or 0.0), 0.18), 3),
+                information_level="low",
+                pricing_confidence=round(pricing_confidence, 3),
+                cooldown_key=cooldown_key,
+                base_token_score=token_score_value,
+                token_context_score=float(gate_metrics.get("token_context_score") or token_score_value),
+                effective_threshold_usd=0.0,
+                metadata={
+                    "base_threshold_usd": 0.0,
+                    "address_grade": address_score.get("grade"),
+                    "address_alpha_score": round(address_score_value, 2),
+                    "address_structure_score": round(address_structure_score, 2),
+                    "token_grade": token_score.get("grade"),
+                    "behavior_reason": behavior.get("reason"),
+                    "intent_confidence": round(float(event.intent_confidence or 0.0), 3),
+                    "intent_evidence": list(event.intent_evidence or []),
+                    "pricing_status": pricing_status,
+                    "raw_quality_score": round(raw_quality_score, 3),
+                    "quality_tier": quality_tier,
+                    "resonance_score": round(resonance_score, 3),
+                    "exchange_noise_sensitive": exchange_noise_sensitive,
+                    "role_group": role_group,
+                    "strategy_role": strategy_role,
+                    "role_priority_tier": role_priority_tier,
+                    "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
+                    "role_priority_rank": role_priority_rank,
+                    "clmm_partial_support": True,
+                    "clmm_partial_reason": str(event.metadata.get("clmm_partial_reason") or ""),
+                    "clmm_candidate_status": str(event.metadata.get("clmm_candidate_status") or ""),
+                    "clmm_manager_protocol": str(event.metadata.get("clmm_manager_protocol") or ""),
+                    "clmm_manager_address": str(event.metadata.get("clmm_manager_address") or ""),
+                },
+            )
 
         def reject(
             reason_code: str,
@@ -1048,6 +1108,14 @@ class StrategyEngine:
         )
         possible_keeper_executor = bool(gate_metrics.get("possible_keeper_executor"))
         possible_vault_or_auction = bool(gate_metrics.get("possible_vault_or_auction"))
+        if self._is_clmm_partial_support_event(event):
+            return self._apply_delivery(
+                event,
+                signal,
+                "observe",
+                "clmm_partial_support_observe",
+                fact_type="clmm_partial_support",
+            )
         if role_group == "market_maker":
             continuation_score = float(max(same_side_addresses, market_maker_context_strength, 1 if market_maker_context_confirmed else 0))
             size_expansion_ratio = max(
@@ -2570,6 +2638,7 @@ class StrategyEngine:
             "clmm_inventory_recenter": "lp_position_intent",
             "clmm_jit_liquidity_likely": "lp_position_intent",
             "clmm_passive_fee_harvest": "lp_position_intent",
+            CLMM_PARTIAL_SUPPORT_INTENT: "clmm_partial_support_signal",
             "internal_rebalance": "internal_rebalance",
             "market_making_inventory_move": "inventory_rebalance",
             "possible_sell_preparation": "sell_preparation",
@@ -2613,9 +2682,19 @@ class StrategyEngine:
             return "high" if confirmation_score >= 0.78 or resonance_score >= 0.65 else "medium"
         if intent_type in {"internal_rebalance", "pure_transfer", "unknown_intent"}:
             return "low"
+        if intent_type == CLMM_PARTIAL_SUPPORT_INTENT:
+            return "low"
         if resonance_score >= 0.7 and event.kind == "swap":
             return "high"
         return "medium"
+
+    def _is_clmm_partial_support_event(self, event: Event) -> bool:
+        raw = event.metadata.get("raw") or {}
+        return bool(
+            event.metadata.get("clmm_partial_support")
+            or raw.get("clmm_partial_support")
+            or str(event.intent_type or "") == CLMM_PARTIAL_SUPPORT_INTENT
+        )
 
     def _confidence(
         self,

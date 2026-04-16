@@ -1,0 +1,44 @@
+{
+  "fixture_name": "uniswap_v4_position_manager_partial_candidate",
+  "protocol": "uniswap_v4",
+  "chain": "ethereum",
+  "watch_address": "0x8273593a2a3dae5af9e3f02af5babea285d4df82",
+  "manager_address": "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+  "manager_abi_profile": "uniswap_v4_position_manager",
+  "pair_label": "WETH/USDC",
+  "source_tx_hash": "0x84f888806e06fc7b844dc605f5d09df320d6c9c3001416a94bc1e6e0edd9eba0",
+  "source_block_number": 24533421,
+  "source_note": "Replay fixture for a real Uniswap v4 PositionManager modifyLiquidities path. The source tx hit the known manager address on chain, but the fixture intentionally leaves decoded logs empty so candidate_only + partial_support stays visible without pretending full parse support.",
+  "steps": [
+    {
+      "label": "position_manager_partial_support",
+      "item": {
+        "tx_hash": "0x84f888806e06fc7b844dc605f5d09df320d6c9c3001416a94bc1e6e0edd9eba0",
+        "ingest_ts": 1772016383,
+        "method_name": "modifyLiquidities",
+        "token_id": "",
+        "token0_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token1_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "token0_symbol": "WETH",
+        "token1_symbol": "USDC",
+        "amount0": 0.75,
+        "amount1": 1500.0,
+        "clmm_context": {
+          "pair_label": "WETH/USDC"
+        },
+        "decoded_logs": []
+      },
+      "expected": {
+        "parsed": {
+          "monitor_type": "clmm_partial_support",
+          "intent_type": "clmm_partial_support_observation",
+          "clmm_position_event": false,
+          "clmm_partial_candidate": true,
+          "clmm_partial_support": true,
+          "clmm_candidate_status": "candidate_only",
+          "clmm_manager_protocol": "uniswap_v4"
+        }
+      }
+    }
+  ]
+}

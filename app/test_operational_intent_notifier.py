@@ -447,6 +447,153 @@ class OperationalIntentNotifierTests(unittest.TestCase):
         self.assertIn("Binance Hot Wallet · 用户入金归集 · 同实体内部", message)
         self.assertIn("purpose=exchange_user_deposit_consolidation", message)
 
+    def test_likely_exchange_deposit_to_hot_line1_stays_explicitly_suspected(self) -> None:
+        deposit = "0x2000000000000000000000000000000000000071"
+        hot = "0x2000000000000000000000000000000000000072"
+        event = Event(
+            tx_hash="0xexchangelikelydeposit",
+            address=hot,
+            token="USDT",
+            amount=1.0,
+            side="流入",
+            usd_value=95_000.0,
+            kind="token_transfer",
+            ts=1_710_000_700,
+            intent_type="internal_rebalance",
+            intent_confidence=0.56,
+            intent_stage="preliminary",
+            confirmation_score=0.40,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "USDT",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "exchange_deposit",
+                "exchange_internality": "likely",
+                "exchange_same_entity_strength": "likely",
+                "exchange_transfer_purpose": "exchange_user_deposit_consolidation",
+                "exchange_transfer_purpose_family": "exchange_user_deposit_consolidation",
+                "exchange_transfer_purpose_strength": "likely",
+                "exchange_transfer_confidence": 0.58,
+                "exchange_entity_label": "Binance",
+                "exchange_transfer_why": ["deposit -> likely same_entity hot"],
+                "raw": {
+                    "from": deposit,
+                    "to": hot,
+                    "exchange_internality": "likely",
+                    "exchange_same_entity_strength": "likely",
+                    "exchange_transfer_purpose": "exchange_user_deposit_consolidation",
+                    "exchange_transfer_purpose_family": "exchange_user_deposit_consolidation",
+                    "exchange_transfer_purpose_strength": "likely",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="internal_rebalance", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "Binance Hot Wallet",
+                "entity_label": "Binance",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": deposit,
+                "label": "Binance Deposit",
+                "entity_label": "Binance",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_deposit",
+                "strategy_role": "exchange_deposit_wallet",
+                "semantic_role": "exchange_deposit_address",
+            },
+        )
+
+        message = format_signal_message(signal, event)
+        line1 = message.strip().splitlines()[0]
+
+        self.assertEqual("likely", context.get("operational_intent_strength"))
+        self.assertIn("疑似内部归集", line1)
+        self.assertNotIn("｜内部归集｜高", line1)
+        self.assertIn("同实体待确认", message)
+
+    def test_likely_exchange_hot_to_cold_does_not_render_as_confirmed_rebalance(self) -> None:
+        hot = "0x2000000000000000000000000000000000000081"
+        cold = "0x2000000000000000000000000000000000000082"
+        event = Event(
+            tx_hash="0xexchangelikelycold",
+            address=cold,
+            token="ETH",
+            amount=1.0,
+            side="流入",
+            usd_value=180_000.0,
+            kind="token_transfer",
+            ts=1_710_000_800,
+            intent_type="internal_rebalance",
+            intent_confidence=0.58,
+            intent_stage="preliminary",
+            confirmation_score=0.42,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_cold_wallet",
+            metadata={
+                "token_symbol": "ETH",
+                "watch_wallet_function": "exchange_cold",
+                "counterparty_wallet_function": "exchange_hot",
+                "exchange_internality": "likely",
+                "exchange_same_entity_strength": "likely",
+                "exchange_transfer_purpose": "exchange_hot_wallet_overflow_to_cold",
+                "exchange_transfer_purpose_family": "exchange_hot_wallet_overflow_to_cold",
+                "exchange_transfer_purpose_strength": "likely",
+                "exchange_transfer_confidence": 0.57,
+                "exchange_entity_label": "OKX",
+                "exchange_transfer_why": ["hot -> likely same_entity cold"],
+                "raw": {
+                    "from": hot,
+                    "to": cold,
+                    "exchange_internality": "likely",
+                    "exchange_same_entity_strength": "likely",
+                    "exchange_transfer_purpose": "exchange_hot_wallet_overflow_to_cold",
+                    "exchange_transfer_purpose_family": "exchange_hot_wallet_overflow_to_cold",
+                    "exchange_transfer_purpose_strength": "likely",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="internal_rebalance", delivery_class="observe")
+        self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": cold,
+                "label": "OKX Cold Wallet",
+                "entity_label": "OKX",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_cold",
+                "strategy_role": "exchange_cold_wallet",
+                "semantic_role": "exchange_cold_wallet",
+            },
+            counterparty_meta={
+                "address": hot,
+                "label": "OKX Hot Wallet",
+                "entity_label": "OKX",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+        )
+
+        message = format_signal_message(signal, event)
+        line1 = message.strip().splitlines()[0]
+
+        self.assertIn("疑似热冷调拨", line1)
+        self.assertNotIn("｜热冷调拨｜高", line1)
+        self.assertIn("疑似热转冷归仓", message)
+
 
 if __name__ == "__main__":
     unittest.main()

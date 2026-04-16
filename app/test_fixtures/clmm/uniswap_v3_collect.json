@@ -1,0 +1,134 @@
+{
+  "fixture_name": "uniswap_v3_collect_only",
+  "protocol": "uniswap_v3",
+  "chain": "ethereum",
+  "watch_address": "0xcc772e33a732587c476e28ea3cae7412909f6d34",
+  "manager_address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+  "manager_abi_profile": "uniswap_v3_position_manager",
+  "pair_label": "USDC/WETH",
+  "source_transactions": [
+    "0x051171db65e2675a5f0060ec09db7ffffcdb6863aba91cbc99a975398e334b29",
+    "0x43d2735529f1a373ba471196053ab53a8586b10328043d5aed17c3a3018a6eff"
+  ],
+  "source_note": "Golden replay bundle built from a real seed-open tx and a real collect-only tx. The collect tx hash is preserved from explorer-observed chain data while decoded logs are normalized into the parser fixture schema.",
+  "steps": [
+    {
+      "label": "seed_open",
+      "item": {
+        "tx_hash": "0x051171db65e2675a5f0060ec09db7ffffcdb6863aba91cbc99a975398e334b29",
+        "ingest_ts": 1774789200,
+        "method_name": "mint",
+        "token_id": "1226187",
+        "token0_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "token1_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token0_symbol": "USDC",
+        "token1_symbol": "WETH",
+        "amount0": 22000.0,
+        "amount1": 9.4,
+        "clmm_context": {
+          "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "pair_label": "USDC/WETH",
+          "tick_lower": 199760,
+          "tick_upper": 199860
+        },
+        "decoded_logs": [
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "Transfer",
+            "args": {
+              "from": "0x0000000000000000000000000000000000000000",
+              "to": "0xcc772e33a732587c476e28ea3cae7412909f6d34",
+              "tokenId": 1226187
+            },
+            "log_index": 0
+          },
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "IncreaseLiquidity",
+            "args": {
+              "tokenId": 1226187,
+              "liquidity": 2500.0,
+              "amount0": 22000.0,
+              "amount1": 9.4
+            },
+            "log_index": 1
+          },
+          {
+            "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+            "event_name": "Mint",
+            "args": {
+              "owner": "0xcc772e33a732587c476e28ea3cae7412909f6d34",
+              "tickLower": 199760,
+              "tickUpper": 199860,
+              "amount": 2500.0,
+              "amount0": 22000.0,
+              "amount1": 9.4
+            },
+            "log_index": 2
+          }
+        ]
+      },
+      "expected": {
+        "parse_status": "parsed",
+        "candidate": {
+          "base_action": "clmm_position_open",
+          "token_id": "1226187"
+        },
+        "intent": {
+          "intent_type": "clmm_position_open"
+        },
+        "state": {
+          "current_liquidity": 2500.0
+        }
+      }
+    },
+    {
+      "label": "collect_only",
+      "item": {
+        "tx_hash": "0x43d2735529f1a373ba471196053ab53a8586b10328043d5aed17c3a3018a6eff",
+        "ingest_ts": 1775232000,
+        "method_name": "collect",
+        "token_id": "1226187",
+        "token0_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "token1_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token0_symbol": "USDC",
+        "token1_symbol": "WETH",
+        "amount0": 734.636287,
+        "amount1": 0.291144238719312,
+        "clmm_context": {
+          "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "pair_label": "USDC/WETH",
+          "tick_lower": 199760,
+          "tick_upper": 199860
+        },
+        "decoded_logs": [
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "Collect",
+            "args": {
+              "tokenId": 1226187,
+              "recipient": "0xcc772e33a732587c476e28ea3cae7412909f6d34",
+              "amount0": 734.636287,
+              "amount1": 0.291144238719312
+            },
+            "log_index": 0
+          }
+        ]
+      },
+      "expected": {
+        "parse_status": "parsed",
+        "candidate": {
+          "base_action": "clmm_position_collect_fees",
+          "token_id": "1226187"
+        },
+        "intent": {
+          "intent_type": "clmm_passive_fee_harvest"
+        },
+        "state": {
+          "current_liquidity": 2500.0,
+          "collected_fees_count": 1
+        }
+      }
+    }
+  ]
+}

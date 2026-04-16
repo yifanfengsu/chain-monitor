@@ -1,0 +1,156 @@
+{
+  "fixture_name": "uniswap_v3_close",
+  "protocol": "uniswap_v3",
+  "chain": "ethereum",
+  "watch_address": "0x89988584a2b4b477050462f36b6a66c55ca1a01c",
+  "manager_address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+  "manager_abi_profile": "uniswap_v3_position_manager",
+  "pair_label": "USDC/WETH",
+  "source_transactions": [
+    "0x051171db65e2675a5f0060ec09db7ffffcdb6863aba91cbc99a975398e334b29",
+    "0x193eec0cea187fdad7983bad57fb7f084d1bdf8623783499e2101ff147b212da"
+  ],
+  "source_note": "Golden replay bundle for a close leg extracted from a real composite close-and-reopen transaction. The close tx hash is preserved, while unrelated legs are omitted so the parser can replay the close path deterministically offline.",
+  "steps": [
+    {
+      "label": "seed_open",
+      "item": {
+        "tx_hash": "0x051171db65e2675a5f0060ec09db7ffffcdb6863aba91cbc99a975398e334b29",
+        "ingest_ts": 1774789200,
+        "method_name": "mint",
+        "token_id": "1115934",
+        "token0_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "token1_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token0_symbol": "USDC",
+        "token1_symbol": "WETH",
+        "amount0": 18000.0,
+        "amount1": 6.8,
+        "clmm_context": {
+          "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "pair_label": "USDC/WETH",
+          "tick_lower": 190200,
+          "tick_upper": 190320
+        },
+        "decoded_logs": [
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "Transfer",
+            "args": {
+              "from": "0x0000000000000000000000000000000000000000",
+              "to": "0x89988584a2b4b477050462f36b6a66c55ca1a01c",
+              "tokenId": 1115934
+            },
+            "log_index": 0
+          },
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "IncreaseLiquidity",
+            "args": {
+              "tokenId": 1115934,
+              "liquidity": 1800.0,
+              "amount0": 18000.0,
+              "amount1": 6.8
+            },
+            "log_index": 1
+          },
+          {
+            "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+            "event_name": "Mint",
+            "args": {
+              "owner": "0x89988584a2b4b477050462f36b6a66c55ca1a01c",
+              "tickLower": 190200,
+              "tickUpper": 190320,
+              "amount": 1800.0,
+              "amount0": 18000.0,
+              "amount1": 6.8
+            },
+            "log_index": 2
+          }
+        ]
+      },
+      "expected": {
+        "parse_status": "parsed",
+        "candidate": {
+          "base_action": "clmm_position_open",
+          "token_id": "1115934"
+        },
+        "intent": {
+          "intent_type": "clmm_position_open"
+        },
+        "state": {
+          "current_liquidity": 1800.0
+        }
+      }
+    },
+    {
+      "label": "close_position",
+      "item": {
+        "tx_hash": "0x193eec0cea187fdad7983bad57fb7f084d1bdf8623783499e2101ff147b212da",
+        "ingest_ts": 1774790100,
+        "method_name": "burn",
+        "token_id": "1115934",
+        "token0_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "token1_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token0_symbol": "USDC",
+        "token1_symbol": "WETH",
+        "amount0": 331.278253702914,
+        "amount1": 0.649,
+        "clmm_context": {
+          "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "pair_label": "USDC/WETH",
+          "tick_lower": 190200,
+          "tick_upper": 190320
+        },
+        "decoded_logs": [
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "DecreaseLiquidity",
+            "args": {
+              "tokenId": 1115934,
+              "liquidity": 1800.0,
+              "amount0": 331.278253702914,
+              "amount1": 0.649
+            },
+            "log_index": 0
+          },
+          {
+            "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+            "event_name": "Burn",
+            "args": {
+              "owner": "0x89988584a2b4b477050462f36b6a66c55ca1a01c",
+              "tickLower": 190200,
+              "tickUpper": 190320,
+              "amount": 1800.0,
+              "amount0": 331.278253702914,
+              "amount1": 0.649
+            },
+            "log_index": 1
+          },
+          {
+            "address": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "event_name": "Transfer",
+            "args": {
+              "from": "0x89988584a2b4b477050462f36b6a66c55ca1a01c",
+              "to": "0x0000000000000000000000000000000000000000",
+              "tokenId": 1115934
+            },
+            "log_index": 2
+          }
+        ]
+      },
+      "expected": {
+        "parse_status": "parsed",
+        "candidate": {
+          "base_action": "clmm_position_close",
+          "token_id": "1115934"
+        },
+        "intent": {
+          "intent_type": "clmm_position_close"
+        },
+        "state": {
+          "current_liquidity": 0.0
+        }
+      }
+    }
+  ]
+}

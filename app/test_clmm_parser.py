@@ -2,6 +2,7 @@ import unittest
 
 from clmm_parser import infer_position_intent, parse_clmm_candidate, update_position_state
 from clmm_position_state import get_position_state, reset_position_runtime_state
+from processor import _parse_clmm_position_candidate
 
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -316,6 +317,27 @@ class ClmmParserTests(unittest.TestCase):
         self.assertEqual("candidate_only", candidate.get("parse_status"))
         self.assertIn("partial_support", candidate)
         self.assertIn("uniswap_v4", candidate.get("reason", ""))
+
+    def test_v4_manager_path_surfaces_partial_support_event_in_processor(self) -> None:
+        item = self._item(
+            token_id=999,
+            ingest_ts=1_710_000_500,
+            method_name="modifyLiquidities",
+            decoded_logs=[],
+            protocol="uniswap_v4",
+            amount0=0.75,
+            amount1=1_250.0,
+        )
+        parsed = _parse_clmm_position_candidate(item, OWNER, [], {})
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual("clmm_partial_support", parsed.get("monitor_type"))
+        self.assertFalse(parsed.get("clmm_position_event"))
+        self.assertTrue(parsed.get("clmm_partial_candidate"))
+        self.assertTrue(parsed.get("clmm_partial_support"))
+        self.assertEqual("candidate_only", parsed.get("clmm_candidate_status"))
+        self.assertEqual("clmm_partial_support_observation", parsed.get("intent_type"))
+        self.assertGreater(float(parsed.get("value") or 0.0), 0.0)
 
 
 if __name__ == "__main__":

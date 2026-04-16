@@ -270,7 +270,7 @@ def _headline_label(context: dict, event: Event) -> str:
     return str(context.get("headline_label") or context.get("conclusion_label") or event.intent_type or "意图未明")
 
 
-def _exchange_transfer_purpose_label(purpose: str) -> str:
+def _exchange_transfer_purpose_label(purpose: str, strength: str = "no") -> str:
     mapping = {
         "exchange_user_deposit_consolidation": "用户入金归集",
         "exchange_hot_wallet_withdrawal_outflow": "热钱包出金",
@@ -283,7 +283,17 @@ def _exchange_transfer_purpose_label(purpose: str) -> str:
         "exchange_external_inflow": "外部流入",
         "exchange_unknown_flow": "待继续确认",
     }
-    return mapping.get(str(purpose or ""), str(purpose or "待继续确认"))
+    label = mapping.get(str(purpose or ""), str(purpose or "待继续确认"))
+    if str(strength or "") == "likely" and str(purpose or "") in {
+        "exchange_user_deposit_consolidation",
+        "exchange_hot_wallet_overflow_to_cold",
+        "exchange_hot_wallet_cold_wallet_topup",
+        "exchange_trading_desk_funding",
+        "exchange_trading_desk_return",
+        "exchange_internal_rebalance",
+    }:
+        return f"疑似{label}"
+    return label
 
 
 def _operational_intent_label(context: dict, event: Event) -> str:
@@ -313,14 +323,19 @@ def _entity_context_brief(context: dict) -> str:
         parts.append(wallet_label)
 
     purpose = str(context.get("exchange_transfer_purpose") or "").strip()
+    purpose_strength = str(
+        context.get("exchange_transfer_purpose_strength")
+        or context.get("exchange_same_entity_strength")
+        or "no"
+    ).strip()
     if purpose:
-        parts.append(_exchange_transfer_purpose_label(purpose))
+        parts.append(_exchange_transfer_purpose_label(purpose, purpose_strength))
 
     internality = str(context.get("exchange_internality") or "").strip()
     if internality == "confirmed":
         parts.append("同实体内部")
     elif internality == "likely":
-        parts.append("疑似同实体")
+        parts.append("同实体待确认")
 
     if not parts:
         return str(context.get("market_context_label") or context.get("role_summary") or "场景待确认")
@@ -915,6 +930,7 @@ def _signal_type_display(signal: Signal) -> str:
         "liquidity_addition": "Liquidity_Addition",
         "liquidity_removal": "Liquidity_Removal",
         "pool_rebalance": "Pool_Rebalance",
+        "clmm_partial_support_signal": "CLMM_Partial_Support",
     }
     return mapping.get(normalized, normalized or "Unknown_Signal")
 

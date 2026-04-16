@@ -5945,6 +5945,21 @@ class SignalPipeline:
         watch_context: dict,
         watch_meta: dict,
     ) -> dict:
+        if self._is_clmm_partial_support_event(event=event, parsed=parsed):
+            return {
+                "intent_type": str(parsed.get("intent_type") or "clmm_partial_support_observation"),
+                "intent_confidence": float(parsed.get("intent_confidence") or 0.42),
+                "information_level": str(parsed.get("information_level") or "low"),
+                "confirmation_score": float(parsed.get("confirmation_score") or 0.18),
+                "intent_evidence": list(parsed.get("intent_evidence") or []),
+                "basis": {
+                    "monitor_type": str(parsed.get("monitor_type") or ""),
+                    "candidate_status": str(parsed.get("clmm_candidate_status") or ""),
+                    "manager_protocol": str(parsed.get("clmm_manager_protocol") or ""),
+                    "manager_address": str(parsed.get("clmm_manager_address") or ""),
+                    "partial_reason": str(parsed.get("clmm_partial_reason") or ""),
+                },
+            }
         if self._is_clmm_position_event(event=event, parsed=parsed):
             return {
                 "intent_type": str(parsed.get("intent_type") or "clmm_position_open"),
@@ -6263,6 +6278,35 @@ class SignalPipeline:
         behavior: dict,
         preliminary_intent: dict,
     ) -> dict:
+        if self._is_clmm_partial_support_event(event=event, parsed=parsed):
+            return {
+                "intent_type": str(preliminary_intent.get("intent_type") or parsed.get("intent_type") or "clmm_partial_support_observation"),
+                "intent_confidence": min(
+                    0.48,
+                    max(
+                        float(preliminary_intent.get("intent_confidence") or 0.0),
+                        float(parsed.get("intent_confidence") or 0.0),
+                        0.42,
+                    ),
+                ),
+                "information_level": str(preliminary_intent.get("information_level") or parsed.get("information_level") or "low"),
+                "confirmation_score": min(
+                    0.24,
+                    max(
+                        float(preliminary_intent.get("confirmation_score") or 0.0),
+                        float(parsed.get("confirmation_score") or 0.0),
+                        0.18,
+                    ),
+                ),
+                "intent_evidence": list(preliminary_intent.get("intent_evidence") or [])[:4],
+                "basis": {
+                    "monitor_type": str(parsed.get("monitor_type") or ""),
+                    "candidate_status": str(parsed.get("clmm_candidate_status") or ""),
+                    "manager_protocol": str(parsed.get("clmm_manager_protocol") or ""),
+                    "manager_address": str(parsed.get("clmm_manager_address") or ""),
+                    "partial_reason": str(parsed.get("clmm_partial_reason") or ""),
+                },
+            }
         if self._is_clmm_position_event(event=event, parsed=parsed):
             clmm_context = parsed.get("clmm_context") or {}
             confirmation_score = max(
@@ -6314,7 +6358,8 @@ class SignalPipeline:
         exchange_sensitive = self._is_exchange_sensitive_role(watch_strategy_role) or self._is_exchange_sensitive_role(counterparty_strategy_role)
         watch_is_exchange = self._is_exchange_sensitive_role(watch_strategy_role)
         exchange_internality = str(parsed.get("exchange_internality") or "no")
-        internal_like = exchange_internality in {"confirmed", "likely"} or bool(parsed.get("possible_internal_transfer"))
+        confirmed_internal_like = exchange_internality == "confirmed" or bool(parsed.get("possible_internal_transfer"))
+        likely_internal_like = exchange_internality == "likely"
 
         recent_window = address_snapshot.get("windows", {}).get("15m", {}).get("recent") or address_snapshot.get("recent") or []
         prior_events = [item for item in recent_window if item.tx_hash != event.tx_hash]
@@ -6380,19 +6425,27 @@ class SignalPipeline:
             score += 0.06
             evidence.append("存在高质量地址带动其他地址跟随")
 
-        if event.intent_type in {"internal_rebalance", "market_making_inventory_move"} and internal_like:
-            score += 0.18
-            evidence.append("路径更像同体系地址调拨或库存迁移")
+        if event.intent_type in {"internal_rebalance", "market_making_inventory_move"}:
+            if confirmed_internal_like:
+                score += 0.18
+                evidence.append("路径更像已确认的同体系地址调拨或库存迁移")
+            elif likely_internal_like:
+                score += 0.08
+                evidence.append("存在 likely same-entity 线索，当前仅按疑似内部流转处理")
 
         if event.intent_type == "market_making_inventory_move" and behavior_type == "inventory_management":
             score += 0.12
             evidence.append("做市地址短时出现双向换手，更像库存管理")
 
         if exchange_sensitive and event.kind != "swap":
-            if internal_like:
+            if confirmed_internal_like:
                 if event.intent_type not in {"internal_rebalance", "market_making_inventory_move"}:
                     score -= 0.16
                     evidence.append("存在交易所内部划转特征，削弱外部交易推断")
+            elif likely_internal_like:
+                if event.intent_type not in {"internal_rebalance", "market_making_inventory_move"}:
+                    score -= 0.08
+                    evidence.append("存在 likely same-entity 线索，先压低外部交易推断")
 
             if (
                 len(same_direction_prior) == 0
@@ -6422,6 +6475,8 @@ class SignalPipeline:
             score -= 0.08
 
         score = self._clamp(score, 0.0, 1.0)
+        if likely_internal_like and event.intent_type in {"internal_rebalance", "market_making_inventory_move"}:
+            score = min(score, 0.66)
         if score >= 0.78:
             stage = "confirmed"
         elif score >= 0.52:
@@ -6756,11 +6811,20 @@ class SignalPipeline:
                 "watch_wallet_function": parsed.get("watch_wallet_function", watch_meta.get("wallet_function", "unknown")),
                 "counterparty_wallet_function": parsed.get("counterparty_wallet_function", "unknown"),
                 "exchange_internality": parsed.get("exchange_internality", "no"),
+                "exchange_same_entity_strength": parsed.get("exchange_same_entity_strength", "no"),
                 "exchange_transfer_purpose": parsed.get("exchange_transfer_purpose", "exchange_unknown_flow"),
+                "exchange_transfer_purpose_family": parsed.get("exchange_transfer_purpose_family", parsed.get("exchange_transfer_purpose", "exchange_unknown_flow")),
+                "exchange_transfer_purpose_strength": parsed.get("exchange_transfer_purpose_strength", "no"),
                 "exchange_transfer_confidence": float(parsed.get("exchange_transfer_confidence") or 0.0),
                 "exchange_entity_label": str(parsed.get("exchange_entity_label") or ""),
                 "exchange_transfer_why": list(parsed.get("exchange_transfer_why") or []),
                 "clmm_position_event": bool(parsed.get("clmm_position_event")),
+                "clmm_partial_candidate": bool(parsed.get("clmm_partial_candidate")),
+                "clmm_partial_support": bool(parsed.get("clmm_partial_support")),
+                "clmm_partial_reason": str(parsed.get("clmm_partial_reason") or ""),
+                "clmm_manager_protocol": str(parsed.get("clmm_manager_protocol") or ""),
+                "clmm_manager_address": str(parsed.get("clmm_manager_address") or ""),
+                "clmm_candidate_status": str(parsed.get("clmm_candidate_status") or ""),
                 "clmm_context": dict(parsed.get("clmm_context") or {}),
                 "inferred_context": parsed.get("inferred_context", {}),
                 "is_liquidation_protocol_related": bool(parsed.get("is_liquidation_protocol_related")),
@@ -6898,6 +6962,8 @@ class SignalPipeline:
         event: Event | None = None,
         parsed: dict | None = None,
     ) -> bool:
+        if self._is_clmm_partial_support_event(event=event, parsed=parsed):
+            return False
         if parsed and str(parsed.get("monitor_type") or "") == "clmm_position":
             return True
         if parsed and bool(parsed.get("clmm_position_event")):
@@ -6909,6 +6975,21 @@ class SignalPipeline:
         if event and str(event.intent_type or "").startswith("clmm_"):
             return True
         return False
+
+    def _is_clmm_partial_support_event(
+        self,
+        event: Event | None = None,
+        parsed: dict | None = None,
+    ) -> bool:
+        if parsed and bool(parsed.get("clmm_partial_support")):
+            return True
+        if parsed and str(parsed.get("monitor_type") or "") == "clmm_partial_support":
+            return True
+        if event and bool(event.metadata.get("clmm_partial_support")):
+            return True
+        if event and bool((event.metadata.get("raw") or {}).get("clmm_partial_support")):
+            return True
+        return str(event.intent_type or "") == "clmm_partial_support_observation" if event else False
 
     def _clamp(self, value: float, low: float, high: float) -> float:
         return max(low, min(high, float(value)))

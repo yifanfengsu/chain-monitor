@@ -31,6 +31,7 @@ CLMM_POSITION_INTENTS = {
     "clmm_inventory_recenter",
     "clmm_passive_fee_harvest",
 }
+CLMM_PARTIAL_SUPPORT_INTENT = "clmm_partial_support_observation"
 
 
 @dataclass
@@ -66,10 +67,12 @@ class SignalInterpreter:
         "clmm_jit_liquidity_likely": "疑似 JIT 流动性",
         "clmm_inventory_recenter": "库存再居中",
         "clmm_passive_fee_harvest": "被动收手续费",
+        CLMM_PARTIAL_SUPPORT_INTENT: "CLMM 部分支持观察",
         "unknown_intent": "意图未明",
     }
 
     INFO_LABELS = {
+        "debug": "调试观察",
         "high": "高信息",
         "medium": "中信息",
         "low": "低信息",
@@ -105,6 +108,7 @@ class SignalInterpreter:
         "liquidity_removal": "Liquidity_Removal",
         "pool_rebalance": "Pool_Rebalance",
         "lp_position_intent": "CLMM_Position_Intent",
+        "clmm_partial_support_signal": "CLMM_Partial_Support",
     }
 
     def __init__(
@@ -131,17 +135,18 @@ class SignalInterpreter:
         self._canonicalize_pool_semantics(event, signal)
         raw = event.metadata.get("raw") or {}
         clmm_context = self._clmm_context(raw, event)
+        clmm_partial_support = self._is_clmm_partial_support_event(event, raw)
         clmm_event = self._is_clmm_position_event(event, raw)
         lp_event = self._is_lp_event(event, watch_meta, raw)
         counterparty_meta = self._resolve_counterparty_meta(event, watch_context)
 
-        semantic = self._classify_semantic(event, lp_event, clmm_event)
+        semantic = self._classify_semantic(event, lp_event, clmm_event, clmm_partial_support)
         intent_label = self.INTENT_LABELS.get(str(event.intent_type or "unknown_intent"), "意图未明")
         actor_label = self._actor_label(event.address, watch_meta, lp_event)
         role_display = self._role_display(watch_meta, lp_event)
-        action_label = self._action_label(event, signal, semantic, lp_event, clmm_event)
-        fact_label = self._fact_label(event, watch_context, lp_event, clmm_event)
-        intent_detail = self._intent_detail(event, lp_event, clmm_event)
+        action_label = self._action_label(event, signal, semantic, lp_event, clmm_event, clmm_partial_support)
+        fact_label = self._fact_label(event, watch_context, lp_event, clmm_event, clmm_partial_support)
+        intent_detail = self._intent_detail(event, lp_event, clmm_event, clmm_partial_support)
         continuous_count = self._continuous_count(event, address_snapshot, lp_event)
         continuous_label = self._continuous_label(event, continuous_count, lp_event)
         abnormal_ratio = float(signal.abnormal_ratio or self._abnormal_ratio(event, address_snapshot))
@@ -317,6 +322,7 @@ class SignalInterpreter:
             counterparty_meta=counterparty_meta,
             gate_metrics=gate_metrics,
             clmm_event=clmm_event,
+            clmm_partial_support=clmm_partial_support,
             clmm_context=clmm_context,
             lp_event=lp_event,
             liquidation_meta=liquidation_meta,
@@ -335,10 +341,21 @@ class SignalInterpreter:
         )
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
         auto_intent_template = ""
-        if (
+        exchange_internal_intent = (
+            role_group == "exchange"
+            and str(operational_intent.get("operational_intent_strength") or "") in {"confirmed", "likely"}
+        )
+        if clmm_partial_support and operational_intent.get("operational_intent_key"):
+            auto_intent_template = "debug"
+        elif (
             operational_intent.get("operational_intent_key")
-            and (role_group in {"exchange", "smart_money", "market_maker"} or clmm_event)
-            and float(operational_intent.get("operational_intent_confidence") or 0.0) >= 0.56
+            and (
+                exchange_internal_intent
+                or (
+                    (role_group in {"exchange", "smart_money", "market_maker"} or clmm_event)
+                    and float(operational_intent.get("operational_intent_confidence") or 0.0) >= 0.56
+                )
+            )
             and not downstream_followup_active
             and not liquidation_meta["active"]
             and not lp_event
@@ -353,6 +370,7 @@ class SignalInterpreter:
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "market_state_label": str(market_state_label or ""),
             "clmm_position_event": clmm_event,
+            "clmm_partial_support": clmm_partial_support,
             "clmm_context": dict(clmm_context),
             **operational_intent,
             **outcome_tracking,
@@ -379,7 +397,10 @@ class SignalInterpreter:
             ),
             "counterparty_wallet_function": str(event.metadata.get("counterparty_wallet_function") or counterparty_meta.get("wallet_function") or "unknown"),
             "exchange_internality": str(event.metadata.get("exchange_internality") or "no"),
+            "exchange_same_entity_strength": str(event.metadata.get("exchange_same_entity_strength") or event.metadata.get("exchange_internality") or "no"),
             "exchange_transfer_purpose": str(event.metadata.get("exchange_transfer_purpose") or "exchange_unknown_flow"),
+            "exchange_transfer_purpose_family": str(event.metadata.get("exchange_transfer_purpose_family") or event.metadata.get("exchange_transfer_purpose") or "exchange_unknown_flow"),
+            "exchange_transfer_purpose_strength": str(event.metadata.get("exchange_transfer_purpose_strength") or "no"),
             "exchange_transfer_confidence": float(event.metadata.get("exchange_transfer_confidence") or 0.0),
             "exchange_entity_label": str(event.metadata.get("exchange_entity_label") or ""),
             "exchange_transfer_why": list(event.metadata.get("exchange_transfer_why") or []),
@@ -429,6 +450,11 @@ class SignalInterpreter:
             "behavior_reason": behavior.get("reason", ""),
             "signal_type_label": self._signal_type_label(signal.type),
             "clmm_position_event": clmm_event,
+            "clmm_partial_support": clmm_partial_support,
+            "clmm_partial_reason": str(event.metadata.get("clmm_partial_reason") or ""),
+            "clmm_candidate_status": str(event.metadata.get("clmm_candidate_status") or ""),
+            "clmm_manager_protocol": str(event.metadata.get("clmm_manager_protocol") or ""),
+            "clmm_manager_address": str(event.metadata.get("clmm_manager_address") or ""),
             "clmm_context": dict(clmm_context),
             "venue_or_position_context": str(operational_intent.get("venue_or_position_context") or ""),
             "lp_event": lp_event,
@@ -518,6 +544,11 @@ class SignalInterpreter:
             "smart_money_observe_label": smart_money_context["observe_label"],
             "message_template": auto_intent_template,
             "clmm_position_event": clmm_event,
+            "clmm_partial_support": clmm_partial_support,
+            "clmm_partial_reason": str(event.metadata.get("clmm_partial_reason") or ""),
+            "clmm_candidate_status": str(event.metadata.get("clmm_candidate_status") or ""),
+            "clmm_manager_protocol": str(event.metadata.get("clmm_manager_protocol") or ""),
+            "clmm_manager_address": str(event.metadata.get("clmm_manager_address") or ""),
             "clmm_context": dict(clmm_context),
             **operational_intent,
             **outcome_tracking,
@@ -623,7 +654,7 @@ class SignalInterpreter:
                 "analysis": dict(event.metadata.get("lp_analysis") or {}),
                 "burst": dict(event.metadata.get("lp_burst") or {}),
             }
-        if clmm_event:
+        if clmm_event or clmm_partial_support:
             signal.metadata["clmm"] = {
                 "context": dict(clmm_context),
                 "outcome_tracking": dict(outcome_tracking.get("outcome_tracking") or {}),
@@ -638,6 +669,8 @@ class SignalInterpreter:
         return str(event.intent_type or "") in LP_INTENTS or str(event.strategy_role or "") == "lp_pool"
 
     def _is_clmm_position_event(self, event: Event, raw: dict) -> bool:
+        if self._is_clmm_partial_support_event(event, raw):
+            return False
         if bool(event.metadata.get("clmm_position_event")):
             return True
         if bool((event.metadata.get("raw") or {}).get("clmm_position_event")):
@@ -647,6 +680,17 @@ class SignalInterpreter:
         if str(raw.get("monitor_type") or "") == "clmm_position":
             return True
         return str(event.intent_type or "") in CLMM_POSITION_INTENTS
+
+    def _is_clmm_partial_support_event(self, event: Event, raw: dict) -> bool:
+        if bool(event.metadata.get("clmm_partial_support")):
+            return True
+        if bool((event.metadata.get("raw") or {}).get("clmm_partial_support")):
+            return True
+        if bool(raw.get("clmm_partial_support")):
+            return True
+        if str(raw.get("monitor_type") or "") == "clmm_partial_support":
+            return True
+        return str(event.intent_type or "") == CLMM_PARTIAL_SUPPORT_INTENT
 
     def _clmm_context(self, raw: dict, event: Event) -> dict:
         context = {}
@@ -690,7 +734,7 @@ class SignalInterpreter:
             return get_address_meta(counterparty)
         return get_address_meta("")
 
-    def _classify_semantic(self, event: Event, lp_event: bool, clmm_event: bool) -> str:
+    def _classify_semantic(self, event: Event, lp_event: bool, clmm_event: bool, clmm_partial_support: bool) -> str:
         if lp_event:
             if event.intent_type in {"pool_buy_pressure", "pool_sell_pressure"}:
                 return "pool_trade_pressure"
@@ -701,6 +745,8 @@ class SignalInterpreter:
             return "pool_noise"
         if clmm_event:
             return "clmm_position"
+        if clmm_partial_support:
+            return "clmm_partial_support"
 
         semantic_map = {
             "swap_execution": "active_trade",
@@ -715,7 +761,7 @@ class SignalInterpreter:
         }
         return semantic_map.get(str(event.intent_type or "unknown_intent"), "unknown_flow")
 
-    def _action_label(self, event: Event, signal: Signal, semantic: str, lp_event: bool, clmm_event: bool) -> str:
+    def _action_label(self, event: Event, signal: Signal, semantic: str, lp_event: bool, clmm_event: bool, clmm_partial_support: bool) -> str:
         raw = event.metadata.get("raw") or {}
         lp_context = raw.get("lp_context") or {}
         clmm_context = self._clmm_context(raw, event)
@@ -749,6 +795,10 @@ class SignalInterpreter:
             if event.intent_type == "clmm_jit_liquidity_likely":
                 return f"{pair_label or 'CLMM'} 疑似 JIT 抽费"
             return f"{pair_label or 'CLMM'} 区间重设"
+        if clmm_partial_support:
+            protocol = str(clmm_context.get("protocol") or event.metadata.get("clmm_manager_protocol") or "clmm").strip()
+            protocol_label = "Uniswap v4" if protocol == "uniswap_v4" else "CLMM"
+            return f"{protocol_label} PositionManager 路径命中（部分支持）"
 
         if semantic == "active_trade":
             if event.side == "买入":
@@ -772,7 +822,7 @@ class SignalInterpreter:
             return f"{token_symbol} 流出"
         return signal.type or f"{token_symbol} 转移"
 
-    def _intent_detail(self, event: Event, lp_event: bool, clmm_event: bool) -> str:
+    def _intent_detail(self, event: Event, lp_event: bool, clmm_event: bool, clmm_partial_support: bool) -> str:
         if lp_event:
             if event.intent_type == "pool_buy_pressure":
                 return "池子表现为稳定币流入、标的流出，更接近市场主动买入。"
@@ -797,6 +847,8 @@ class SignalInterpreter:
             if event.intent_type == "clmm_position_remove_range_liquidity":
                 return "当前更像 LP 正在撤离对应价区流动性，需继续看是否还有后续撤离或重设。"
             return "当前更像 LP 头寸层的区间加流动性动作，不直接等于方向表达。"
+        if clmm_partial_support:
+            return "当前只确认命中了已知 CLMM PositionManager 路径，但还缺 decode primitives，不能写成已解析的 LP 头寸动作。"
 
         if self._is_exchange_followup_case(event) and bool(event.metadata.get("followup_confirmed")):
             return "前序交易场景流入后，又出现同地址主流资产后续流入，当前更像结构延续观察，不等于已确认卖出。"
@@ -816,7 +868,7 @@ class SignalInterpreter:
             return "更接近入场前的资金准备，尚未看到真实买入。"
         return "当前更像重点地址的一般资金动作，暂不下更强结论。"
 
-    def _fact_label(self, event: Event, watch_context: dict | None, lp_event: bool, clmm_event: bool) -> str:
+    def _fact_label(self, event: Event, watch_context: dict | None, lp_event: bool, clmm_event: bool, clmm_partial_support: bool) -> str:
         raw = event.metadata.get("raw") or {}
         lp_context = raw.get("lp_context") or {}
         clmm_context = self._clmm_context(raw, event)
@@ -851,6 +903,16 @@ class SignalInterpreter:
             if event.intent_type == "clmm_jit_liquidity_likely":
                 return f"{position_label} 在 {pair_label} 出现短持有围绕冲击窗口的疑似 JIT 行为"
             return f"{position_label} 在 {pair_label} 出现区间迁移/再居中调整"
+        if clmm_partial_support:
+            protocol = str(clmm_context.get("protocol") or event.metadata.get("clmm_manager_protocol") or "clmm").strip()
+            protocol_label = "Uniswap v4" if protocol == "uniswap_v4" else "CLMM"
+            manager_address = str(
+                event.metadata.get("clmm_manager_address")
+                or clmm_context.get("position_manager")
+                or ""
+            ).strip()
+            manager_label = format_address_label(manager_address) if manager_address else "未知 manager"
+            return f"{protocol_label} PositionManager 路径命中：{manager_label}，当前仅到部分支持观察"
 
         flow_direction = (watch_context or {}).get("direction") or event.metadata.get("flow_direction") or event.side or ""
         if event.kind == "swap":
@@ -1586,6 +1648,7 @@ class SignalInterpreter:
         counterparty_meta: dict,
         gate_metrics: dict,
         clmm_event: bool,
+        clmm_partial_support: bool,
         clmm_context: dict,
         lp_event: bool,
         liquidation_meta: dict,
@@ -1595,7 +1658,13 @@ class SignalInterpreter:
         pair_label: str,
     ) -> dict:
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
-        if clmm_event:
+        if clmm_partial_support:
+            payload = self._clmm_partial_support_operational_intent(
+                event=event,
+                clmm_context=clmm_context,
+                pair_label=pair_label,
+            )
+        elif clmm_event:
             payload = self._clmm_operational_intent(
                 event=event,
                 clmm_context=clmm_context,
@@ -1673,13 +1742,37 @@ class SignalInterpreter:
         object_label: str,
     ) -> dict:
         raw = event.metadata.get("raw") or {}
-        purpose = str(event.metadata.get("exchange_transfer_purpose") or raw.get("exchange_transfer_purpose") or "exchange_unknown_flow")
+        purpose = str(event.metadata.get("exchange_transfer_purpose_family") or event.metadata.get("exchange_transfer_purpose") or raw.get("exchange_transfer_purpose_family") or raw.get("exchange_transfer_purpose") or "exchange_unknown_flow")
         internality = str(event.metadata.get("exchange_internality") or raw.get("exchange_internality") or "no")
+        same_entity_strength = str(
+            event.metadata.get("exchange_same_entity_strength")
+            or raw.get("exchange_same_entity_strength")
+            or internality
+            or "no"
+        )
+        purpose_strength = str(
+            event.metadata.get("exchange_transfer_purpose_strength")
+            or raw.get("exchange_transfer_purpose_strength")
+            or (
+                same_entity_strength
+                if purpose in {
+                    "exchange_user_deposit_consolidation",
+                    "exchange_hot_wallet_overflow_to_cold",
+                    "exchange_hot_wallet_cold_wallet_topup",
+                    "exchange_trading_desk_funding",
+                    "exchange_trading_desk_return",
+                    "exchange_internal_rebalance",
+                }
+                else "no"
+            )
+        )
         transfer_confidence = float(event.metadata.get("exchange_transfer_confidence") or raw.get("exchange_transfer_confidence") or 0.0)
         entity_label = str(event.metadata.get("exchange_entity_label") or raw.get("exchange_entity_label") or watch_meta.get("entity_label") or "").strip()
         wallet_function = str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown")
         counterparty_role_group = strategy_role_group(counterparty_meta.get("strategy_role") or "")
         known_followup_counterparty = counterparty_role_group in {"smart_money", "market_maker"} or bool(counterparty_meta.get("entity_label"))
+        likely_internal = purpose_strength == "likely" or same_entity_strength == "likely"
+        confirmed_internal = purpose_strength == "confirmed" or same_entity_strength == "confirmed"
 
         key = ""
         label = ""
@@ -1687,25 +1780,38 @@ class SignalInterpreter:
         next_check = ""
         invalidation = ""
 
-        if purpose in {
-            "exchange_user_deposit_consolidation",
-            "exchange_hot_wallet_overflow_to_cold",
-            "exchange_internal_rebalance",
-        }:
+        if purpose in {"exchange_user_deposit_consolidation", "exchange_internal_rebalance"}:
             key = "exchange_internal_consolidation"
-            label = "内部归集"
-            market_implication = "市场含义偏中性，更像交易所内部库存/用户资金归集。"
+            label = "疑似内部归集" if likely_internal else "内部归集"
+            market_implication = (
+                "当前更像交易所内部库存/用户资金归集，但 same-entity 仍待确认。"
+                if likely_internal
+                else "市场含义偏中性，更像交易所内部库存/用户资金归集。"
+            )
             next_check = "是否继续回流同实体 hot/trading，或出现对外转出。"
             invalidation = "短窗内改为流向外部对手方，且不再命中 same-entity。"
+        elif purpose in {"exchange_hot_wallet_overflow_to_cold", "exchange_hot_wallet_cold_wallet_topup"}:
+            key = "exchange_hot_cold_rebalance"
+            label = "疑似热冷调拨" if likely_internal else "热冷调拨"
+            market_implication = (
+                "更像交易所热冷钱包之间的疑似调拨，不直接等于外部执行。"
+                if likely_internal
+                else "更像交易所热冷钱包之间的内部调拨，不直接等于外部执行。"
+            )
+            next_check = "继续看是否回到 hot/trading 端，或后续进入外部路径。"
+            invalidation = "后续直接流向外部对手方，且不再命中 same-entity。"
         elif purpose in {
-            "exchange_hot_wallet_cold_wallet_topup",
             "exchange_trading_desk_funding",
             "exchange_trading_desk_return",
             "exchange_external_inflow",
         }:
             key = "exchange_liquidity_preparation"
-            label = "流动性准备"
-            market_implication = "更像交易所为后续流动性/交易席位做准备，不直接等于方向执行。"
+            label = "疑似流动性准备" if likely_internal else "流动性准备"
+            market_implication = (
+                "更像交易所为后续流动性/交易席位做疑似准备，不直接等于方向执行。"
+                if likely_internal
+                else "更像交易所为后续流动性/交易席位做准备，不直接等于方向执行。"
+            )
             next_check = "是否继续进入 trading/hot 路径，或短时出现成交延续。"
             invalidation = "后续没有形成同实体接力，且转而快速回流外部。"
         elif purpose == "exchange_hot_wallet_withdrawal_outflow":
@@ -1740,10 +1846,10 @@ class SignalInterpreter:
             + transfer_confidence * 0.30,
             transfer_confidence,
         )
-        if internality == "confirmed":
+        if confirmed_internal or internality == "confirmed":
             confidence = min(0.92, confidence + 0.10)
-        elif internality == "likely":
-            confidence = min(0.74, confidence)
+        elif likely_internal or internality == "likely":
+            confidence = min(0.66, max(confidence, 0.44))
 
         actor = self._operational_actor_label(
             watch_meta,
@@ -1753,20 +1859,82 @@ class SignalInterpreter:
         why_items = list(event.metadata.get("exchange_transfer_why") or raw.get("exchange_transfer_why") or [])
         why_items.append(f"purpose={purpose}")
         why_items.append(f"internality={internality}")
+        why_items.append(f"purpose_strength={purpose_strength}")
         if entity_label:
             why_items.append(f"entity={entity_label}")
         return {
             "operational_intent_key": key,
+            "operational_intent_family": key,
+            "operational_intent_strength": "likely" if likely_internal else "confirmed" if confirmed_internal else "no",
             "operational_intent_label": label,
             "operational_intent_confidence": confidence,
             "operational_intent_why": why_items,
-            "operational_intent_not_yet": "还没看到明确外部执行或成交落点，不能写成市场方向执行。",
+            "operational_intent_not_yet": (
+                "same-entity 仍未完全确认，还不能把它写成确认过的内部业务动作。"
+                if likely_internal
+                else "还没看到明确外部执行或成交落点，不能写成市场方向执行。"
+            ),
             "operational_intent_next_check": next_check,
             "operational_intent_market_implication": market_implication,
             "operational_intent_time_horizon": "短线到数小时",
             "operational_intent_invalidation": invalidation,
             "operational_actor_label": actor,
             "operational_object_label": self._operational_object_label(event, object_label),
+        }
+
+    def _clmm_partial_support_operational_intent(
+        self,
+        *,
+        event: Event,
+        clmm_context: dict,
+        pair_label: str,
+    ) -> dict:
+        protocol = str(
+            clmm_context.get("protocol")
+            or event.metadata.get("clmm_manager_protocol")
+            or "clmm"
+        ).strip()
+        protocol_label = "Uniswap v4" if protocol == "uniswap_v4" else "CLMM"
+        manager_address = str(
+            event.metadata.get("clmm_manager_address")
+            or clmm_context.get("position_manager")
+            or ""
+        ).strip().lower()
+        reason = str(
+            event.metadata.get("clmm_partial_reason")
+            or clmm_context.get("partial_reason")
+            or ""
+        ).strip()
+        candidate_status = str(
+            event.metadata.get("clmm_candidate_status")
+            or clmm_context.get("parse_status")
+            or "candidate_only"
+        ).strip()
+        venue_context = f"{protocol_label} · manager {format_address_label(manager_address) if manager_address else 'unknown'}"
+        why_items = list(event.intent_evidence or [])
+        if protocol:
+            why_items.append(f"protocol={protocol}")
+        if candidate_status:
+            why_items.append(f"status={candidate_status}")
+        if reason:
+            why_items.append(f"reason={reason}")
+        if manager_address:
+            why_items.append(f"manager={manager_address}")
+        return {
+            "operational_intent_key": "clmm_partial_support_observation",
+            "operational_intent_family": "clmm_partial_support_observation",
+            "operational_intent_strength": "partial_support",
+            "operational_intent_label": "V4 PositionManager 命中（部分支持）" if protocol == "uniswap_v4" else "CLMM manager path 命中（部分支持）",
+            "operational_intent_confidence": 0.44,
+            "operational_intent_why": why_items,
+            "operational_intent_not_yet": "尚未完整解析 position action；不能写成开仓、加仓、减仓、收手续费或平仓。",
+            "operational_intent_next_check": "补齐 decode primitives 后再看是否能升级为 parsed CLMM position event。",
+            "operational_intent_market_implication": "这只是技术观察：命中了已知 manager path，不构成 LP 主体意图，也不构成市场方向结论。",
+            "operational_intent_time_horizon": "工程观察",
+            "operational_intent_invalidation": "后续证明该路径并非已登记 PositionManager，或补码后发现并非 position action。",
+            "operational_actor_label": f"{protocol_label} PositionManager",
+            "operational_object_label": pair_label or format_address_label(manager_address) or "CLMM manager path",
+            "venue_or_position_context": venue_context,
         }
 
     def _smart_money_operational_intent(
@@ -2086,6 +2254,8 @@ class SignalInterpreter:
     def _empty_operational_intent(self) -> dict:
         return {
             "operational_intent_key": "",
+            "operational_intent_family": "",
+            "operational_intent_strength": "",
             "operational_intent_label": "",
             "operational_intent_confidence": 0.0,
             "operational_intent_confidence_label": "低",

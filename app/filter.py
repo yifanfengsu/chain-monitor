@@ -268,6 +268,7 @@ STRATEGY_ROLE_THRESHOLDS = {
     "alpha_wallet": {1: 150, 2: 250, 3: 350},
     "adjacent_watch": {1: 30000, 2: 50000, 3: 80000},
     "exchange_hot_wallet": {1: 1000, 2: 1000, 3: 1500},
+    "exchange_cold_wallet": {1: 1000, 2: 1000, 3: 1500},
     "exchange_deposit_wallet": {1: 1500, 2: 1500, 3: 2000},
     "exchange_trading_wallet": {1: 800, 2: 1000, 3: 1200},
     "treasury_issuer": {1: 5000, 2: 5000, 3: 6000},
@@ -283,6 +284,7 @@ STRATEGY_ROLE_THRESHOLDS = {
 
 EXCHANGE_STRATEGY_ROLES = {
     "exchange_hot_wallet",
+    "exchange_cold_wallet",
     "exchange_deposit_wallet",
     "exchange_trading_wallet",
 }

@@ -343,6 +343,32 @@ def _snapshot_meta(address: str) -> dict:
     }
 
 
+EXPLICIT_INTERNAL_ENTITY_TYPES = {
+    "exchange",
+    "market_maker_firm",
+    "treasury",
+    "protocol",
+}
+
+
+def _has_confirmed_shared_entity_internal(from_meta: dict, to_meta: dict) -> bool:
+    from_entity_id = str(from_meta.get("entity_id") or "").strip()
+    to_entity_id = str(to_meta.get("entity_id") or "").strip()
+    if not from_entity_id or not to_entity_id or from_entity_id != to_entity_id:
+        return False
+
+    from_strength = str(from_meta.get("entity_attribution_strength") or "").strip()
+    to_strength = str(to_meta.get("entity_attribution_strength") or "").strip()
+    if from_strength != "confirmed_entity" or to_strength != "confirmed_entity":
+        return False
+
+    from_entity_type = str(from_meta.get("entity_type") or "").strip()
+    to_entity_type = str(to_meta.get("entity_type") or "").strip()
+    if not from_entity_type or from_entity_type != to_entity_type:
+        return False
+    return from_entity_type in EXPLICIT_INTERNAL_ENTITY_TYPES
+
+
 def _is_inventory_style_internal(from_meta: dict, to_meta: dict) -> bool:
     if not from_meta.get("address") or not to_meta.get("address"):
         return False
@@ -350,10 +376,7 @@ def _is_inventory_style_internal(from_meta: dict, to_meta: dict) -> bool:
         return True
     if _exchange_role(from_meta) and _exchange_role(to_meta):
         return False
-    if from_meta["is_watch_address"] and to_meta["is_watch_address"]:
-        return True
-    # 没有实体级别证据时，不再仅凭“同类角色”把转账解释成内部调拨。
-    return False
+    return _has_confirmed_shared_entity_internal(from_meta, to_meta)
 
 
 def _exchange_role(meta: dict) -> bool:
@@ -400,65 +423,91 @@ def _exchange_transfer_context(from_meta: dict, to_meta: dict) -> dict:
     to_exchange = _exchange_role(to_meta)
     from_function = str(from_meta.get("wallet_function") or "unknown")
     to_function = str(to_meta.get("wallet_function") or "unknown")
-    same_entity = internality in {"confirmed", "likely"}
     entity_label = ""
-    purpose = "exchange_unknown_flow"
+    purpose_family = "exchange_unknown_flow"
+    purpose_strength = "no"
     confidence = 0.0
     why = []
 
-    if same_entity and from_exchange and to_exchange:
+    if internality == "confirmed" and from_exchange and to_exchange:
         entity_label = _entity_label(from_meta) or _entity_label(to_meta)
+        purpose_strength = "confirmed"
         if from_function == "exchange_deposit" and to_function == "exchange_hot":
-            purpose = "exchange_user_deposit_consolidation"
-            why.append("deposit -> same_entity hot")
+            purpose_family = "exchange_user_deposit_consolidation"
+            why.append("deposit -> confirmed same_entity hot")
         elif from_function == "exchange_hot" and to_function == "exchange_cold":
-            purpose = "exchange_hot_wallet_overflow_to_cold"
-            why.append("hot -> same_entity cold")
+            purpose_family = "exchange_hot_wallet_overflow_to_cold"
+            why.append("hot -> confirmed same_entity cold")
         elif from_function == "exchange_cold" and to_function == "exchange_hot":
-            purpose = "exchange_hot_wallet_cold_wallet_topup"
-            why.append("cold -> same_entity hot")
+            purpose_family = "exchange_hot_wallet_cold_wallet_topup"
+            why.append("cold -> confirmed same_entity hot")
         elif from_function == "exchange_hot" and to_function == "exchange_trading":
-            purpose = "exchange_trading_desk_funding"
-            why.append("hot -> same_entity trading")
+            purpose_family = "exchange_trading_desk_funding"
+            why.append("hot -> confirmed same_entity trading")
         elif from_function == "exchange_trading" and to_function == "exchange_hot":
-            purpose = "exchange_trading_desk_return"
-            why.append("trading -> same_entity hot")
+            purpose_family = "exchange_trading_desk_return"
+            why.append("trading -> confirmed same_entity hot")
         else:
-            purpose = "exchange_internal_rebalance"
-            why.append("same entity exchange-to-exchange transfer")
-        confidence = 0.88 if internality == "confirmed" else 0.64
+            purpose_family = "exchange_internal_rebalance"
+            why.append("confirmed same_entity exchange-to-exchange transfer")
+        confidence = 0.88
+    elif internality == "likely" and from_exchange and to_exchange:
+        entity_label = _entity_label(from_meta) or _entity_label(to_meta)
+        purpose_strength = "likely"
+        if from_function == "exchange_deposit" and to_function == "exchange_hot":
+            purpose_family = "exchange_user_deposit_consolidation"
+            why.append("deposit -> likely same_entity hot")
+        elif from_function == "exchange_hot" and to_function == "exchange_cold":
+            purpose_family = "exchange_hot_wallet_overflow_to_cold"
+            why.append("hot -> likely same_entity cold")
+        elif from_function == "exchange_cold" and to_function == "exchange_hot":
+            purpose_family = "exchange_hot_wallet_cold_wallet_topup"
+            why.append("cold -> likely same_entity hot")
+        elif from_function == "exchange_hot" and to_function == "exchange_trading":
+            purpose_family = "exchange_trading_desk_funding"
+            why.append("hot -> likely same_entity trading")
+        elif from_function == "exchange_trading" and to_function == "exchange_hot":
+            purpose_family = "exchange_trading_desk_return"
+            why.append("trading -> likely same_entity hot")
+        else:
+            purpose_family = "exchange_internal_rebalance"
+            why.append("likely same_entity exchange-to-exchange transfer")
+        confidence = 0.58
     elif from_exchange and to_exchange:
         entity_label = _entity_label(from_meta) or _entity_label(to_meta)
-        purpose = "exchange_unknown_flow"
+        purpose_family = "exchange_unknown_flow"
         confidence = 0.36
         why.append("both sides are exchange-related but not same_entity")
     elif from_exchange and not to_exchange:
         entity_label = _entity_label(from_meta)
         if from_function == "exchange_hot":
-            purpose = "exchange_hot_wallet_withdrawal_outflow"
+            purpose_family = "exchange_hot_wallet_withdrawal_outflow"
             why.append("hot -> external")
             confidence = 0.68
         else:
-            purpose = "exchange_external_outflow"
+            purpose_family = "exchange_external_outflow"
             why.append("exchange -> external")
             confidence = 0.56
     elif not from_exchange and to_exchange:
         entity_label = _entity_label(to_meta)
         if to_function in {"exchange_deposit", "exchange_hot"}:
-            purpose = "exchange_external_inflow"
+            purpose_family = "exchange_external_inflow"
             why.append("external -> deposit/hot")
             confidence = 0.66
         else:
-            purpose = "exchange_external_inflow"
+            purpose_family = "exchange_external_inflow"
             why.append("external -> exchange")
             confidence = 0.52
 
     if internality == "likely":
-        confidence = min(confidence, 0.66)
+        confidence = min(confidence, 0.62)
 
     return {
         "exchange_internality": internality,
-        "exchange_transfer_purpose": purpose,
+        "exchange_same_entity_strength": internality if internality in {"confirmed", "likely"} else "no",
+        "exchange_transfer_purpose": purpose_family,
+        "exchange_transfer_purpose_family": purpose_family,
+        "exchange_transfer_purpose_strength": purpose_strength,
         "exchange_transfer_confidence": round(confidence, 3),
         "exchange_entity_label": entity_label,
         "from_wallet_function": from_function,
@@ -545,7 +594,10 @@ def _build_context_hints(
         "is_protocol_related": is_protocol_related,
         "possible_internal_transfer": possible_internal_transfer,
         "exchange_internality": exchange_transfer_context["exchange_internality"],
+        "exchange_same_entity_strength": exchange_transfer_context["exchange_same_entity_strength"],
         "exchange_transfer_purpose": exchange_transfer_context["exchange_transfer_purpose"],
+        "exchange_transfer_purpose_family": exchange_transfer_context["exchange_transfer_purpose_family"],
+        "exchange_transfer_purpose_strength": exchange_transfer_context["exchange_transfer_purpose_strength"],
         "exchange_transfer_confidence": exchange_transfer_context["exchange_transfer_confidence"],
         "exchange_entity_label": exchange_transfer_context["exchange_entity_label"],
         "exchange_transfer_why": list(exchange_transfer_context["exchange_transfer_why"]),
@@ -602,7 +654,10 @@ def _attach_context_fields(
     parsed["is_stablecoin_flow"] = role_hints["is_stablecoin_flow"]
     parsed["possible_internal_transfer"] = role_hints["possible_internal_transfer"]
     parsed["exchange_internality"] = role_hints["exchange_internality"]
+    parsed["exchange_same_entity_strength"] = role_hints["exchange_same_entity_strength"]
     parsed["exchange_transfer_purpose"] = role_hints["exchange_transfer_purpose"]
+    parsed["exchange_transfer_purpose_family"] = role_hints["exchange_transfer_purpose_family"]
+    parsed["exchange_transfer_purpose_strength"] = role_hints["exchange_transfer_purpose_strength"]
     parsed["exchange_transfer_confidence"] = role_hints["exchange_transfer_confidence"]
     parsed["exchange_entity_label"] = role_hints["exchange_entity_label"]
     parsed["exchange_transfer_why"] = list(role_hints["exchange_transfer_why"])
@@ -970,7 +1025,94 @@ def _parse_clmm_position_candidate(item, watch_address: str, transfers: list[dic
         transfers=transfers,
         flows=flows,
     )
-    if not candidate or str(candidate.get("parse_status") or "") != "parsed":
+    if not candidate:
+        return None
+
+    parse_status = str(candidate.get("parse_status") or "")
+    if parse_status == "candidate_only" and bool(candidate.get("partial_support")):
+        clmm_context = dict(item.get("clmm_context") or {})
+        clmm_context.update({
+            "protocol": str(candidate.get("protocol") or clmm_context.get("protocol") or ""),
+            "chain": str(candidate.get("chain") or clmm_context.get("chain") or item.get("chain") or "ethereum"),
+            "position_manager": str(candidate.get("position_manager") or clmm_context.get("position_manager") or "").lower(),
+            "token_id": str(candidate.get("token_id") or clmm_context.get("token_id") or ""),
+            "position_key": str(candidate.get("position_key") or clmm_context.get("position_key") or ""),
+            "parse_status": parse_status,
+            "partial_support": True,
+            "partial_reason": str(candidate.get("reason") or ""),
+            "pair_label": str(clmm_context.get("pair_label") or item.get("pair_label") or ""),
+        })
+        parsed = {
+            "kind": "clmm_observe",
+            "side": "技术观察",
+            "direction": "技术观察",
+            "monitor_type": "clmm_partial_support",
+            "watch_address": watch_address,
+            "from": "",
+            "to": str(candidate.get("position_manager") or "").lower(),
+            "counterparty": str(candidate.get("position_manager") or "").lower(),
+            "value": max(
+                abs(float(item.get("amount0") or 0.0)),
+                abs(float(item.get("amount1") or 0.0)),
+                float(candidate.get("value") or 0.0),
+                1.0,
+            ),
+            "token_contract": item.get("token0_contract") or item.get("token_contract"),
+            "token_symbol": item.get("token0_symbol") or item.get("token_symbol"),
+            "quote_token_contract": item.get("token1_contract") or item.get("quote_token_contract"),
+            "quote_symbol": item.get("token1_symbol") or item.get("quote_symbol"),
+            "token_amount": abs(float(item.get("amount0") or 0.0)),
+            "quote_amount": abs(float(item.get("amount1") or 0.0)),
+            "tx_hash": str(item.get("tx_hash") or candidate.get("tx_hash") or ""),
+            "pair_label": str(clmm_context.get("pair_label") or ""),
+            "lp_legs": [],
+            "clmm_context": clmm_context,
+            "clmm_position_event": False,
+            "clmm_partial_candidate": True,
+            "clmm_partial_support": True,
+            "clmm_partial_reason": str(candidate.get("reason") or ""),
+            "clmm_manager_protocol": str(candidate.get("protocol") or ""),
+            "clmm_manager_address": str(candidate.get("position_manager") or "").lower(),
+            "clmm_candidate_status": parse_status,
+            "intent_type": "clmm_partial_support_observation",
+            "intent_confidence": 0.42,
+            "information_level": "low",
+            "confirmation_score": 0.18,
+            "intent_evidence": [
+                f"manager={str(candidate.get('position_manager') or '').lower()}",
+                f"protocol={str(candidate.get('protocol') or '')}",
+                f"reason={str(candidate.get('reason') or '')}",
+            ],
+        }
+        extra_addresses = [
+            str(clmm_context.get("pool") or "").lower(),
+            str(clmm_context.get("position_manager") or "").lower(),
+            str(clmm_context.get("owner") or "").lower(),
+        ]
+        stable_tokens_touched = [
+            token for token in [
+                str(parsed.get("token_contract") or "").lower(),
+                str(parsed.get("quote_token_contract") or "").lower(),
+            ]
+            if token and _is_stable_asset(token, TOKEN_SYMBOLS.get(token))
+        ]
+        volatile_tokens_touched = [
+            token for token in [
+                str(parsed.get("token_contract") or "").lower(),
+                str(parsed.get("quote_token_contract") or "").lower(),
+            ]
+            if token and token not in stable_tokens_touched
+        ]
+        return _attach_context_fields(
+            parsed,
+            watch_address=watch_address,
+            counterparty=str(candidate.get("position_manager") or "").lower(),
+            stable_tokens_touched=stable_tokens_touched,
+            volatile_tokens_touched=volatile_tokens_touched,
+            extra_addresses=extra_addresses,
+        )
+
+    if parse_status != "parsed":
         return None
 
     position_state = update_position_state(candidate)

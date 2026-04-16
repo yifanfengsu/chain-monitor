@@ -119,6 +119,8 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
 
         self.assertEqual("confirmed", parsed.get("exchange_internality"))
         self.assertEqual("exchange_user_deposit_consolidation", parsed.get("exchange_transfer_purpose"))
+        self.assertEqual("exchange_user_deposit_consolidation", parsed.get("exchange_transfer_purpose_family"))
+        self.assertEqual("confirmed", parsed.get("exchange_transfer_purpose_strength"))
         self.assertTrue(parsed.get("possible_internal_transfer"))
 
     def test_same_entity_hot_to_cold_is_overflow_to_cold(self) -> None:
@@ -139,6 +141,7 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
 
         self.assertEqual("exchange_hot_wallet_overflow_to_cold", parsed.get("exchange_transfer_purpose"))
         self.assertEqual("confirmed", parsed.get("exchange_internality"))
+        self.assertEqual("confirmed", parsed.get("exchange_transfer_purpose_strength"))
 
     def test_same_entity_cold_to_hot_is_cold_wallet_topup(self) -> None:
         cold = "0x1000000000000000000000000000000000000021"
@@ -150,6 +153,7 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
 
         self.assertEqual("exchange_hot_wallet_cold_wallet_topup", parsed.get("exchange_transfer_purpose"))
         self.assertEqual("confirmed", parsed.get("exchange_internality"))
+        self.assertEqual("confirmed", parsed.get("exchange_transfer_purpose_strength"))
 
     def test_hot_to_external_is_not_internal(self) -> None:
         hot = "0x1000000000000000000000000000000000000031"
@@ -160,6 +164,7 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
 
         self.assertEqual("exchange_hot_wallet_withdrawal_outflow", parsed.get("exchange_transfer_purpose"))
         self.assertEqual("no", parsed.get("exchange_internality"))
+        self.assertEqual("no", parsed.get("exchange_transfer_purpose_strength"))
         self.assertFalse(parsed.get("possible_internal_transfer"))
 
     def test_different_exchange_entities_do_not_become_same_entity_internal(self) -> None:
@@ -171,8 +176,70 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
         parsed = self._parse_transfer(from_addr=binance_hot, to_addr=bybit_hot, watch_address=binance_hot, counterparty=bybit_hot)
 
         self.assertEqual("no", parsed.get("exchange_internality"))
+        self.assertEqual("exchange_unknown_flow", parsed.get("exchange_transfer_purpose_family"))
+        self.assertEqual("no", parsed.get("exchange_transfer_purpose_strength"))
         self.assertFalse(parsed.get("possible_internal_transfer"))
         self.assertNotEqual("exchange_internal_rebalance", parsed.get("exchange_transfer_purpose"))
+
+    def test_likely_same_entity_deposit_to_hot_keeps_family_but_drops_strength(self) -> None:
+        deposit = "0x1000000000000000000000000000000000000061"
+        hot = "0x1000000000000000000000000000000000000062"
+        self._register_meta(
+            deposit,
+            label="Binance Deposit Candidate",
+            strategy_role="exchange_deposit_wallet",
+            semantic_role="exchange_deposit_address",
+            wallet_function="exchange_deposit",
+            entity_id="",
+            entity_label="Binance",
+            entity_attribution_strength="likely_entity",
+        )
+        self._register_meta(
+            hot,
+            label="Binance Hot Candidate",
+            strategy_role="exchange_hot_wallet",
+            semantic_role="exchange_hot_wallet",
+            wallet_function="exchange_hot",
+            entity_id="",
+            entity_label="Binance",
+            entity_attribution_strength="likely_entity",
+        )
+
+        parsed = self._parse_transfer(from_addr=deposit, to_addr=hot, watch_address=hot, counterparty=deposit)
+
+        self.assertEqual("likely", parsed.get("exchange_internality"))
+        self.assertEqual("exchange_user_deposit_consolidation", parsed.get("exchange_transfer_purpose_family"))
+        self.assertEqual("likely", parsed.get("exchange_transfer_purpose_strength"))
+        self.assertFalse(parsed.get("possible_internal_transfer"))
+
+    def test_likely_same_entity_hot_to_cold_stays_likely_only(self) -> None:
+        hot = "0x1000000000000000000000000000000000000071"
+        cold = "0x1000000000000000000000000000000000000072"
+        self._register_meta(
+            hot,
+            label="Binance Hot Candidate",
+            wallet_function="exchange_hot",
+            entity_id="",
+            entity_label="Binance",
+            entity_attribution_strength="likely_entity",
+        )
+        self._register_meta(
+            cold,
+            label="Binance Cold Candidate",
+            strategy_role="exchange_hot_wallet",
+            semantic_role="exchange_hot_wallet",
+            wallet_function="exchange_cold",
+            entity_id="",
+            entity_label="Binance",
+            entity_attribution_strength="likely_entity",
+        )
+
+        parsed = self._parse_transfer(from_addr=hot, to_addr=cold, watch_address=hot, counterparty=cold)
+
+        self.assertEqual("likely", parsed.get("exchange_internality"))
+        self.assertEqual("exchange_hot_wallet_overflow_to_cold", parsed.get("exchange_transfer_purpose_family"))
+        self.assertEqual("likely", parsed.get("exchange_transfer_purpose_strength"))
+        self.assertFalse(parsed.get("possible_internal_transfer"))
 
     def test_missing_entity_id_only_yields_likely_or_adjacent(self) -> None:
         known_exchange = "0x1000000000000000000000000000000000000051"

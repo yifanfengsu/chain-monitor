@@ -285,8 +285,8 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
             )
         )
 
-    def test_inventory_style_internal_still_accepts_both_watch_addresses(self) -> None:
-        self.assertTrue(
+    def test_inventory_style_internal_both_watch_addresses_alone_no_longer_count(self) -> None:
+        self.assertFalse(
             _is_inventory_style_internal(
                 {
                     "address": "0xaaa",
@@ -300,6 +300,128 @@ class StrategyEngineClassifyDeliveryTests(unittest.TestCase):
                 },
             )
         )
+
+    def test_inventory_style_internal_requires_confirmed_shared_entity_id_for_non_exchange(self) -> None:
+        self.assertTrue(
+            _is_inventory_style_internal(
+                {
+                    "address": "0xaaa",
+                    "entity_id": "wintermute",
+                    "entity_type": "market_maker_firm",
+                    "entity_attribution_strength": "confirmed_entity",
+                    "strategy_role": "market_maker_wallet",
+                },
+                {
+                    "address": "0xbbb",
+                    "entity_id": "wintermute",
+                    "entity_type": "market_maker_firm",
+                    "entity_attribution_strength": "confirmed_entity",
+                    "strategy_role": "market_maker_wallet",
+                },
+            )
+        )
+
+    def test_inventory_style_internal_rejects_shared_label_without_confirmed_entity(self) -> None:
+        self.assertFalse(
+            _is_inventory_style_internal(
+                {
+                    "address": "0xaaa",
+                    "entity_label": "Wintermute",
+                    "entity_type": "market_maker_firm",
+                    "entity_attribution_strength": "likely_entity",
+                    "strategy_role": "market_maker_wallet",
+                },
+                {
+                    "address": "0xbbb",
+                    "entity_label": "Wintermute",
+                    "entity_type": "market_maker_firm",
+                    "entity_attribution_strength": "likely_entity",
+                    "strategy_role": "market_maker_wallet",
+                },
+            )
+        )
+
+    def test_inventory_style_internal_exchange_confirmed_same_entity_still_true(self) -> None:
+        self.assertTrue(
+            _is_inventory_style_internal(
+                {
+                    "address": "0xaaa",
+                    "entity_id": "binance",
+                    "entity_label": "Binance",
+                    "entity_type": "exchange",
+                    "entity_attribution_strength": "confirmed_entity",
+                    "strategy_role": "exchange_hot_wallet",
+                    "wallet_function": "exchange_hot",
+                },
+                {
+                    "address": "0xbbb",
+                    "entity_id": "binance",
+                    "entity_label": "Binance",
+                    "entity_type": "exchange",
+                    "entity_attribution_strength": "confirmed_entity",
+                    "strategy_role": "exchange_cold_wallet",
+                    "wallet_function": "exchange_cold",
+                },
+            )
+        )
+
+    def test_clmm_partial_support_signal_routes_to_observe(self) -> None:
+        engine = StrategyEngine()
+        event = Event(
+            tx_hash="0xpartialsupport",
+            address="0xlp",
+            token="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            amount=1.0,
+            side="技术观察",
+            usd_value=0.0,
+            kind="clmm_observe",
+            ts=1,
+            intent_type="clmm_partial_support_observation",
+            intent_confidence=0.42,
+            intent_stage="weak",
+            confirmation_score=0.18,
+            pricing_status="unknown",
+            pricing_confidence=0.0,
+            strategy_role="liquidity_provider",
+            metadata={
+                "clmm_partial_support": True,
+                "clmm_partial_reason": "uniswap_v4_partial_support_missing_decode_primitives",
+                "clmm_candidate_status": "candidate_only",
+                "clmm_manager_protocol": "uniswap_v4",
+                "clmm_manager_address": "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+                "raw": {
+                    "clmm_partial_support": True,
+                    "monitor_type": "clmm_partial_support",
+                },
+            },
+        )
+        signal = engine.decide(
+            event,
+            {"strategy_role": "liquidity_provider"},
+            {"behavior_type": "clmm_partial_support", "confidence": 1.0, "reason": "unit_test"},
+            {"score": 1.0, "grade": "A"},
+            {"score": 1.0, "grade": "A"},
+            gate_metrics={
+                "cooldown_key": "clmm_partial:test",
+                "quality_score": 0.1,
+                "adjusted_quality_score": 0.1,
+                "resonance_score": 0.0,
+                "dynamic_min_usd": 0.0,
+            },
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual("clmm_partial_support_signal", signal.type)
+        self.assertEqual("clmm_partial_support", signal.semantic)
+
+        delivery_class, delivery_reason = engine.classify_delivery(
+            event,
+            signal,
+            {"strategy_role": "liquidity_provider"},
+            gate_metrics={},
+        )
+
+        self.assertEqual(("observe", "clmm_partial_support_observe"), (delivery_class, delivery_reason))
 
     def test_unrelated_exchange_branch_behavior_is_unchanged(self) -> None:
         event = self._event(

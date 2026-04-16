@@ -170,6 +170,91 @@ class ClmmOperationalIntentTests(unittest.TestCase):
         self.assertEqual("clmm_jit_fee_extraction_likely", context.get("operational_intent_key"))
         self.assertEqual("疑似 JIT 抽费", context.get("operational_intent_label"))
 
+    def test_partial_support_event_stays_debug_observation_not_lp_intent(self) -> None:
+        clmm_context = {
+            "protocol": "uniswap_v4",
+            "chain": "ethereum",
+            "position_manager": "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+            "pair_label": "WETH/USDC",
+            "parse_status": "candidate_only",
+            "partial_support": True,
+            "partial_reason": "uniswap_v4_partial_support_missing_decode_primitives",
+        }
+        event = Event(
+            tx_hash="0xclmmpartial",
+            address=OWNER,
+            token="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            amount=1.0,
+            side="技术观察",
+            usd_value=0.0,
+            kind="clmm_observe",
+            ts=1_710_000_050,
+            intent_type="clmm_partial_support_observation",
+            intent_confidence=0.42,
+            intent_stage="weak",
+            confirmation_score=0.18,
+            pricing_status="unknown",
+            pricing_confidence=0.0,
+            usd_value_available=False,
+            strategy_role="liquidity_provider",
+            metadata={
+                "token_symbol": "WETH",
+                "quote_symbol": "USDC",
+                "pair_label": "WETH/USDC",
+                "monitor_type": "clmm_partial_support",
+                "clmm_position_event": False,
+                "clmm_partial_candidate": True,
+                "clmm_partial_support": True,
+                "clmm_partial_reason": "uniswap_v4_partial_support_missing_decode_primitives",
+                "clmm_manager_protocol": "uniswap_v4",
+                "clmm_manager_address": "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+                "clmm_candidate_status": "candidate_only",
+                "clmm_context": clmm_context,
+                "raw": {
+                    "monitor_type": "clmm_partial_support",
+                    "clmm_position_event": False,
+                    "clmm_partial_support": True,
+                    "clmm_partial_reason": "uniswap_v4_partial_support_missing_decode_primitives",
+                    "clmm_manager_protocol": "uniswap_v4",
+                    "clmm_manager_address": "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+                    "clmm_candidate_status": "candidate_only",
+                    "clmm_context": clmm_context,
+                },
+            },
+        )
+        signal = Signal(
+            type="clmm_partial_support_signal",
+            confidence=0.44,
+            priority=3,
+            tier="Tier 4",
+            address=event.address,
+            token=event.token,
+            tx_hash=event.tx_hash,
+            usd_value=0.0,
+            reason="unit_test_partial_support",
+            behavior_type="clmm_partial_support",
+            quality_score=0.44,
+            semantic="clmm_partial_support",
+            intent_type=event.intent_type,
+            intent_stage=event.intent_stage,
+            confirmation_score=event.confirmation_score,
+            information_level="low",
+            abnormal_ratio=0.0,
+            pricing_confidence=event.pricing_confidence,
+            delivery_class="observe",
+            delivery_reason="clmm_partial_support_observe",
+        )
+        context = self._interpret(event, signal)
+
+        self.assertEqual("clmm_partial_support_observation", context.get("operational_intent_key"))
+        self.assertEqual("debug", context.get("message_template"))
+        self.assertTrue(context.get("clmm_partial_support"))
+
+        message = format_signal_message(signal, event)
+        self.assertIn("V4 PositionManager 命中（部分支持）", message)
+        self.assertIn("这只是技术观察：命中了已知 manager path，不构成 LP 主体意图", message)
+        self.assertNotIn("区间重设", message)
+
     def test_clmm_intent_template_line1_is_actor_intent_confidence(self) -> None:
         event = self._event(intent_type="clmm_range_shift")
         signal = self._signal(event)
