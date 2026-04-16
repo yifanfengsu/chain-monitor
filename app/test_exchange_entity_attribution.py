@@ -165,7 +165,94 @@ class ExchangeEntityAttributionTests(AddressRegistryMixin, unittest.TestCase):
         self.assertEqual("exchange_hot_wallet_withdrawal_outflow", parsed.get("exchange_transfer_purpose"))
         self.assertEqual("no", parsed.get("exchange_internality"))
         self.assertEqual("no", parsed.get("exchange_transfer_purpose_strength"))
+        self.assertEqual("none", parsed.get("exchange_external_counterparty_risk_class"))
+        self.assertFalse(parsed.get("exchange_distribution_risk_target_eligible"))
         self.assertFalse(parsed.get("possible_internal_transfer"))
+
+    def test_external_to_exchange_deposit_defaults_to_neutral_inflow_observation_context(self) -> None:
+        external = "0x1000000000000000000000000000000000000038"
+        deposit = "0x1000000000000000000000000000000000000039"
+        self._register_meta(
+            deposit,
+            label="Binance Deposit",
+            strategy_role="exchange_deposit_wallet",
+            semantic_role="exchange_deposit_address",
+            wallet_function="exchange_deposit",
+            entity_id="binance",
+            entity_label="Binance",
+        )
+
+        parsed = self._parse_transfer(from_addr=external, to_addr=deposit, watch_address=deposit, counterparty=external)
+
+        self.assertEqual("exchange_external_inflow", parsed.get("exchange_transfer_purpose_family"))
+        self.assertEqual("observe", parsed.get("exchange_inflow_context_strength"))
+        self.assertFalse(parsed.get("exchange_followup_ready"))
+        self.assertEqual("no", parsed.get("exchange_transfer_purpose_strength"))
+
+    def test_hot_to_external_entity_label_alone_is_not_distribution_risk_target(self) -> None:
+        hot = "0x100000000000000000000000000000000000003a"
+        labeled = "0x100000000000000000000000000000000000003b"
+        self._register_meta(hot, label="Binance Hot", wallet_function="exchange_hot", entity_id="binance", entity_label="Binance")
+        self._register_meta(
+            labeled,
+            label="Some Labeled External",
+            role="unknown",
+            strategy_role="unknown",
+            semantic_role="unknown",
+            wallet_function="unknown",
+            entity_id="",
+            entity_label="External Desk",
+            entity_type="unknown",
+            entity_attribution_strength="unknown",
+            is_watch=False,
+        )
+
+        parsed = self._parse_transfer(from_addr=hot, to_addr=labeled, watch_address=hot, counterparty=labeled)
+
+        self.assertEqual("none", parsed.get("exchange_external_counterparty_risk_class"))
+        self.assertFalse(parsed.get("exchange_distribution_risk_target_eligible"))
+
+    def test_hot_to_smart_money_target_marks_distribution_risk_target_eligible(self) -> None:
+        hot = "0x100000000000000000000000000000000000003c"
+        smart_money = "0x100000000000000000000000000000000000003d"
+        self._register_meta(hot, label="Binance Hot", wallet_function="exchange_hot", entity_id="binance", entity_label="Binance")
+        self._register_meta(
+            smart_money,
+            label="Smart Money",
+            role="smart_money",
+            strategy_role="smart_money_wallet",
+            semantic_role="trader_wallet",
+            wallet_function="unknown",
+            entity_type="unknown",
+            entity_attribution_strength="confirmed_entity",
+            is_watch=False,
+        )
+
+        parsed = self._parse_transfer(from_addr=hot, to_addr=smart_money, watch_address=hot, counterparty=smart_money)
+
+        self.assertEqual("smart_money", parsed.get("exchange_external_counterparty_risk_class"))
+        self.assertTrue(parsed.get("exchange_distribution_risk_target_eligible"))
+
+    def test_hot_to_bridge_like_target_marks_distribution_risk_target_eligible(self) -> None:
+        hot = "0x100000000000000000000000000000000000003e"
+        bridge = "0x100000000000000000000000000000000000003f"
+        self._register_meta(hot, label="Binance Hot", wallet_function="exchange_hot", entity_id="binance", entity_label="Binance")
+        self._register_meta(
+            bridge,
+            label="Across Bridge",
+            role="bridge",
+            strategy_role="unknown",
+            semantic_role="bridge_contract",
+            wallet_function="bridge",
+            entity_type="unknown",
+            entity_attribution_strength="unknown",
+            is_watch=False,
+        )
+
+        parsed = self._parse_transfer(from_addr=hot, to_addr=bridge, watch_address=hot, counterparty=bridge)
+
+        self.assertEqual("bridge", parsed.get("exchange_external_counterparty_risk_class"))
+        self.assertTrue(parsed.get("exchange_distribution_risk_target_eligible"))
 
     def test_different_exchange_entities_do_not_become_same_entity_internal(self) -> None:
         binance_hot = "0x1000000000000000000000000000000000000041"

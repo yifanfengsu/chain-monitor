@@ -7,6 +7,7 @@ from config import (
     CHAT_ID,
     TELEGRAM_BOT_TOKEN,
 )
+from constants import OP_INTENT_AUTO_TEMPLATE_THRESHOLD, OP_INTENT_TENTATIVE_PREFIX_THRESHOLD
 from filter import format_address_label, strategy_role_group
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
@@ -297,7 +298,24 @@ def _exchange_transfer_purpose_label(purpose: str, strength: str = "no") -> str:
 
 
 def _operational_intent_label(context: dict, event: Event) -> str:
-    return str(context.get("operational_intent_label") or _headline_label(context, event))
+    label = str(context.get("operational_intent_label") or _headline_label(context, event)).strip()
+    if not label:
+        return _headline_label(context, event)
+
+    strength = str(context.get("operational_intent_strength") or "").strip()
+    if strength in {"likely", "partial_support"}:
+        return label
+
+    if label.startswith(("疑似", "可能", "待")) or "观察" in label:
+        return label
+
+    try:
+        confidence = float(context.get("operational_intent_confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if OP_INTENT_TENTATIVE_PREFIX_THRESHOLD <= confidence < OP_INTENT_AUTO_TEMPLATE_THRESHOLD:
+        return f"可能{label}"
+    return label
 
 
 def _confidence_badge(context: dict) -> str:

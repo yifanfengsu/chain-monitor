@@ -169,6 +169,7 @@ class ClmmOperationalIntentTests(unittest.TestCase):
 
         self.assertEqual("clmm_jit_fee_extraction_likely", context.get("operational_intent_key"))
         self.assertEqual("疑似 JIT 抽费", context.get("operational_intent_label"))
+        self.assertNotEqual("intent", context.get("message_template"))
 
     def test_partial_support_event_stays_debug_observation_not_lp_intent(self) -> None:
         clmm_context = {
@@ -263,6 +264,7 @@ class ClmmOperationalIntentTests(unittest.TestCase):
         message = format_signal_message(signal, event)
         lines = message.strip().splitlines()
 
+        self.assertEqual("intent", signal.context.get("message_template"))
         self.assertEqual("Uniswap v3 Position #12345｜区间重设｜高", lines[0])
 
     def test_clmm_message_includes_position_context(self) -> None:

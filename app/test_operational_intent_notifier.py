@@ -126,6 +126,7 @@ class OperationalIntentNotifierTests(unittest.TestCase):
 
         self.assertEqual("smart_money_preparation_only", context.get("operational_intent_key"))
         self.assertEqual("仅交易准备", context.get("operational_intent_label"))
+        self.assertNotEqual("intent", context.get("message_template"))
 
     def test_smart_money_actual_swap_maps_to_entry_or_exit_execution(self) -> None:
         for side, expected in [("买入", "smart_money_entry_execution"), ("卖出", "smart_money_exit_execution")]:
@@ -222,6 +223,7 @@ class OperationalIntentNotifierTests(unittest.TestCase):
 
         self.assertEqual("market_maker_settlement_move", context.get("operational_intent_key"))
         self.assertEqual("结算/轮转", context.get("operational_intent_label"))
+        self.assertNotEqual("intent", context.get("message_template"))
 
     def test_pool_only_event_does_not_claim_lp_subject_intent(self) -> None:
         pool = "0x2000000000000000000000000000000000000031"
@@ -593,6 +595,408 @@ class OperationalIntentNotifierTests(unittest.TestCase):
         self.assertIn("疑似热冷调拨", line1)
         self.assertNotIn("｜热冷调拨｜高", line1)
         self.assertIn("疑似热转冷归仓", message)
+
+    def test_external_to_exchange_deposit_defaults_to_external_inflow_observation(self) -> None:
+        external = "0x2000000000000000000000000000000000000091"
+        deposit = "0x2000000000000000000000000000000000000092"
+        event = Event(
+            tx_hash="0xexchangeexternaldeposit",
+            address=deposit,
+            token="USDT",
+            amount=1.0,
+            side="流入",
+            usd_value=88_000.0,
+            kind="token_transfer",
+            ts=1_710_000_900,
+            intent_type="exchange_deposit_candidate",
+            intent_confidence=0.54,
+            intent_stage="preliminary",
+            confirmation_score=0.34,
+            pricing_status="exact",
+            pricing_confidence=0.95,
+            strategy_role="exchange_deposit_wallet",
+            metadata={
+                "token_symbol": "USDT",
+                "watch_wallet_function": "exchange_deposit",
+                "counterparty_wallet_function": "unknown",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_external_inflow",
+                "exchange_transfer_purpose_family": "exchange_external_inflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_inflow_context_strength": "observe",
+                "exchange_followup_ready": False,
+                "exchange_transfer_confidence": 0.52,
+                "exchange_entity_label": "Binance",
+                "exchange_transfer_why": ["external -> deposit/hot"],
+                "raw": {
+                    "from": external,
+                    "to": deposit,
+                    "exchange_transfer_purpose": "exchange_external_inflow",
+                    "exchange_transfer_purpose_family": "exchange_external_inflow",
+                    "exchange_inflow_context_strength": "observe",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_deposit_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": deposit,
+                "label": "Binance Deposit",
+                "entity_label": "Binance",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_deposit",
+                "strategy_role": "exchange_deposit_wallet",
+                "semantic_role": "exchange_deposit_address",
+            },
+            counterparty_meta={
+                "address": external,
+                "label": "External Wallet",
+                "strategy_role": "unknown",
+                "semantic_role": "unknown",
+                "wallet_function": "unknown",
+            },
+            gate_metrics={"resonance_score": 0.22},
+        )
+
+        message = format_signal_message(signal, event)
+        self.assertEqual("exchange_external_inflow_observation", context.get("operational_intent_key"))
+        self.assertEqual("外部流入观察", context.get("operational_intent_label"))
+        self.assertNotEqual("intent", context.get("message_template"))
+        self.assertNotIn("流动性准备", message)
+
+    def test_external_to_exchange_hot_single_flow_stays_external_inflow_observation(self) -> None:
+        external = "0x2000000000000000000000000000000000000093"
+        hot = "0x2000000000000000000000000000000000000094"
+        event = Event(
+            tx_hash="0xexchangeexternalhot",
+            address=hot,
+            token="USDT",
+            amount=1.0,
+            side="流入",
+            usd_value=120_000.0,
+            kind="token_transfer",
+            ts=1_710_000_910,
+            intent_type="exchange_deposit_candidate",
+            intent_confidence=0.56,
+            intent_stage="preliminary",
+            confirmation_score=0.36,
+            pricing_status="exact",
+            pricing_confidence=0.95,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "USDT",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "unknown",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_external_inflow",
+                "exchange_transfer_purpose_family": "exchange_external_inflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_inflow_context_strength": "observe",
+                "exchange_followup_ready": False,
+                "exchange_transfer_confidence": 0.56,
+                "exchange_entity_label": "OKX",
+                "exchange_transfer_why": ["external -> deposit/hot"],
+                "raw": {
+                    "from": external,
+                    "to": hot,
+                    "exchange_transfer_purpose": "exchange_external_inflow",
+                    "exchange_transfer_purpose_family": "exchange_external_inflow",
+                    "exchange_inflow_context_strength": "observe",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_deposit_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "OKX Hot Wallet",
+                "entity_label": "OKX",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": external,
+                "label": "External Wallet",
+                "strategy_role": "unknown",
+                "semantic_role": "unknown",
+                "wallet_function": "unknown",
+            },
+            gate_metrics={"resonance_score": 0.24},
+        )
+
+        self.assertEqual("exchange_external_inflow_observation", context.get("operational_intent_key"))
+        self.assertEqual("外部流入观察", context.get("operational_intent_label"))
+        self.assertNotEqual("intent", context.get("message_template"))
+
+    def test_external_to_exchange_hot_with_continuation_can_upgrade_to_liquidity_preparation(self) -> None:
+        external = "0x2000000000000000000000000000000000000095"
+        hot = "0x2000000000000000000000000000000000000096"
+        event = Event(
+            tx_hash="0xexchangeexternalhotfollowup",
+            address=hot,
+            token="USDT",
+            amount=1.0,
+            side="流入",
+            usd_value=220_000.0,
+            kind="token_transfer",
+            ts=1_710_000_920,
+            intent_type="exchange_deposit_candidate",
+            intent_confidence=0.62,
+            intent_stage="preliminary",
+            confirmation_score=0.64,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "USDT",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "unknown",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_external_inflow",
+                "exchange_transfer_purpose_family": "exchange_external_inflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_inflow_context_strength": "observe",
+                "exchange_followup_ready": False,
+                "exchange_transfer_confidence": 0.60,
+                "exchange_entity_label": "Coinbase",
+                "exchange_transfer_why": ["external -> deposit/hot"],
+                "raw": {
+                    "from": external,
+                    "to": hot,
+                    "exchange_transfer_purpose": "exchange_external_inflow",
+                    "exchange_transfer_purpose_family": "exchange_external_inflow",
+                    "exchange_inflow_context_strength": "observe",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_deposit_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "Coinbase Hot Wallet",
+                "entity_label": "Coinbase",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": external,
+                "label": "External Wallet",
+                "strategy_role": "unknown",
+                "semantic_role": "unknown",
+                "wallet_function": "unknown",
+            },
+            gate_metrics={"resonance_score": 0.52},
+        )
+
+        self.assertEqual("exchange_liquidity_preparation", context.get("operational_intent_key"))
+        self.assertIn("流动性准备", context.get("operational_intent_label", ""))
+        self.assertNotEqual("exchange_external_inflow_observation", context.get("operational_intent_key"))
+
+    def test_hot_to_external_with_entity_label_only_stays_outflow_observation(self) -> None:
+        hot = "0x2000000000000000000000000000000000000097"
+        external = "0x2000000000000000000000000000000000000098"
+        event = Event(
+            tx_hash="0xexchangeexternalentitylabel",
+            address=hot,
+            token="ETH",
+            amount=1.0,
+            side="流出",
+            usd_value=165_000.0,
+            kind="token_transfer",
+            ts=1_710_000_930,
+            intent_type="exchange_withdraw_candidate",
+            intent_confidence=0.56,
+            intent_stage="preliminary",
+            confirmation_score=0.36,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "ETH",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "unknown",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_external_counterparty_risk_class": "none",
+                "exchange_distribution_risk_target_eligible": False,
+                "exchange_transfer_confidence": 0.66,
+                "exchange_entity_label": "Binance",
+                "exchange_transfer_why": ["hot -> external"],
+                "raw": {
+                    "from": hot,
+                    "to": external,
+                    "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                    "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_withdraw_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "Binance Hot Wallet",
+                "entity_label": "Binance",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": external,
+                "label": "External Desk",
+                "entity_label": "External Desk",
+                "strategy_role": "unknown",
+                "semantic_role": "unknown",
+                "wallet_function": "unknown",
+            },
+            gate_metrics={"resonance_score": 0.28},
+        )
+
+        message = format_signal_message(signal, event)
+        self.assertEqual("exchange_external_outflow_observation", context.get("operational_intent_key"))
+        self.assertNotIn("外部分发风险", message)
+
+    def test_hot_to_known_smart_money_can_upgrade_to_distribution_risk(self) -> None:
+        hot = "0x2000000000000000000000000000000000000099"
+        smart_money = "0x20000000000000000000000000000000000000a0"
+        event = Event(
+            tx_hash="0xexchangesmartmoneyoutflow",
+            address=hot,
+            token="ETH",
+            amount=1.0,
+            side="流出",
+            usd_value=210_000.0,
+            kind="token_transfer",
+            ts=1_710_000_940,
+            intent_type="exchange_withdraw_candidate",
+            intent_confidence=0.58,
+            intent_stage="preliminary",
+            confirmation_score=0.40,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "ETH",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "unknown",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_external_counterparty_risk_class": "smart_money",
+                "exchange_distribution_risk_target_eligible": True,
+                "exchange_transfer_confidence": 0.66,
+                "exchange_entity_label": "Binance",
+                "exchange_transfer_why": ["hot -> external"],
+                "raw": {
+                    "from": hot,
+                    "to": smart_money,
+                    "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                    "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_withdraw_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "Binance Hot Wallet",
+                "entity_label": "Binance",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": smart_money,
+                "label": "Smart Money Wallet",
+                "strategy_role": "smart_money_wallet",
+                "semantic_role": "trader_wallet",
+                "wallet_function": "unknown",
+            },
+        )
+
+        self.assertEqual("exchange_external_distribution_risk", context.get("operational_intent_key"))
+
+    def test_hot_to_bridge_like_target_can_upgrade_to_distribution_risk(self) -> None:
+        hot = "0x20000000000000000000000000000000000000a1"
+        bridge = "0x20000000000000000000000000000000000000a2"
+        event = Event(
+            tx_hash="0xexchangebridgeoutflow",
+            address=hot,
+            token="USDT",
+            amount=1.0,
+            side="流出",
+            usd_value=240_000.0,
+            kind="token_transfer",
+            ts=1_710_000_950,
+            intent_type="exchange_withdraw_candidate",
+            intent_confidence=0.58,
+            intent_stage="preliminary",
+            confirmation_score=0.40,
+            pricing_status="exact",
+            pricing_confidence=0.96,
+            strategy_role="exchange_hot_wallet",
+            metadata={
+                "token_symbol": "USDT",
+                "watch_wallet_function": "exchange_hot",
+                "counterparty_wallet_function": "bridge",
+                "exchange_internality": "no",
+                "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                "exchange_transfer_purpose_strength": "no",
+                "exchange_external_counterparty_risk_class": "bridge",
+                "exchange_distribution_risk_target_eligible": True,
+                "exchange_transfer_confidence": 0.66,
+                "exchange_entity_label": "OKX",
+                "exchange_transfer_why": ["hot -> external"],
+                "raw": {
+                    "from": hot,
+                    "to": bridge,
+                    "exchange_transfer_purpose": "exchange_hot_wallet_withdrawal_outflow",
+                    "exchange_transfer_purpose_family": "exchange_hot_wallet_withdrawal_outflow",
+                },
+            },
+        )
+        signal = self._signal(event, signal_type="exchange_withdraw_flow", delivery_class="observe")
+        context = self._interpret(
+            event,
+            signal,
+            watch_meta={
+                "address": hot,
+                "label": "OKX Hot Wallet",
+                "entity_label": "OKX",
+                "entity_type": "exchange",
+                "wallet_function": "exchange_hot",
+                "strategy_role": "exchange_hot_wallet",
+                "semantic_role": "exchange_hot_wallet",
+            },
+            counterparty_meta={
+                "address": bridge,
+                "label": "Across Bridge",
+                "strategy_role": "unknown",
+                "semantic_role": "bridge_contract",
+                "wallet_function": "bridge",
+            },
+        )
+
+        self.assertEqual("exchange_external_distribution_risk", context.get("operational_intent_key"))
 
 
 if __name__ == "__main__":

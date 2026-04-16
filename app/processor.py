@@ -20,7 +20,7 @@ from config import (
     TOKEN_METADATA_CACHE_ENABLE,
     TOKEN_METADATA_CACHE_PATH,
 )
-from filter import ALL_WATCH_ADDRESSES, get_address_meta
+from filter import ALL_WATCH_ADDRESSES, get_address_meta, strategy_role_group
 from clmm_parser import infer_position_intent, parse_clmm_candidate, update_position_state
 from liquidation_registry import scan_liquidation_context
 from lp_analyzer import LPAnalyzer
@@ -349,6 +349,12 @@ EXPLICIT_INTERNAL_ENTITY_TYPES = {
     "treasury",
     "protocol",
 }
+EXTERNAL_DISTRIBUTION_RISK_CLASSES = {
+    "smart_money",
+    "market_maker",
+    "bridge",
+    "otc_like",
+}
 
 
 def _has_confirmed_shared_entity_internal(from_meta: dict, to_meta: dict) -> bool:
@@ -393,6 +399,41 @@ def _entity_match_label(meta: dict) -> str:
     return _entity_label(meta).lower()
 
 
+def _meta_text_blob(meta: dict) -> str:
+    values = [
+        meta.get("label"),
+        meta.get("entity_label"),
+        meta.get("role"),
+        meta.get("strategy_role"),
+        meta.get("semantic_role"),
+        meta.get("wallet_function"),
+        meta.get("category"),
+    ]
+    return " ".join([str(value or "").strip().lower() for value in values if str(value or "").strip()])
+
+
+def _external_counterparty_risk_class(meta: dict) -> str:
+    if not meta.get("address") or _exchange_role(meta):
+        return "none"
+
+    role_group = strategy_role_group(meta.get("strategy_role") or "")
+    if role_group == "smart_money":
+        return "smart_money"
+    if role_group == "market_maker":
+        return "market_maker"
+
+    text_blob = f" {_meta_text_blob(meta)} "
+    if any(token in text_blob for token in {" bridge ", " bridge_", "_bridge ", " wormhole ", " stargate ", " across ", " hop "}):
+        return "bridge"
+    if any(token in text_blob for token in {" otc ", " broker ", " custody ", " prime ", " settlement "}):
+        return "otc_like"
+    return "none"
+
+
+def _eligible_distribution_risk_target(meta: dict) -> bool:
+    return _external_counterparty_risk_class(meta) in EXTERNAL_DISTRIBUTION_RISK_CLASSES
+
+
 def _exchange_internality(from_meta: dict, to_meta: dict) -> str:
     if not _exchange_role(from_meta) or not _exchange_role(to_meta):
         return "no"
@@ -428,6 +469,17 @@ def _exchange_transfer_context(from_meta: dict, to_meta: dict) -> dict:
     purpose_strength = "no"
     confidence = 0.0
     why = []
+    external_counterparty_meta = (
+        to_meta if from_exchange and not to_exchange
+        else from_meta if not from_exchange and to_exchange
+        else {}
+    )
+    external_counterparty_risk_class = _external_counterparty_risk_class(external_counterparty_meta)
+    distribution_risk_target_eligible = bool(
+        from_exchange and not to_exchange and _eligible_distribution_risk_target(to_meta)
+    )
+    inflow_context_strength = "observe" if not from_exchange and to_exchange else "no"
+    followup_ready = False
 
     if internality == "confirmed" and from_exchange and to_exchange:
         entity_label = _entity_label(from_meta) or _entity_label(to_meta)
@@ -508,6 +560,10 @@ def _exchange_transfer_context(from_meta: dict, to_meta: dict) -> dict:
         "exchange_transfer_purpose": purpose_family,
         "exchange_transfer_purpose_family": purpose_family,
         "exchange_transfer_purpose_strength": purpose_strength,
+        "exchange_inflow_context_strength": inflow_context_strength,
+        "exchange_followup_ready": followup_ready,
+        "exchange_external_counterparty_risk_class": external_counterparty_risk_class,
+        "exchange_distribution_risk_target_eligible": distribution_risk_target_eligible,
         "exchange_transfer_confidence": round(confidence, 3),
         "exchange_entity_label": entity_label,
         "from_wallet_function": from_function,
@@ -598,6 +654,10 @@ def _build_context_hints(
         "exchange_transfer_purpose": exchange_transfer_context["exchange_transfer_purpose"],
         "exchange_transfer_purpose_family": exchange_transfer_context["exchange_transfer_purpose_family"],
         "exchange_transfer_purpose_strength": exchange_transfer_context["exchange_transfer_purpose_strength"],
+        "exchange_inflow_context_strength": exchange_transfer_context["exchange_inflow_context_strength"],
+        "exchange_followup_ready": exchange_transfer_context["exchange_followup_ready"],
+        "exchange_external_counterparty_risk_class": exchange_transfer_context["exchange_external_counterparty_risk_class"],
+        "exchange_distribution_risk_target_eligible": exchange_transfer_context["exchange_distribution_risk_target_eligible"],
         "exchange_transfer_confidence": exchange_transfer_context["exchange_transfer_confidence"],
         "exchange_entity_label": exchange_transfer_context["exchange_entity_label"],
         "exchange_transfer_why": list(exchange_transfer_context["exchange_transfer_why"]),
@@ -658,6 +718,10 @@ def _attach_context_fields(
     parsed["exchange_transfer_purpose"] = role_hints["exchange_transfer_purpose"]
     parsed["exchange_transfer_purpose_family"] = role_hints["exchange_transfer_purpose_family"]
     parsed["exchange_transfer_purpose_strength"] = role_hints["exchange_transfer_purpose_strength"]
+    parsed["exchange_inflow_context_strength"] = role_hints["exchange_inflow_context_strength"]
+    parsed["exchange_followup_ready"] = role_hints["exchange_followup_ready"]
+    parsed["exchange_external_counterparty_risk_class"] = role_hints["exchange_external_counterparty_risk_class"]
+    parsed["exchange_distribution_risk_target_eligible"] = role_hints["exchange_distribution_risk_target_eligible"]
     parsed["exchange_transfer_confidence"] = role_hints["exchange_transfer_confidence"]
     parsed["exchange_entity_label"] = role_hints["exchange_entity_label"]
     parsed["exchange_transfer_why"] = list(role_hints["exchange_transfer_why"])

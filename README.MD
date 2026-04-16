@@ -11,3 +11,7 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
 - `address_aliases.json` 用来本地覆盖地址别名、钱包职能和实体补丁（如 `wallet_function/entity_source/entity_confidence`）
 - `clmm_managers.json` 用来本地启用 Uniswap v3 / v4 PositionManager registry；缺失时 CLMM parser 会优雅降级为不识别 manager
 - 需要本地注入时，直接把对应 JSON 文件放到 `data/` 目录即可；公开仓库提供 `data/entities.example.json`、`data/address_aliases.example.json` 和 `data/clmm_managers.example.json` 作为最小 schema 参考
+
+CLMM replay fixture 分两层：
+- `app/test_fixtures/clmm/` 是 normalized replay，直接对齐 parser 当前稳定输入接口
+- `app/test_fixtures/clmm_decoder/` 是 decoder-aligned replay，保留更贴近上游 `decoded_logs_snapshot` 的形状，再经 `clmm_decoder_normalizer` 归一化后进入 parser/state/intent 链路

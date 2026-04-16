@@ -5,7 +5,12 @@ from config import (
     INTERPRETER_CONTINUOUS_WINDOW_SEC,
     QUALITY_GATE_MIN_PRICE_IMPACT_RATIO,
 )
-from constants import ETH_EQUIVALENT_CONTRACTS, STABLE_TOKEN_CONTRACTS
+from constants import (
+    ETH_EQUIVALENT_CONTRACTS,
+    OP_INTENT_AUTO_TEMPLATE_THRESHOLD,
+    OP_INTENT_TENTATIVE_PREFIX_THRESHOLD,
+    STABLE_TOKEN_CONTRACTS,
+)
 from filter import WALLET_FUNCTION_LABELS, format_address_label, get_address_meta, shorten_address, strategy_role_group
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
@@ -32,6 +37,9 @@ CLMM_POSITION_INTENTS = {
     "clmm_passive_fee_harvest",
 }
 CLMM_PARTIAL_SUPPORT_INTENT = "clmm_partial_support_observation"
+EXCHANGE_INFLOW_PREPARATION_RESONANCE_THRESHOLD = 0.45
+EXCHANGE_INFLOW_PREPARATION_CONFIRMATION_THRESHOLD = 0.58
+EXCHANGE_OUTFLOW_DISTRIBUTION_RESONANCE_THRESHOLD = 0.58
 
 
 @dataclass
@@ -341,19 +349,20 @@ class SignalInterpreter:
         )
         role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
         auto_intent_template = ""
-        exchange_internal_intent = (
+        operational_intent_confidence = float(operational_intent.get("operational_intent_confidence") or 0.0)
+        exchange_likely_internal_intent = (
             role_group == "exchange"
-            and str(operational_intent.get("operational_intent_strength") or "") in {"confirmed", "likely"}
+            and str(operational_intent.get("operational_intent_strength") or "") == "likely"
         )
         if clmm_partial_support and operational_intent.get("operational_intent_key"):
             auto_intent_template = "debug"
         elif (
             operational_intent.get("operational_intent_key")
             and (
-                exchange_internal_intent
+                exchange_likely_internal_intent
                 or (
                     (role_group in {"exchange", "smart_money", "market_maker"} or clmm_event)
-                    and float(operational_intent.get("operational_intent_confidence") or 0.0) >= 0.56
+                    and operational_intent_confidence >= OP_INTENT_AUTO_TEMPLATE_THRESHOLD
                 )
             )
             and not downstream_followup_active
@@ -401,6 +410,10 @@ class SignalInterpreter:
             "exchange_transfer_purpose": str(event.metadata.get("exchange_transfer_purpose") or "exchange_unknown_flow"),
             "exchange_transfer_purpose_family": str(event.metadata.get("exchange_transfer_purpose_family") or event.metadata.get("exchange_transfer_purpose") or "exchange_unknown_flow"),
             "exchange_transfer_purpose_strength": str(event.metadata.get("exchange_transfer_purpose_strength") or "no"),
+            "exchange_inflow_context_strength": str(event.metadata.get("exchange_inflow_context_strength") or "no"),
+            "exchange_followup_ready": bool(event.metadata.get("exchange_followup_ready")),
+            "exchange_external_counterparty_risk_class": str(event.metadata.get("exchange_external_counterparty_risk_class") or "none"),
+            "exchange_distribution_risk_target_eligible": bool(event.metadata.get("exchange_distribution_risk_target_eligible")),
             "exchange_transfer_confidence": float(event.metadata.get("exchange_transfer_confidence") or 0.0),
             "exchange_entity_label": str(event.metadata.get("exchange_entity_label") or ""),
             "exchange_transfer_why": list(event.metadata.get("exchange_transfer_why") or []),
@@ -550,6 +563,10 @@ class SignalInterpreter:
             "clmm_manager_protocol": str(event.metadata.get("clmm_manager_protocol") or ""),
             "clmm_manager_address": str(event.metadata.get("clmm_manager_address") or ""),
             "clmm_context": dict(clmm_context),
+            "exchange_inflow_context_strength": str(event.metadata.get("exchange_inflow_context_strength") or "no"),
+            "exchange_followup_ready": bool(event.metadata.get("exchange_followup_ready")),
+            "exchange_external_counterparty_risk_class": str(event.metadata.get("exchange_external_counterparty_risk_class") or "none"),
+            "exchange_distribution_risk_target_eligible": bool(event.metadata.get("exchange_distribution_risk_target_eligible")),
             **operational_intent,
             **outcome_tracking,
             **market_maker_display_context,
@@ -1688,6 +1705,7 @@ class SignalInterpreter:
                 event=event,
                 watch_meta=watch_meta,
                 counterparty_meta=counterparty_meta,
+                gate_metrics=gate_metrics,
                 actor_label=actor_label,
                 object_label=object_label,
             )
@@ -1732,12 +1750,116 @@ class SignalInterpreter:
         normalized["venue_or_position_context"] = str(normalized.get("venue_or_position_context") or "").strip()
         return normalized
 
+    def _exchange_counterparty_risk_class(self, meta: dict) -> str:
+        role_group = strategy_role_group(meta.get("strategy_role") or "")
+        if role_group == "smart_money":
+            return "smart_money"
+        if role_group == "market_maker":
+            return "market_maker"
+
+        text_blob = " ".join([
+            str(meta.get("label") or "").strip().lower(),
+            str(meta.get("entity_label") or "").strip().lower(),
+            str(meta.get("role") or "").strip().lower(),
+            str(meta.get("strategy_role") or "").strip().lower(),
+            str(meta.get("semantic_role") or "").strip().lower(),
+            str(meta.get("wallet_function") or "").strip().lower(),
+        ])
+        normalized = f" {text_blob} "
+        if any(token in normalized for token in {" bridge ", " bridge_", "_bridge ", " wormhole ", " stargate ", " across ", " hop "}):
+            return "bridge"
+        if any(token in normalized for token in {" otc ", " broker ", " custody ", " prime ", " settlement "}):
+            return "otc_like"
+        return "none"
+
+    def _exchange_inflow_followup_state(
+        self,
+        *,
+        event: Event,
+        gate_metrics: dict,
+        wallet_function: str,
+        raw: dict,
+    ) -> dict:
+        resonance_score = float(gate_metrics.get("resonance_score") or 0.0)
+        confirmation_score = float(event.confirmation_score or 0.0)
+        followup_confirmed = bool(event.metadata.get("followup_confirmed") or event.metadata.get("downstream_followup_active"))
+        hot_or_trading_destination = wallet_function in {"exchange_hot", "exchange_trading"}
+        readiness_score = 0
+        if hot_or_trading_destination:
+            readiness_score += 1
+        if followup_confirmed:
+            readiness_score += 2
+        if resonance_score >= EXCHANGE_INFLOW_PREPARATION_RESONANCE_THRESHOLD:
+            readiness_score += 1
+        if confirmation_score >= EXCHANGE_INFLOW_PREPARATION_CONFIRMATION_THRESHOLD:
+            readiness_score += 1
+        if str(event.intent_type or "") in {"exchange_deposit_candidate", "possible_buy_preparation"} and confirmation_score >= 0.52:
+            readiness_score += 1
+
+        stored_followup_ready = bool(
+            event.metadata.get("exchange_followup_ready")
+            or raw.get("exchange_followup_ready")
+        )
+        followup_ready = stored_followup_ready or (hot_or_trading_destination and readiness_score >= 3)
+        confirmed_ready = bool(
+            hot_or_trading_destination
+            and followup_confirmed
+            and resonance_score >= EXCHANGE_INFLOW_PREPARATION_RESONANCE_THRESHOLD
+            and confirmation_score >= OP_INTENT_AUTO_TEMPLATE_THRESHOLD
+        )
+        return {
+            "resonance_score": resonance_score,
+            "confirmation_score": confirmation_score,
+            "followup_confirmed": followup_confirmed,
+            "hot_or_trading_destination": hot_or_trading_destination,
+            "readiness_score": readiness_score,
+            "followup_ready": followup_ready,
+            "confirmed_ready": confirmed_ready,
+        }
+
+    def _exchange_outflow_distribution_state(
+        self,
+        *,
+        event: Event,
+        counterparty_meta: dict,
+        gate_metrics: dict,
+        raw: dict,
+    ) -> dict:
+        risk_class = str(
+            event.metadata.get("exchange_external_counterparty_risk_class")
+            or raw.get("exchange_external_counterparty_risk_class")
+            or self._exchange_counterparty_risk_class(counterparty_meta)
+            or "none"
+        ).strip()
+        eligible_target = bool(
+            event.metadata.get("exchange_distribution_risk_target_eligible")
+            or raw.get("exchange_distribution_risk_target_eligible")
+            or risk_class in {"smart_money", "market_maker", "bridge", "otc_like"}
+        )
+        resonance_score = float(gate_metrics.get("resonance_score") or 0.0)
+        confirmation_score = float(event.confirmation_score or 0.0)
+        strong_followup = bool(
+            event.metadata.get("followup_confirmed")
+            or event.metadata.get("downstream_followup_active")
+            or (
+                resonance_score >= EXCHANGE_OUTFLOW_DISTRIBUTION_RESONANCE_THRESHOLD
+                and confirmation_score >= 0.62
+            )
+        )
+        return {
+            "risk_class": risk_class,
+            "eligible_target": eligible_target,
+            "strong_followup": strong_followup,
+            "distribution_ready": eligible_target or strong_followup,
+        }
+
     def _exchange_operational_intent(
         self,
         *,
         event: Event,
         watch_meta: dict,
         counterparty_meta: dict,
+        gate_metrics: dict,
         actor_label: str,
         object_label: str,
     ) -> dict:
@@ -1769,19 +1891,32 @@ class SignalInterpreter:
         transfer_confidence = float(event.metadata.get("exchange_transfer_confidence") or raw.get("exchange_transfer_confidence") or 0.0)
         entity_label = str(event.metadata.get("exchange_entity_label") or raw.get("exchange_entity_label") or watch_meta.get("entity_label") or "").strip()
         wallet_function = str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown")
-        counterparty_role_group = strategy_role_group(counterparty_meta.get("strategy_role") or "")
-        known_followup_counterparty = counterparty_role_group in {"smart_money", "market_maker"} or bool(counterparty_meta.get("entity_label"))
         likely_internal = purpose_strength == "likely" or same_entity_strength == "likely"
         confirmed_internal = purpose_strength == "confirmed" or same_entity_strength == "confirmed"
 
+        inflow_state = self._exchange_inflow_followup_state(
+            event=event,
+            gate_metrics=gate_metrics,
+            wallet_function=wallet_function,
+            raw=raw,
+        )
+        outflow_state = self._exchange_outflow_distribution_state(
+            event=event,
+            counterparty_meta=counterparty_meta,
+            gate_metrics=gate_metrics,
+            raw=raw,
+        )
+
         key = ""
         label = ""
+        strength = "observe"
         market_implication = ""
         next_check = ""
         invalidation = ""
 
         if purpose in {"exchange_user_deposit_consolidation", "exchange_internal_rebalance"}:
             key = "exchange_internal_consolidation"
+            strength = "likely" if likely_internal else "confirmed" if confirmed_internal else "no"
             label = "疑似内部归集" if likely_internal else "内部归集"
             market_implication = (
                 "当前更像交易所内部库存/用户资金归集，但 same-entity 仍待确认。"
@@ -1792,6 +1927,7 @@ class SignalInterpreter:
             invalidation = "短窗内改为流向外部对手方，且不再命中 same-entity。"
         elif purpose in {"exchange_hot_wallet_overflow_to_cold", "exchange_hot_wallet_cold_wallet_topup"}:
             key = "exchange_hot_cold_rebalance"
+            strength = "likely" if likely_internal else "confirmed" if confirmed_internal else "no"
             label = "疑似热冷调拨" if likely_internal else "热冷调拨"
             market_implication = (
                 "更像交易所热冷钱包之间的疑似调拨，不直接等于外部执行。"
@@ -1800,12 +1936,9 @@ class SignalInterpreter:
             )
             next_check = "继续看是否回到 hot/trading 端，或后续进入外部路径。"
             invalidation = "后续直接流向外部对手方，且不再命中 same-entity。"
-        elif purpose in {
-            "exchange_trading_desk_funding",
-            "exchange_trading_desk_return",
-            "exchange_external_inflow",
-        }:
+        elif purpose in {"exchange_trading_desk_funding", "exchange_trading_desk_return"}:
             key = "exchange_liquidity_preparation"
+            strength = "likely" if likely_internal else "confirmed"
             label = "疑似流动性准备" if likely_internal else "流动性准备"
             market_implication = (
                 "更像交易所为后续流动性/交易席位做疑似准备，不直接等于方向执行。"
@@ -1814,27 +1947,58 @@ class SignalInterpreter:
             )
             next_check = "是否继续进入 trading/hot 路径，或短时出现成交延续。"
             invalidation = "后续没有形成同实体接力，且转而快速回流外部。"
-        elif purpose == "exchange_hot_wallet_withdrawal_outflow":
-            if known_followup_counterparty:
-                key = "exchange_external_distribution_risk"
-                label = "外部迁移/分发风险"
-                market_implication = "对市场偏风险，但当前更像外部分发/迁移风险上升，不可直接写成已卖出。"
-                next_check = "盯 smart money / maker / bridge / OTC / 新簇的后续 swap 或二跳分发。"
-                invalidation = "资金回流同实体钱包，或后续没有外部延续。"
+        elif purpose == "exchange_external_inflow":
+            if inflow_state["followup_ready"]:
+                key = "exchange_liquidity_preparation"
+                strength = "confirmed" if inflow_state["confirmed_ready"] else "likely"
+                label = "流动性准备" if inflow_state["confirmed_ready"] else "疑似流动性准备"
+                market_implication = (
+                    "当前外部流入已出现热钱包/席位路径延续，更像交易所为后续流动性或席位做准备。"
+                    if inflow_state["confirmed_ready"]
+                    else "当前外部流入已出现一定路径延续，更像交易所为后续流动性或席位做疑似准备。"
+                )
+                next_check = "继续看是否进入 trading/hot 接力，或短窗出现同 token 同向延续。"
+                invalidation = "后续没有形成 hot/trading 延续，或很快回流外部。"
             else:
-                key = "exchange_user_withdrawal_servicing"
-                label = "外部出金服务"
-                market_implication = "更像交易所服务用户出金，市场含义偏中性。"
-                next_check = "继续看是否进入路由/桥/场外地址，或是否出现大额连续出金。"
-                invalidation = "后续很快回流同实体内部，或缺少外部延续。"
+                key = "exchange_external_inflow_observation"
+                strength = "observe"
+                label = "外部流入观察"
+                market_implication = "当前只能确认有资金从外部流入交易所路径，既可能是用户充值，也可能是归集或席位补充，不能直接写成流动性准备。"
+                next_check = "继续看是否转入 hot/trading、是否出现短窗连续流入、是否形成同 token 同方向 continuation。"
+                invalidation = "观察窗内没有继续进入热钱包/席位，或很快回流外部。"
+        elif purpose == "exchange_hot_wallet_withdrawal_outflow":
+            if outflow_state["distribution_ready"]:
+                key = "exchange_external_distribution_risk"
+                strength = "likely"
+                label = "外部分发风险"
+                market_implication = "当前更像热钱包资金已流向高风险外部承接路径，需继续看是否出现 swap、桥接、OTC 或分发延续。"
+                next_check = "盯后续 swap / bridge / OTC / 新簇分发是否落地。"
+                invalidation = "后续没有出现外部执行/桥接/分发确认，或资金很快回流同实体。"
+            else:
+                key = "exchange_external_outflow_observation"
+                strength = "observe"
+                label = "热钱包出金观察"
+                market_implication = "当前只能确认热钱包向外部转出，可能是用户出金、清算转场或一般外流，不能直接写成分发风险。"
+                next_check = "继续看是否进入桥、OTC、已知执行地址，或是否出现后续连续外流。"
+                invalidation = "后续没有外部执行/桥接确认，或资金很快回流同实体。"
         elif purpose == "exchange_external_outflow":
-            key = "exchange_external_distribution_risk"
-            label = "外部迁移/分发风险"
-            market_implication = "偏风险，但仍只是外部迁移/分发风险升高，不应直接解读为已卖出。"
-            next_check = "继续盯外部地址是否执行 swap、进桥、进 OTC 或分发新簇。"
-            invalidation = "后续没有执行/分发确认，或资金很快回流同实体。"
+            if outflow_state["distribution_ready"]:
+                key = "exchange_external_distribution_risk"
+                strength = "likely"
+                label = "外部分发风险"
+                market_implication = "当前更像交易所资金已流向具备后续分发/迁移特征的外部路径，但仍不能直接解读为已卖出。"
+                next_check = "继续看是否出现 bridge、OTC、swap 或二跳分发。"
+                invalidation = "后续没有形成外部执行/分发确认，或资金很快回流同实体。"
+            else:
+                key = "exchange_external_outflow_observation"
+                strength = "observe"
+                label = "外部转出观察"
+                market_implication = "当前只能确认交易所资金向外部转出，仍不足以下结论为外部分发风险。"
+                next_check = "继续看是否进入桥、OTC、已知执行地址，或是否出现后续连续外流。"
+                invalidation = "观察窗内没有形成后续外部执行/分发。"
         else:
             key = "exchange_liquidity_preparation" if wallet_function in {"exchange_hot", "exchange_trading"} else "exchange_internal_consolidation"
+            strength = "no"
             label = "待继续确认"
             market_implication = "当前仍是交易所运营动作线索，方向性含义有限。"
             next_check = "继续看 same-entity 接力、外部二跳、是否命中执行地址。"
@@ -1850,6 +2014,22 @@ class SignalInterpreter:
             confidence = min(0.92, confidence + 0.10)
         elif likely_internal or internality == "likely":
             confidence = min(0.66, max(confidence, 0.44))
+        elif key == "exchange_external_inflow_observation":
+            confidence = min(0.54, max(confidence, 0.42))
+        elif key == "exchange_external_outflow_observation":
+            confidence = min(0.58, max(confidence, 0.44))
+        elif key == "exchange_external_distribution_risk":
+            if outflow_state["eligible_target"] and outflow_state["strong_followup"]:
+                confidence = min(0.80, max(confidence, 0.72))
+            elif outflow_state["eligible_target"]:
+                confidence = min(0.70, max(confidence, 0.60))
+            else:
+                confidence = min(0.74, max(confidence, 0.62))
+        elif key == "exchange_liquidity_preparation" and purpose == "exchange_external_inflow":
+            if inflow_state["confirmed_ready"]:
+                confidence = min(0.82, max(confidence, 0.72))
+            else:
+                confidence = min(0.70, max(confidence, 0.60))
 
         actor = self._operational_actor_label(
             watch_meta,
@@ -1860,19 +2040,25 @@ class SignalInterpreter:
         why_items.append(f"purpose={purpose}")
         why_items.append(f"internality={internality}")
         why_items.append(f"purpose_strength={purpose_strength}")
+        if purpose == "exchange_external_inflow":
+            why_items.append(f"inflow_followup_ready={str(inflow_state['followup_ready']).lower()}")
+            why_items.append(f"inflow_readiness_score={inflow_state['readiness_score']}")
+        if purpose in {"exchange_hot_wallet_withdrawal_outflow", "exchange_external_outflow"}:
+            why_items.append(f"risk_class={outflow_state['risk_class']}")
+            why_items.append(f"distribution_target_eligible={str(outflow_state['eligible_target']).lower()}")
         if entity_label:
             why_items.append(f"entity={entity_label}")
         return {
             "operational_intent_key": key,
             "operational_intent_family": key,
-            "operational_intent_strength": "likely" if likely_internal else "confirmed" if confirmed_internal else "no",
+            "operational_intent_strength": strength,
             "operational_intent_label": label,
             "operational_intent_confidence": confidence,
             "operational_intent_why": why_items,
             "operational_intent_not_yet": (
                 "same-entity 仍未完全确认，还不能把它写成确认过的内部业务动作。"
                 if likely_internal
-                else "还没看到明确外部执行或成交落点，不能写成市场方向执行。"
+                else "当前仍缺少足够的 follow-up 证据，不能把观察态资金流直接写成强方向性结论。"
             ),
             "operational_intent_next_check": next_check,
             "operational_intent_market_implication": market_implication,
@@ -1880,6 +2066,7 @@ class SignalInterpreter:
             "operational_intent_invalidation": invalidation,
             "operational_actor_label": actor,
             "operational_object_label": self._operational_object_label(event, object_label),
+            "exchange_followup_ready": bool(inflow_state["followup_ready"]),
         }
 
     def _clmm_partial_support_operational_intent(
@@ -2271,9 +2458,9 @@ class SignalInterpreter:
         }
 
     def _operational_confidence_label(self, confidence: float) -> str:
-        if confidence >= 0.78:
+        if confidence >= OP_INTENT_AUTO_TEMPLATE_THRESHOLD:
             return "高"
-        if confidence >= 0.56:
+        if confidence >= OP_INTENT_TENTATIVE_PREFIX_THRESHOLD:
             return "中"
         return "低"
 

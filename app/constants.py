@@ -117,3 +117,9 @@ TOKEN_QUALITY_HINTS = {
 
 # 行为分析默认窗口（秒）。
 BEHAVIOR_WINDOW_SEC = 3600
+
+# operational intent 展示阈值：
+# - 达到 auto template 阈值，才允许默认切到 intent-first
+# - 介于 tentative 与 auto 之间时，如进入 intent-first，必须显式带“疑似/可能”
+OP_INTENT_AUTO_TEMPLATE_THRESHOLD = 0.72
+OP_INTENT_TENTATIVE_PREFIX_THRESHOLD = 0.56
