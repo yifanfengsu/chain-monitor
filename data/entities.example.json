@@ -1,0 +1,11 @@
+{
+  "binance": {
+    "entity_id": "binance",
+    "entity_label": "Binance",
+    "entity_type": "exchange",
+    "cluster_tags": [
+      "cex",
+      "exchange"
+    ]
+  }
+}

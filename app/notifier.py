@@ -89,6 +89,8 @@ def _resolve_template(signal: Signal) -> str:
     metadata = signal.metadata or {}
     template = context.get("message_template") or metadata.get("message_template") or DEFAULT_MESSAGE_TEMPLATE
     normalized = str(template).strip().lower()
+    if normalized == "intent":
+        return "intent"
     if normalized in {"headline", "brief"}:
         return "brief"
     if normalized == "short":
@@ -266,6 +268,111 @@ def _pair_label(signal: Signal, context: dict) -> str:
 
 def _headline_label(context: dict, event: Event) -> str:
     return str(context.get("headline_label") or context.get("conclusion_label") or event.intent_type or "意图未明")
+
+
+def _exchange_transfer_purpose_label(purpose: str) -> str:
+    mapping = {
+        "exchange_user_deposit_consolidation": "用户入金归集",
+        "exchange_hot_wallet_withdrawal_outflow": "热钱包出金",
+        "exchange_hot_wallet_cold_wallet_topup": "冷转热补给",
+        "exchange_hot_wallet_overflow_to_cold": "热转冷归仓",
+        "exchange_internal_rebalance": "内部再平衡",
+        "exchange_trading_desk_funding": "交易席位注资",
+        "exchange_trading_desk_return": "交易席位回流",
+        "exchange_external_outflow": "外部转出",
+        "exchange_external_inflow": "外部流入",
+        "exchange_unknown_flow": "待继续确认",
+    }
+    return mapping.get(str(purpose or ""), str(purpose or "待继续确认"))
+
+
+def _operational_intent_label(context: dict, event: Event) -> str:
+    return str(context.get("operational_intent_label") or _headline_label(context, event))
+
+
+def _confidence_badge(context: dict) -> str:
+    return str(
+        context.get("operational_intent_confidence_label")
+        or context.get("confidence_label")
+        or "低"
+    )
+
+
+def _entity_context_brief(context: dict) -> str:
+    venue_or_position_context = str(context.get("venue_or_position_context") or "").strip()
+    if venue_or_position_context:
+        return venue_or_position_context
+    parts = []
+    entity_label = str(context.get("exchange_entity_label") or context.get("entity_label") or "").strip()
+    wallet_label = str(context.get("wallet_function_label") or "").strip()
+    if entity_label and wallet_label and wallet_label != "Unknown Wallet":
+        parts.append(f"{entity_label} {wallet_label}")
+    elif entity_label:
+        parts.append(entity_label)
+    elif wallet_label and wallet_label != "Unknown Wallet":
+        parts.append(wallet_label)
+
+    purpose = str(context.get("exchange_transfer_purpose") or "").strip()
+    if purpose:
+        parts.append(_exchange_transfer_purpose_label(purpose))
+
+    internality = str(context.get("exchange_internality") or "").strip()
+    if internality == "confirmed":
+        parts.append("同实体内部")
+    elif internality == "likely":
+        parts.append("疑似同实体")
+
+    if not parts:
+        return str(context.get("market_context_label") or context.get("role_summary") or "场景待确认")
+    return " · ".join(parts[:3])
+
+
+def _invalidation_brief(context: dict) -> str:
+    return str(
+        context.get("operational_intent_invalidation")
+        or context.get("failure_conditions")
+        or "等待更多失效条件"
+    )
+
+
+def _next_check_brief(context: dict) -> str:
+    return str(
+        context.get("operational_intent_next_check")
+        or context.get("action_hint")
+        or "观察后续路径"
+    )
+
+
+def _market_implication_short(context: dict, event: Event) -> str:
+    return str(
+        context.get("operational_intent_market_implication")
+        or context.get("lp_meaning_brief")
+        or _explanation_brief(context, event)
+    )
+
+
+def _intent_message(signal: Signal, event: Event, context: dict, raw: dict, *, debug: bool = False) -> str:
+    del raw
+    actor = str(context.get("operational_actor_label") or _object_label(signal, context))
+    object_or_pair = str(
+        context.get("operational_object_label")
+        or context.get("pair_label")
+        or context.get("pool_label")
+        or _object_label(signal, context)
+    )
+    confidence = _confidence_badge(context)
+    evidence_pack = str(context.get("operational_intent_why") or _evidence_brief(context))
+    lines = [
+        f"{actor}｜{_operational_intent_label(context, event)}｜{confidence}",
+        f"{object_or_pair}｜{_usd_value_text(signal.usd_value)}｜{_entity_context_brief(context)}",
+        evidence_pack,
+        _market_implication_short(context, event),
+    ]
+    if debug or str(signal.delivery_class or "") == "primary" or confidence == "高":
+        lines.append(f"失效：{_invalidation_brief(context)}｜继续看：{_next_check_brief(context)}")
+    if debug or str(signal.delivery_class or "") == "primary":
+        lines.append(_tx_line(signal, compact=True))
+    return _join_lines(lines)
 
 
 def _market_state_label(context: dict, event: Event) -> str:
@@ -785,6 +892,10 @@ def format_signal_message(signal: Signal, event: Event) -> str:
         return _brief_message(signal, event, context, raw)
     if template == "short":
         return _short_message(signal, event, context, raw)
+    if template == "intent":
+        return _intent_message(signal, event, context, raw)
+    if template == "debug" and context.get("operational_intent_key"):
+        return _intent_message(signal, event, context, raw, debug=True)
     return _long_message(signal, event, context, raw)
 
 def _signal_type_display(signal: Signal) -> str:

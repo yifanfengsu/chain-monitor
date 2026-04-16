@@ -6,7 +6,7 @@ from config import (
     QUALITY_GATE_MIN_PRICE_IMPACT_RATIO,
 )
 from constants import ETH_EQUIVALENT_CONTRACTS, STABLE_TOKEN_CONTRACTS
-from filter import format_address_label, get_address_meta, shorten_address
+from filter import WALLET_FUNCTION_LABELS, format_address_label, get_address_meta, shorten_address, strategy_role_group
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
 from signal_quality_gate import LP_SWEEP_SEMANTIC_SUBTYPES, detect_lp_liquidity_sweep
@@ -19,6 +19,17 @@ LP_INTENTS = {
     "liquidity_removal",
     "pool_rebalance",
     "pool_noise",
+}
+CLMM_POSITION_INTENTS = {
+    "clmm_position_open",
+    "clmm_position_add_range_liquidity",
+    "clmm_position_remove_range_liquidity",
+    "clmm_position_collect_fees",
+    "clmm_position_close",
+    "clmm_range_shift",
+    "clmm_jit_liquidity_likely",
+    "clmm_inventory_recenter",
+    "clmm_passive_fee_harvest",
 }
 
 
@@ -46,6 +57,15 @@ class SignalInterpreter:
         "liquidity_removal": "流动性减少",
         "pool_rebalance": "池子再平衡",
         "pool_noise": "池子噪声",
+        "clmm_position_open": "头寸开启",
+        "clmm_position_add_range_liquidity": "区间加流动性",
+        "clmm_position_remove_range_liquidity": "区间撤流动性",
+        "clmm_position_collect_fees": "收取手续费",
+        "clmm_position_close": "头寸关闭",
+        "clmm_range_shift": "区间迁移",
+        "clmm_jit_liquidity_likely": "疑似 JIT 流动性",
+        "clmm_inventory_recenter": "库存再居中",
+        "clmm_passive_fee_harvest": "被动收手续费",
         "unknown_intent": "意图未明",
     }
 
@@ -84,6 +104,7 @@ class SignalInterpreter:
         "liquidity_addition": "Liquidity_Addition",
         "liquidity_removal": "Liquidity_Removal",
         "pool_rebalance": "Pool_Rebalance",
+        "lp_position_intent": "CLMM_Position_Intent",
     }
 
     def __init__(
@@ -109,16 +130,18 @@ class SignalInterpreter:
         watch_meta = watch_meta or get_address_meta(event.address)
         self._canonicalize_pool_semantics(event, signal)
         raw = event.metadata.get("raw") or {}
+        clmm_context = self._clmm_context(raw, event)
+        clmm_event = self._is_clmm_position_event(event, raw)
         lp_event = self._is_lp_event(event, watch_meta, raw)
         counterparty_meta = self._resolve_counterparty_meta(event, watch_context)
 
-        semantic = self._classify_semantic(event, lp_event)
+        semantic = self._classify_semantic(event, lp_event, clmm_event)
         intent_label = self.INTENT_LABELS.get(str(event.intent_type or "unknown_intent"), "意图未明")
         actor_label = self._actor_label(event.address, watch_meta, lp_event)
         role_display = self._role_display(watch_meta, lp_event)
-        action_label = self._action_label(event, signal, semantic, lp_event)
-        fact_label = self._fact_label(event, watch_context, lp_event)
-        intent_detail = self._intent_detail(event, lp_event)
+        action_label = self._action_label(event, signal, semantic, lp_event, clmm_event)
+        fact_label = self._fact_label(event, watch_context, lp_event, clmm_event)
+        intent_detail = self._intent_detail(event, lp_event, clmm_event)
         continuous_count = self._continuous_count(event, address_snapshot, lp_event)
         continuous_label = self._continuous_label(event, continuous_count, lp_event)
         abnormal_ratio = float(signal.abnormal_ratio or self._abnormal_ratio(event, address_snapshot))
@@ -287,6 +310,41 @@ class SignalInterpreter:
                 continuous_label=continuous_label,
             )
 
+        operational_intent = self._build_operational_intent(
+            event=event,
+            signal=signal,
+            watch_meta=watch_meta,
+            counterparty_meta=counterparty_meta,
+            gate_metrics=gate_metrics,
+            clmm_event=clmm_event,
+            clmm_context=clmm_context,
+            lp_event=lp_event,
+            liquidation_meta=liquidation_meta,
+            sweep_meta=sweep_meta,
+            actor_label=actor_label,
+            object_label=object_label,
+            pair_label=pair_label,
+        )
+        outcome_tracking = self._outcome_tracking_seam(
+            event=event,
+            pair_label=pair_label,
+            clmm_event=clmm_event,
+            clmm_context=clmm_context,
+            lp_event=lp_event,
+            operational_intent=operational_intent,
+        )
+        role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
+        auto_intent_template = ""
+        if (
+            operational_intent.get("operational_intent_key")
+            and (role_group in {"exchange", "smart_money", "market_maker"} or clmm_event)
+            and float(operational_intent.get("operational_intent_confidence") or 0.0) >= 0.56
+            and not downstream_followup_active
+            and not liquidation_meta["active"]
+            and not lp_event
+        ):
+            auto_intent_template = "intent"
+
         event.metadata.update({
             "semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
             "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
@@ -294,6 +352,10 @@ class SignalInterpreter:
             "lp_sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "market_state_label": str(market_state_label or ""),
+            "clmm_position_event": clmm_event,
+            "clmm_context": dict(clmm_context),
+            **operational_intent,
+            **outcome_tracking,
         })
         signal.semantic = semantic
         signal.core_action = action_label
@@ -307,6 +369,20 @@ class SignalInterpreter:
             "role_label": watch_meta.get("role_label", "未分类"),
             "strategy_role_label": watch_meta.get("strategy_role_label", "未分类"),
             "semantic_role_label": watch_meta.get("semantic_role_label", "未分类"),
+            "entity_id": str(watch_meta.get("entity_id") or ""),
+            "entity_label": str(watch_meta.get("entity_label") or ""),
+            "entity_type": str(watch_meta.get("entity_type") or "unknown"),
+            "wallet_function": str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown"),
+            "wallet_function_label": WALLET_FUNCTION_LABELS.get(
+                str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown"),
+                str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown"),
+            ),
+            "counterparty_wallet_function": str(event.metadata.get("counterparty_wallet_function") or counterparty_meta.get("wallet_function") or "unknown"),
+            "exchange_internality": str(event.metadata.get("exchange_internality") or "no"),
+            "exchange_transfer_purpose": str(event.metadata.get("exchange_transfer_purpose") or "exchange_unknown_flow"),
+            "exchange_transfer_confidence": float(event.metadata.get("exchange_transfer_confidence") or 0.0),
+            "exchange_entity_label": str(event.metadata.get("exchange_entity_label") or ""),
+            "exchange_transfer_why": list(event.metadata.get("exchange_transfer_why") or []),
             "fact_label": fact_label,
             "inference_label": inference_label,
             "inference_confidence_label": inference_confidence_label,
@@ -352,6 +428,9 @@ class SignalInterpreter:
             "note": str(watch_meta.get("note") or "").strip(),
             "behavior_reason": behavior.get("reason", ""),
             "signal_type_label": self._signal_type_label(signal.type),
+            "clmm_position_event": clmm_event,
+            "clmm_context": dict(clmm_context),
+            "venue_or_position_context": str(operational_intent.get("venue_or_position_context") or ""),
             "lp_event": lp_event,
             "followup_confirmed": followup_confirmed,
             "followup_assets": followup_assets,
@@ -420,6 +499,9 @@ class SignalInterpreter:
             "downstream_early_warning_emitted": bool(event.metadata.get("downstream_early_warning_emitted")),
             "anchor_usd_value": downstream_anchor_usd_value,
             "current_event_is_anchor": current_event_is_anchor,
+            "message_template": auto_intent_template,
+            **operational_intent,
+            **outcome_tracking,
         }
 
         event.metadata.update(lp_trend_display)
@@ -434,6 +516,11 @@ class SignalInterpreter:
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
             "smart_money_style_variant": smart_money_context["style_variant"],
             "smart_money_observe_label": smart_money_context["observe_label"],
+            "message_template": auto_intent_template,
+            "clmm_position_event": clmm_event,
+            "clmm_context": dict(clmm_context),
+            **operational_intent,
+            **outcome_tracking,
             **market_maker_display_context,
             **lp_trend_display,
         })
@@ -525,12 +612,21 @@ class SignalInterpreter:
             "downstream_early_warning_emitted": bool(event.metadata.get("downstream_early_warning_emitted")),
             "anchor_usd_value": downstream_anchor_usd_value,
             "current_event_is_anchor": current_event_is_anchor,
+            "clmm_position_event": clmm_event,
+            "clmm_context": dict(clmm_context),
+            "venue_or_position_context": str(operational_intent.get("venue_or_position_context") or ""),
+            **outcome_tracking,
         })
         if lp_event:
             signal.metadata["lp"] = {
                 "context": dict(raw.get("lp_context") or {}),
                 "analysis": dict(event.metadata.get("lp_analysis") or {}),
                 "burst": dict(event.metadata.get("lp_burst") or {}),
+            }
+        if clmm_event:
+            signal.metadata["clmm"] = {
+                "context": dict(clmm_context),
+                "outcome_tracking": dict(outcome_tracking.get("outcome_tracking") or {}),
             }
         return InterpretationDecision(should_notify=True, reason="interpreted")
 
@@ -540,6 +636,27 @@ class SignalInterpreter:
         if str(raw.get("monitor_type") or "") == "lp_pool":
             return True
         return str(event.intent_type or "") in LP_INTENTS or str(event.strategy_role or "") == "lp_pool"
+
+    def _is_clmm_position_event(self, event: Event, raw: dict) -> bool:
+        if bool(event.metadata.get("clmm_position_event")):
+            return True
+        if bool((event.metadata.get("raw") or {}).get("clmm_position_event")):
+            return True
+        if bool(raw.get("clmm_position_event")):
+            return True
+        if str(raw.get("monitor_type") or "") == "clmm_position":
+            return True
+        return str(event.intent_type or "") in CLMM_POSITION_INTENTS
+
+    def _clmm_context(self, raw: dict, event: Event) -> dict:
+        context = {}
+        raw_context = raw.get("clmm_context") or {}
+        metadata_context = event.metadata.get("clmm_context") or {}
+        if isinstance(raw_context, dict):
+            context.update(raw_context)
+        if isinstance(metadata_context, dict):
+            context.update(metadata_context)
+        return context
 
     def _actor_label(self, address: str, watch_meta: dict, lp_event: bool) -> str:
         label = str(watch_meta.get("label") or "").strip()
@@ -573,7 +690,7 @@ class SignalInterpreter:
             return get_address_meta(counterparty)
         return get_address_meta("")
 
-    def _classify_semantic(self, event: Event, lp_event: bool) -> str:
+    def _classify_semantic(self, event: Event, lp_event: bool, clmm_event: bool) -> str:
         if lp_event:
             if event.intent_type in {"pool_buy_pressure", "pool_sell_pressure"}:
                 return "pool_trade_pressure"
@@ -582,6 +699,8 @@ class SignalInterpreter:
             if event.intent_type == "pool_rebalance":
                 return "pool_rebalance"
             return "pool_noise"
+        if clmm_event:
+            return "clmm_position"
 
         semantic_map = {
             "swap_execution": "active_trade",
@@ -596,12 +715,13 @@ class SignalInterpreter:
         }
         return semantic_map.get(str(event.intent_type or "unknown_intent"), "unknown_flow")
 
-    def _action_label(self, event: Event, signal: Signal, semantic: str, lp_event: bool) -> str:
+    def _action_label(self, event: Event, signal: Signal, semantic: str, lp_event: bool, clmm_event: bool) -> str:
         raw = event.metadata.get("raw") or {}
         lp_context = raw.get("lp_context") or {}
+        clmm_context = self._clmm_context(raw, event)
         token_symbol = str(lp_context.get("base_token_symbol") or raw.get("token_symbol") or event.metadata.get("token_symbol") or event.token or "资产")
         quote_symbol = str(lp_context.get("quote_token_symbol") or raw.get("quote_symbol") or event.metadata.get("quote_symbol") or "稳定币")
-        pair_label = str(lp_context.get("pair_label") or "")
+        pair_label = str(clmm_context.get("pair_label") or lp_context.get("pair_label") or "")
 
         if lp_event:
             if event.intent_type == "pool_buy_pressure":
@@ -615,6 +735,20 @@ class SignalInterpreter:
             if event.intent_type == "pool_rebalance":
                 return f"{pair_label or f'{token_symbol}/{quote_symbol}'} 池子再平衡"
             return f"{pair_label or f'{token_symbol}/{quote_symbol}'} 池子噪声流"
+        if clmm_event:
+            if event.intent_type == "clmm_position_open":
+                return f"{pair_label or 'CLMM'} 开新头寸"
+            if event.intent_type == "clmm_position_add_range_liquidity":
+                return f"{pair_label or 'CLMM'} 区间加流动性"
+            if event.intent_type == "clmm_position_remove_range_liquidity":
+                return f"{pair_label or 'CLMM'} 区间撤流动性"
+            if event.intent_type == "clmm_position_close":
+                return f"{pair_label or 'CLMM'} 头寸退出"
+            if event.intent_type == "clmm_passive_fee_harvest":
+                return f"{pair_label or 'CLMM'} 被动收手续费"
+            if event.intent_type == "clmm_jit_liquidity_likely":
+                return f"{pair_label or 'CLMM'} 疑似 JIT 抽费"
+            return f"{pair_label or 'CLMM'} 区间重设"
 
         if semantic == "active_trade":
             if event.side == "买入":
@@ -638,7 +772,7 @@ class SignalInterpreter:
             return f"{token_symbol} 流出"
         return signal.type or f"{token_symbol} 转移"
 
-    def _intent_detail(self, event: Event, lp_event: bool) -> str:
+    def _intent_detail(self, event: Event, lp_event: bool, clmm_event: bool) -> str:
         if lp_event:
             if event.intent_type == "pool_buy_pressure":
                 return "池子表现为稳定币流入、标的流出，更接近市场主动买入。"
@@ -651,6 +785,18 @@ class SignalInterpreter:
             if event.intent_type == "pool_rebalance":
                 return "池子更像在做库存或区间再平衡，方向性较弱。"
             return "当前更像普通池子噪声，不宜直接下强结论。"
+        if clmm_event:
+            if event.intent_type == "clmm_passive_fee_harvest":
+                return "当前更像头寸在不明显改动区间和仓位的前提下收取手续费，不宜解读为方向表达。"
+            if event.intent_type == "clmm_jit_liquidity_likely":
+                return "当前只可写成疑似 JIT fee extraction，不能写 confirmed，也不能直接写成方向性看多/看空。"
+            if event.intent_type == "clmm_position_close":
+                return "当前更像该头寸退出对应区间流动性，但不自动等于方向性看空。"
+            if event.intent_type in {"clmm_range_shift", "clmm_inventory_recenter"}:
+                return "当前更像 LP 在短窗内迁移或再居中重设价区，不直接等于主观方向判断。"
+            if event.intent_type == "clmm_position_remove_range_liquidity":
+                return "当前更像 LP 正在撤离对应价区流动性，需继续看是否还有后续撤离或重设。"
+            return "当前更像 LP 头寸层的区间加流动性动作，不直接等于方向表达。"
 
         if self._is_exchange_followup_case(event) and bool(event.metadata.get("followup_confirmed")):
             return "前序交易场景流入后，又出现同地址主流资产后续流入，当前更像结构延续观察，不等于已确认卖出。"
@@ -670,12 +816,13 @@ class SignalInterpreter:
             return "更接近入场前的资金准备，尚未看到真实买入。"
         return "当前更像重点地址的一般资金动作，暂不下更强结论。"
 
-    def _fact_label(self, event: Event, watch_context: dict | None, lp_event: bool) -> str:
+    def _fact_label(self, event: Event, watch_context: dict | None, lp_event: bool, clmm_event: bool) -> str:
         raw = event.metadata.get("raw") or {}
         lp_context = raw.get("lp_context") or {}
+        clmm_context = self._clmm_context(raw, event)
         token_symbol = str(lp_context.get("base_token_symbol") or raw.get("token_symbol") or event.metadata.get("token_symbol") or event.token or "资产")
         quote_symbol = str(lp_context.get("quote_token_symbol") or raw.get("quote_symbol") or event.metadata.get("quote_symbol") or "报价资产")
-        pair_label = str(lp_context.get("pair_label") or f"{token_symbol}/{quote_symbol}")
+        pair_label = str(clmm_context.get("pair_label") or lp_context.get("pair_label") or f"{token_symbol}/{quote_symbol}")
 
         if lp_event:
             if event.intent_type == "pool_buy_pressure":
@@ -689,6 +836,21 @@ class SignalInterpreter:
             if event.intent_type == "pool_rebalance":
                 return f"{pair_label} 池子发生再平衡：双边资金结构出现混合调整"
             return f"{pair_label} 池子出现弱资金扰动"
+        if clmm_event:
+            position_label = str(clmm_context.get("position_actor_label") or pair_label or "某 LP 头寸")
+            if event.intent_type == "clmm_position_open":
+                return f"{position_label} 在 {pair_label} 开出新价区头寸"
+            if event.intent_type == "clmm_position_add_range_liquidity":
+                return f"{position_label} 在 {pair_label} 对当前区间继续加流动性"
+            if event.intent_type == "clmm_position_remove_range_liquidity":
+                return f"{position_label} 在 {pair_label} 从当前区间撤出部分流动性"
+            if event.intent_type == "clmm_position_close":
+                return f"{position_label} 在 {pair_label} 退出该区间头寸"
+            if event.intent_type == "clmm_passive_fee_harvest":
+                return f"{position_label} 在 {pair_label} 更像收手续费而非改方向"
+            if event.intent_type == "clmm_jit_liquidity_likely":
+                return f"{position_label} 在 {pair_label} 出现短持有围绕冲击窗口的疑似 JIT 行为"
+            return f"{position_label} 在 {pair_label} 出现区间迁移/再居中调整"
 
         flow_direction = (watch_context or {}).get("direction") or event.metadata.get("flow_direction") or event.side or ""
         if event.kind == "swap":
@@ -1415,6 +1577,611 @@ class SignalInterpreter:
             "market_maker_action_hint": smart_money_context.get("action_hint", ""),
         }
 
+    def _build_operational_intent(
+        self,
+        *,
+        event: Event,
+        signal: Signal,
+        watch_meta: dict,
+        counterparty_meta: dict,
+        gate_metrics: dict,
+        clmm_event: bool,
+        clmm_context: dict,
+        lp_event: bool,
+        liquidation_meta: dict,
+        sweep_meta: dict,
+        actor_label: str,
+        object_label: str,
+        pair_label: str,
+    ) -> dict:
+        role_group = strategy_role_group(watch_meta.get("strategy_role") or event.strategy_role)
+        if clmm_event:
+            payload = self._clmm_operational_intent(
+                event=event,
+                clmm_context=clmm_context,
+                gate_metrics=gate_metrics,
+                pair_label=pair_label,
+            )
+        elif liquidation_meta["active"]:
+            payload = self._liquidation_operational_intent(
+                event=event,
+                liquidation_meta=liquidation_meta,
+                pair_label=pair_label,
+            )
+        elif lp_event:
+            payload = self._lp_operational_intent(
+                event=event,
+                sweep_meta=sweep_meta,
+                pair_label=pair_label,
+            )
+        elif role_group == "exchange":
+            payload = self._exchange_operational_intent(
+                event=event,
+                watch_meta=watch_meta,
+                counterparty_meta=counterparty_meta,
+                actor_label=actor_label,
+                object_label=object_label,
+            )
+        elif role_group == "market_maker":
+            payload = self._market_maker_operational_intent(
+                event=event,
+                signal=signal,
+                watch_meta=watch_meta,
+                counterparty_meta=counterparty_meta,
+                gate_metrics=gate_metrics,
+                actor_label=actor_label,
+                object_label=object_label,
+            )
+        elif role_group == "smart_money":
+            payload = self._smart_money_operational_intent(
+                event=event,
+                signal=signal,
+                watch_meta=watch_meta,
+                counterparty_meta=counterparty_meta,
+                gate_metrics=gate_metrics,
+                actor_label=actor_label,
+                object_label=object_label,
+            )
+        else:
+            payload = {}
+
+        normalized = self._empty_operational_intent()
+        normalized.update(payload)
+        confidence = float(normalized.get("operational_intent_confidence") or 0.0)
+        normalized["operational_intent_confidence"] = round(max(0.0, min(1.0, confidence)), 3)
+        normalized["operational_intent_confidence_label"] = self._operational_confidence_label(confidence)
+        why_value = normalized.get("operational_intent_why")
+        if isinstance(why_value, str):
+            normalized["operational_intent_why"] = why_value.strip()
+        else:
+            normalized["operational_intent_why"] = self._join_operational_evidence(why_value)
+        normalized["operational_intent_not_yet"] = str(normalized.get("operational_intent_not_yet") or "").strip()
+        normalized["operational_intent_next_check"] = str(normalized.get("operational_intent_next_check") or "").strip()
+        normalized["operational_intent_market_implication"] = str(normalized.get("operational_intent_market_implication") or "").strip()
+        normalized["operational_intent_time_horizon"] = str(normalized.get("operational_intent_time_horizon") or "").strip()
+        normalized["operational_intent_invalidation"] = str(normalized.get("operational_intent_invalidation") or "").strip()
+        normalized["venue_or_position_context"] = str(normalized.get("venue_or_position_context") or "").strip()
+        return normalized
+
+    def _exchange_operational_intent(
+        self,
+        *,
+        event: Event,
+        watch_meta: dict,
+        counterparty_meta: dict,
+        actor_label: str,
+        object_label: str,
+    ) -> dict:
+        raw = event.metadata.get("raw") or {}
+        purpose = str(event.metadata.get("exchange_transfer_purpose") or raw.get("exchange_transfer_purpose") or "exchange_unknown_flow")
+        internality = str(event.metadata.get("exchange_internality") or raw.get("exchange_internality") or "no")
+        transfer_confidence = float(event.metadata.get("exchange_transfer_confidence") or raw.get("exchange_transfer_confidence") or 0.0)
+        entity_label = str(event.metadata.get("exchange_entity_label") or raw.get("exchange_entity_label") or watch_meta.get("entity_label") or "").strip()
+        wallet_function = str(event.metadata.get("watch_wallet_function") or watch_meta.get("wallet_function") or "unknown")
+        counterparty_role_group = strategy_role_group(counterparty_meta.get("strategy_role") or "")
+        known_followup_counterparty = counterparty_role_group in {"smart_money", "market_maker"} or bool(counterparty_meta.get("entity_label"))
+
+        key = ""
+        label = ""
+        market_implication = ""
+        next_check = ""
+        invalidation = ""
+
+        if purpose in {
+            "exchange_user_deposit_consolidation",
+            "exchange_hot_wallet_overflow_to_cold",
+            "exchange_internal_rebalance",
+        }:
+            key = "exchange_internal_consolidation"
+            label = "内部归集"
+            market_implication = "市场含义偏中性，更像交易所内部库存/用户资金归集。"
+            next_check = "是否继续回流同实体 hot/trading，或出现对外转出。"
+            invalidation = "短窗内改为流向外部对手方，且不再命中 same-entity。"
+        elif purpose in {
+            "exchange_hot_wallet_cold_wallet_topup",
+            "exchange_trading_desk_funding",
+            "exchange_trading_desk_return",
+            "exchange_external_inflow",
+        }:
+            key = "exchange_liquidity_preparation"
+            label = "流动性准备"
+            market_implication = "更像交易所为后续流动性/交易席位做准备，不直接等于方向执行。"
+            next_check = "是否继续进入 trading/hot 路径，或短时出现成交延续。"
+            invalidation = "后续没有形成同实体接力，且转而快速回流外部。"
+        elif purpose == "exchange_hot_wallet_withdrawal_outflow":
+            if known_followup_counterparty:
+                key = "exchange_external_distribution_risk"
+                label = "外部迁移/分发风险"
+                market_implication = "对市场偏风险，但当前更像外部分发/迁移风险上升，不可直接写成已卖出。"
+                next_check = "盯 smart money / maker / bridge / OTC / 新簇的后续 swap 或二跳分发。"
+                invalidation = "资金回流同实体钱包，或后续没有外部延续。"
+            else:
+                key = "exchange_user_withdrawal_servicing"
+                label = "外部出金服务"
+                market_implication = "更像交易所服务用户出金，市场含义偏中性。"
+                next_check = "继续看是否进入路由/桥/场外地址，或是否出现大额连续出金。"
+                invalidation = "后续很快回流同实体内部，或缺少外部延续。"
+        elif purpose == "exchange_external_outflow":
+            key = "exchange_external_distribution_risk"
+            label = "外部迁移/分发风险"
+            market_implication = "偏风险，但仍只是外部迁移/分发风险升高，不应直接解读为已卖出。"
+            next_check = "继续盯外部地址是否执行 swap、进桥、进 OTC 或分发新簇。"
+            invalidation = "后续没有执行/分发确认，或资金很快回流同实体。"
+        else:
+            key = "exchange_liquidity_preparation" if wallet_function in {"exchange_hot", "exchange_trading"} else "exchange_internal_consolidation"
+            label = "待继续确认"
+            market_implication = "当前仍是交易所运营动作线索，方向性含义有限。"
+            next_check = "继续看 same-entity 接力、外部二跳、是否命中执行地址。"
+            invalidation = "观察窗内没有新的路径确认。"
+
+        confidence = max(
+            float(event.intent_confidence or 0.0) * 0.45
+            + float(event.confirmation_score or 0.0) * 0.25
+            + transfer_confidence * 0.30,
+            transfer_confidence,
+        )
+        if internality == "confirmed":
+            confidence = min(0.92, confidence + 0.10)
+        elif internality == "likely":
+            confidence = min(0.74, confidence)
+
+        actor = self._operational_actor_label(
+            watch_meta,
+            fallback=actor_label,
+            default_unknown="交易所地址",
+        )
+        why_items = list(event.metadata.get("exchange_transfer_why") or raw.get("exchange_transfer_why") or [])
+        why_items.append(f"purpose={purpose}")
+        why_items.append(f"internality={internality}")
+        if entity_label:
+            why_items.append(f"entity={entity_label}")
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": confidence,
+            "operational_intent_why": why_items,
+            "operational_intent_not_yet": "还没看到明确外部执行或成交落点，不能写成市场方向执行。",
+            "operational_intent_next_check": next_check,
+            "operational_intent_market_implication": market_implication,
+            "operational_intent_time_horizon": "短线到数小时",
+            "operational_intent_invalidation": invalidation,
+            "operational_actor_label": actor,
+            "operational_object_label": self._operational_object_label(event, object_label),
+        }
+
+    def _smart_money_operational_intent(
+        self,
+        *,
+        event: Event,
+        signal: Signal,
+        watch_meta: dict,
+        counterparty_meta: dict,
+        gate_metrics: dict,
+        actor_label: str,
+        object_label: str,
+    ) -> dict:
+        is_execution = bool(signal.metadata.get("is_real_execution") or event.kind == "swap" or str(event.intent_type or "") == "swap_execution")
+        if is_execution:
+            key = "smart_money_entry_execution" if str(event.side or "") == "买入" else "smart_money_exit_execution"
+            label = "已执行建仓" if key == "smart_money_entry_execution" else "已执行退出"
+            market_implication = "已出现真实执行，短线方向性更强。"
+            not_yet = ""
+            next_check = "同地址是否继续同向执行，或短时进入交易所反向回吐。"
+            invalidation = "短窗内被同地址明显反向成交覆盖。"
+            confidence = min(
+                0.96,
+                0.56 * float(event.intent_confidence or 0.0)
+                + 0.34 * float(event.confirmation_score or 0.0)
+                + 0.10 * max(float(gate_metrics.get("resonance_score") or 0.0), 0.30),
+            )
+        else:
+            key = "smart_money_preparation_only"
+            label = "仅交易准备"
+            market_implication = "目前仍停留在准备阶段，方向性证据有限。"
+            not_yet = "还没看到 router + token + 短窗延续 + executed swap 的执行闭环。"
+            next_check = "继续看 router 命中、swap_execution、是否进入交易所/桥/新簇。"
+            invalidation = "观察窗结束仍无执行，或资金反向回流。"
+            confidence = min(
+                0.72,
+                0.48 * float(event.intent_confidence or 0.0)
+                + 0.26 * float(event.confirmation_score or 0.0)
+                + 0.12 * max(float(gate_metrics.get("resonance_score") or 0.0), 0.10),
+            )
+            if str(event.intent_type or "") in {"exchange_deposit_candidate", "possible_sell_preparation"}:
+                market_implication = "更像卖出准备 / 交易准备，不能写成已卖出。"
+
+        actor = self._operational_actor_label(
+            watch_meta,
+            fallback=actor_label,
+            default_unknown="某聪明钱地址",
+        )
+        why_items = list(event.intent_evidence or [])
+        if is_execution:
+            why_items.append("链上已出现 executed swap")
+        else:
+            why_items.append(f"intent={event.intent_type}")
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": confidence,
+            "operational_intent_why": why_items,
+            "operational_intent_not_yet": not_yet,
+            "operational_intent_next_check": next_check,
+            "operational_intent_market_implication": market_implication,
+            "operational_intent_time_horizon": "分钟到数小时",
+            "operational_intent_invalidation": invalidation,
+            "operational_actor_label": actor,
+            "operational_object_label": self._operational_object_label(event, object_label),
+        }
+
+    def _market_maker_operational_intent(
+        self,
+        *,
+        event: Event,
+        signal: Signal,
+        watch_meta: dict,
+        counterparty_meta: dict,
+        gate_metrics: dict,
+        actor_label: str,
+        object_label: str,
+    ) -> dict:
+        behavior_type = str(signal.behavior_type or event.metadata.get("behavior_type") or "")
+        counterparty_wallet_function = str(event.metadata.get("counterparty_wallet_function") or counterparty_meta.get("wallet_function") or "unknown")
+        settlement_like = counterparty_wallet_function in {"exchange_trading", "exchange_internal_buffer", "mm_settlement"}
+        if settlement_like:
+            key = "market_maker_settlement_move"
+            label = "结算/轮转"
+            market_implication = "更像做市结算或库存轮转，不应轻易给方向性 alpha。"
+        elif behavior_type == "inventory_distribution" or str(event.side or "") in {"卖出", "流出"}:
+            key = "market_maker_inventory_distribute"
+            label = "库存分发"
+            market_implication = "更像做市库存分发，不等于主观看空。"
+        elif behavior_type == "inventory_expansion" or str(event.side or "") in {"买入", "流入"}:
+            key = "market_maker_inventory_expand"
+            label = "库存扩张"
+            market_implication = "更像库存回补/扩张，不等于主观看多。"
+        elif behavior_type in {"inventory_shift", "inventory_management"} or str(event.intent_type or "") == "market_making_inventory_move":
+            key = "market_maker_inventory_recenter"
+            label = "库存轮转"
+            market_implication = "更像库存再居中/库存轮转，方向性有限。"
+        else:
+            key = "market_maker_inventory_recenter"
+            label = "库存轮转"
+            market_implication = "更像库存管理动作。"
+
+        confidence = min(
+            0.86,
+            0.42 * float(event.intent_confidence or 0.0)
+            + 0.28 * float(event.confirmation_score or 0.0)
+            + 0.18 * max(float(gate_metrics.get("resonance_score") or 0.0), 0.12)
+            + 0.12 * (1.0 if behavior_type in {"inventory_management", "inventory_shift", "inventory_expansion", "inventory_distribution"} else 0.0),
+        )
+        actor = self._operational_actor_label(
+            watch_meta,
+            fallback=actor_label,
+            default_unknown="某做市地址",
+        )
+        why_items = list(event.intent_evidence or [])
+        if settlement_like:
+            why_items.append(f"counterparty_wallet_function={counterparty_wallet_function}")
+        if behavior_type:
+            why_items.append(f"behavior={behavior_type}")
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": confidence,
+            "operational_intent_why": why_items,
+            "operational_intent_not_yet": "当前仍以库存/结算语境优先，不把它直接写成主观看多看空。",
+            "operational_intent_next_check": "继续看是否进入交易所 trading/settlement 路径，或是否出现连续同 token 轮转。",
+            "operational_intent_market_implication": market_implication,
+            "operational_intent_time_horizon": "分钟到数小时",
+            "operational_intent_invalidation": "短窗内出现强执行闭环且脱离库存/结算语境。",
+            "operational_actor_label": actor,
+            "operational_object_label": self._operational_object_label(event, object_label),
+        }
+
+    def _clmm_operational_intent(
+        self,
+        *,
+        event: Event,
+        clmm_context: dict,
+        gate_metrics: dict,
+        pair_label: str,
+    ) -> dict:
+        raw_key = str(event.intent_type or clmm_context.get("intent_type") or "").strip()
+        protocol = str(clmm_context.get("protocol") or "clmm").strip()
+        token_id = str(clmm_context.get("token_id") or "").strip()
+        tick_lower = clmm_context.get("tick_lower")
+        tick_upper = clmm_context.get("tick_upper")
+        position_key = str(clmm_context.get("position_key") or "").strip()
+        actor = str(
+            clmm_context.get("position_actor_label")
+            or self._clmm_actor_label(protocol=protocol, token_id=token_id, pair_label=pair_label)
+        )
+        venue_context = self._clmm_position_context_brief(clmm_context, pair_label)
+
+        if raw_key in {"clmm_range_shift", "clmm_inventory_recenter"}:
+            key = "clmm_range_recenter"
+            label = "区间重设"
+            implication = "更像 LP 在追价/再居中重设区间，不直接等于主观看多看空。"
+            not_yet = "还没看到该头寸完全退出流动性，也不能把它写成主观方向表达。"
+            next_check = "继续看新价区是否保留、是否继续加减仓，以及近价深度是否迁移。"
+            invalidation = "短窗内并未形成新区间承接，或后续只是单边退出而非重设。"
+        elif raw_key == "clmm_jit_liquidity_likely":
+            key = "clmm_jit_fee_extraction_likely"
+            label = "疑似 JIT 抽费"
+            implication = "更像围绕冲击窗口的疑似抽费行为，只能写 likely，不能写 confirmed。"
+            not_yet = "缺少更长样本验证，不能把它写成 confirmed JIT，也不能推演主观方向。"
+            next_check = "继续看持有期是否极短、是否紧贴大额 swap burst、是否快速撤出。"
+            invalidation = "持有期明显拉长，或没有命中冲击窗口的前后夹层。"
+        elif raw_key in {"clmm_passive_fee_harvest", "clmm_position_collect_fees"}:
+            key = "clmm_passive_fee_harvest"
+            label = "被动收手续费"
+            implication = "更像在不明显改区间和仓位的情况下收手续费，不宜解读为方向性表态。"
+            not_yet = "还没看到明确区间迁移或仓位撤离，不应写成 bullish / bearish。"
+            next_check = "继续看 range/liquidity 是否基本不变，还是随后转成移仓/撤仓。"
+            invalidation = "collect 后紧接着明显改区间或大幅改流动性。"
+        elif raw_key == "clmm_position_remove_range_liquidity":
+            key = "clmm_range_liquidity_remove"
+            label = "区间撤流动性"
+            implication = "该价区深度更可能变薄；若继续撤离近价流动性，短线冲击风险会上升。"
+            not_yet = "当前只是头寸层撤流动性，不自动等于方向性卖出。"
+            next_check = "继续看是否还有同池同 owner 的连续撤离，或是否转为新区间重设。"
+            invalidation = "后续快速回补流动性，或只是单次微调并未持续。"
+        elif raw_key == "clmm_position_close":
+            key = "clmm_position_exit"
+            label = "头寸退出"
+            implication = "该头寸退出该区间流动性，但这仍不自动等于方向性看空。"
+            not_yet = "还不能仅凭 close 推断其整体仓位方向或现货观点。"
+            next_check = "继续看是否在邻近区间重开，还是整体撤离该池。"
+            invalidation = "短窗内在邻近区间迅速重开并维持相近暴露。"
+        else:
+            key = "clmm_range_liquidity_add"
+            label = "区间加流动性"
+            implication = "更像 LP 在对应价区补充深度 / 建立头寸，不直接等于方向判断。"
+            not_yet = "当前只是 position-level 加流动性，不应替 LP 推演心理状态。"
+            next_check = "继续看是否保留该区间、是否扩展仓位、以及后续成交是否围绕该价区发生。"
+            invalidation = "加池后很快撤回，或并未形成持续的区间驻留。"
+
+        confidence = min(
+            0.92,
+            max(
+                float(event.intent_confidence or 0.0),
+                0.52 * float(event.intent_confidence or 0.0)
+                + 0.30 * float(event.confirmation_score or 0.0)
+                + 0.18 * max(float(gate_metrics.get("resonance_score") or 0.0), 0.10),
+            ),
+        )
+        if key == "clmm_jit_fee_extraction_likely":
+            confidence = min(confidence, 0.68)
+
+        why_items = list(event.intent_evidence or [])
+        if position_key:
+            why_items.append(f"position={position_key}")
+        if tick_lower is not None and tick_upper is not None:
+            why_items.append(f"range=[{tick_lower},{tick_upper}]")
+        if protocol:
+            why_items.append(f"protocol={protocol}")
+
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": confidence,
+            "operational_intent_why": why_items,
+            "operational_intent_not_yet": not_yet,
+            "operational_intent_next_check": next_check,
+            "operational_intent_market_implication": implication,
+            "operational_intent_time_horizon": "分钟到数小时",
+            "operational_intent_invalidation": invalidation,
+            "operational_actor_label": actor,
+            "operational_object_label": pair_label or self._operational_object_label(event, pair_label),
+            "venue_or_position_context": venue_context,
+        }
+
+    def _lp_operational_intent(
+        self,
+        *,
+        event: Event,
+        sweep_meta: dict,
+        pair_label: str,
+    ) -> dict:
+        if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            key = "lp_pool_buy_pressure"
+            label = "买方清扫"
+            implication = "短线偏多，但这是池子成交冲击，不是 LP 主体方向。"
+        elif sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            key = "lp_pool_sell_pressure"
+            label = "卖方清扫"
+            implication = "短线偏空，但这是池子成交冲击，不是 LP 主体方向。"
+        elif str(event.intent_type or "") == "pool_buy_pressure":
+            key = "lp_pool_buy_pressure"
+            label = "池子买压"
+            implication = "更像池子层面的买压延续，不替 LP 主体发言。"
+        elif str(event.intent_type or "") == "pool_sell_pressure":
+            key = "lp_pool_sell_pressure"
+            label = "池子卖压"
+            implication = "更像池子层面的卖压延续，不替 LP 主体发言。"
+        elif str(event.intent_type or "") == "liquidity_removal":
+            key = "lp_liquidity_withdrawal_risk"
+            label = "流动性抽离风险"
+            implication = "更像池子深度下降与冲击风险抬升，不替 LP 主体发言。"
+        else:
+            key = "lp_liquidity_reinforcement"
+            label = "流动性补充"
+            implication = "更像池子深度补充，不替 LP 主体发言。"
+
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": min(0.92, max(float(event.intent_confidence or 0.0), float(event.confirmation_score or 0.0))),
+            "operational_intent_why": list(event.intent_evidence or []) + [f"intent={event.intent_type}"],
+            "operational_intent_not_yet": "不能替 LP 主体表态，只能描述池子层结构。 ",
+            "operational_intent_next_check": "继续看同池连续、跨池共振、以及是否被清算事件接管。",
+            "operational_intent_market_implication": implication,
+            "operational_intent_time_horizon": "分钟级",
+            "operational_intent_invalidation": "后续不再出现同向压力/结构延续。",
+            "operational_actor_label": pair_label or "LP Pool",
+            "operational_object_label": pair_label or "LP Pool",
+            "venue_or_position_context": f"Pool Layer · {pair_label or 'LP Pool'}",
+        }
+
+    def _liquidation_operational_intent(
+        self,
+        *,
+        event: Event,
+        liquidation_meta: dict,
+        pair_label: str,
+    ) -> dict:
+        if liquidation_meta["stage"] == "execution":
+            key = "liquidation_sell_pressure_release"
+            label = "清算压力释放"
+            implication = "短线冲击已落地，优先盯是否继续连锁触发。"
+            not_yet = ""
+            invalidation = "后续没有继续连锁，且成交冲击快速衰减。"
+        else:
+            key = "liquidation_risk_building"
+            label = "清算风险累积"
+            implication = "风险在积累，但尚未等于已发生大规模清算。"
+            not_yet = "还没看到更强执行级清算链条。"
+            invalidation = "风险指标回落且未进入执行阶段。"
+        return {
+            "operational_intent_key": key,
+            "operational_intent_label": label,
+            "operational_intent_confidence": min(0.94, max(float(liquidation_meta.get("score") or 0.0), float(event.intent_confidence or 0.0))),
+            "operational_intent_why": self._join_operational_evidence([
+                f"stage={liquidation_meta['stage']}",
+                *(list(liquidation_meta.get("protocols") or [])[:2]),
+                str(liquidation_meta.get("reason") or ""),
+            ]),
+            "operational_intent_not_yet": not_yet,
+            "operational_intent_next_check": "继续看协议命中扩散、同池连续冲击、是否升级到执行级。",
+            "operational_intent_market_implication": implication,
+            "operational_intent_time_horizon": "分钟级",
+            "operational_intent_invalidation": invalidation,
+            "operational_actor_label": pair_label or "清算相关池",
+            "operational_object_label": pair_label or "清算相关池",
+            "venue_or_position_context": f"Pool Layer · {pair_label or '清算相关池'}",
+        }
+
+    def _empty_operational_intent(self) -> dict:
+        return {
+            "operational_intent_key": "",
+            "operational_intent_label": "",
+            "operational_intent_confidence": 0.0,
+            "operational_intent_confidence_label": "低",
+            "operational_intent_why": "",
+            "operational_intent_not_yet": "",
+            "operational_intent_next_check": "",
+            "operational_intent_market_implication": "",
+            "operational_intent_time_horizon": "",
+            "operational_intent_invalidation": "",
+            "operational_actor_label": "",
+            "operational_object_label": "",
+            "venue_or_position_context": "",
+        }
+
+    def _operational_confidence_label(self, confidence: float) -> str:
+        if confidence >= 0.78:
+            return "高"
+        if confidence >= 0.56:
+            return "中"
+        return "低"
+
+    def _join_operational_evidence(self, items) -> str:
+        return "｜".join(self._dedup_text(items)[:4])
+
+    def _clmm_actor_label(self, *, protocol: str, token_id: str, pair_label: str) -> str:
+        protocol_label = "Uniswap v3" if protocol == "uniswap_v3" else "Uniswap v4" if protocol == "uniswap_v4" else "CLMM"
+        if token_id:
+            return f"{protocol_label} Position #{token_id}"
+        if pair_label:
+            return f"{pair_label} CLMM Position"
+        return "某 LP 头寸"
+
+    def _clmm_position_context_brief(self, clmm_context: dict, pair_label: str) -> str:
+        protocol = str(clmm_context.get("protocol") or "clmm").strip()
+        protocol_label = "Uniswap v3" if protocol == "uniswap_v3" else "Uniswap v4" if protocol == "uniswap_v4" else "CLMM"
+        lower = clmm_context.get("tick_lower")
+        upper = clmm_context.get("tick_upper")
+        parts = [protocol_label]
+        if pair_label:
+            parts.append(pair_label)
+        if lower is not None and upper is not None:
+            parts.append(f"tick [{lower},{upper}]")
+        return " · ".join([item for item in parts if item]) or "CLMM Position"
+
+    def _outcome_tracking_seam(
+        self,
+        *,
+        event: Event,
+        pair_label: str,
+        clmm_event: bool,
+        clmm_context: dict,
+        lp_event: bool,
+        operational_intent: dict,
+    ) -> dict:
+        if not clmm_event and not lp_event:
+            return {}
+        windows = {
+            window: {
+                "price_follow_through": None,
+                "additional_same_direction_flow": None,
+                "pool_depth_change_followup": None,
+                "position_continuation": None,
+                "invalidation": None,
+            }
+            for window in ("5m", "15m", "1h")
+        }
+        return {
+            "outcome_tracking_enabled": True,
+            "outcome_tracking": {
+                "schema_version": "clmm_lp_v1",
+                "actor_type": "clmm_position" if clmm_event else "lp_pool",
+                "pair_label": pair_label,
+                "operational_intent_key": str(operational_intent.get("operational_intent_key") or ""),
+                "anchor_tx_hash": str(event.tx_hash or ""),
+                "position_key": str(clmm_context.get("position_key") or ""),
+                "windows": windows,
+            },
+        }
+
+    def _operational_actor_label(self, meta: dict, *, fallback: str, default_unknown: str) -> str:
+        entity_label = str(meta.get("entity_label") or "").strip()
+        wallet_function = str(meta.get("wallet_function") or "unknown")
+        if entity_label and wallet_function != "unknown":
+            return f"{entity_label} {WALLET_FUNCTION_LABELS.get(wallet_function, wallet_function)}"
+        if entity_label:
+            return entity_label
+        label = str(meta.get("label") or "").strip()
+        return label or fallback or default_unknown
+
+    def _operational_object_label(self, event: Event, fallback: str) -> str:
+        clmm_context = self._clmm_context(event.metadata.get("raw") or {}, event)
+        if str(clmm_context.get("pair_label") or "").strip():
+            return str(clmm_context.get("pair_label") or "").strip()
+        token_symbol = str(event.metadata.get("token_symbol") or event.token or "").strip()
+        return token_symbol or fallback or "资产"
+
     def _canonicalize_pool_semantics(self, event: Event, signal: Signal) -> None:
         canonical_intent = canonicalize_pool_semantic_key(event.intent_type)
         if canonical_intent:
@@ -1570,8 +2337,10 @@ class SignalInterpreter:
 
     def _pair_label(self, event: Event, raw: dict, pool_label: str) -> str:
         lp_context = raw.get("lp_context") or {}
+        clmm_context = raw.get("clmm_context") or event.metadata.get("clmm_context") or {}
         return str(
-            lp_context.get("pair_label")
+            clmm_context.get("pair_label")
+            or lp_context.get("pair_label")
             or event.metadata.get("pair_label")
             or pool_label
             or "LP Pool"
@@ -1653,7 +2422,7 @@ class SignalInterpreter:
             return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型买方清扫；这不是撤池，也不等于 LP 主体看多。"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
             return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型卖方清扫；这不是撤池，也不等于 LP 主体看空。"
-        return self._intent_detail(event, True)
+        return self._intent_detail(event, True, False)
 
     def _lp_sweep_market_implication(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
@@ -2017,8 +2786,10 @@ class SignalInterpreter:
 
     def _pool_label(self, event: Event, raw: dict, actor_label: str) -> str:
         lp_context = raw.get("lp_context") or {}
+        clmm_context = raw.get("clmm_context") or event.metadata.get("clmm_context") or {}
         return str(
-            lp_context.get("pool_label")
+            clmm_context.get("pair_label")
+            or lp_context.get("pool_label")
             or lp_context.get("pair_label")
             or event.metadata.get("watch_address_label")
             or actor_label

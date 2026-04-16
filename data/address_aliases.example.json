@@ -1,0 +1,11 @@
+[
+  {
+    "address": "0x0000000000000000000000000000000000000000",
+    "label": "Example Exchange Hot Wallet",
+    "entity_id": "binance",
+    "wallet_function": "exchange_hot",
+    "entity_source": "address_book",
+    "entity_confidence": 1.0,
+    "ownership_confidence": 1.0
+  }
+]

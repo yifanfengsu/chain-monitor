@@ -5945,6 +5945,19 @@ class SignalPipeline:
         watch_context: dict,
         watch_meta: dict,
     ) -> dict:
+        if self._is_clmm_position_event(event=event, parsed=parsed):
+            return {
+                "intent_type": str(parsed.get("intent_type") or "clmm_position_open"),
+                "intent_confidence": float(parsed.get("intent_confidence") or 0.68),
+                "information_level": str(parsed.get("information_level") or "medium"),
+                "confirmation_score": float(parsed.get("confirmation_score") or 0.42),
+                "intent_evidence": list(parsed.get("intent_evidence") or []),
+                "basis": {
+                    "monitor_type": str(parsed.get("monitor_type") or ""),
+                    "position_key": str((parsed.get("clmm_context") or {}).get("position_key") or ""),
+                    "base_action": str((parsed.get("clmm_context") or {}).get("base_action") or ""),
+                },
+            }
         if self._is_lp_event(event=event, watch_meta=watch_meta, parsed=parsed):
             return self.lp_analyzer.preliminary_intent(event, parsed)
 
@@ -5965,10 +5978,14 @@ class SignalPipeline:
             parsed.get("possible_internal_transfer")
             or watch_context.get("direction") == "内部划转"
         )
+        exchange_internality = str(parsed.get("exchange_internality") or "no")
+        exchange_transfer_purpose = str(parsed.get("exchange_transfer_purpose") or "exchange_unknown_flow")
+        exchange_transfer_confidence = float(parsed.get("exchange_transfer_confidence") or 0.0)
         direction = str(event.side or watch_context.get("direction") or "")
         watch_is_exchange = watch_strategy_role.startswith("exchange_")
         counterparty_is_exchange = counterparty_strategy_role.startswith("exchange_")
-        both_exchange = watch_is_exchange and counterparty_is_exchange
+        confirmed_exchange_internal = exchange_internality == "confirmed"
+        likely_exchange_internal = exchange_internality == "likely"
 
         usd_value = float(event.usd_value or 0.0)
         participant_count = len(parsed.get("participant_addresses") or [])
@@ -6005,19 +6022,20 @@ class SignalPipeline:
                 },
             }
 
-        if possible_internal_transfer or both_exchange:
+        if possible_internal_transfer or confirmed_exchange_internal:
             if watch_strategy_role == "market_maker_wallet" or counterparty_strategy_role == "market_maker_wallet":
                 return {
                     "intent_type": "market_making_inventory_move",
                     "intent_confidence": 0.68,
                     "information_level": "medium",
                     "confirmation_score": 0.36,
-                    "intent_evidence": ["路径存在同体系地址/同策略角色转移特征，更像库存迁移"],
+                    "intent_evidence": ["路径存在 confirmed internal / 库存迁移特征，更像库存迁移"],
                     "basis": {
                         "possible_internal_transfer": True,
                         "watch_strategy_role": watch_strategy_role,
                         "counterparty_strategy_role": counterparty_strategy_role,
-                        "both_exchange": both_exchange,
+                        "exchange_internality": exchange_internality,
+                        "exchange_transfer_purpose": exchange_transfer_purpose,
                     },
                 }
 
@@ -6026,12 +6044,28 @@ class SignalPipeline:
                 "intent_confidence": 0.64,
                 "information_level": "low",
                 "confirmation_score": 0.34,
-                "intent_evidence": ["路径更像同体系地址调拨或归集"],
+                "intent_evidence": ["路径更像同实体内部归集/调拨"],
                 "basis": {
                     "possible_internal_transfer": True,
                     "watch_strategy_role": watch_strategy_role,
                     "counterparty_strategy_role": counterparty_strategy_role,
-                    "both_exchange": both_exchange,
+                    "exchange_internality": exchange_internality,
+                    "exchange_transfer_purpose": exchange_transfer_purpose,
+                },
+            }
+
+        if likely_exchange_internal:
+            return {
+                "intent_type": "internal_rebalance",
+                "intent_confidence": max(0.52, min(exchange_transfer_confidence, 0.62)),
+                "information_level": "low",
+                "confirmation_score": 0.26,
+                "intent_evidence": ["存在 likely same-entity 证据，更像交易所内部流转"],
+                "basis": {
+                    "watch_strategy_role": watch_strategy_role,
+                    "counterparty_strategy_role": counterparty_strategy_role,
+                    "exchange_internality": exchange_internality,
+                    "exchange_transfer_purpose": exchange_transfer_purpose,
                 },
             }
 
@@ -6229,6 +6263,38 @@ class SignalPipeline:
         behavior: dict,
         preliminary_intent: dict,
     ) -> dict:
+        if self._is_clmm_position_event(event=event, parsed=parsed):
+            clmm_context = parsed.get("clmm_context") or {}
+            confirmation_score = max(
+                float(preliminary_intent.get("confirmation_score") or 0.0),
+                float(parsed.get("confirmation_score") or 0.0),
+            )
+            if str(preliminary_intent.get("intent_type") or "") in {"clmm_range_shift", "clmm_inventory_recenter"}:
+                confirmation_score = max(confirmation_score, 0.52)
+            if str(preliminary_intent.get("intent_type") or "") == "clmm_position_close":
+                confirmation_score = max(confirmation_score, 0.56)
+            return {
+                "intent_type": str(preliminary_intent.get("intent_type") or parsed.get("intent_type") or "clmm_position_open"),
+                "intent_confidence": max(
+                    float(preliminary_intent.get("intent_confidence") or 0.0),
+                    float(parsed.get("intent_confidence") or 0.0),
+                ),
+                "information_level": str(preliminary_intent.get("information_level") or parsed.get("information_level") or "medium"),
+                "confirmation_score": min(0.92, confirmation_score),
+                "intent_evidence": list(preliminary_intent.get("intent_evidence") or [])[:4] + [
+                    item
+                    for item in [
+                        f"position={clmm_context.get('position_key')}" if clmm_context.get("position_key") else "",
+                        f"base_action={clmm_context.get('base_action')}" if clmm_context.get("base_action") else "",
+                    ]
+                    if item
+                ],
+                "basis": {
+                    "monitor_type": str(parsed.get("monitor_type") or ""),
+                    "position_key": str(clmm_context.get("position_key") or ""),
+                    "base_action": str(clmm_context.get("base_action") or ""),
+                },
+            }
         if self._is_lp_event(event=event, watch_meta=watch_meta, parsed=parsed):
             return self.lp_analyzer.confirm_intent(
                 event=event,
@@ -6247,7 +6313,8 @@ class SignalPipeline:
         counterparty_strategy_role = str(counterparty_meta.get("strategy_role") or parsed.get("counterparty_strategy_role") or "unknown")
         exchange_sensitive = self._is_exchange_sensitive_role(watch_strategy_role) or self._is_exchange_sensitive_role(counterparty_strategy_role)
         watch_is_exchange = self._is_exchange_sensitive_role(watch_strategy_role)
-        both_exchange = watch_strategy_role.startswith("exchange_") and counterparty_strategy_role.startswith("exchange_")
+        exchange_internality = str(parsed.get("exchange_internality") or "no")
+        internal_like = exchange_internality in {"confirmed", "likely"} or bool(parsed.get("possible_internal_transfer"))
 
         recent_window = address_snapshot.get("windows", {}).get("15m", {}).get("recent") or address_snapshot.get("recent") or []
         prior_events = [item for item in recent_window if item.tx_hash != event.tx_hash]
@@ -6313,9 +6380,7 @@ class SignalPipeline:
             score += 0.06
             evidence.append("存在高质量地址带动其他地址跟随")
 
-        if event.intent_type in {"internal_rebalance", "market_making_inventory_move"} and (
-            parsed.get("possible_internal_transfer") or both_exchange
-        ):
+        if event.intent_type in {"internal_rebalance", "market_making_inventory_move"} and internal_like:
             score += 0.18
             evidence.append("路径更像同体系地址调拨或库存迁移")
 
@@ -6324,7 +6389,7 @@ class SignalPipeline:
             evidence.append("做市地址短时出现双向换手，更像库存管理")
 
         if exchange_sensitive and event.kind != "swap":
-            if parsed.get("possible_internal_transfer") or both_exchange:
+            if internal_like:
                 if event.intent_type not in {"internal_rebalance", "market_making_inventory_move"}:
                     score -= 0.16
                     evidence.append("存在交易所内部划转特征，削弱外部交易推断")
@@ -6687,6 +6752,16 @@ class SignalPipeline:
                 "counterparty_role": parsed.get("counterparty_role", "unknown"),
                 "counterparty_strategy_role": parsed.get("counterparty_strategy_role", "unknown"),
                 "counterparty_semantic_role": parsed.get("counterparty_semantic_role", "unknown"),
+                "wallet_function": parsed.get("wallet_function", watch_meta.get("wallet_function", "unknown")),
+                "watch_wallet_function": parsed.get("watch_wallet_function", watch_meta.get("wallet_function", "unknown")),
+                "counterparty_wallet_function": parsed.get("counterparty_wallet_function", "unknown"),
+                "exchange_internality": parsed.get("exchange_internality", "no"),
+                "exchange_transfer_purpose": parsed.get("exchange_transfer_purpose", "exchange_unknown_flow"),
+                "exchange_transfer_confidence": float(parsed.get("exchange_transfer_confidence") or 0.0),
+                "exchange_entity_label": str(parsed.get("exchange_entity_label") or ""),
+                "exchange_transfer_why": list(parsed.get("exchange_transfer_why") or []),
+                "clmm_position_event": bool(parsed.get("clmm_position_event")),
+                "clmm_context": dict(parsed.get("clmm_context") or {}),
                 "inferred_context": parsed.get("inferred_context", {}),
                 "is_liquidation_protocol_related": bool(parsed.get("is_liquidation_protocol_related")),
                 "liquidation_protocols_touched": list(parsed.get("liquidation_protocols_touched") or []),
@@ -6815,6 +6890,23 @@ class SignalPipeline:
         if parsed and str(parsed.get("monitor_type") or "") == "lp_pool":
             return True
         if event and str(event.intent_type or "") in LP_ALL_INTENTS:
+            return True
+        return False
+
+    def _is_clmm_position_event(
+        self,
+        event: Event | None = None,
+        parsed: dict | None = None,
+    ) -> bool:
+        if parsed and str(parsed.get("monitor_type") or "") == "clmm_position":
+            return True
+        if parsed and bool(parsed.get("clmm_position_event")):
+            return True
+        if event and bool(event.metadata.get("clmm_position_event")):
+            return True
+        if event and bool((event.metadata.get("raw") or {}).get("clmm_position_event")):
+            return True
+        if event and str(event.intent_type or "").startswith("clmm_"):
             return True
         return False
 

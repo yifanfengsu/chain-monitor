@@ -6,18 +6,110 @@ from state_manager import is_runtime_adjacent_watch_active, maybe_get_runtime_ad
 
 # 地址簿路径：固定定位到项目根目录 data/addresses.json，避免受 cwd 影响。
 ADDRESS_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "addresses.json"
+ENTITY_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "entities.json"
+ADDRESS_ALIASES_PATH = Path(__file__).resolve().parent.parent / "data" / "address_aliases.json"
+
+VALID_ENTITY_TYPES = {
+    "exchange",
+    "market_maker_firm",
+    "protocol",
+    "treasury",
+    "unknown",
+}
+VALID_WALLET_FUNCTIONS = {
+    "exchange_deposit",
+    "exchange_hot",
+    "exchange_cold",
+    "exchange_internal_buffer",
+    "exchange_trading",
+    "mm_inventory",
+    "mm_settlement",
+    "protocol_treasury",
+    "lp_pool",
+    "router",
+    "unknown",
+}
+VALID_ENTITY_SOURCES = {
+    "address_book",
+    "inferred_likely",
+    "adjacent_only",
+    "unknown",
+}
+VALID_ENTITY_ATTRIBUTION_STRENGTHS = {
+    "confirmed_entity",
+    "likely_entity",
+    "adjacent_only",
+    "unknown",
+}
+
+
+def _load_json_book(path: Path, *, fallback):
+    try:
+        with path.open(encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Warning: {path.name} missing; using fallback.")
+        return fallback
+    except json.JSONDecodeError as exc:
+        print(f"Warning: {path.name} invalid JSON; using fallback ({exc.msg}).")
+        return fallback
 
 
 def _load_address_book():
+    return _load_json_book(ADDRESS_BOOK_PATH, fallback={})
+
+
+def _load_entity_book():
+    return _load_json_book(ENTITY_BOOK_PATH, fallback={})
+
+
+def _load_address_aliases():
+    return _load_json_book(ADDRESS_ALIASES_PATH, fallback={})
+
+
+def _normalize_string_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = []
+        seen = set()
+        for item in value:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            items.append(text)
+        return items
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _normalize_entity_type(value) -> str:
+    normalized = str(value or "unknown").strip().lower()
+    return normalized if normalized in VALID_ENTITY_TYPES else "unknown"
+
+
+def _normalize_wallet_function(value) -> str:
+    normalized = str(value or "unknown").strip().lower()
+    return normalized if normalized in VALID_WALLET_FUNCTIONS else "unknown"
+
+
+def _normalize_entity_source(value) -> str:
+    normalized = str(value or "unknown").strip().lower()
+    return normalized if normalized in VALID_ENTITY_SOURCES else "unknown"
+
+
+def _normalize_entity_attribution_strength(value) -> str:
+    normalized = str(value or "unknown").strip().lower()
+    return normalized if normalized in VALID_ENTITY_ATTRIBUTION_STRENGTHS else "unknown"
+
+
+def _normalize_confidence(value, default: float = 0.0) -> float:
     try:
-        with ADDRESS_BOOK_PATH.open(encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"Warning: {ADDRESS_BOOK_PATH.name} missing; using empty address book.")
-        return {}
-    except json.JSONDecodeError as exc:
-        print(f"Warning: {ADDRESS_BOOK_PATH.name} invalid JSON; using empty address book ({exc.msg}).")
-        return {}
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(1.0, normalized))
 
 
 def _address_book_items(address_book):
@@ -38,7 +130,9 @@ def _address_book_items(address_book):
 
 
 # 公开仓库允许缺失私有地址簿，缺失时回退为空结构。
-ADDRESS_BOOK = _load_address_book()
+RAW_ADDRESS_BOOK = _load_address_book()
+ENTITY_BOOK = _load_entity_book()
+ADDRESS_ALIASES = _load_address_aliases()
 
 
 CATEGORY_LABELS = {
@@ -100,6 +194,28 @@ SEMANTIC_ROLE_LABELS = {
     "bot_wallet": "机器人地址",
     "watched_wallet": "监控地址",
     "unknown": "未分类",
+}
+
+ENTITY_TYPE_LABELS = {
+    "exchange": "交易所实体",
+    "market_maker_firm": "做市机构",
+    "protocol": "协议实体",
+    "treasury": "资金金库",
+    "unknown": "未知实体",
+}
+
+WALLET_FUNCTION_LABELS = {
+    "exchange_deposit": "Deposit Wallet",
+    "exchange_hot": "Hot Wallet",
+    "exchange_cold": "Cold Wallet",
+    "exchange_internal_buffer": "Internal Buffer",
+    "exchange_trading": "Trading Wallet",
+    "mm_inventory": "Inventory Wallet",
+    "mm_settlement": "Settlement Wallet",
+    "protocol_treasury": "Protocol Treasury",
+    "lp_pool": "LP Pool",
+    "router": "Router",
+    "unknown": "Unknown Wallet",
 }
 
 CATEGORY_ROLE_DEFAULTS = {
@@ -186,6 +302,166 @@ PRIORITY_SMART_MONEY_STRATEGY_ROLES = {
 LP_STRATEGY_ROLES = {
     "lp_pool",
 }
+
+
+def _entity_book_item(entity_id: str) -> dict:
+    normalized = str(entity_id or "").strip()
+    if not normalized:
+        return {}
+    entity_book = ENTITY_BOOK
+    if isinstance(entity_book, dict):
+        entry = entity_book.get(normalized) or entity_book.get(normalized.lower()) or {}
+        if isinstance(entry, dict):
+            payload = dict(entry)
+            payload.setdefault("entity_id", normalized)
+            return payload
+    elif isinstance(entity_book, list):
+        for item in entity_book:
+            if not isinstance(item, dict):
+                continue
+            current = str(item.get("entity_id") or "").strip()
+            if current and current.lower() == normalized.lower():
+                payload = dict(item)
+                payload.setdefault("entity_id", current)
+                return payload
+    return {}
+
+
+def _address_alias_items(address_aliases):
+    if isinstance(address_aliases, dict):
+        items = []
+        for address, payload in address_aliases.items():
+            if isinstance(payload, dict):
+                item = dict(payload)
+                item.setdefault("address", address)
+                items.append(item)
+        return items
+    if isinstance(address_aliases, list):
+        return [item for item in address_aliases if isinstance(item, dict)]
+    return []
+
+
+def _merge_address_aliases(address_book, address_aliases):
+    alias_by_address = {}
+    for item in _address_alias_items(address_aliases):
+        address = str(item.get("address") or "").lower()
+        if not address:
+            continue
+        alias_by_address[address] = dict(item)
+
+    if not alias_by_address:
+        return address_book
+
+    merged_items = []
+    for item in _address_book_items(address_book):
+        if isinstance(item, dict) and item.get("address"):
+            address = str(item.get("address") or "").lower()
+            alias = alias_by_address.pop(address, {})
+            payload = dict(item)
+            for key, value in alias.items():
+                if key == "address":
+                    continue
+                payload[key] = value
+            merged_items.append(payload)
+        else:
+            merged_items.append(item)
+
+    for address, alias in alias_by_address.items():
+        payload = {"address": address}
+        for key, value in alias.items():
+            if key == "address":
+                continue
+            payload[key] = value
+        merged_items.append(payload)
+    return merged_items
+
+
+def _wallet_function_from_roles(item: dict) -> str:
+    explicit = _normalize_wallet_function(item.get("wallet_function"))
+    if explicit != "unknown":
+        return explicit
+
+    strategy_role = str(item.get("strategy_role") or "").strip()
+    semantic_role = str(item.get("semantic_role") or "").strip()
+    role = str(item.get("role") or "").strip()
+    category = str(item.get("category") or "").strip()
+
+    if strategy_role == "exchange_deposit_wallet" or semantic_role == "exchange_deposit_address":
+        return "exchange_deposit"
+    if strategy_role == "exchange_hot_wallet" or semantic_role == "exchange_hot_wallet":
+        return "exchange_hot"
+    if strategy_role == "exchange_trading_wallet":
+        return "exchange_trading"
+    if strategy_role == "market_maker_wallet" or semantic_role == "market_maker_wallet":
+        return "mm_inventory"
+    if strategy_role == "protocol_treasury" or semantic_role == "protocol_wallet":
+        return "protocol_treasury"
+    if strategy_role == "aggregator_router" or semantic_role == "router_contract" or role == "router":
+        return "router"
+    if strategy_role == "lp_pool" or semantic_role == "liquidity_pool" or category == "lp_pool":
+        return "lp_pool"
+    return "unknown"
+
+
+def _entity_type_from_item(item: dict, entity_entry: dict) -> str:
+    explicit = _normalize_entity_type(item.get("entity_type"))
+    if explicit != "unknown":
+        return explicit
+
+    entity_type = _normalize_entity_type(entity_entry.get("entity_type"))
+    if entity_type != "unknown":
+        return entity_type
+
+    role = str(item.get("role") or "").strip()
+    strategy_role = str(item.get("strategy_role") or "").strip()
+    semantic_role = str(item.get("semantic_role") or "").strip()
+    category = str(item.get("category") or "").strip()
+
+    if role == "exchange" or strategy_role.startswith("exchange_") or semantic_role.startswith("exchange_"):
+        return "exchange"
+    if strategy_role == "market_maker_wallet":
+        return "market_maker_firm"
+    if role == "protocol" or strategy_role == "protocol_treasury":
+        return "protocol"
+    if role == "issuer" or strategy_role == "treasury_issuer":
+        return "treasury"
+    if category == "lp_pool":
+        return "protocol"
+    return "unknown"
+
+
+def _entity_label_from_item(item: dict, entity_entry: dict) -> str:
+    explicit = str(item.get("entity_label") or "").strip()
+    if explicit:
+        return explicit
+    from_book = str(entity_entry.get("entity_label") or entity_entry.get("label") or "").strip()
+    if from_book:
+        return from_book
+    if str(item.get("entity_id") or "").strip():
+        return str(item.get("label") or "").strip()
+    return ""
+
+
+def _entity_source_from_item(item: dict, *, has_entity_id: bool) -> str:
+    explicit = _normalize_entity_source(item.get("entity_source"))
+    if explicit != "unknown":
+        return explicit
+    if has_entity_id:
+        return "address_book"
+    return "unknown"
+
+
+def _entity_attribution_strength_from_item(item: dict, *, has_entity_id: bool, entity_source: str) -> str:
+    explicit = _normalize_entity_attribution_strength(item.get("entity_attribution_strength"))
+    if explicit != "unknown":
+        return explicit
+    if has_entity_id:
+        return "confirmed_entity"
+    if entity_source == "inferred_likely":
+        return "likely_entity"
+    if entity_source == "adjacent_only":
+        return "adjacent_only"
+    return "unknown"
 
 
 def _normalize_priority(value) -> int:
@@ -320,6 +596,44 @@ def build_address_meta(address_book):
         else:
             role_source = "fallback"
 
+        entity_id = str(item.get("entity_id") or "").strip()
+        entity_entry = _entity_book_item(entity_id)
+        entity_label = _entity_label_from_item(item, entity_entry)
+        entity_type = _entity_type_from_item(item, entity_entry)
+        wallet_function = _wallet_function_from_roles({
+            **dict(item),
+            "role": role,
+            "strategy_role": strategy_role,
+            "semantic_role": semantic_role,
+        })
+        entity_source = _entity_source_from_item(item, has_entity_id=bool(entity_id))
+        entity_attribution_strength = _entity_attribution_strength_from_item(
+            item,
+            has_entity_id=bool(entity_id),
+            entity_source=entity_source,
+        )
+        cluster_tags = _normalize_string_list(
+            item.get("cluster_tags")
+            or entity_entry.get("cluster_tags")
+        )
+        entity_confidence = _normalize_confidence(
+            item.get("entity_confidence"),
+            default=1.0 if entity_attribution_strength == "confirmed_entity" else 0.0,
+        )
+        ownership_confidence = _normalize_confidence(
+            item.get("ownership_confidence"),
+            default=entity_confidence if entity_attribution_strength == "confirmed_entity" else 0.0,
+        )
+        entity_why = _normalize_string_list(
+            item.get("entity_why")
+            or entity_entry.get("entity_why")
+        )
+        wallet_function_confidence = _normalize_confidence(
+            item.get("wallet_function_confidence"),
+            default=1.0 if wallet_function != "unknown" else 0.0,
+        )
+        wallet_function_source = str(item.get("wallet_function_source") or ("address_book" if wallet_function != "unknown" else "unknown")).strip()
+
         meta[item["address"].lower()] = {
             "address": item["address"].lower(),
             "label": item.get("label", item["address"]),
@@ -332,6 +646,20 @@ def build_address_meta(address_book):
             "strategy_role": strategy_role,
             "semantic_role": semantic_role,
             "role_source": role_source,
+            "entity_id": entity_id,
+            "entity_label": entity_label,
+            "entity_type": entity_type,
+            "entity_type_label": ENTITY_TYPE_LABELS.get(entity_type, entity_type),
+            "wallet_function": wallet_function,
+            "wallet_function_label": WALLET_FUNCTION_LABELS.get(wallet_function, wallet_function),
+            "cluster_tags": cluster_tags,
+            "ownership_confidence": ownership_confidence,
+            "entity_confidence": entity_confidence,
+            "entity_source": entity_source,
+            "entity_attribution_strength": entity_attribution_strength,
+            "entity_why": entity_why,
+            "wallet_function_confidence": wallet_function_confidence,
+            "wallet_function_source": wallet_function_source,
         }
 
     return meta
@@ -357,6 +685,7 @@ def extract_watch_addresses(address_book, active_only=False):
 
 
 # 全量地址（包含禁用地址，用于兜底查 meta）。
+ADDRESS_BOOK = _merge_address_aliases(RAW_ADDRESS_BOOK, ADDRESS_ALIASES)
 ALL_WATCH_ADDRESSES = extract_watch_addresses(ADDRESS_BOOK, active_only=False)
 # 实际参与监控的地址（只含 is_active=true）。
 WATCH_ADDRESSES = extract_watch_addresses(ADDRESS_BOOK, active_only=True)
@@ -463,6 +792,25 @@ def _display_role_label(meta: dict) -> str:
     )
 
 
+def _entity_defaults() -> dict:
+    return {
+        "entity_id": "",
+        "entity_label": "",
+        "entity_type": "unknown",
+        "entity_type_label": ENTITY_TYPE_LABELS["unknown"],
+        "wallet_function": "unknown",
+        "wallet_function_label": WALLET_FUNCTION_LABELS["unknown"],
+        "cluster_tags": [],
+        "ownership_confidence": 0.0,
+        "entity_confidence": 0.0,
+        "entity_source": "unknown",
+        "entity_attribution_strength": "unknown",
+        "entity_why": [],
+        "wallet_function_confidence": 0.0,
+        "wallet_function_source": "unknown",
+    }
+
+
 def format_address_label(address):
     """格式化地址显示名：优先输出稳定标签，减少调试型冗余信息。"""
     if not address:
@@ -486,7 +834,7 @@ def get_address_meta(address):
     """读取地址元信息，不存在时返回完整默认结构。"""
     if not address:
         defaults = _default_roles_from_category("unknown")
-        return {
+        result = {
             "address": "",
             "label": "",
             "category": "unknown",
@@ -511,6 +859,8 @@ def get_address_meta(address):
             "first_seen_ts": 0,
             "last_seen_ts": 0,
         }
+        result.update(_entity_defaults())
+        return result
 
     address = address.lower()
     pool_meta = get_lp_pool_meta(address)
@@ -549,6 +899,22 @@ def get_address_meta(address):
             "first_seen_ts": 0,
             "last_seen_ts": 0,
         })
+        result.update({
+            "entity_id": str(pool_meta.get("entity_id") or ""),
+            "entity_label": str(pool_meta.get("entity_label") or pool_meta.get("protocol") or ""),
+            "entity_type": _normalize_entity_type(pool_meta.get("entity_type") or ("protocol" if pool_meta.get("protocol") else "unknown")),
+            "wallet_function": _normalize_wallet_function(pool_meta.get("wallet_function") or "lp_pool"),
+            "cluster_tags": _normalize_string_list(pool_meta.get("cluster_tags")),
+            "ownership_confidence": _normalize_confidence(pool_meta.get("ownership_confidence"), default=0.0),
+            "entity_confidence": _normalize_confidence(pool_meta.get("entity_confidence"), default=0.0),
+            "entity_source": _normalize_entity_source(pool_meta.get("entity_source") or "unknown"),
+            "entity_attribution_strength": _normalize_entity_attribution_strength(pool_meta.get("entity_attribution_strength") or "unknown"),
+            "entity_why": _normalize_string_list(pool_meta.get("entity_why")),
+            "wallet_function_confidence": _normalize_confidence(pool_meta.get("wallet_function_confidence"), default=1.0),
+            "wallet_function_source": str(pool_meta.get("wallet_function_source") or "lp_registry"),
+        })
+        result["entity_type_label"] = ENTITY_TYPE_LABELS.get(result["entity_type"], result["entity_type"])
+        result["wallet_function_label"] = WALLET_FUNCTION_LABELS.get(result["wallet_function"], result["wallet_function"])
         return result
 
     meta = ADDRESS_META.get(address, {})
@@ -605,6 +971,22 @@ def get_address_meta(address):
         "anchor_strategy_role": "",
         "downstream_case_id": "",
     })
+    result.update(_entity_defaults())
+    if meta:
+        result.update({
+            "entity_id": str(meta.get("entity_id") or ""),
+            "entity_label": str(meta.get("entity_label") or ""),
+            "entity_type": _normalize_entity_type(meta.get("entity_type")),
+            "wallet_function": _normalize_wallet_function(meta.get("wallet_function")),
+            "cluster_tags": _normalize_string_list(meta.get("cluster_tags")),
+            "ownership_confidence": _normalize_confidence(meta.get("ownership_confidence")),
+            "entity_confidence": _normalize_confidence(meta.get("entity_confidence")),
+            "entity_source": _normalize_entity_source(meta.get("entity_source")),
+            "entity_attribution_strength": _normalize_entity_attribution_strength(meta.get("entity_attribution_strength")),
+            "entity_why": _normalize_string_list(meta.get("entity_why")),
+            "wallet_function_confidence": _normalize_confidence(meta.get("wallet_function_confidence")),
+            "wallet_function_source": str(meta.get("wallet_function_source") or "unknown"),
+        })
     intel_patch = _intelligence_patch(address)
     runtime_patch = _runtime_adjacent_patch(address)
     result.update(intel_patch)
@@ -616,6 +998,17 @@ def get_address_meta(address):
     result["strategy_role_label"] = STRATEGY_ROLE_LABELS.get(result["strategy_role"], result["strategy_role"])
     result["semantic_role_label"] = SEMANTIC_ROLE_LABELS.get(result["semantic_role"], result["semantic_role"])
     result["display_role_label"] = SEMANTIC_ROLE_LABELS.get(result["semantic_role"], result["semantic_role"])
+    result["entity_type"] = _normalize_entity_type(result.get("entity_type"))
+    result["wallet_function"] = _normalize_wallet_function(result.get("wallet_function"))
+    result["entity_source"] = _normalize_entity_source(result.get("entity_source"))
+    result["entity_attribution_strength"] = _normalize_entity_attribution_strength(result.get("entity_attribution_strength"))
+    result["cluster_tags"] = _normalize_string_list(result.get("cluster_tags"))
+    result["entity_why"] = _normalize_string_list(result.get("entity_why"))
+    result["ownership_confidence"] = _normalize_confidence(result.get("ownership_confidence"))
+    result["entity_confidence"] = _normalize_confidence(result.get("entity_confidence"))
+    result["wallet_function_confidence"] = _normalize_confidence(result.get("wallet_function_confidence"))
+    result["entity_type_label"] = ENTITY_TYPE_LABELS.get(result["entity_type"], result["entity_type"])
+    result["wallet_function_label"] = WALLET_FUNCTION_LABELS.get(result["wallet_function"], result["wallet_function"])
     if not meta:
         result["priority"] = int(runtime_patch.get("priority") or result.get("priority", 3) or 3)
     result["display"] = _format_address_label_from_parts(
@@ -639,6 +1032,21 @@ def build_flow_description(direction, watch_meta, counterparty_meta):
         return f"从 {watch_label} 流出，去向: {counterparty_label}"
 
     return f"{watch_label} -> {counterparty_label} 内部划转"
+
+
+def _select_primary_watch_leg(from_addr: str, to_addr: str, from_meta: dict, to_meta: dict) -> tuple[str, str, str, dict, dict]:
+    def _watch_meta_sort_key(meta: dict):
+        strategy_role = str(meta.get("strategy_role") or "unknown")
+        is_exchange_role = 1 if is_exchange_strategy_role(strategy_role) else 0
+        priority = _normalize_priority(meta.get("priority", 3))
+        threshold = get_threshold(meta)
+        label = str(meta.get("label") or "")
+        return (is_exchange_role, priority, threshold, label)
+
+    primary_meta = min([from_meta, to_meta], key=_watch_meta_sort_key)
+    if str(primary_meta.get("address") or "").lower() == str(from_addr or "").lower():
+        return from_addr, to_addr, "流出", from_meta, to_meta
+    return to_addr, from_addr, "流入", to_meta, from_meta
 
 
 def get_watch_context(data):
@@ -740,15 +1148,49 @@ def get_watch_context(data):
     to_meta = get_address_meta(to_addr)
 
     if from_watch and to_watch:
+        if _intelligence_patch(from_addr).get("entity_attribution_strength") == "confirmed_entity":
+            from_meta = get_address_meta(from_addr)
+        if _intelligence_patch(to_addr).get("entity_attribution_strength") == "confirmed_entity":
+            to_meta = get_address_meta(to_addr)
+
+        if (
+            str(from_meta.get("entity_attribution_strength") or "") == "confirmed_entity"
+            and str(to_meta.get("entity_attribution_strength") or "") == "confirmed_entity"
+            and str(from_meta.get("entity_id") or "")
+            and str(from_meta.get("entity_id") or "") == str(to_meta.get("entity_id") or "")
+        ):
+            return {
+                "direction": "内部划转",
+                "watch_from": from_addr,
+                "watch_to": to_addr,
+                "watch_from_label": format_address_label(from_addr),
+                "watch_to_label": format_address_label(to_addr),
+                "watch_from_meta": from_meta,
+                "watch_to_meta": to_meta,
+                "flow_label": build_flow_description("内部划转", from_meta, to_meta),
+            }
+
+        primary_watch_address, counterparty, direction, watch_meta, counterparty_meta = _select_primary_watch_leg(
+            from_addr,
+            to_addr,
+            from_meta,
+            to_meta,
+        )
         return {
-            "direction": "内部划转",
+            "direction": direction,
+            "watch_address": primary_watch_address,
+            "counterparty": counterparty,
+            "watch_address_label": format_address_label(primary_watch_address),
+            "counterparty_label": format_address_label(counterparty),
+            "watch_meta": watch_meta,
+            "counterparty_meta": counterparty_meta,
             "watch_from": from_addr,
             "watch_to": to_addr,
             "watch_from_label": format_address_label(from_addr),
             "watch_to_label": format_address_label(to_addr),
             "watch_from_meta": from_meta,
             "watch_to_meta": to_meta,
-            "flow_label": build_flow_description("内部划转", from_meta, to_meta),
+            "flow_label": build_flow_description(direction, watch_meta, counterparty_meta),
         }
 
     if to_watch:

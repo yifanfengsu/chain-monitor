@@ -8,7 +8,9 @@ __pycache__/
 .env.*
 logs/
 archive/
-data/
+app/data/
+data/*
+!data/*.example.json
 *.sqlite
 *.db
 .idea/

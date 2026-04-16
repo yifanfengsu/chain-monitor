@@ -224,7 +224,11 @@ class BehaviorAnalyzer:
         very_large_value = current_usd >= self.whale_single_trade_usd * 2.3
         fast_bilateral = self._has_fast_bilateral_swaps(recent) or (inbound_count >= 2 and outbound_count >= 2)
         same_token_active = len(same_token) >= 2
-        possible_internal = bool((event.metadata.get("raw") or {}).get("possible_internal_transfer"))
+        raw_meta = event.metadata.get("raw") or {}
+        possible_internal = bool(
+            raw_meta.get("possible_internal_transfer")
+            or str(raw_meta.get("exchange_internality") or "") == "confirmed"
+        )
 
         if very_large_value and same_token_active and outbound_count >= inbound_count + 1:
             return {

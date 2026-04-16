@@ -122,7 +122,7 @@ class PriceService:
 
             return self._unavailable_result("swap_price_missing")
 
-        if kind in {"lp_add_liquidity", "lp_remove_liquidity", "lp_rebalance"}:
+        if kind in {"lp_add_liquidity", "lp_remove_liquidity", "lp_rebalance", "clmm_collect_fees"}:
             legs = list(event.get("lp_legs") or [])
             if not legs:
                 return self._unavailable_result("lp_leg_missing")

@@ -90,6 +90,7 @@ class AddressScorer:
         except (TypeError, ValueError):
             priority = 3
         behavior_type = behavior.get("behavior_type", "normal")
+        behavior_confidence = float(behavior.get("confidence") or 0.0)
 
         base = self.CATEGORY_BASE_SCORE.get(category, self.CATEGORY_BASE_SCORE["unknown"])
         score = float(base)
@@ -157,20 +158,33 @@ class AddressScorer:
 
         alpha_score = max(0.0, min(100.0, alpha_score))
         structure_score = max(0.0, min(100.0, structure_score))
+        intent_confidence_score = max(
+            0.0,
+            min(
+                100.0,
+                behavior_confidence * 100.0
+                + (8.0 if behavior_type != "normal" else -4.0)
+                + (4.0 if strategy_role in {"smart_money_wallet", "alpha_wallet"} else 0.0),
+            ),
+        )
         grade = self._grade(legacy_score)
 
         return {
             "score": round(legacy_score, 2),
+            "raw_score": round(legacy_score, 2),
             "alpha_score": round(alpha_score, 2),
             "structure_score": round(structure_score, 2),
+            "intent_confidence_score": round(intent_confidence_score, 2),
             "grade": grade,
             "factors": {
                 "category": category,
                 "priority": priority,
                 "strategy_role": strategy_role,
                 "behavior_type": behavior_type,
+                "behavior_confidence": round(behavior_confidence, 3),
                 "legacy_score_model": "mixed_v1",
                 "score_split_model": "alpha_structure_v1",
+                "intent_confidence_model": "behavior_proxy_v1",
                 "recent_count": recent_count,
                 "trade_frequency_1h": round(trade_frequency_1h, 3),
                 "avg_usd": round(avg_usd, 2),

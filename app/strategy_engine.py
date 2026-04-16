@@ -845,6 +845,23 @@ class StrategyEngine:
         smart_money_same_actor_continuation = bool(event.metadata.get("smart_money_same_actor_continuation"))
         smart_money_size_expansion_ratio = float(event.metadata.get("smart_money_size_expansion_ratio") or 1.0)
         intent_confirmed = str(event.intent_stage or signal.intent_stage or "") == "confirmed"
+        operational_intent_key = str(
+            signal.context.get("operational_intent_key")
+            or signal.metadata.get("operational_intent_key")
+            or event.metadata.get("operational_intent_key")
+            or ""
+        )
+        operational_intent_confidence = float(
+            signal.context.get("operational_intent_confidence")
+            or signal.metadata.get("operational_intent_confidence")
+            or event.metadata.get("operational_intent_confidence")
+            or 0.0
+        )
+        clmm_position_event = bool(
+            signal.context.get("clmm_position_event")
+            or signal.metadata.get("clmm_position_event")
+            or event.metadata.get("clmm_position_event")
+        )
         continuation_score = 0.0
         size_expansion_ratio = 1.0
         explicit_candidate_intent = False
@@ -1037,12 +1054,18 @@ class StrategyEngine:
                 float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
                 1.0,
             )
-            explicit_candidate_intent = is_real_execution or market_maker_inventory_context or intent_type in {"possible_buy_preparation", "possible_sell_preparation"}
+            explicit_candidate_intent = (
+                is_real_execution
+                or market_maker_inventory_context
+                or intent_type in {"possible_buy_preparation", "possible_sell_preparation"}
+                or (operational_intent_key.startswith("market_maker_") and operational_intent_confidence >= 0.58)
+            )
             context_supported = bool(
                 market_maker_context_confirmed
                 or market_maker_observe_exception_applied
                 or same_side_addresses >= 1
                 or resonance_score >= MARKET_MAKER_OBSERVE_MIN_RESONANCE
+                or operational_intent_confidence >= 0.58
             )
         elif role_group == "smart_money":
             continuation_score = max(
@@ -1050,11 +1073,15 @@ class StrategyEngine:
                 2.0 if smart_money_same_actor_continuation else 0.0,
             )
             size_expansion_ratio = max(float(smart_money_size_expansion_ratio or 1.0), 1.0)
-            explicit_candidate_intent = is_real_execution
+            explicit_candidate_intent = is_real_execution or (
+                operational_intent_key == "smart_money_preparation_only"
+                and operational_intent_confidence >= 0.56
+            )
             context_supported = bool(
                 smart_money_case_confirmed
                 or same_side_smart_money_addresses >= 1
                 or resonance_score >= 0.32
+                or operational_intent_confidence >= 0.58
             )
         elif role_group == "lp_pool":
             continuation_score = float(max(lp_same_pool_continuity, lp_multi_pool_resonance, lp_burst_same_pool_continuity))
@@ -1071,18 +1098,38 @@ class StrategyEngine:
                 or lp_same_pool_continuity >= 2
                 or lp_multi_pool_resonance >= 2
             )
+        elif clmm_position_event:
+            continuation_score = float(max(same_side_addresses, 1 if intent_confirmed else 0))
+            size_expansion_ratio = max(
+                float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
+                1.0,
+            )
+            explicit_candidate_intent = bool(
+                str(intent_type or "").startswith("clmm_")
+                or (operational_intent_key.startswith("clmm_") and operational_intent_confidence >= 0.56)
+            )
+            context_supported = bool(
+                operational_intent_confidence >= 0.56
+                or confirmation_score >= 0.46
+                or resonance_score >= 0.30
+            )
         elif role_group == "exchange":
             continuation_score = float(max(same_side_addresses, same_side_smart_money_addresses, 1 if followup_confirmed else 0))
             size_expansion_ratio = max(
                 float(event.usd_value or 0.0) / max(float(signal.effective_threshold_usd or 0.0), 1.0),
                 1.0,
             )
-            explicit_candidate_intent = intent_type in EXCHANGE_SENSITIVE_INTENTS or is_real_execution
+            explicit_candidate_intent = (
+                intent_type in EXCHANGE_SENSITIVE_INTENTS
+                or is_real_execution
+                or (operational_intent_key.startswith("exchange_") and operational_intent_confidence >= 0.60)
+            )
             context_supported = bool(
                 followup_confirmed
                 or multi_address_resonance
                 or same_side_addresses >= 2
                 or resonance_score >= 0.45
+                or operational_intent_confidence >= 0.60
             )
         else:
             continuation_score = float(max(same_side_addresses, 0))
@@ -2514,6 +2561,15 @@ class StrategyEngine:
             "liquidity_addition": "liquidity_addition",
             "liquidity_removal": "liquidity_removal",
             "pool_rebalance": "pool_rebalance",
+            "clmm_position_open": "lp_position_intent",
+            "clmm_position_add_range_liquidity": "lp_position_intent",
+            "clmm_position_remove_range_liquidity": "lp_position_intent",
+            "clmm_position_collect_fees": "lp_position_intent",
+            "clmm_position_close": "lp_position_intent",
+            "clmm_range_shift": "lp_position_intent",
+            "clmm_inventory_recenter": "lp_position_intent",
+            "clmm_jit_liquidity_likely": "lp_position_intent",
+            "clmm_passive_fee_harvest": "lp_position_intent",
             "internal_rebalance": "internal_rebalance",
             "market_making_inventory_move": "inventory_rebalance",
             "possible_sell_preparation": "sell_preparation",

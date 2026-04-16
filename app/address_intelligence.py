@@ -4,10 +4,21 @@ import json
 from pathlib import Path
 import time
 
+from filter import ADDRESS_META
 from models import AddressIntel, Event
 
 
 PERSISTED_EXCHANGE_ADJACENT_VERSION = 1
+
+ENTITY_WALLET_FUNCTION_BY_ROLE = {
+    "exchange_deposit_wallet": "exchange_deposit",
+    "exchange_hot_wallet": "exchange_hot",
+    "exchange_trading_wallet": "exchange_trading",
+    "market_maker_wallet": "mm_inventory",
+    "protocol_treasury": "protocol_treasury",
+    "aggregator_router": "router",
+    "lp_pool": "lp_pool",
+}
 
 
 class AddressIntelligenceManager:
@@ -152,6 +163,7 @@ class AddressIntelligenceManager:
                 "first_seen_ts": int(intel.first_seen_ts or 0),
                 "last_seen_ts": int(intel.last_seen_ts or 0),
             })
+            patch.update(self.build_entity_context_patch(address))
         if hint:
             patch.update({
                 "display_hint_label": str(hint.get("display_hint_label") or ""),
@@ -163,6 +175,180 @@ class AddressIntelligenceManager:
                 "display_hint_expire_at": int(hint.get("display_hint_expire_at") or 0),
                 "display_hint_source": str(hint.get("display_hint_source") or "adjacent_watch"),
             })
+        return patch
+
+    def infer_entity_context(self, address: str, meta: dict | None = None) -> dict:
+        addr = str(address or "").lower()
+        base_meta = dict(meta or self._static_meta(addr))
+        entity_id = str(base_meta.get("entity_id") or "").strip()
+        entity_label = str(base_meta.get("entity_label") or "").strip()
+        entity_type = str(base_meta.get("entity_type") or "unknown").strip() or "unknown"
+        if entity_id:
+            confidence = self._normalized_confidence(
+                base_meta.get("entity_confidence"),
+                default=1.0,
+            )
+            ownership_confidence = self._normalized_confidence(
+                base_meta.get("ownership_confidence"),
+                default=confidence,
+            )
+            why = self._dedup_text(
+                list(base_meta.get("entity_why") or [])
+                or [f"地址簿已显式声明 entity_id={entity_id}"]
+            )
+            return {
+                "entity_id": entity_id,
+                "entity_label": entity_label or str(base_meta.get("label") or ""),
+                "entity_type": entity_type,
+                "entity_source": "address_book",
+                "entity_attribution_strength": "confirmed_entity",
+                "entity_confidence": confidence,
+                "ownership_confidence": ownership_confidence,
+                "entity_why": why,
+            }
+
+        intel = self._intel_by_address.get(addr)
+        if intel is None:
+            return {}
+
+        candidate_entities: dict[str, dict] = {}
+        for entry in self._sorted_counterparties(intel):
+            counterparty = str(entry.get("address") or "").lower()
+            hit_count = int(entry.get("count") or 0)
+            if not counterparty or hit_count <= 0:
+                continue
+            counter_meta = self._static_meta(counterparty)
+            counter_entity_id = str(counter_meta.get("entity_id") or "").strip()
+            counter_entity_label = str(counter_meta.get("entity_label") or counter_meta.get("label") or "").strip()
+            counter_entity_type = str(counter_meta.get("entity_type") or "unknown").strip() or "unknown"
+            if not counter_entity_id or not counter_entity_label or counter_entity_type == "unknown":
+                continue
+            bucket = candidate_entities.setdefault(counter_entity_id, {
+                "entity_label": counter_entity_label,
+                "entity_type": counter_entity_type,
+                "counterparty_hits": 0,
+                "counterparties": set(),
+            })
+            bucket["counterparty_hits"] += hit_count
+            bucket["counterparties"].add(counterparty)
+
+        best_key = ""
+        best_payload = None
+        best_score = 0.0
+        for key, payload in candidate_entities.items():
+            counterparty_hits = int(payload.get("counterparty_hits") or 0)
+            unique_counterparties = len(payload.get("counterparties") or [])
+            score = (
+                min(0.28, counterparty_hits * 0.06)
+                + min(0.10, unique_counterparties * 0.04)
+                + min(0.14, int(intel.same_block_with_watch_count or 0) * 0.02)
+                + min(0.12, int(intel.same_token_resonance_count or 0) * 0.04)
+            )
+            if str(payload.get("entity_type") or "") == "exchange":
+                score += min(0.12, int(intel.exchange_interactions or 0) * 0.02)
+            if score > best_score:
+                best_score = score
+                best_key = key
+                best_payload = payload
+
+        if best_key and best_payload:
+            counterparty_hits = int(best_payload.get("counterparty_hits") or 0)
+            unique_counterparties = len(best_payload.get("counterparties") or [])
+            evidence = []
+            if counterparty_hits >= 3:
+                evidence.append(f"与已知实体高频稳定往返 {counterparty_hits} 次")
+            if unique_counterparties >= 2:
+                evidence.append(f"命中同一实体的已标注地址 {unique_counterparties} 个")
+            if int(intel.same_block_with_watch_count or 0) >= 2:
+                evidence.append(f"同时间桶聚类 {int(intel.same_block_with_watch_count or 0)} 次")
+            if int(intel.same_token_resonance_count or 0) >= 1:
+                evidence.append(f"同 watch anchor 共振 {int(intel.same_token_resonance_count or 0)} 次")
+            if str(best_payload.get("entity_type") or "") == "exchange" and int(intel.exchange_interactions or 0) >= 3:
+                evidence.append(f"与该实体交易所路径反复交互 {int(intel.exchange_interactions or 0)} 次")
+
+            if counterparty_hits >= 3 and evidence:
+                confidence = min(0.86, 0.46 + best_score)
+                return {
+                    "entity_id": "",
+                    "entity_label": str(best_payload.get("entity_label") or ""),
+                    "entity_type": str(best_payload.get("entity_type") or "unknown"),
+                    "entity_source": "inferred_likely",
+                    "entity_attribution_strength": "likely_entity",
+                    "entity_confidence": round(confidence, 3),
+                    "ownership_confidence": round(max(0.40, confidence - 0.06), 3),
+                    "entity_why": self._dedup_text(evidence),
+                }
+
+        adjacent = self._adjacent_only_entity_context(intel)
+        if adjacent:
+            return adjacent
+        return {}
+
+    def infer_wallet_function(self, address: str, meta: dict | None = None) -> dict:
+        addr = str(address or "").lower()
+        base_meta = dict(meta or self._static_meta(addr))
+        explicit_function = str(base_meta.get("wallet_function") or "").strip()
+        if explicit_function and explicit_function != "unknown":
+            confidence = self._normalized_confidence(
+                base_meta.get("wallet_function_confidence"),
+                default=1.0,
+            )
+            return {
+                "wallet_function": explicit_function,
+                "wallet_function_confidence": round(confidence, 3),
+                "wallet_function_source": str(base_meta.get("wallet_function_source") or "address_book"),
+                "wallet_function_why": self._dedup_text(
+                    [f"地址标签/策略角色已映射为 {explicit_function}"]
+                ),
+            }
+
+        strategy_role = str(base_meta.get("strategy_role") or "").strip()
+        mapped = ENTITY_WALLET_FUNCTION_BY_ROLE.get(strategy_role, "")
+        if mapped:
+            return {
+                "wallet_function": mapped,
+                "wallet_function_confidence": 0.92,
+                "wallet_function_source": "address_book",
+                "wallet_function_why": self._dedup_text(
+                    [f"strategy_role={strategy_role}"]
+                ),
+            }
+
+        intel = self._intel_by_address.get(addr)
+        entity_context = self.infer_entity_context(addr, meta=base_meta)
+        if intel and str(entity_context.get("entity_type") or "") == "exchange" and str(intel.suspected_role or "") == "exchange_adjacent":
+            return {
+                "wallet_function": "exchange_internal_buffer",
+                "wallet_function_confidence": round(min(0.68, 0.42 + float(intel.role_confidence or 0.0) * 0.3), 3),
+                "wallet_function_source": "inferred_likely",
+                "wallet_function_why": self._dedup_text(
+                    [
+                        "位于交易所实体相邻路径中",
+                        f"exchange_interactions={int(intel.exchange_interactions or 0)}",
+                    ]
+                ),
+            }
+        if intel and str(intel.suspected_role or "") == "router_adjacent":
+            return {
+                "wallet_function": "router",
+                "wallet_function_confidence": round(min(0.72, 0.44 + float(intel.role_confidence or 0.0) * 0.3), 3),
+                "wallet_function_source": "adjacent_only",
+                "wallet_function_why": self._dedup_text(["多次位于路由相邻路径中"]),
+            }
+        return {}
+
+    def build_entity_context_patch(self, address: str, meta: dict | None = None) -> dict:
+        addr = str(address or "").lower()
+        base_meta = dict(meta or self._static_meta(addr))
+        entity_context = self.infer_entity_context(addr, meta=base_meta)
+        wallet_context = self.infer_wallet_function(addr, meta={**base_meta, **entity_context})
+        patch = {}
+        if entity_context:
+            patch.update(entity_context)
+        if wallet_context:
+            patch.update(wallet_context)
+        if patch and patch.get("entity_attribution_strength") == "confirmed_entity":
+            patch.setdefault("entity_source", "address_book")
         return patch
 
     def get_candidate_pool(self, min_score: float | None = None) -> list[dict]:
@@ -548,3 +734,65 @@ class AddressIntelligenceManager:
         if normalized in {"卖出", "流出"}:
             return "sell"
         return "other"
+
+    def _adjacent_only_entity_context(self, intel: AddressIntel) -> dict:
+        suspected_role = str(intel.suspected_role or "")
+        if suspected_role not in {"exchange_adjacent", "router_adjacent", "protocol_adjacent"}:
+            return {}
+
+        entity_type = "unknown"
+        why = []
+        if suspected_role == "exchange_adjacent":
+            entity_type = "exchange"
+            why.append(f"仅有 exchange_adjacent 证据，exchange_interactions={int(intel.exchange_interactions or 0)}")
+        elif suspected_role == "router_adjacent":
+            why.append(f"仅有 router_adjacent 证据，router_interactions={int(intel.router_interactions or 0)}")
+        elif suspected_role == "protocol_adjacent":
+            entity_type = "protocol"
+            why.append(f"仅有 protocol_adjacent 证据，protocol_interactions={int(intel.protocol_interactions or 0)}")
+
+        if int(intel.same_block_with_watch_count or 0) >= 2:
+            why.append(f"同时间桶聚类 {int(intel.same_block_with_watch_count or 0)} 次")
+        if int(intel.same_token_resonance_count or 0) >= 1:
+            why.append(f"同 watch anchor 共振 {int(intel.same_token_resonance_count or 0)} 次")
+
+        confidence = min(
+            0.66,
+            0.30
+            + float(intel.role_confidence or 0.0) * 0.35
+            + min(0.10, int(intel.same_block_with_watch_count or 0) * 0.02),
+        )
+        return {
+            "entity_id": "",
+            "entity_label": "",
+            "entity_type": entity_type,
+            "entity_source": "adjacent_only",
+            "entity_attribution_strength": "adjacent_only",
+            "entity_confidence": round(confidence, 3),
+            "ownership_confidence": 0.0,
+            "entity_why": self._dedup_text(why),
+        }
+
+    @staticmethod
+    def _static_meta(address: str) -> dict:
+        return dict(ADDRESS_META.get(str(address or "").lower()) or {})
+
+    @staticmethod
+    def _normalized_confidence(value, default: float = 0.0) -> float:
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        return max(0.0, min(1.0, normalized))
+
+    @staticmethod
+    def _dedup_text(items) -> list[str]:
+        seen = set()
+        ordered = []
+        for item in items or []:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            ordered.append(text)
+        return ordered

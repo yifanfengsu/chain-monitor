@@ -563,6 +563,17 @@ def _allow_strong_exchange_observe(event, signal) -> bool:
         _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_pricing_below_min")
         return False
 
+    operational_intent_confidence = _safe_float(
+        getattr(signal, "context", {}).get("operational_intent_confidence"),
+        _safe_float(
+            signal_metadata.get("operational_intent_confidence"),
+            _safe_float(event_metadata.get("operational_intent_confidence"), 0.0),
+        ),
+    )
+    if operational_intent_confidence and operational_intent_confidence < 0.46:
+        _apply_exchange_strong_observe_metadata(event, signal, False, "strong_exchange_observe_operational_intent_too_weak")
+        return False
+
     _apply_exchange_strong_observe_metadata(event, signal, True, "strong_exchange_observe_allowed")
     return True
 
