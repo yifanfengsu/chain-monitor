@@ -1,0 +1,39 @@
+{
+  "schema_version": "lp_quality_stats_v1",
+  "generated_at": 1710000360,
+  "history_limit": 800,
+  "records": [
+    {
+      "alert_relative_timing": "leading",
+      "anchor_price_proxy": 1.0,
+      "asset_case_id": "asset_case:ETH:abc123def0",
+      "asset_case_key": "ethereum|ETH|buy_pressure|onchain_lp",
+      "asset_case_quality_score": 0.77,
+      "asset_case_stage": "prealert",
+      "asset_symbol": "ETH",
+      "confirm_after_prealert": true,
+      "created_at": 1710000300,
+      "delivered_notification": true,
+      "direction_bucket": "buy_pressure",
+      "event_id": "pre1",
+      "false_prealert": false,
+      "followthrough_negative": false,
+      "followthrough_positive": true,
+      "intent_type": "pool_buy_pressure",
+      "lp_alert_stage": "prealert",
+      "lp_promoted_fastlane": true,
+      "market_context_source": "live_public",
+      "move_after_alert_60s": 0.006,
+      "move_after_alert_300s": 0.012,
+      "pair_label": "ETH/USDC",
+      "pool_address": "0xpool1",
+      "record_id": "pre1",
+      "reversal_after_climax": false
+    }
+  ],
+  "summary": {
+    "overall": {
+      "sample_size": 1
+    }
+  }
+}

@@ -555,25 +555,35 @@ def _lp_case_label(context: dict) -> str:
 
 
 def _lp_evidence_line(signal: Signal, context: dict) -> str:
+    continuity_hint = str(context.get("asset_case_continuity_hint") or "").strip()
     if should_use_asset_case_primary(context):
-        return str(
+        evidence = str(
             context.get("asset_case_evidence_pack")
             or context.get("asset_case_evidence_summary")
             or context.get("core_evidence_pack")
             or context.get("evidence_brief")
             or _evidence_brief(context)
         )
-    return str(
+        if continuity_hint and evidence and continuity_hint not in evidence:
+            return f"{continuity_hint}｜{evidence}"
+        return evidence
+    evidence = str(
         context.get("core_evidence_pack")
         or context.get("evidence_brief")
         or context.get("lp_burst_summary")
         or _evidence_brief(context)
     )
+    if continuity_hint and evidence and continuity_hint not in evidence:
+        return f"{continuity_hint}｜{evidence}"
+    return evidence
 
 
 def _market_context_short(context: dict) -> str:
     if not bool(context.get("market_context_available")):
         return ""
+    brief = str(context.get("market_context_brief") or "").strip()
+    if brief:
+        return brief
     timing_label = str(context.get("market_timing_label") or "")
     if not timing_label:
         return ""

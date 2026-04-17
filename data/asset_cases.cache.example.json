@@ -1,0 +1,55 @@
+{
+  "schema_version": "asset_case_cache_v1",
+  "generated_at": 1710000360,
+  "window_sec": 90,
+  "cases": [
+    {
+      "aggregate_metrics": {
+        "lp_multi_pool_resonance": 2,
+        "lp_pool_volume_surge_ratio": 2.3,
+        "lp_same_pool_continuity": 1
+      },
+      "asset_case_id": "asset_case:ETH:abc123def0",
+      "asset_case_key": "ethereum|ETH|buy_pressure|onchain_lp",
+      "asset_symbol": "ETH",
+      "chain": "ethereum",
+      "confidence": 0.81,
+      "direction_bucket": "buy_pressure",
+      "event_ids": [
+        "0xabc"
+      ],
+      "evidence_summary": "首发2池｜ETH/USDC, ETH/USDT｜跨池2｜放量2.3x",
+      "last_signal_at": 1710000360,
+      "last_stage_transition_at": 1710000330,
+      "market_context_snapshot": {
+        "alert_relative_timing": "leading",
+        "basis_bps": 8.4,
+        "market_context_source": "live_public",
+        "market_context_venue": "binance_perp"
+      },
+      "pool_addresses": [
+        "0xpool1",
+        "0xpool2"
+      ],
+      "primary_pair": "ETH/USDC",
+      "quality_snapshot": {
+        "asset_case_quality_score": 0.77,
+        "fastlane_roi_score": 0.63,
+        "prealert_precision_score": 0.71,
+        "quality_score_brief": "历史传导较强"
+      },
+      "stage": "confirm",
+      "stage_history": [
+        "prealert",
+        "confirm"
+      ],
+      "started_at": 1710000300,
+      "supporting_pairs": [
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
+      "updated_at": 1710000360,
+      "venue_family": "onchain_lp"
+    }
+  ]
+}

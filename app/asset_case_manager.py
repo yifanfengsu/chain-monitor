@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import atexit
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 import hashlib
+import time
 
-from config import LP_ASSET_CASE_MAX_SUPPORTING_PAIRS, LP_ASSET_CASE_MAX_TRACKED, LP_ASSET_CASE_WINDOW_SEC
+from config import (
+    LP_ASSET_CASE_CACHE_PATH,
+    LP_ASSET_CASE_FLUSH_INTERVAL_SEC,
+    LP_ASSET_CASE_MAX_SUPPORTING_PAIRS,
+    LP_ASSET_CASE_MAX_TRACKED,
+    LP_ASSET_CASE_PERSIST_ENABLE,
+    LP_ASSET_CASE_RECOVER_ON_START,
+    LP_ASSET_CASE_SCHEMA_VERSION,
+    LP_ASSET_CASE_WINDOW_SEC,
+)
 from lp_product_helpers import (
     asset_symbol_from_event,
     lp_direction_bucket_for_event,
@@ -12,6 +23,7 @@ from lp_product_helpers import (
     pair_label_from_event,
     venue_family_from_event,
 )
+from persistence_utils import read_json_file, resolve_persistence_path, write_json_file
 
 
 @dataclass
@@ -32,6 +44,12 @@ class AssetCase:
     stage_history: list[str] = field(default_factory=list)
     pool_addresses: list[str] = field(default_factory=list)
     event_ids: list[str] = field(default_factory=list)
+    last_signal_at: int = 0
+    last_stage_transition_at: int = 0
+    aggregate_metrics: dict = field(default_factory=dict)
+    market_context_snapshot: dict = field(default_factory=dict)
+    quality_snapshot: dict = field(default_factory=dict)
+    restored_from_cache: bool = False
 
 
 class AssetCaseManager:
@@ -41,12 +59,28 @@ class AssetCaseManager:
         window_sec: int = LP_ASSET_CASE_WINDOW_SEC,
         max_supporting_pairs: int = LP_ASSET_CASE_MAX_SUPPORTING_PAIRS,
         max_tracked: int = LP_ASSET_CASE_MAX_TRACKED,
+        persistence_enabled: bool = LP_ASSET_CASE_PERSIST_ENABLE,
+        cache_path: str | None = LP_ASSET_CASE_CACHE_PATH,
+        flush_interval_sec: float = LP_ASSET_CASE_FLUSH_INTERVAL_SEC,
+        recover_on_start: bool = LP_ASSET_CASE_RECOVER_ON_START,
+        schema_version: str = LP_ASSET_CASE_SCHEMA_VERSION,
     ) -> None:
         self.window_sec = max(int(window_sec), 30)
         self.max_supporting_pairs = max(int(max_supporting_pairs), 2)
         self.max_tracked = max(int(max_tracked), 32)
+        self.persistence_enabled = bool(persistence_enabled)
+        self.flush_interval_sec = max(float(flush_interval_sec or 0.0), 0.2)
+        self.schema_version = str(schema_version or LP_ASSET_CASE_SCHEMA_VERSION)
+        self.cache_path = resolve_persistence_path(cache_path, namespace="asset-cases") if self.persistence_enabled else None
         self._cases: dict[str, AssetCase] = {}
         self._index: dict[tuple[str, str, str, str], deque[str]] = defaultdict(lambda: deque(maxlen=self.max_tracked))
+        self._dirty = False
+        self._last_flush_monotonic = 0.0
+        self._last_load_status = "not_loaded"
+        if self.persistence_enabled and bool(recover_on_start):
+            self.load_from_disk()
+        if self.persistence_enabled:
+            atexit.register(self.flush, True)
 
     def merge_lp_signal(self, event, signal, gate_metrics: dict | None = None) -> dict:
         gate_metrics = gate_metrics or {}
@@ -90,11 +124,98 @@ class AssetCaseManager:
             )
 
         self._update_case(case=case, event=event, signal=signal, gate_metrics=gate_metrics, pair_label=pair_label)
-        payload = self._payload(case, event=event, signal=signal, gate_metrics=gate_metrics)
+        payload = self._payload(case, event=event, signal=signal)
+        getattr(event, "metadata", {}).update(payload)
+        getattr(signal, "metadata", {}).update(payload)
+        getattr(signal, "context", {}).update(payload)
+        self._mark_dirty()
+        self.flush()
+        return payload
+
+    def attach_runtime_context(self, event, signal, *, gate_metrics: dict | None = None) -> dict:
+        case_id = str(
+            getattr(signal, "context", {}).get("asset_case_id")
+            or getattr(signal, "metadata", {}).get("asset_case_id")
+            or getattr(event, "metadata", {}).get("asset_case_id")
+            or ""
+        ).strip()
+        if not case_id or case_id not in self._cases:
+            return {}
+        case = self._cases[case_id]
+        gate_metrics = gate_metrics or {}
+        case.aggregate_metrics = {
+            "lp_multi_pool_resonance": int(gate_metrics.get("lp_multi_pool_resonance") or case.aggregate_metrics.get("lp_multi_pool_resonance") or 0),
+            "lp_same_pool_continuity": int(gate_metrics.get("lp_same_pool_continuity") or case.aggregate_metrics.get("lp_same_pool_continuity") or 0),
+            "lp_pool_volume_surge_ratio": round(float(gate_metrics.get("lp_pool_volume_surge_ratio") or case.aggregate_metrics.get("lp_pool_volume_surge_ratio") or 0.0), 4),
+        }
+        case.market_context_snapshot = self._market_context_snapshot(event, signal)
+        case.quality_snapshot = self._quality_snapshot(event, signal)
+        self._mark_dirty()
+        self.flush()
+        payload = self._payload(case, event=event, signal=signal)
         getattr(event, "metadata", {}).update(payload)
         getattr(signal, "metadata", {}).update(payload)
         getattr(signal, "context", {}).update(payload)
         return payload
+
+    def flush(self, force: bool = False) -> None:
+        if not self.persistence_enabled or self.cache_path is None or not self._dirty:
+            return
+        now_monotonic = time.monotonic()
+        if not force and (now_monotonic - self._last_flush_monotonic) < self.flush_interval_sec:
+            return
+        payload = {
+            "schema_version": self.schema_version,
+            "generated_at": int(time.time()),
+            "window_sec": int(self.window_sec),
+            "cases": [self._serialize_case(case) for case in self.snapshot_cases()],
+        }
+        write_json_file(self.cache_path, payload)
+        self._dirty = False
+        self._last_flush_monotonic = now_monotonic
+
+    def load_from_disk(self) -> int:
+        payload = read_json_file(self.cache_path)
+        if not payload:
+            self._last_load_status = "empty_or_missing"
+            return 0
+        if not isinstance(payload, dict):
+            self._last_load_status = "malformed_payload"
+            return 0
+        schema_version = str(payload.get("schema_version") or "")
+        migrated_cases = self._migrate_cases(payload, schema_version=schema_version)
+        if migrated_cases is None:
+            self._last_load_status = f"schema_mismatch:{schema_version or 'unknown'}"
+            return 0
+
+        self._cases.clear()
+        self._index.clear()
+        loaded = 0
+        for item in migrated_cases:
+            case = self._deserialize_case(item)
+            if case is None:
+                continue
+            self._cases[case.asset_case_id] = case
+            self._index[(case.chain, case.asset_symbol, case.asset_case_direction, case.venue_family)].append(case.asset_case_id)
+            loaded += 1
+        self._trim_cases(mark_dirty=False)
+        self._last_load_status = "loaded"
+        return loaded
+
+    def prune_expired(self, *, now_ts: int | None = None) -> list[str]:
+        reference_ts = int(now_ts or time.time())
+        removed = self._prune(now_ts=reference_ts)
+        self.flush()
+        return removed
+
+    def snapshot(self) -> list[dict]:
+        return [asdict(item) for item in self.snapshot_cases()]
+
+    def snapshot_cases(self) -> list[AssetCase]:
+        return sorted(
+            self._cases.values(),
+            key=lambda item: (-int(item.asset_case_updated_at or 0), -lp_stage_rank(item.asset_case_stage)),
+        )
 
     def _create_case(
         self,
@@ -121,6 +242,8 @@ class AssetCaseManager:
             asset_symbol=asset_symbol,
             chain=chain,
             venue_family=venue_family,
+            last_signal_at=ts,
+            last_stage_transition_at=ts,
         )
         self._cases[case.asset_case_id] = case
         self._index[(chain, asset_symbol, direction, venue_family)].append(case.asset_case_id)
@@ -162,10 +285,13 @@ class AssetCaseManager:
             or getattr(signal, "context", {}).get("lp_exhaustion_confidence")
             or 0.0
         )
-        if lp_stage_rank(stage) >= lp_stage_rank(case.asset_case_stage):
+        if stage and lp_stage_rank(stage) >= lp_stage_rank(case.asset_case_stage):
+            if stage != case.asset_case_stage:
+                case.last_stage_transition_at = int(getattr(event, "ts", 0) or case.asset_case_updated_at)
             case.asset_case_stage = stage or case.asset_case_stage
         case.asset_case_confidence = round(max(float(case.asset_case_confidence or 0.0), confidence), 3)
         case.asset_case_updated_at = int(getattr(event, "ts", 0) or case.asset_case_updated_at)
+        case.last_signal_at = int(getattr(event, "ts", 0) or case.last_signal_at or case.asset_case_updated_at)
         if pair_label and pair_label not in case.asset_case_supporting_pairs:
             case.asset_case_supporting_pairs.append(pair_label)
         if not case.asset_case_primary_pair:
@@ -181,6 +307,11 @@ class AssetCaseManager:
         case.asset_case_supporting_pairs = case.asset_case_supporting_pairs[: self.max_supporting_pairs]
         case.pool_addresses = case.pool_addresses[: self.max_supporting_pairs]
         case.event_ids = case.event_ids[-8:]
+        case.aggregate_metrics = {
+            "lp_multi_pool_resonance": int(gate_metrics.get("lp_multi_pool_resonance") or case.aggregate_metrics.get("lp_multi_pool_resonance") or 0),
+            "lp_same_pool_continuity": int(gate_metrics.get("lp_same_pool_continuity") or case.aggregate_metrics.get("lp_same_pool_continuity") or 0),
+            "lp_pool_volume_surge_ratio": round(float(gate_metrics.get("lp_pool_volume_surge_ratio") or case.aggregate_metrics.get("lp_pool_volume_surge_ratio") or 0.0), 4),
+        }
         case.asset_case_evidence_summary = self._evidence_summary(case=case, gate_metrics=gate_metrics)
 
     def _evidence_summary(self, *, case: AssetCase, gate_metrics: dict) -> str:
@@ -192,9 +323,9 @@ class AssetCaseManager:
         else:
             prefix = "单池主导"
         pair_brief = ", ".join(case.asset_case_supporting_pairs[: self.max_supporting_pairs])
-        volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or 0.0)
-        same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or 0)
-        multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or 0)
+        volume_surge_ratio = float(gate_metrics.get("lp_pool_volume_surge_ratio") or case.aggregate_metrics.get("lp_pool_volume_surge_ratio") or 0.0)
+        same_pool_continuity = int(gate_metrics.get("lp_same_pool_continuity") or case.aggregate_metrics.get("lp_same_pool_continuity") or 0)
+        multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or case.aggregate_metrics.get("lp_multi_pool_resonance") or 0)
         parts = [prefix]
         if pair_brief:
             parts.append(pair_brief)
@@ -206,9 +337,13 @@ class AssetCaseManager:
             parts.append(f"放量{volume_surge_ratio:.1f}x")
         return "｜".join(parts[:4])
 
-    def _payload(self, case: AssetCase, *, event, signal, gate_metrics: dict) -> dict:
+    def _payload(self, case: AssetCase, *, event, signal) -> dict:
         pair_count = len(case.asset_case_supporting_pairs)
         pool_count = len(case.pool_addresses)
+        evidence_pack = case.asset_case_evidence_summary
+        continuity_hint = "续案" if bool(case.restored_from_cache) else ""
+        if continuity_hint and evidence_pack and not evidence_pack.startswith(f"{continuity_hint}｜"):
+            evidence_pack = f"{continuity_hint}｜{evidence_pack}"
         return {
             "asset_case_id": case.asset_case_id,
             "asset_case_key": case.asset_case_key,
@@ -222,21 +357,27 @@ class AssetCaseManager:
             "asset_case_evidence_summary": case.asset_case_evidence_summary,
             "asset_case_started_at": int(case.asset_case_started_at or 0),
             "asset_case_updated_at": int(case.asset_case_updated_at or 0),
+            "asset_case_last_signal_at": int(case.last_signal_at or 0),
+            "asset_case_last_stage_transition_at": int(case.last_stage_transition_at or 0),
             "asset_case_label": case.asset_symbol,
             "asset_symbol": case.asset_symbol,
             "asset_case_aggregated": pair_count >= 2 or pool_count >= 2,
             "asset_case_multi_pool": pair_count >= 2 or pool_count >= 2,
             "asset_case_stage_rank": lp_stage_rank(case.asset_case_stage),
             "asset_case_pool_fallback_only": pair_count <= 1 and case.asset_case_stage == "prealert",
-            "asset_case_evidence_pack": case.asset_case_evidence_summary,
+            "asset_case_evidence_pack": evidence_pack,
             "asset_case_stage_history": list(case.stage_history),
             "asset_case_last_pair": pair_label_from_event(event),
             "asset_case_last_signal_id": str(getattr(signal, "signal_id", "") or ""),
             "asset_case_window_sec": int(self.window_sec),
             "asset_case_venue_family": case.venue_family,
+            "asset_case_continuity_hint": continuity_hint,
+            "asset_case_recovered": bool(case.restored_from_cache),
+            "asset_case_market_context_snapshot": dict(case.market_context_snapshot),
+            "asset_case_quality_snapshot": dict(case.quality_snapshot),
         }
 
-    def _prune(self, *, now_ts: int) -> None:
+    def _prune(self, *, now_ts: int) -> list[str]:
         stale_case_ids = [
             case_id
             for case_id, case in self._cases.items()
@@ -253,14 +394,18 @@ class AssetCaseManager:
             self._index[index_key] = deque([item for item in queue if item != case_id], maxlen=self.max_tracked)
             if not self._index[index_key]:
                 self._index.pop(index_key, None)
+        if stale_case_ids:
+            self._mark_dirty()
+        return stale_case_ids
 
-    def _trim_cases(self) -> None:
+    def _trim_cases(self, *, mark_dirty: bool = True) -> None:
         if len(self._cases) <= self.max_tracked:
             return
         ordered_ids = sorted(
             self._cases,
             key=lambda case_id: int(self._cases[case_id].asset_case_updated_at or 0),
         )
+        removed = False
         for case_id in ordered_ids[: max(len(self._cases) - self.max_tracked, 0)]:
             case = self._cases.pop(case_id, None)
             if case is None:
@@ -272,10 +417,96 @@ class AssetCaseManager:
             self._index[index_key] = deque([item for item in queue if item != case_id], maxlen=self.max_tracked)
             if not self._index[index_key]:
                 self._index.pop(index_key, None)
+            removed = True
+        if removed and mark_dirty:
+            self._mark_dirty()
 
-    def snapshot(self) -> list[dict]:
-        ordered = sorted(
-            self._cases.values(),
-            key=lambda item: (-int(item.asset_case_updated_at or 0), -lp_stage_rank(item.asset_case_stage)),
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+
+    def _serialize_case(self, case: AssetCase) -> dict:
+        return {
+            "asset_case_id": case.asset_case_id,
+            "asset_case_key": case.asset_case_key,
+            "chain": case.chain,
+            "asset_symbol": case.asset_symbol,
+            "direction_bucket": case.asset_case_direction,
+            "stage": case.asset_case_stage,
+            "confidence": round(float(case.asset_case_confidence or 0.0), 4),
+            "primary_pair": case.asset_case_primary_pair,
+            "supporting_pairs": list(case.asset_case_supporting_pairs),
+            "evidence_summary": case.asset_case_evidence_summary,
+            "started_at": int(case.asset_case_started_at or 0),
+            "updated_at": int(case.asset_case_updated_at or 0),
+            "last_signal_at": int(case.last_signal_at or 0),
+            "last_stage_transition_at": int(case.last_stage_transition_at or 0),
+            "aggregate_metrics": dict(case.aggregate_metrics),
+            "market_context_snapshot": dict(case.market_context_snapshot),
+            "quality_snapshot": dict(case.quality_snapshot),
+            "stage_history": list(case.stage_history),
+            "pool_addresses": list(case.pool_addresses),
+            "event_ids": list(case.event_ids),
+            "venue_family": case.venue_family,
+        }
+
+    def _deserialize_case(self, payload: dict) -> AssetCase | None:
+        if not isinstance(payload, dict):
+            return None
+        asset_case_id = str(payload.get("asset_case_id") or "").strip()
+        asset_case_key = str(payload.get("asset_case_key") or "").strip()
+        if not asset_case_id or not asset_case_key:
+            return None
+        return AssetCase(
+            asset_case_id=asset_case_id,
+            asset_case_key=asset_case_key,
+            asset_case_stage=str(payload.get("stage") or "prealert"),
+            asset_case_direction=str(payload.get("direction_bucket") or ""),
+            asset_case_confidence=float(payload.get("confidence") or 0.0),
+            asset_case_primary_pair=str(payload.get("primary_pair") or ""),
+            asset_case_supporting_pairs=list(payload.get("supporting_pairs") or []),
+            asset_case_evidence_summary=str(payload.get("evidence_summary") or ""),
+            asset_case_started_at=int(payload.get("started_at") or 0),
+            asset_case_updated_at=int(payload.get("updated_at") or 0),
+            asset_symbol=str(payload.get("asset_symbol") or ""),
+            chain=str(payload.get("chain") or "ethereum"),
+            venue_family=str(payload.get("venue_family") or "onchain_lp"),
+            stage_history=list(payload.get("stage_history") or []),
+            pool_addresses=list(payload.get("pool_addresses") or []),
+            event_ids=list(payload.get("event_ids") or []),
+            last_signal_at=int(payload.get("last_signal_at") or payload.get("updated_at") or 0),
+            last_stage_transition_at=int(payload.get("last_stage_transition_at") or payload.get("updated_at") or 0),
+            aggregate_metrics=dict(payload.get("aggregate_metrics") or {}),
+            market_context_snapshot=dict(payload.get("market_context_snapshot") or {}),
+            quality_snapshot=dict(payload.get("quality_snapshot") or {}),
+            restored_from_cache=True,
         )
-        return [asdict(item) for item in ordered]
+
+    def _migrate_cases(self, payload: dict, *, schema_version: str) -> list[dict] | None:
+        if schema_version == self.schema_version:
+            cases = payload.get("cases") or []
+            return cases if isinstance(cases, list) else []
+        return None
+
+    def _market_context_snapshot(self, event, signal) -> dict:
+        source_payload = getattr(signal, "context", {}) or getattr(event, "metadata", {}) or {}
+        return {
+            "market_context_source": str(source_payload.get("market_context_source") or ""),
+            "market_context_venue": str(source_payload.get("market_context_venue") or ""),
+            "alert_relative_timing": str(source_payload.get("alert_relative_timing") or ""),
+            "basis_bps": source_payload.get("basis_bps"),
+            "perp_mark_price": source_payload.get("perp_mark_price"),
+            "perp_index_price": source_payload.get("perp_index_price"),
+            "spot_reference_price": source_payload.get("spot_reference_price"),
+        }
+
+    def _quality_snapshot(self, event, signal) -> dict:
+        source_payload = getattr(signal, "context", {}) or getattr(event, "metadata", {}) or {}
+        return {
+            "pool_quality_score": source_payload.get("pool_quality_score"),
+            "pair_quality_score": source_payload.get("pair_quality_score"),
+            "asset_case_quality_score": source_payload.get("asset_case_quality_score"),
+            "prealert_precision_score": source_payload.get("prealert_precision_score"),
+            "climax_reversal_score": source_payload.get("climax_reversal_score"),
+            "fastlane_roi_score": source_payload.get("fastlane_roi_score"),
+            "quality_score_brief": str(source_payload.get("quality_score_brief") or ""),
+        }

@@ -27,6 +27,7 @@ from config import (
     LP_FASTLANE_PROMOTION_ENABLE,
     LP_FASTLANE_PROMOTION_TTL_SEC,
     LP_QUALITY_MIN_FASTLANE_ROI_SCORE,
+    MARKET_CONTEXT_PRIMARY_VENUE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
@@ -341,7 +342,26 @@ class SignalPipeline:
             signal.context["outcome_tracking"] = outcome_tracking
             event.metadata["outcome_tracking"] = outcome_tracking
             signal.metadata["outcome_tracking"] = outcome_tracking
+        self.quality_manager.sync_from_state_manager()
         return payload
+
+    def _market_context_brief(self, context_payload: dict) -> str:
+        source = str(context_payload.get("market_context_source") or "unavailable")
+        if source == "unavailable":
+            return ""
+        timing_label = stage_label_for_timing(context_payload.get("alert_relative_timing"))
+        if not timing_label:
+            return ""
+        parts = [f"合约视角：{timing_label}"]
+        basis_bps = context_payload.get("basis_bps")
+        if basis_bps is not None:
+            parts.append(f"基差 {float(basis_bps):+.1f}bp")
+        mark_index_spread_bps = context_payload.get("mark_index_spread_bps")
+        if mark_index_spread_bps is not None:
+            parts.append(f"M/I {float(mark_index_spread_bps):+.1f}bp")
+        elif context_payload.get("last_mark_spread_bps") is not None:
+            parts.append(f"L/M {float(context_payload.get('last_mark_spread_bps') or 0.0):+.1f}bp")
+        return "｜".join(parts[:3])
 
     def _annotate_market_context(self, event: Event, signal) -> dict:
         if not self._is_lp_event(event=event):
@@ -356,19 +376,22 @@ class SignalPipeline:
             self.market_context_adapter.get_market_context(
                 token_or_pair,
                 int(event.ts or 0),
-                venue="binance_perp",
+                venue=MARKET_CONTEXT_PRIMARY_VENUE,
             )
             or {}
         )
         source = str(context_payload.get("market_context_source") or "unavailable")
-        if source != "unavailable" and not context_payload.get("alert_relative_timing"):
-            context_payload["alert_relative_timing"] = self.market_context_adapter.classify_alert_relative_timing(context_payload)
+        if source != "unavailable" and (source == "live_public" or not context_payload.get("alert_relative_timing")):
+            context_payload["alert_relative_timing"] = self.market_context_adapter.classify_alert_relative_timing(
+                context_payload,
+                stage=str(signal.context.get("lp_alert_stage") or event.metadata.get("lp_alert_stage") or ""),
+            )
         timing = str(context_payload.get("alert_relative_timing") or "")
         update_payload = {
             **context_payload,
             "market_context_available": source != "unavailable",
             "market_timing_label": stage_label_for_timing(timing),
-            "market_context_brief": f"合约视角：{stage_label_for_timing(timing)}" if source != "unavailable" and timing else "",
+            "market_context_brief": self._market_context_brief(context_payload),
         }
         event.metadata.update(update_payload)
         signal.metadata.update(update_payload)
@@ -382,6 +405,11 @@ class SignalPipeline:
         asset_case_payload = self.asset_case_manager.merge_lp_signal(event, signal, gate_metrics=gate_metrics)
         market_context_payload = self._annotate_market_context(event, signal)
         quality_payload = self.quality_manager.annotate_lp_signal(event, signal, gate_metrics=gate_metrics)
+        self.asset_case_manager.attach_runtime_context(
+            event,
+            signal,
+            gate_metrics=gate_metrics,
+        )
         tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
         return {
             "asset_case": asset_case_payload,
@@ -6091,6 +6119,7 @@ class SignalPipeline:
                     event.metadata["lp_outcome_record"] = updated_record
                     signal.metadata["lp_outcome_record"] = updated_record
                     signal.context["lp_outcome_record"] = updated_record
+                    self.quality_manager.sync_from_state_manager(force=True)
         self._apply_notification_delivery_metadata(
             event=event,
             signal=signal,
