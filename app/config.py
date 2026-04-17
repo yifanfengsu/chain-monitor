@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency in test envs
@@ -70,6 +71,10 @@ def _get_optional_str_env(name: str) -> str | None:
         return None
     value = str(raw).strip()
     return value or None
+
+
+APP_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_ROOT.parent
 
 
 # 价格服务配置。
@@ -344,10 +349,23 @@ LP_TREND_BTC_LIKE_SYMBOLS = _get_csv_env(
     "LP_TREND_BTC_LIKE_SYMBOLS",
     ["WBTC", "CBBTC"],
 )
+LP_TREND_SOL_LIKE_SYMBOLS = _get_csv_env(
+    "LP_TREND_SOL_LIKE_SYMBOLS",
+    ["SOL", "WSOL"],
+)
 LP_TREND_STABLE_SYMBOLS = _get_csv_env(
     "LP_TREND_STABLE_SYMBOLS",
     ["USDC", "USDT", "DAI", "FRAX", "USDP", "TUSD", "BUSD", "USDC.E"],
 )
+LP_MAJOR_ASSETS = _get_csv_env(
+    "LP_MAJOR_ASSETS",
+    ["ETH", "WETH", "BTC", "WBTC", "CBBTC", "SOL", "WSOL"],
+)
+LP_MAJOR_QUOTES = _get_csv_env(
+    "LP_MAJOR_QUOTES",
+    ["USDT", "USDC", "USDC.E"],
+)
+LP_MAJOR_PRIORITY_SCORE = _get_float_env("LP_MAJOR_PRIORITY_SCORE", 1.25)
 LP_TREND_STATE_WINDOW_SEC = _get_int_env("LP_TREND_STATE_WINDOW_SEC", 300)
 LP_TREND_CONTINUATION_MIN_SCORE = _get_float_env("LP_TREND_CONTINUATION_MIN_SCORE", 0.56)
 LP_TREND_REVERSAL_MIN_SCORE = _get_float_env("LP_TREND_REVERSAL_MIN_SCORE", 0.58)
@@ -568,6 +586,7 @@ MARKET_CONTEXT_PRIMARY_VENUE = _get_str_env("MARKET_CONTEXT_PRIMARY_VENUE", "bin
 MARKET_CONTEXT_SECONDARY_VENUE = _get_str_env("MARKET_CONTEXT_SECONDARY_VENUE", "bybit_perp").strip().lower()
 MARKET_CONTEXT_TIMEOUT_SEC = _get_float_env("MARKET_CONTEXT_TIMEOUT_SEC", 2.5)
 MARKET_CONTEXT_CACHE_TTL_SEC = _get_float_env("MARKET_CONTEXT_CACHE_TTL_SEC", 2.0)
+MARKET_CONTEXT_FAILURE_CACHE_TTL_SEC = _get_float_env("MARKET_CONTEXT_FAILURE_CACHE_TTL_SEC", 1.0)
 MARKET_CONTEXT_RETRY_COUNT = _get_int_env("MARKET_CONTEXT_RETRY_COUNT", 1)
 BINANCE_FAPI_BASE_URL = _get_str_env("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com")
 BINANCE_SPOT_BASE_URL = _get_str_env("BINANCE_SPOT_BASE_URL", "https://api.binance.com")
@@ -604,6 +623,7 @@ RPC_RETRY_MAX_ATTEMPTS = _get_int_env("RPC_RETRY_MAX_ATTEMPTS", 5)
 RPC_CIRCUIT_BREAKER_SEC = _get_int_env("RPC_CIRCUIT_BREAKER_SEC", 30)
 
 # 本地归档开关配置。
+ARCHIVE_BASE_DIR = _get_str_env("ARCHIVE_BASE_DIR", str(APP_ROOT / "data" / "archive"))
 ARCHIVE_ENABLE_RAW_EVENTS = _get_bool_env("ARCHIVE_ENABLE_RAW_EVENTS", False)
 ARCHIVE_ENABLE_PARSED_EVENTS = _get_bool_env("ARCHIVE_ENABLE_PARSED_EVENTS", False)
 ARCHIVE_ENABLE_SIGNALS = _get_bool_env("ARCHIVE_ENABLE_SIGNALS", True)

@@ -2,10 +2,14 @@ import json
 from pathlib import Path
 
 from config import (
+    LP_MAJOR_ASSETS,
+    LP_MAJOR_PRIORITY_SCORE,
+    LP_MAJOR_QUOTES,
     LP_TREND_BTC_LIKE_SYMBOLS,
     LP_TREND_ETH_LIKE_SYMBOLS,
     LP_TREND_PRIMARY_PAIR_LABELS,
     LP_TREND_PRIMARY_PAIR_OVERRIDES,
+    LP_TREND_SOL_LIKE_SYMBOLS,
     LP_TREND_STABLE_SYMBOLS,
 )
 from constants import (
@@ -28,6 +32,67 @@ PRIMARY_TREND_PAIR_OVERRIDES = {
     for item in LP_TREND_PRIMARY_PAIR_OVERRIDES
     if str(item).strip()
 }
+
+
+def _normalize_symbol_key(value: str | None) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .upper()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+
+def _canonical_asset_symbol(value: str | None) -> str:
+    normalized = _normalize_symbol_key(value)
+    if normalized in {
+        *{
+            _normalize_symbol_key(item)
+            for item in ETH_EQUIVALENT_SYMBOLS
+        },
+        *{
+            _normalize_symbol_key(item)
+            for item in LP_TREND_ETH_LIKE_SYMBOLS
+        },
+    }:
+        return "ETH"
+    if normalized in {
+        *{
+            _normalize_symbol_key(item)
+            for item in LP_TREND_BTC_LIKE_SYMBOLS
+        },
+        "BTC",
+        "WBTC",
+        "CBBTC",
+    }:
+        return "BTC"
+    if normalized in {
+        *{
+            _normalize_symbol_key(item)
+            for item in LP_TREND_SOL_LIKE_SYMBOLS
+        },
+        "SOL",
+        "WSOL",
+    }:
+        return "SOL"
+    return normalized
+
+
+MAJOR_BASE_SYMBOLS = {
+    _canonical_asset_symbol(item)
+    for item in LP_MAJOR_ASSETS
+    if str(item).strip()
+}
+MAJOR_QUOTE_SYMBOLS = {
+    _normalize_symbol_key(item)
+    for item in LP_MAJOR_QUOTES
+    if str(item).strip()
+}
+
+
 TREND_BASE_FAMILY_SYMBOLS = {
     "eth_like": {
         *{
@@ -44,10 +109,16 @@ TREND_BASE_FAMILY_SYMBOLS = {
         for item in LP_TREND_BTC_LIKE_SYMBOLS
         if str(item).strip()
     },
+    "sol_like": {
+        str(item).strip().upper().replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+        for item in LP_TREND_SOL_LIKE_SYMBOLS
+        if str(item).strip()
+    },
 }
 TREND_BASE_FAMILY_CONTRACTS = {
     "eth_like": set(ETH_EQUIVALENT_CONTRACTS),
     "btc_like": {str(WBTC_TOKEN_CONTRACT or "").lower()} if str(WBTC_TOKEN_CONTRACT or "").strip() else set(),
+    "sol_like": set(),
 }
 TREND_QUOTE_FAMILY_SYMBOLS = {
     "stable": {
@@ -86,19 +157,6 @@ def normalize_lp_pair_label(value: str | None) -> str:
     while "//" in normalized:
         normalized = normalized.replace("//", "/")
     return normalized
-
-
-def _normalize_symbol_key(value: str | None) -> str:
-    return (
-        str(value or "")
-        .strip()
-        .upper()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace(".", "")
-    )
-
 
 def _is_stable(token_contract: str | None, token_symbol: str | None) -> bool:
     contract = str(token_contract or "").lower()
@@ -174,6 +232,10 @@ def classify_trend_pool_meta(meta: dict | None) -> dict:
         family_contracts=TREND_QUOTE_FAMILY_CONTRACTS,
         family_symbols=TREND_QUOTE_FAMILY_SYMBOLS,
     )
+    major_base_symbol = _canonical_asset_symbol(base_symbol)
+    major_quote_symbol = _normalize_symbol_key(quote_symbol)
+    is_major_pool = bool(major_base_symbol in MAJOR_BASE_SYMBOLS and major_quote_symbol in MAJOR_QUOTE_SYMBOLS)
+    major_match_mode = "major_family_match" if is_major_pool else "non_major_pool"
 
     match_mode = "non_trend_pool"
     is_primary = False
@@ -183,16 +245,24 @@ def classify_trend_pool_meta(meta: dict | None) -> dict:
     elif candidate_pairs & PRIMARY_TREND_PAIR_OVERRIDES:
         match_mode = "override_match"
         is_primary = True
-    elif base_family in {"eth_like", "btc_like"} and quote_family == "stable":
+    elif base_family in {"eth_like", "btc_like", "sol_like"} and quote_family == "stable":
         match_mode = "family_match"
+        is_primary = True
+    elif is_major_pool:
+        match_mode = "major_family_match"
         is_primary = True
 
     trend_pool_family = ""
-    if is_primary and base_family in {"eth_like", "btc_like"} and quote_family == "stable":
+    if is_primary and base_family in {"eth_like", "btc_like", "sol_like"} and quote_family == "stable":
         trend_pool_family = f"{base_family}_stable"
 
     return {
         "is_primary_trend_pool": bool(is_primary),
+        "is_major_pool": is_major_pool,
+        "major_priority_score": float(LP_MAJOR_PRIORITY_SCORE if is_major_pool else 1.0),
+        "major_match_mode": major_match_mode,
+        "major_base_symbol": major_base_symbol if is_major_pool else "",
+        "major_quote_symbol": quote_symbol if is_major_pool else "",
         "trend_pool_family": trend_pool_family,
         "trend_base_family": base_family,
         "trend_quote_family": quote_family,
@@ -294,11 +364,18 @@ ACTIVE_PRIMARY_TREND_SCAN_LP_POOLS = {
     for address, meta in ACTIVE_PRIMARY_TREND_LP_POOLS.items()
     if str(meta.get("trend_pool_match_mode") or "") in {"explicit_whitelist", "override_match"}
     or int(meta.get("priority") or 3) <= 2
+    or bool(meta.get("is_major_pool"))
+}
+ACTIVE_MAJOR_LP_POOLS = {
+    address: meta
+    for address, meta in ACTIVE_LP_POOLS.items()
+    if bool(meta.get("is_major_pool"))
 }
 ALL_LP_POOL_ADDRESSES = set(LP_POOLS.keys())
 ACTIVE_LP_POOL_ADDRESSES = set(ACTIVE_LP_POOLS.keys())
 ACTIVE_PRIMARY_TREND_LP_POOL_ADDRESSES = set(ACTIVE_PRIMARY_TREND_LP_POOLS.keys())
 ACTIVE_PRIMARY_TREND_SCAN_LP_POOL_ADDRESSES = set(ACTIVE_PRIMARY_TREND_SCAN_LP_POOLS.keys())
+ACTIVE_MAJOR_LP_POOL_ADDRESSES = set(ACTIVE_MAJOR_LP_POOLS.keys())
 ACTIVE_EXTENDED_LP_POOL_ADDRESSES = {
     address
     for address in ACTIVE_LP_POOL_ADDRESSES

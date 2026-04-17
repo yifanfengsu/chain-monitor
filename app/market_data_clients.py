@@ -1,21 +1,51 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import dataclass
+import json
 import time
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-import json
 
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
 
 
 JsonFetcher = Callable[[str, float], object]
+MAJOR_PERP_QUOTES = {
+    "ETH": ["USDT", "USDC"],
+    "BTC": ["USDT", "USDC"],
+    "SOL": ["USDT", "USDC"],
+}
 
 
+@dataclass
 class MarketDataClientError(RuntimeError):
-    pass
+    reason: str
+    stage: str = ""
+    venue: str = ""
+    symbol: str = ""
+    requested_symbol: str = ""
+    http_status: int | None = None
+    endpoint: str = ""
+    latency_ms: int | None = None
+    attempts: list[dict] | None = None
+
+    def __str__(self) -> str:
+        return self.reason
+
+    def to_diagnostic(self) -> dict:
+        return {
+            "failure_reason": str(self.reason or ""),
+            "failure_stage": str(self.stage or ""),
+            "http_status": self.http_status,
+            "endpoint": str(self.endpoint or ""),
+            "latency_ms": self.latency_ms,
+            "venue": str(self.venue or ""),
+            "symbol": str(self.symbol or ""),
+            "requested_symbol": str(self.requested_symbol or ""),
+        }
 
 
 def _as_float(value) -> float | None:
@@ -49,23 +79,47 @@ def _funding_direction(funding_rate: float | None) -> str | None:
     return "flat"
 
 
-def _candidate_symbols(token_or_pair: str | None) -> list[str]:
+def _normalize_quote_symbol(value: str | None) -> str:
+    normalized = normalize_symbol(value)
+    if normalized in {"USDC.E", "USDCE"}:
+        return "USDC"
+    return normalized
+
+
+def requested_symbol(token_or_pair: str | None) -> str:
+    raw = str(token_or_pair or "").strip().upper()
+    if not raw:
+        return ""
+    if "/" in raw:
+        left, right = [normalize_symbol(part) for part in raw.split("/", 1)]
+        return f"{canonical_asset_symbol(left)}{_normalize_quote_symbol(right)}"
+    base_asset = canonical_asset_symbol(raw)
+    quotes = MAJOR_PERP_QUOTES.get(base_asset) or ["USDT"]
+    return f"{base_asset}{quotes[0]}"
+
+
+def candidate_symbols(token_or_pair: str | None) -> list[str]:
     raw = str(token_or_pair or "").strip().upper()
     if not raw:
         return []
+    pair_quote = ""
     if "/" in raw:
         left, right = [normalize_symbol(part) for part in raw.split("/", 1)]
         base_asset = canonical_asset_symbol(left)
-        quote_candidates = [right] if right else []
+        pair_quote = _normalize_quote_symbol(right)
     else:
         base_asset = canonical_asset_symbol(raw)
-        quote_candidates = []
-    ordered_quotes = []
-    for quote in ["USDT"] + quote_candidates + ["USDC"]:
-        normalized = normalize_symbol(quote)
+
+    ordered_quotes: list[str] = []
+    for quote in (MAJOR_PERP_QUOTES.get(base_asset) or []):
+        normalized = _normalize_quote_symbol(quote)
         if normalized and normalized not in ordered_quotes:
             ordered_quotes.append(normalized)
-    return [f"{base_asset}{quote}" for quote in ordered_quotes if base_asset]
+    for quote in [pair_quote, "USDT", "USDC"]:
+        normalized = _normalize_quote_symbol(quote)
+        if normalized and normalized not in ordered_quotes:
+            ordered_quotes.append(normalized)
+    return [f"{base_asset}{quote}" for quote in ordered_quotes if base_asset and quote]
 
 
 class PublicMarketDataClient:
@@ -91,16 +145,52 @@ class PublicMarketDataClient:
         self._price_history: dict[str, deque[tuple[int, float]]] = defaultdict(lambda: deque(maxlen=256))
 
     def fetch_market_context(self, token_or_pair: str | None, alert_ts: int | None = None) -> dict:
-        last_error = None
-        for symbol in _candidate_symbols(token_or_pair):
+        requested = requested_symbol(token_or_pair)
+        attempts: list[dict] = []
+        last_error: MarketDataClientError | None = None
+
+        for symbol in candidate_symbols(token_or_pair):
             try:
-                raw_payload = self._get_cached_raw_payload(symbol)
-                return self._build_market_context(symbol, raw_payload, int(alert_ts or 0))
+                raw_payload = self._get_cached_raw_payload(symbol, attempts=attempts, requested_symbol=requested)
+                return self._build_market_context(
+                    symbol,
+                    raw_payload,
+                    int(alert_ts or 0),
+                    requested_symbol=requested,
+                    attempts=attempts,
+                )
             except MarketDataClientError as exc:
                 last_error = exc
-        raise last_error or MarketDataClientError("market_symbol_unavailable")
 
-    def _build_market_context(self, symbol: str, raw_payload: dict, alert_ts: int) -> dict:
+        if last_error is not None:
+            raise MarketDataClientError(
+                str(last_error.reason or "market_symbol_unavailable"),
+                stage=str(last_error.stage or "symbol_resolution"),
+                venue=str(last_error.venue or self.venue),
+                symbol=str(last_error.symbol or ""),
+                requested_symbol=str(last_error.requested_symbol or requested),
+                http_status=last_error.http_status,
+                endpoint=str(last_error.endpoint or ""),
+                latency_ms=last_error.latency_ms,
+                attempts=[dict(item) for item in attempts],
+            )
+        raise MarketDataClientError(
+            "market_symbol_unavailable",
+            stage="symbol_resolution",
+            venue=self.venue,
+            requested_symbol=requested,
+            attempts=[dict(item) for item in attempts],
+        )
+
+    def _build_market_context(
+        self,
+        symbol: str,
+        raw_payload: dict,
+        alert_ts: int,
+        *,
+        requested_symbol: str,
+        attempts: list[dict],
+    ) -> dict:
         sampled_at = int(raw_payload.get("sampled_at") or self._clock())
         perp_last = _as_float(raw_payload.get("perp_last_price"))
         perp_mark = _as_float(raw_payload.get("perp_mark_price"))
@@ -128,10 +218,22 @@ class PublicMarketDataClient:
                     self._historical_price(symbol, raw_payload, alert_ts + 300, fallback_to_current=True),
                     price_at_alert,
                 )
+
+        success_attempt = self._last_attempt(attempts, symbol=symbol, status="success")
+        latency_ms = sum(
+            int(item.get("latency_ms") or 0)
+            for item in attempts
+            if str(item.get("symbol") or "") == symbol
+        )
         return {
             "market_context_source": "live_public",
             "market_context_venue": self.venue,
             "market_context_symbol": symbol,
+            "market_context_requested_symbol": requested_symbol,
+            "market_context_resolved_symbol": symbol,
+            "market_context_endpoint": str(success_attempt.get("endpoint") or ""),
+            "market_context_latency_ms": int(latency_ms),
+            "market_context_attempts": [dict(item) for item in attempts],
             "perp_last_price": perp_last,
             "perp_mark_price": perp_mark,
             "perp_index_price": perp_index,
@@ -193,12 +295,26 @@ class PublicMarketDataClient:
             return round(open_price + (close_price - open_price) * progress, 8)
         return latest_close
 
-    def _get_cached_raw_payload(self, symbol: str) -> dict:
+    def _get_cached_raw_payload(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
         now = float(self._clock())
         cached = self._cache.get(symbol)
         if cached and (now - cached[0]) <= self.cache_ttl_sec:
+            attempts.append(
+                {
+                    "venue": self.venue,
+                    "symbol": symbol,
+                    "requested_symbol": requested_symbol,
+                    "stage": "cache",
+                    "endpoint": "cache",
+                    "status": "cache_hit",
+                    "failure_reason": "",
+                    "failure_stage": "",
+                    "http_status": None,
+                    "latency_ms": 0,
+                }
+            )
             return dict(cached[1])
-        raw_payload = self._fetch_raw_payload(symbol)
+        raw_payload = self._fetch_raw_payload(symbol, attempts=attempts, requested_symbol=requested_symbol)
         self._cache[symbol] = (now, dict(raw_payload))
         sampled_at = int(raw_payload.get("sampled_at") or now)
         mark_or_last = _as_float(raw_payload.get("perp_mark_price")) or _as_float(raw_payload.get("perp_last_price"))
@@ -208,37 +324,243 @@ class PublicMarketDataClient:
                 history.append((sampled_at, float(mark_or_last)))
         return dict(raw_payload)
 
-    def _fetch_raw_payload(self, symbol: str) -> dict:
+    def _fetch_raw_payload(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
         last_error = None
         for _ in range(self.retry_count + 1):
             try:
-                return dict(self._fetch_raw_payload_once(symbol))
+                return dict(
+                    self._fetch_raw_payload_once(
+                        symbol,
+                        attempts=attempts,
+                        requested_symbol=requested_symbol,
+                    )
+                )
             except MarketDataClientError as exc:
                 last_error = exc
-        raise last_error or MarketDataClientError(f"{self.venue}_payload_fetch_failed")
+                if not exc.endpoint:
+                    attempts.append(
+                        self._build_attempt(
+                            symbol=symbol,
+                            requested_symbol=requested_symbol,
+                            stage=str(exc.stage or "payload_validation"),
+                            endpoint="",
+                            status="failure",
+                            failure_reason=str(exc.reason or ""),
+                            http_status=exc.http_status,
+                            latency_ms=exc.latency_ms,
+                        )
+                    )
+        raise last_error or MarketDataClientError(
+            f"{self.venue}_payload_fetch_failed",
+            stage="fetch",
+            venue=self.venue,
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
 
-    def _fetch_raw_payload_once(self, symbol: str) -> dict:
+    def _fetch_raw_payload_once(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
         raise NotImplementedError
 
-    def _get_json(self, path: str, params: dict | None = None) -> object:
-        url = self._build_url(path, params or {})
-        try:
-            return self._fetcher(url, self.timeout_sec)
-        except HTTPError as exc:
-            raise MarketDataClientError(f"http_{exc.code}") from exc
-        except URLError as exc:
-            raise MarketDataClientError("network_unavailable") from exc
-        except TimeoutError as exc:
-            raise MarketDataClientError("timeout") from exc
-        except json.JSONDecodeError as exc:
-            raise MarketDataClientError("malformed_json") from exc
-        except OSError as exc:
-            raise MarketDataClientError("network_os_error") from exc
+    def _build_attempt(
+        self,
+        *,
+        symbol: str,
+        requested_symbol: str,
+        stage: str,
+        endpoint: str,
+        status: str,
+        failure_reason: str = "",
+        http_status: int | None = None,
+        latency_ms: int | None = None,
+    ) -> dict:
+        return {
+            "venue": self.venue,
+            "symbol": str(symbol or ""),
+            "requested_symbol": str(requested_symbol or ""),
+            "stage": str(stage or ""),
+            "endpoint": str(endpoint or ""),
+            "status": str(status or ""),
+            "failure_reason": str(failure_reason or ""),
+            "failure_stage": str(stage or ""),
+            "http_status": http_status,
+            "latency_ms": 0 if latency_ms is None else int(latency_ms),
+        }
 
-    def _build_url(self, path: str, params: dict) -> str:
+    def _get_json(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        stage: str,
+        symbol: str,
+        requested_symbol: str,
+        attempts: list[dict],
+        base_url: str | None = None,
+    ) -> object:
+        url = self._build_url(path, params or {}, base_url=base_url)
+        started = time.monotonic()
+        try:
+            payload = self._fetcher(url, self.timeout_sec)
+        except HTTPError as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            attempts.append(
+                self._build_attempt(
+                    symbol=symbol,
+                    requested_symbol=requested_symbol,
+                    stage=stage,
+                    endpoint=url,
+                    status="failure",
+                    failure_reason=f"http_{exc.code}",
+                    http_status=int(exc.code),
+                    latency_ms=latency_ms,
+                )
+            )
+            raise MarketDataClientError(
+                f"http_{exc.code}",
+                stage=stage,
+                venue=self.venue,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                http_status=int(exc.code),
+                endpoint=url,
+                latency_ms=latency_ms,
+            ) from exc
+        except URLError as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            attempts.append(
+                self._build_attempt(
+                    symbol=symbol,
+                    requested_symbol=requested_symbol,
+                    stage=stage,
+                    endpoint=url,
+                    status="failure",
+                    failure_reason="network_unavailable",
+                    latency_ms=latency_ms,
+                )
+            )
+            raise MarketDataClientError(
+                "network_unavailable",
+                stage=stage,
+                venue=self.venue,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                endpoint=url,
+                latency_ms=latency_ms,
+            ) from exc
+        except TimeoutError as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            attempts.append(
+                self._build_attempt(
+                    symbol=symbol,
+                    requested_symbol=requested_symbol,
+                    stage=stage,
+                    endpoint=url,
+                    status="failure",
+                    failure_reason="timeout",
+                    latency_ms=latency_ms,
+                )
+            )
+            raise MarketDataClientError(
+                "timeout",
+                stage=stage,
+                venue=self.venue,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                endpoint=url,
+                latency_ms=latency_ms,
+            ) from exc
+        except json.JSONDecodeError as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            attempts.append(
+                self._build_attempt(
+                    symbol=symbol,
+                    requested_symbol=requested_symbol,
+                    stage=stage,
+                    endpoint=url,
+                    status="failure",
+                    failure_reason="malformed_json",
+                    latency_ms=latency_ms,
+                )
+            )
+            raise MarketDataClientError(
+                "malformed_json",
+                stage=stage,
+                venue=self.venue,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                endpoint=url,
+                latency_ms=latency_ms,
+            ) from exc
+        except OSError as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            attempts.append(
+                self._build_attempt(
+                    symbol=symbol,
+                    requested_symbol=requested_symbol,
+                    stage=stage,
+                    endpoint=url,
+                    status="failure",
+                    failure_reason="network_os_error",
+                    latency_ms=latency_ms,
+                )
+            )
+            raise MarketDataClientError(
+                "network_os_error",
+                stage=stage,
+                venue=self.venue,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                endpoint=url,
+                latency_ms=latency_ms,
+            ) from exc
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        attempts.append(
+            self._build_attempt(
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                stage=stage,
+                endpoint=url,
+                status="success",
+                latency_ms=latency_ms,
+            )
+        )
+        return payload
+
+    def _validate_payload_symbol(
+        self,
+        actual_symbol: str | None,
+        expected_symbol: str,
+        *,
+        stage: str,
+    ) -> None:
+        normalized_actual = normalize_symbol(actual_symbol)
+        normalized_expected = normalize_symbol(expected_symbol)
+        if not normalized_actual:
+            return
+        if normalized_actual != normalized_expected:
+            raise MarketDataClientError(
+                "symbol_mismatch",
+                stage=stage,
+                venue=self.venue,
+                symbol=expected_symbol,
+            )
+
+    def _last_attempt(self, attempts: list[dict], *, symbol: str, status: str | None = None) -> dict:
+        for item in reversed(attempts):
+            if str(item.get("symbol") or "") != str(symbol or ""):
+                continue
+            if status and str(item.get("status") or "") != status:
+                continue
+            return dict(item)
+        return {}
+
+    def _build_url(self, path: str, params: dict, *, base_url: str | None = None) -> str:
         query = urlencode({key: value for key, value in params.items() if value is not None})
         suffix = f"?{query}" if query else ""
-        return f"{self.base_url}/{path.lstrip('/')}{suffix}"
+        prefix = str(base_url or self.base_url).rstrip("/")
+        return f"{prefix}/{path.lstrip('/')}{suffix}"
 
     def _default_fetcher(self, url: str, timeout_sec: float) -> object:
         request = Request(url, headers={"Accept": "application/json", "User-Agent": "chain-monitor/1.0"})
@@ -253,17 +575,46 @@ class BinancePublicMarketClient(PublicMarketDataClient):
         super().__init__(**kwargs)
         self.spot_base_url = str(spot_base_url or "").rstrip("/")
 
-    def _fetch_raw_payload_once(self, symbol: str) -> dict:
-        premium = self._get_json("/fapi/v1/premiumIndex", {"symbol": symbol})
-        perp_last = self._get_json("/fapi/v1/ticker/price", {"symbol": symbol})
-        spot_last = self._get_spot_json("/api/v3/ticker/price", {"symbol": symbol})
-        klines = self._get_json("/fapi/v1/klines", {"symbol": symbol, "interval": "1m", "limit": 8})
-        premium_payload = self._parse_premium_index_payload(premium)
-        perp_last_price = self._parse_ticker_price_payload(perp_last)
-        spot_reference_price = self._parse_ticker_price_payload(spot_last)
+    def _fetch_raw_payload_once(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
+        premium = self._get_json(
+            "/fapi/v1/premiumIndex",
+            {"symbol": symbol},
+            stage="premium_index",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        perp_last = self._get_json(
+            "/fapi/v1/ticker/price",
+            {"symbol": symbol},
+            stage="perp_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        spot_last = self._get_json(
+            "/api/v3/ticker/price",
+            {"symbol": symbol},
+            stage="spot_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+            base_url=self.spot_base_url,
+        )
+        klines = self._get_json(
+            "/fapi/v1/klines",
+            {"symbol": symbol, "interval": "1m", "limit": 8},
+            stage="klines",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        premium_payload = self._parse_premium_index_payload(premium, symbol=symbol)
+        perp_last_price = self._parse_ticker_price_payload(perp_last, symbol=symbol, stage="perp_ticker")
+        spot_reference_price = self._parse_ticker_price_payload(spot_last, symbol=symbol, stage="spot_ticker")
         kline_payload = self._parse_binance_klines_payload(klines)
         if premium_payload["perp_mark_price"] is None and perp_last_price is None:
-            raise MarketDataClientError("binance_missing_prices")
+            raise MarketDataClientError("no_symbol", stage="pricing", venue=self.venue, symbol=symbol)
         return {
             **premium_payload,
             "perp_last_price": perp_last_price,
@@ -272,18 +623,10 @@ class BinancePublicMarketClient(PublicMarketDataClient):
             "sampled_at": int(premium_payload.get("sampled_at") or self._clock()),
         }
 
-    def _get_spot_json(self, path: str, params: dict | None = None) -> object:
-        original_base = self.base_url
-        self.base_url = self.spot_base_url
-        try:
-            return self._get_json(path, params)
-        finally:
-            self.base_url = original_base
-
-    @staticmethod
-    def _parse_premium_index_payload(payload: object) -> dict:
+    def _parse_premium_index_payload(self, payload: object, *, symbol: str) -> dict:
         if not isinstance(payload, dict):
-            raise MarketDataClientError("binance_premium_payload_invalid")
+            raise MarketDataClientError("malformed_payload", stage="premium_index", venue=self.venue, symbol=symbol)
+        self._validate_payload_symbol(payload.get("symbol"), symbol, stage="premium_index")
         return {
             "perp_mark_price": _as_float(payload.get("markPrice")),
             "perp_index_price": _as_float(payload.get("indexPrice")),
@@ -291,20 +634,20 @@ class BinancePublicMarketClient(PublicMarketDataClient):
             "sampled_at": int((_as_float(payload.get("time")) or time.time() * 1000) / 1000),
         }
 
-    @staticmethod
-    def _parse_ticker_price_payload(payload: object) -> float | None:
+    def _parse_ticker_price_payload(self, payload: object, *, symbol: str, stage: str) -> float | None:
         if not isinstance(payload, dict):
-            raise MarketDataClientError("binance_ticker_payload_invalid")
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
+        self._validate_payload_symbol(payload.get("symbol"), symbol, stage=stage)
         return _as_float(payload.get("price"))
 
     @staticmethod
     def _parse_binance_klines_payload(payload: object) -> list[dict]:
         if not isinstance(payload, list):
-            raise MarketDataClientError("binance_klines_payload_invalid")
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="binance_perp")
         klines = []
         for item in payload:
             if not isinstance(item, list) or len(item) < 5:
-                raise MarketDataClientError("binance_kline_entry_invalid")
+                raise MarketDataClientError("malformed_payload", stage="klines", venue="binance_perp")
             klines.append(
                 {
                     "open_time": int(int(item[0]) / 1000),
@@ -319,15 +662,36 @@ class BinancePublicMarketClient(PublicMarketDataClient):
 class BybitPublicMarketClient(PublicMarketDataClient):
     venue = "bybit_perp"
 
-    def _fetch_raw_payload_once(self, symbol: str) -> dict:
-        perp_ticker = self._get_json("/v5/market/tickers", {"category": "linear", "symbol": symbol})
-        spot_ticker = self._get_json("/v5/market/tickers", {"category": "spot", "symbol": symbol})
-        klines = self._get_json("/v5/market/kline", {"category": "linear", "symbol": symbol, "interval": 1, "limit": 8})
-        perp_payload = self._parse_bybit_ticker_payload(perp_ticker)
-        spot_payload = self._parse_bybit_ticker_payload(spot_ticker)
+    def _fetch_raw_payload_once(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
+        perp_ticker = self._get_json(
+            "/v5/market/tickers",
+            {"category": "linear", "symbol": symbol},
+            stage="perp_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        spot_ticker = self._get_json(
+            "/v5/market/tickers",
+            {"category": "spot", "symbol": symbol},
+            stage="spot_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        klines = self._get_json(
+            "/v5/market/kline",
+            {"category": "linear", "symbol": symbol, "interval": 1, "limit": 8},
+            stage="klines",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        perp_payload = self._parse_bybit_ticker_payload(perp_ticker, symbol=symbol, stage="perp_ticker")
+        spot_payload = self._parse_bybit_ticker_payload(spot_ticker, symbol=symbol, stage="spot_ticker", allow_missing_symbol=True)
         kline_payload = self._parse_bybit_klines_payload(klines)
         if perp_payload["perp_mark_price"] is None and perp_payload["perp_last_price"] is None:
-            raise MarketDataClientError("bybit_missing_prices")
+            raise MarketDataClientError("no_symbol", stage="pricing", venue=self.venue, symbol=symbol)
         return {
             **perp_payload,
             "spot_reference_price": spot_payload.get("perp_last_price"),
@@ -335,19 +699,32 @@ class BybitPublicMarketClient(PublicMarketDataClient):
             "sampled_at": int(perp_payload.get("sampled_at") or self._clock()),
         }
 
-    @staticmethod
-    def _parse_bybit_ticker_payload(payload: object) -> dict:
+    def _parse_bybit_ticker_payload(
+        self,
+        payload: object,
+        *,
+        symbol: str,
+        stage: str,
+        allow_missing_symbol: bool = False,
+    ) -> dict:
         if not isinstance(payload, dict):
-            raise MarketDataClientError("bybit_ticker_payload_invalid")
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
         result = payload.get("result") or {}
         if not isinstance(result, dict):
-            raise MarketDataClientError("bybit_ticker_result_invalid")
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
         rows = result.get("list") or []
-        if not isinstance(rows, list) or not rows:
-            raise MarketDataClientError("bybit_ticker_rows_missing")
+        if not isinstance(rows, list):
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
+        if not rows:
+            raise MarketDataClientError("no_symbol", stage=stage, venue=self.venue, symbol=symbol)
         row = rows[0]
         if not isinstance(row, dict):
-            raise MarketDataClientError("bybit_ticker_row_invalid")
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
+        actual_symbol = row.get("symbol")
+        if actual_symbol:
+            self._validate_payload_symbol(actual_symbol, symbol, stage=stage)
+        elif not allow_missing_symbol and len(rows) > 1:
+            raise MarketDataClientError("no_symbol", stage=stage, venue=self.venue, symbol=symbol)
         return {
             "perp_last_price": _as_float(row.get("lastPrice")),
             "perp_mark_price": _as_float(row.get("markPrice")),
@@ -359,15 +736,15 @@ class BybitPublicMarketClient(PublicMarketDataClient):
     @staticmethod
     def _parse_bybit_klines_payload(payload: object) -> list[dict]:
         if not isinstance(payload, dict):
-            raise MarketDataClientError("bybit_klines_payload_invalid")
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="bybit_perp")
         result = payload.get("result") or {}
         rows = result.get("list") or []
         if not isinstance(rows, list):
-            raise MarketDataClientError("bybit_klines_rows_invalid")
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="bybit_perp")
         klines = []
         for item in rows:
             if not isinstance(item, list) or len(item) < 5:
-                raise MarketDataClientError("bybit_kline_entry_invalid")
+                raise MarketDataClientError("malformed_payload", stage="klines", venue="bybit_perp")
             open_time = int(int(item[0]) / 1000)
             klines.append(
                 {

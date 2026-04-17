@@ -892,6 +892,16 @@ def get_address_meta(address):
             "base_token_symbol": pool_meta.get("base_token_symbol", ""),
             "quote_token_contract": pool_meta.get("quote_token_contract", ""),
             "quote_token_symbol": pool_meta.get("quote_token_symbol", ""),
+            "is_primary_trend_pool": bool(pool_meta.get("is_primary_trend_pool")),
+            "is_major_pool": bool(pool_meta.get("is_major_pool")),
+            "major_priority_score": float(pool_meta.get("major_priority_score") or 1.0),
+            "major_match_mode": str(pool_meta.get("major_match_mode") or ""),
+            "major_base_symbol": str(pool_meta.get("major_base_symbol") or ""),
+            "major_quote_symbol": str(pool_meta.get("major_quote_symbol") or ""),
+            "trend_pool_family": str(pool_meta.get("trend_pool_family") or ""),
+            "trend_base_family": str(pool_meta.get("trend_base_family") or ""),
+            "trend_quote_family": str(pool_meta.get("trend_quote_family") or ""),
+            "trend_pool_match_mode": str(pool_meta.get("trend_pool_match_mode") or ""),
         }
         result.update({
             "intelligence_status": "",

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import defaultdict
 import io
 import json
+from pathlib import Path
 import sys
 
+from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
+from lp_product_helpers import canonical_asset_symbol
+from lp_registry import ACTIVE_LP_POOLS
 from quality_manager import QualityManager
 from state_manager import StateManager
 
@@ -15,6 +20,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary", action="store_true", help="输出全量 JSON summary")
     parser.add_argument("--top-bad-prealerts", action="store_true", help="输出低 prealert precision 维度")
     parser.add_argument("--fastlane-roi", action="store_true", help="输出低 fastlane ROI 维度")
+    parser.add_argument("--market-context-health", action="store_true", help="输出 live market context 健康度")
+    parser.add_argument("--major-pool-coverage", action="store_true", help="输出 majors pool 覆盖情况")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
     parser.add_argument("--top-n", type=int, default=None, help="top/bottom 行数")
@@ -48,12 +55,262 @@ def _render_csv(rows: list[dict]) -> str:
     return output.getvalue()
 
 
+def _iter_archive_rows(category: str, *, base_dir: str | Path = ARCHIVE_BASE_DIR) -> list[dict]:
+    root = Path(base_dir) / category
+    rows: list[dict] = []
+    if not root.exists():
+        return rows
+    for path in sorted(root.glob("*.ndjson")):
+        try:
+            with path.open(encoding="utf-8") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                    if data:
+                        rows.append(data)
+        except OSError:
+            continue
+    return rows
+
+
+def _signal_row_value(row: dict, key: str):
+    def _present(value) -> bool:
+        return value not in (None, "", [], {})
+
+    if key in row and _present(row.get(key)):
+        return row.get(key)
+    signal = row.get("signal") if isinstance(row.get("signal"), dict) else {}
+    event = row.get("event") if isinstance(row.get("event"), dict) else {}
+    signal_context = signal.get("context") if isinstance(signal.get("context"), dict) else {}
+    signal_metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+    event_metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    for container in (signal_context, signal_metadata, event_metadata, signal, event):
+        if key in container and _present(container.get(key)):
+            return container.get(key)
+    return None
+
+
+def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DIR) -> dict:
+    rows = _iter_archive_rows("signals", base_dir=base_dir)
+    venue_stats = defaultdict(lambda: defaultdict(int))
+    endpoint_stats = defaultdict(lambda: defaultdict(int))
+    symbol_stats = defaultdict(lambda: defaultdict(int))
+    failure_reason_counts = defaultdict(int)
+    warnings: list[str] = []
+
+    unavailable_count = sum(1 for row in rows if str(_signal_row_value(row, "market_context_source") or "") == "unavailable")
+    live_public_count = sum(1 for row in rows if str(_signal_row_value(row, "market_context_source") or "") == "live_public")
+
+    for row in rows:
+        venue = str(_signal_row_value(row, "market_context_venue") or "")
+        source = str(_signal_row_value(row, "market_context_source") or "")
+        symbol = str(
+            _signal_row_value(row, "market_context_resolved_symbol")
+            or _signal_row_value(row, "market_context_requested_symbol")
+            or ""
+        )
+        if venue:
+            venue_stats[venue]["signal_total"] += 1
+            if source == "live_public":
+                venue_stats[venue]["signal_success"] += 1
+            elif source == "unavailable":
+                venue_stats[venue]["signal_unavailable"] += 1
+        if symbol:
+            symbol_stats[symbol]["signal_total"] += 1
+            if source == "live_public":
+                symbol_stats[symbol]["signal_success"] += 1
+            elif source == "unavailable":
+                symbol_stats[symbol]["signal_failure"] += 1
+
+        for attempt in list(_signal_row_value(row, "market_context_attempts") or []):
+            attempt_venue = str(attempt.get("venue") or venue or "")
+            endpoint = str(attempt.get("endpoint") or "")
+            attempt_symbol = str(attempt.get("symbol") or symbol or "")
+            status = str(attempt.get("status") or "")
+            failure_reason = str(attempt.get("failure_reason") or "")
+            http_status = attempt.get("http_status")
+
+            if attempt_venue:
+                venue_stats[attempt_venue]["attempt_total"] += 1
+                venue_stats[attempt_venue][f"attempt_{status or 'unknown'}"] += 1
+                if failure_reason.startswith("timeout"):
+                    venue_stats[attempt_venue]["timeout_count"] += 1
+                if "malformed" in failure_reason:
+                    venue_stats[attempt_venue]["malformed_payload_count"] += 1
+                if "symbol_mismatch" in failure_reason:
+                    venue_stats[attempt_venue]["symbol_mismatch_count"] += 1
+                if "no_symbol" in failure_reason:
+                    venue_stats[attempt_venue]["no_symbol_count"] += 1
+                if http_status is not None:
+                    venue_stats[attempt_venue][f"http_{int(http_status)}"] += 1
+            if endpoint and endpoint != "cache":
+                endpoint_stats[endpoint]["attempt_total"] += 1
+                endpoint_stats[endpoint][f"attempt_{status or 'unknown'}"] += 1
+            if attempt_symbol:
+                symbol_stats[attempt_symbol]["attempt_total"] += 1
+                symbol_stats[attempt_symbol][f"attempt_{status or 'unknown'}"] += 1
+                if failure_reason:
+                    symbol_stats[attempt_symbol]["failure_total"] += 1
+            if failure_reason:
+                failure_reason_counts[failure_reason] += 1
+
+    if not rows:
+        warnings.append("archive/signals 为空或缺失，无法评估 market context hit rate")
+
+    def _sort_table(source: dict, *, key_name: str) -> list[dict]:
+        return [
+            {
+                key_name: key,
+                **dict(value),
+            }
+            for key, value in sorted(
+                source.items(),
+                key=lambda item: (
+                    -int(item[1].get("signal_total") or item[1].get("attempt_total") or 0),
+                    item[0],
+                ),
+            )
+        ]
+
+    total = len(rows)
+    return {
+        "archive_base_dir": str(Path(base_dir)),
+        "signal_rows": total,
+        "live_public_count": live_public_count,
+        "unavailable_count": unavailable_count,
+        "live_public_hit_rate": round((live_public_count / total), 4) if total else 0.0,
+        "unavailable_rate": round((unavailable_count / total), 4) if total else 0.0,
+        "per_venue": _sort_table(venue_stats, key_name="venue"),
+        "per_endpoint": _sort_table(endpoint_stats, key_name="endpoint"),
+        "per_symbol": _sort_table(symbol_stats, key_name="symbol"),
+        "failure_reason_counts": dict(sorted(failure_reason_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "warnings": warnings,
+    }
+
+
+def build_major_pool_coverage_report(
+    manager: QualityManager | None = None,
+    *,
+    pool_book_path: Path | None = None,
+) -> dict:
+    manager = manager or QualityManager(state_manager=StateManager())
+    records = list(manager._combined_records(limit=manager.history_limit))
+    pool_book_path = pool_book_path or (PROJECT_ROOT / "data" / "lp_pools.json")
+    pool_book_exists = pool_book_path.exists()
+    warnings: list[str] = []
+    suggestions: list[str] = []
+
+    configured_assets = []
+    for item in LP_MAJOR_ASSETS:
+        normalized = canonical_asset_symbol(item)
+        if normalized and normalized not in configured_assets:
+            configured_assets.append(normalized)
+    configured_quotes = []
+    for item in LP_MAJOR_QUOTES:
+        normalized = str(item or "").strip().upper().replace(".E", "")
+        if normalized and normalized not in configured_quotes:
+            configured_quotes.append(normalized)
+
+    expected_pairs = []
+    for asset in configured_assets:
+        if asset not in {"ETH", "BTC", "SOL"}:
+            continue
+        for quote in configured_quotes:
+            if quote not in {"USDT", "USDC"}:
+                continue
+            expected_pairs.append(f"{asset}/{quote}")
+
+    sample_count_by_pair = defaultdict(int)
+    sample_count_by_asset = defaultdict(int)
+    for record in records:
+        pair_label = str(record.get("pair_label") or "")
+        asset_symbol = canonical_asset_symbol(record.get("asset_symbol") or "")
+        if asset_symbol in {"ETH", "BTC", "SOL"}:
+            sample_count_by_asset[asset_symbol] += 1
+        if pair_label:
+            sample_count_by_pair[pair_label] += 1
+
+    active_major_pools = []
+    covered_pairs = set()
+    for meta in ACTIVE_LP_POOLS.values():
+        if not bool(meta.get("is_major_pool")):
+            continue
+        pair_label = str(meta.get("pair_label") or "")
+        covered_pairs.add(pair_label)
+        active_major_pools.append(
+            {
+                "pair_label": pair_label,
+                "pool_address": str(meta.get("pool_address") or meta.get("address") or ""),
+                "priority": int(meta.get("priority") or 3),
+                "major_priority_score": float(meta.get("major_priority_score") or 1.0),
+                "major_match_mode": str(meta.get("major_match_mode") or ""),
+                "trend_pool_match_mode": str(meta.get("trend_pool_match_mode") or ""),
+                "is_primary_trend_pool": bool(meta.get("is_primary_trend_pool")),
+                "sample_size": int(sample_count_by_pair.get(pair_label) or 0),
+            }
+        )
+
+    missing_pairs = [pair for pair in expected_pairs if pair not in covered_pairs]
+    under_sampled_assets = [
+        {
+            "asset_symbol": asset,
+            "sample_size": int(sample_count_by_asset.get(asset) or 0),
+        }
+        for asset in configured_assets
+        if asset in {"ETH", "BTC", "SOL"} and int(sample_count_by_asset.get(asset) or 0) < 2
+    ]
+
+    if not pool_book_exists:
+        warnings.append("data/lp_pools.json 不存在；当前只能根据公开仓库默认配置评估 coverage")
+        suggestions.append("新增本地私有 pool book 时，优先补 ETH/BTC/SOL 对 USDT/USDC 主池，不扩 long-tail")
+    if missing_pairs:
+        warnings.append("majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail")
+        suggestions.append(f"优先补齐：{', '.join(missing_pairs[:6])}")
+    if not active_major_pools:
+        warnings.append("当前没有 active major pools 命中 LP major metadata")
+    if under_sampled_assets:
+        suggestions.append("当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池")
+
+    return {
+        "pool_book_path": str(pool_book_path),
+        "pool_book_exists": bool(pool_book_exists),
+        "configured_major_assets": configured_assets,
+        "configured_major_quotes": configured_quotes,
+        "expected_major_pairs": expected_pairs,
+        "active_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
+        "missing_expected_pairs": missing_pairs,
+        "under_sampled_major_assets": under_sampled_assets,
+        "warnings": warnings,
+        "suggestions": suggestions,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     manager = QualityManager(state_manager=StateManager())
-    report = manager.build_report(days=args.days, limit=args.limit, top_n=args.top_n or 10)
 
+    if args.market_context_health:
+        payload = build_market_context_health_report()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.major_pool_coverage:
+        payload = build_major_pool_coverage_report(manager)
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    report = manager.build_report(days=args.days, limit=args.limit, top_n=args.top_n or 10)
     if args.top_bad_prealerts:
         payload = report.get("top_bad_prealerts") or []
     elif args.fastlane_roi:

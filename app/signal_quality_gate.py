@@ -626,6 +626,11 @@ class SignalQualityGate:
             "lp_direction": str(lp_context.get("direction") or ""),
             "lp_trend_sensitivity_mode": bool(lp_directional_profile.get("trend_sensitivity_mode")),
             "lp_trend_primary_pool": bool(lp_trend_primary_pool),
+            "lp_major_pool": bool(lp_trend_pool_context.get("is_major_pool")),
+            "lp_major_priority_score": float(lp_trend_pool_context.get("major_priority_score") or 1.0),
+            "lp_major_match_mode": str(lp_trend_pool_context.get("major_match_mode") or "non_major_pool"),
+            "lp_major_base_symbol": str(lp_trend_pool_context.get("major_base_symbol") or ""),
+            "lp_major_quote_symbol": str(lp_trend_pool_context.get("major_quote_symbol") or ""),
             "lp_trend_pool_family": str(lp_trend_pool_context.get("trend_pool_family") or ""),
             "lp_trend_base_family": str(lp_trend_pool_context.get("trend_base_family") or ""),
             "lp_trend_quote_family": str(lp_trend_pool_context.get("trend_quote_family") or ""),
@@ -703,7 +708,13 @@ class SignalQualityGate:
             "lp_prealert_applied": False,
             "lp_structure_score": 0.0,
             "lp_structure_components": {},
-            "lp_pool_priority_class": "primary_trend_pool" if lp_trend_primary_pool else "standard_pool",
+            "lp_pool_priority_class": (
+                "major_pool"
+                if bool(lp_trend_pool_context.get("is_major_pool"))
+                else "primary_trend_pool"
+                if lp_trend_primary_pool
+                else "standard_pool"
+            ),
             "liquidation_observe_exception_applied": False,
             "liquidation_observe_exception_reason": "",
             "value_weight_multiplier": 1.0,
@@ -1428,6 +1439,11 @@ class SignalQualityGate:
         if not self._is_lp_event(event=event, watch_meta=watch_meta):
             return {
                 "is_primary_trend_pool": False,
+                "is_major_pool": False,
+                "major_priority_score": 1.0,
+                "major_match_mode": "non_major_pool",
+                "major_base_symbol": "",
+                "major_quote_symbol": "",
                 "trend_pool_family": "",
                 "trend_base_family": "other",
                 "trend_quote_family": "other",

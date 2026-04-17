@@ -1,5 +1,6 @@
 raw_events：系统“看到了什么”
 parsed_events：系统“理解成了什么”
+signals：系统“最终发出的 signal / delivery 决策 / market context 诊断”
 cases：系统“把这件事当成哪条持续故事在跟踪”
 
 私有 data 文件：
@@ -20,6 +21,7 @@ CLMM replay fixture 分两层：
 - user tiers：`retail / trader / research`，通过 `app/user_tiers.py` + `DEFAULT_USER_TIER` 控制 LP stage 准入、模板细节、debug 行展示与 asset-case 优先级；当前测试/默认运行保持 `DEFAULT_USER_TIER=research`
 - asset case：`app/asset_case_manager.py` 维护短窗 token/asset 级聚合，只聚合 LP pool 事件；`asset_case_id / asset_case_key / asset_case_stage / supporting_pairs` 都挂在 event/signal metadata 里，并默认持久化到 `data/asset_cases.cache.json` 以支持跨进程/重启恢复
 - market context：`app/market_context_adapter.py` 提供 `fixture / unavailable / live` 三层接口；`live` 只接公共市场数据 API（Binance USDⓈ-M / Bybit public），没有外部市场数据时统一回落到 `market_context_source=unavailable`
+- signal archive：`app/data/archive/signals/YYYY-MM-DD.ndjson` 现在会稳定落盘 `signal_id / asset_case_id / delivery_decision / notifier_sent_at / market_context diagnostics`，用于和 `delivery_audit` / outcome 做 1:1 对账
 - outcome / quality：`app/quality_manager.py` 基于 `state_manager` 里的 `lp_alert_outcome_v1` 滚动记录计算 `pool_quality_score / pair_quality_score / asset_case_quality_score / prealert_precision_score / climax_reversal_score / fastlane_roi_score`，并把 rolling outcome / ops summary 持久化到 `data/lp_quality_stats.cache.json`
 
 quality/outcome 本地结构说明：
@@ -33,20 +35,33 @@ live market context 最小 env：
 - `MARKET_CONTEXT_SECONDARY_VENUE=bybit_perp`
 - `MARKET_CONTEXT_TIMEOUT_SEC=2.5`
 - `MARKET_CONTEXT_CACHE_TTL_SEC=2.0`
+- `MARKET_CONTEXT_FAILURE_CACHE_TTL_SEC=1.0`
 - `BINANCE_FAPI_BASE_URL=https://fapi.binance.com`
 - `BINANCE_SPOT_BASE_URL=https://api.binance.com`
 - `BYBIT_V5_BASE_URL=https://api.bybit.com`
 
+live market context 诊断补充：
+- 每条 LP signal 会带 `market_context_attempted / requested_symbol / resolved_symbol / failure_reason / failure_stage / endpoint / latency_ms`
+- ETH/BTC/SOL 主池默认优先尝试更广泛的 `USDT` perp reference，再回退到 `USDC`
+
 asset-case / quality cache：
 - asset-case cache 默认路径：`data/asset_cases.cache.json`
 - quality/outcome cache 默认路径：`data/lp_quality_stats.cache.json`
+- archive base dir 默认路径：`app/data/archive`
 - 示例 schema：`data/asset_cases.cache.example.json`、`data/lp_quality_stats.cache.example.json`
 
 quality report / 导出入口：
 - `python -m app.quality_reports --summary`
 - `python -m app.quality_reports --top-bad-prealerts`
 - `python -m app.quality_reports --fastlane-roi`
+- `python -m app.quality_reports --market-context-health`
+- `python -m app.quality_reports --major-pool-coverage`
 - `python -m app.quality_reports --format csv`
+
+majors-first pool book 指引：
+- `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
+- 本地扩 `data/lp_pools.json` 时优先补 `ETH / BTC / SOL` 对 `USDT / USDC` 主池
+- 公开仓库不内置 unverifiable 私有 pool 地址；缺少本地 pool book 时 coverage report 会给 warning，但不会伪造数据
 
 当前 patch 明确不做多频道真实分发：
 - 默认只跑 `research` 视图，研究期消息保留最完整字段

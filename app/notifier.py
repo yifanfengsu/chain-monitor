@@ -654,6 +654,20 @@ def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
         debug_parts = [f"链路：{scan_path}", f"延迟 {latency_ms}ms"]
         if quality_hint:
             debug_parts.append(f"质量 {quality_hint}")
+        if (
+            not bool(context.get("market_context_available"))
+            and str(context.get("market_context_failure_reason") or "").strip()
+            and user_tier == "research"
+        ):
+            failure_reason = str(context.get("market_context_failure_reason") or "").strip()
+            failure_venue = str(
+                context.get("market_context_venue")
+                or context.get("market_context_primary_venue")
+                or ""
+            ).strip()
+            debug_parts.append(
+                f"合约缺口 {failure_reason}" + (f"@{failure_venue}" if failure_venue else "")
+            )
         lines.append("｜".join(debug_parts))
     return _join_lines(lines)
 

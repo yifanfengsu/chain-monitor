@@ -202,6 +202,17 @@ def evaluate_user_tier_lp_delivery(event, signal, delivery_class: str) -> tuple[
         or event_metadata.get("fastlane_roi_score")
         or 0.55
     )
+    major_pool = bool(
+        context.get("lp_major_pool")
+        or event_metadata.get("lp_major_pool")
+    )
+    major_priority_score = float(
+        context.get("lp_major_priority_score")
+        or event_metadata.get("lp_major_priority_score")
+        or 1.0
+    )
+    if major_pool:
+        asset_case_quality_score = min(1.0, asset_case_quality_score + max(major_priority_score - 1.0, 0.0) * 0.08)
     long_tail = (
         not is_major_asset_symbol(asset_symbol)
         and max(asset_case_quality_score, pair_quality_score, pool_quality_score) < 0.64
@@ -221,6 +232,9 @@ def evaluate_user_tier_lp_delivery(event, signal, delivery_class: str) -> tuple[
     elif lp_stage == "climax" and asset_case_quality_score < max(profile.min_confirm_quality, 0.50):
         return False, f"user_tier_{tier}_climax_quality_filtered"
 
+    if tier == "retail" and not major_pool and lp_stage in {"prealert", "confirm"}:
+        if max(asset_case_quality_score, pair_quality_score, pool_quality_score) < 0.72:
+            return False, f"user_tier_{tier}_non_major_pool_filtered"
     if long_tail and not profile.allow_long_tail_pool:
         return False, f"user_tier_{tier}_long_tail_filtered"
     if delivery_class == "primary" and not profile.allow_fastlane_results and fastlane_roi_score < 0.50:

@@ -433,6 +433,72 @@ def scan_lp_case_archive(path: Path) -> dict[str, Any]:
     }
 
 
+def scan_signal_archive(path: Path) -> dict[str, Any]:
+    signal_rows: list[dict[str, Any]] = []
+    archive_ts_values: list[int] = []
+    line_count = 0
+    if not path.exists():
+        return {
+            "signal_rows": signal_rows,
+            "line_count": line_count,
+            "archive_ts_values": archive_ts_values,
+        }
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line_count += 1
+            obj = json.loads(raw_line)
+            data = obj.get("data") or {}
+            lp_alert_stage = str(data.get("lp_alert_stage") or data.get("stage") or "")
+            canonical_semantic = str(data.get("canonical_semantic_key") or "")
+            if lp_alert_stage not in STAGE_ORDER and canonical_semantic not in {"pool_buy_pressure", "pool_sell_pressure"}:
+                continue
+            archive_ts = to_int(obj.get("archive_ts"))
+            if archive_ts is not None:
+                archive_ts_values.append(archive_ts)
+            signal_rows.append(
+                {
+                    "archive_ts": archive_ts,
+                    "pool_case_id": str(data.get("asset_case_id") or ""),
+                    "action": "signal_archived",
+                    "signal_id": str(data.get("signal_id") or ""),
+                    "event_id": str(data.get("event_id") or ""),
+                    "pair_label": str(data.get("pair_label") or ""),
+                    "pool_address": str(((data.get("event") or {}).get("address") or "")).lower(),
+                    "asset_symbol": str((((data.get("signal") or {}).get("context") or {}).get("asset_case_label") or "")).upper(),
+                    "lp_alert_stage": lp_alert_stage,
+                    "delivery_class": str(data.get("delivery_class") or ""),
+                    "delivery_reason": str(data.get("delivery_reason") or data.get("delivery_decision") or ""),
+                    "lp_scan_path": str((((data.get("signal") or {}).get("context") or {}).get("lp_scan_path") or "")),
+                    "lp_route_family": str((((data.get("signal") or {}).get("context") or {}).get("lp_route_family") or "")),
+                    "lp_route_priority_source": str((((data.get("signal") or {}).get("context") or {}).get("lp_route_priority_source") or "")),
+                    "lp_promoted_fastlane": bool((((data.get("signal") or {}).get("context") or {}).get("lp_promoted_fastlane"))),
+                    "lp_promote_reason": str((((data.get("signal") or {}).get("context") or {}).get("lp_promote_reason") or "")),
+                    "lp_detect_latency_ms": to_float((((data.get("signal") or {}).get("context") or {}).get("lp_detect_latency_ms"))),
+                    "lp_alert_quality": str((((data.get("signal") or {}).get("context") or {}).get("lp_alert_quality") or "")),
+                    "lp_move_phase_label": str((((data.get("signal") or {}).get("context") or {}).get("lp_move_phase_label") or "")),
+                    "asset_case_id": str(data.get("asset_case_id") or ""),
+                    "asset_case_key": str(data.get("asset_case_key") or ""),
+                    "asset_case_stage": str((((data.get("signal") or {}).get("context") or {}).get("asset_case_stage") or "")),
+                    "asset_case_started_at": to_int((((data.get("signal") or {}).get("context") or {}).get("asset_case_started_at"))),
+                    "asset_case_updated_at": to_int((((data.get("signal") or {}).get("context") or {}).get("asset_case_updated_at"))),
+                    "asset_case_stage_history": list((((data.get("signal") or {}).get("context") or {}).get("asset_case_stage_history") or [])),
+                    "asset_case_supporting_pairs": list((((data.get("signal") or {}).get("context") or {}).get("asset_case_supporting_pairs") or [])),
+                    "asset_case_aggregated": bool((((data.get("signal") or {}).get("context") or {}).get("asset_case_aggregated"))),
+                    "asset_case_multi_pool": bool((((data.get("signal") or {}).get("context") or {}).get("asset_case_multi_pool"))),
+                    "market_context_source": str(data.get("market_context_source") or ""),
+                    "alert_relative_timing": str(data.get("alert_relative_timing") or ""),
+                    "signal_confidence": to_float(((data.get("signal") or {}).get("confidence"))),
+                    "signal_priority": to_int(((data.get("signal") or {}).get("priority"))),
+                    "quality_hint": str((((data.get("signal") or {}).get("context") or {}).get("quality_score_brief") or "")),
+                }
+            )
+    return {
+        "signal_rows": signal_rows,
+        "line_count": line_count,
+        "archive_ts_values": archive_ts_values,
+    }
+
+
 def scan_lp_case_followups(path: Path, lp_case_ids: set[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not path.exists():
@@ -1374,7 +1440,8 @@ def main() -> None:
 
     quality_records = quality_stats.get("records") or []
     case_scan = scan_lp_case_archive(CASES_PATH)
-    case_signals = case_scan["signal_rows"]
+    signal_archive_scan = scan_signal_archive(SIGNALS_PATH)
+    case_signals = signal_archive_scan["signal_rows"] or case_scan["signal_rows"]
     lp_followups = scan_lp_case_followups(CASE_FOLLOWUPS_PATH, case_scan["pool_case_ids"])
     parsed_lp = scan_parsed_lp_events(PARSED_EVENTS_PATH)
 

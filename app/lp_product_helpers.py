@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from constants import ETH_EQUIVALENT_SYMBOLS, QUOTE_TOKEN_SYMBOLS, STABLE_TOKEN_SYMBOLS
-from config import LP_TREND_BTC_LIKE_SYMBOLS, LP_TREND_ETH_LIKE_SYMBOLS
+from config import (
+    LP_MAJOR_ASSETS,
+    LP_TREND_BTC_LIKE_SYMBOLS,
+    LP_TREND_ETH_LIKE_SYMBOLS,
+    LP_TREND_SOL_LIKE_SYMBOLS,
+)
 
 
 LP_STAGE_RANKS = {
@@ -16,12 +21,20 @@ def normalize_symbol(symbol: str | None) -> str:
     return str(symbol or "").strip().upper()
 
 
+ETH_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_ETH_LIKE_SYMBOLS} | ETH_EQUIVALENT_SYMBOLS
+BTC_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_BTC_LIKE_SYMBOLS} | {"WBTC", "BTC"}
+SOL_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_SOL_LIKE_SYMBOLS} | {"SOL", "WSOL"}
+MAJOR_ASSET_SYMBOLS = {normalize_symbol(item) for item in LP_MAJOR_ASSETS}
+
+
 def canonical_asset_symbol(symbol: str | None) -> str:
     normalized = normalize_symbol(symbol)
-    if normalized in {normalize_symbol(item) for item in LP_TREND_ETH_LIKE_SYMBOLS} | ETH_EQUIVALENT_SYMBOLS:
+    if normalized in ETH_LIKE_SYMBOLS:
         return "ETH"
-    if normalized in {normalize_symbol(item) for item in LP_TREND_BTC_LIKE_SYMBOLS} | {"WBTC", "BTC"}:
+    if normalized in BTC_LIKE_SYMBOLS:
         return "BTC"
+    if normalized in SOL_LIKE_SYMBOLS:
+        return "SOL"
     return normalized
 
 
@@ -38,7 +51,7 @@ def is_stable_symbol(symbol: str | None) -> bool:
 
 def is_major_asset_symbol(symbol: str | None) -> bool:
     normalized = canonical_asset_symbol(symbol)
-    return normalized in {"ETH", "BTC"} or is_stable_symbol(normalized)
+    return normalized in {canonical_asset_symbol(item) for item in MAJOR_ASSET_SYMBOLS} or is_stable_symbol(normalized)
 
 
 def lp_stage_rank(stage: str | None) -> int:

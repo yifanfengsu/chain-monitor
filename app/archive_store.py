@@ -7,6 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from config import (
+    ARCHIVE_BASE_DIR,
     ARCHIVE_ENABLE_CASE_FOLLOWUPS,
     ARCHIVE_ENABLE_CASES,
     ARCHIVE_ENABLE_DELIVERY_AUDIT,
@@ -29,11 +30,12 @@ class ArchiveStore:
     }
     _BJ_TZ = ZoneInfo("Asia/Shanghai")
 
-    def __init__(self, base_dir: str | Path = "data/archive") -> None:
+    def __init__(self, base_dir: str | Path = ARCHIVE_BASE_DIR) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._global_lock = threading.Lock()
         self._locks_by_path: dict[str, threading.Lock] = {}
+        self._seen_keys_by_path: dict[str, set[str]] = {}
         self._category_enabled = {
             "raw_events": bool(ARCHIVE_ENABLE_RAW_EVENTS),
             "parsed_events": bool(ARCHIVE_ENABLE_PARSED_EVENTS),
@@ -49,12 +51,33 @@ class ArchiveStore:
     def write_parsed_event(self, parsed_event: dict, archive_ts: int | None = None) -> bool:
         return self._write("parsed_events", self._payload(parsed_event, archive_ts=archive_ts))
 
-    def write_signal(self, signal: Any, event: Any | None = None, archive_ts: int | None = None) -> bool:
-        payload = {
-            "signal": self._serialize(signal),
-            "event": self._serialize(event) if event is not None else None,
-        }
-        return self._write("signals", self._payload(payload, archive_ts=archive_ts))
+    def write_signal(
+        self,
+        signal: Any,
+        event: Any | None = None,
+        archive_ts: int | None = None,
+        dedupe_key: str | None = None,
+    ) -> bool:
+        serialized_signal = self._serialize(signal)
+        if isinstance(serialized_signal, dict) and (
+            serialized_signal.get("signal_id")
+            or serialized_signal.get("signal_archive_key")
+        ):
+            payload = dict(serialized_signal)
+        else:
+            payload = {
+                "signal": serialized_signal,
+                "event": self._serialize(event) if event is not None else None,
+            }
+        dedupe_key = str(
+            dedupe_key
+            or payload.get("signal_archive_key")
+            or payload.get("signal_id")
+            or ""
+        ).strip()
+        if "archive_written_at" not in payload:
+            payload["archive_written_at"] = int(archive_ts or self._now_ts())
+        return self._write("signals", self._payload(payload, archive_ts=archive_ts), dedupe_key=dedupe_key)
 
     def write_delivery_audit(self, audit_record: dict, archive_ts: int | None = None) -> bool:
         return self._write("delivery_audit", self._payload(audit_record, archive_ts=archive_ts))
@@ -107,7 +130,7 @@ class ArchiveStore:
         }
         return self._enrich_time_fields(payload)
 
-    def _write(self, category: str, payload: dict) -> bool:
+    def _write(self, category: str, payload: dict, *, dedupe_key: str = "") -> bool:
         if not self._is_enabled(category):
             return False
         try:
@@ -115,8 +138,14 @@ class ArchiveStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             lock = self._lock_for_path(path)
             with lock:
+                if dedupe_key:
+                    seen = self._seen_keys_for_path(path)
+                    if dedupe_key in seen:
+                        return False
                 with path.open("a", encoding="utf-8") as fp:
                     fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                if dedupe_key:
+                    seen.add(dedupe_key)
             return True
         except Exception as e:
             print(f"归档失败[{category}]: {e}")
@@ -141,6 +170,38 @@ class ArchiveStore:
                 lock = threading.Lock()
                 self._locks_by_path[key] = lock
             return lock
+
+    def _seen_keys_for_path(self, path: Path) -> set[str]:
+        key = str(path.resolve())
+        seen = self._seen_keys_by_path.get(key)
+        if seen is not None:
+            return seen
+        seen = set()
+        if path.exists():
+            try:
+                with path.open(encoding="utf-8") as fp:
+                    for line in fp:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        data = payload.get("data") if isinstance(payload, dict) else {}
+                        if not isinstance(data, dict):
+                            continue
+                        dedupe_key = str(
+                            data.get("signal_archive_key")
+                            or data.get("signal_id")
+                            or ""
+                        ).strip()
+                        if dedupe_key:
+                            seen.add(dedupe_key)
+            except OSError:
+                pass
+        self._seen_keys_by_path[key] = seen
+        return seen
 
     def _serialize(self, value: Any) -> Any:
         if value is None:

@@ -460,10 +460,57 @@ class StateManager:
                 or event.metadata.get("market_context_source")
                 or "unavailable"
             ),
+            "market_context_attempted": bool(
+                getattr(signal, "context", {}).get("market_context_attempted")
+                or getattr(signal, "metadata", {}).get("market_context_attempted")
+                or event.metadata.get("market_context_attempted")
+            ),
+            "market_context_requested_symbol": str(
+                getattr(signal, "context", {}).get("market_context_requested_symbol")
+                or getattr(signal, "metadata", {}).get("market_context_requested_symbol")
+                or event.metadata.get("market_context_requested_symbol")
+                or ""
+            ),
+            "market_context_resolved_symbol": str(
+                getattr(signal, "context", {}).get("market_context_resolved_symbol")
+                or getattr(signal, "metadata", {}).get("market_context_resolved_symbol")
+                or event.metadata.get("market_context_resolved_symbol")
+                or ""
+            ),
+            "market_context_failure_reason": str(
+                getattr(signal, "context", {}).get("market_context_failure_reason")
+                or getattr(signal, "metadata", {}).get("market_context_failure_reason")
+                or event.metadata.get("market_context_failure_reason")
+                or ""
+            ),
             "alert_relative_timing": str(
                 getattr(signal, "context", {}).get("alert_relative_timing")
                 or getattr(signal, "metadata", {}).get("alert_relative_timing")
                 or event.metadata.get("alert_relative_timing")
+                or ""
+            ),
+            "lp_confirm_quality": str(
+                getattr(signal, "context", {}).get("lp_confirm_quality")
+                or getattr(signal, "metadata", {}).get("lp_confirm_quality")
+                or event.metadata.get("lp_confirm_quality")
+                or ""
+            ),
+            "lp_confirm_reason": str(
+                getattr(signal, "context", {}).get("lp_confirm_reason")
+                or getattr(signal, "metadata", {}).get("lp_confirm_reason")
+                or event.metadata.get("lp_confirm_reason")
+                or ""
+            ),
+            "lp_absorption_context": str(
+                getattr(signal, "context", {}).get("lp_absorption_context")
+                or getattr(signal, "metadata", {}).get("lp_absorption_context")
+                or event.metadata.get("lp_absorption_context")
+                or ""
+            ),
+            "lp_broader_alignment": str(
+                getattr(signal, "context", {}).get("lp_broader_alignment")
+                or getattr(signal, "metadata", {}).get("lp_broader_alignment")
+                or event.metadata.get("lp_broader_alignment")
                 or ""
             ),
             "market_move_before_alert_30s": getattr(signal, "context", {}).get(
@@ -486,6 +533,12 @@ class StateManager:
                 getattr(signal, "context", {}).get("lp_promoted_fastlane")
                 or getattr(signal, "metadata", {}).get("lp_promoted_fastlane")
                 or event.metadata.get("lp_promoted_fastlane")
+            ),
+            "outcome_tracking_key": str(
+                (getattr(signal, "context", {}).get("outcome_tracking") or {}).get("record_id")
+                or (getattr(signal, "metadata", {}).get("outcome_tracking") or {}).get("record_id")
+                or (event.metadata.get("outcome_tracking") or {}).get("record_id")
+                or ""
             ),
             "notifier_sent_at": None,
             "delivered_notification": False,

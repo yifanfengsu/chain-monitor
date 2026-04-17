@@ -44,6 +44,7 @@ from filter import (
     strategy_role_group,
 )
 from lp_analyzer import LP_ALL_INTENTS, LPAnalyzer
+from lp_analyzer import canonicalize_pool_semantic_key
 from lp_noise_rules import (
     LP_ADJACENT_NOISE_STAGE_PIPELINE,
     lp_adjacent_noise_core_decision,
@@ -251,6 +252,19 @@ class SignalPipeline:
         multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or 0)
         structure_score = float(gate_metrics.get("lp_structure_score") or 0.0)
         lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool") or event.metadata.get("lp_trend_primary_pool"))
+        lp_major_pool = bool(
+            signal.context.get("lp_major_pool")
+            or signal.metadata.get("lp_major_pool")
+            or event.metadata.get("lp_major_pool")
+            or gate_metrics.get("lp_major_pool")
+        )
+        major_priority_score = float(
+            signal.context.get("lp_major_priority_score")
+            or signal.metadata.get("lp_major_priority_score")
+            or event.metadata.get("lp_major_priority_score")
+            or gate_metrics.get("lp_major_priority_score")
+            or 1.0
+        )
         fastlane_roi_score = float(
             signal.context.get("fastlane_roi_score")
             or signal.metadata.get("fastlane_roi_score")
@@ -281,6 +295,9 @@ class SignalPipeline:
             priority_score = max(0.36, min(0.60, 0.34 + fastlane_roi_score * 0.08 + asset_case_quality_score * 0.08))
         if not reason:
             return {}
+        if lp_major_pool:
+            reason = f"{reason}_major_pool"
+            priority_score = min(0.94, priority_score * max(major_priority_score, 1.0))
         payload = self.state_manager.register_lp_fastlane_pool(
             pool_address,
             now_ts=int(event.ts or time.time()),
@@ -398,6 +415,269 @@ class SignalPipeline:
         signal.context.update(update_payload)
         return update_payload
 
+    def _lp_direction_sign(self, intent_type: str) -> int:
+        normalized = str(intent_type or "")
+        if normalized == "pool_buy_pressure":
+            return 1
+        if normalized == "pool_sell_pressure":
+            return -1
+        return 0
+
+    def _lp_direction_labels(self, intent_type: str) -> tuple[str, str]:
+        if str(intent_type or "") == "pool_sell_pressure":
+            return "卖压", "承接"
+        return "买压", "吸收"
+
+    def _signed_market_alignment(self, intent_type: str, *moves) -> float:
+        direction = self._lp_direction_sign(intent_type)
+        if direction == 0:
+            return 0.0
+        scored = []
+        for move in moves:
+            if move in {None, ""}:
+                continue
+            try:
+                scored.append(direction * float(move))
+            except (TypeError, ValueError):
+                continue
+        if not scored:
+            return 0.0
+        return max(scored)
+
+    def _apply_lp_signal_corrections(self, event: Event, signal, gate_metrics: dict | None = None) -> dict:
+        gate_metrics = gate_metrics or {}
+        if not self._is_lp_event(event=event):
+            return {}
+        stage = str(
+            signal.context.get("lp_alert_stage")
+            or signal.metadata.get("lp_alert_stage")
+            or event.metadata.get("lp_alert_stage")
+            or ""
+        ).strip()
+        if stage not in {"prealert", "confirm", "climax", "exhaustion_risk"}:
+            return {}
+
+        intent_type = str(event.intent_type or "")
+        move_label, absorption_verb = self._lp_direction_labels(intent_type)
+        market_source = str(signal.context.get("market_context_source") or event.metadata.get("market_context_source") or "unavailable")
+        alert_timing = str(signal.context.get("alert_relative_timing") or event.metadata.get("alert_relative_timing") or "")
+        same_pool_continuity = int(
+            signal.context.get("lp_same_pool_continuity")
+            or signal.metadata.get("lp_same_pool_continuity")
+            or gate_metrics.get("lp_same_pool_continuity")
+            or (event.metadata.get("lp_analysis") or {}).get("same_pool_continuity")
+            or 0
+        )
+        multi_pool_resonance = int(
+            signal.context.get("lp_multi_pool_resonance")
+            or signal.metadata.get("lp_multi_pool_resonance")
+            or gate_metrics.get("lp_multi_pool_resonance")
+            or (event.metadata.get("lp_analysis") or {}).get("multi_pool_resonance")
+            or 0
+        )
+        asset_case_supporting_pairs = int(
+            signal.context.get("asset_case_supporting_pair_count")
+            or signal.metadata.get("asset_case_supporting_pair_count")
+            or event.metadata.get("asset_case_supporting_pair_count")
+            or 1
+        )
+        pool_move_before_abs = max(
+            abs(float(signal.context.get("pool_price_move_before_alert_30s") or event.metadata.get("pool_price_move_before_alert_30s") or 0.0)),
+            abs(float(signal.context.get("pool_price_move_before_alert_60s") or event.metadata.get("pool_price_move_before_alert_60s") or 0.0)),
+        )
+        market_move_before_abs = max(
+            abs(float(signal.context.get("market_move_before_alert_30s") or event.metadata.get("market_move_before_alert_30s") or 0.0)),
+            abs(float(signal.context.get("market_move_before_alert_60s") or event.metadata.get("market_move_before_alert_60s") or 0.0)),
+        )
+        signed_market_alignment = self._signed_market_alignment(
+            intent_type,
+            signal.context.get("market_move_before_alert_30s"),
+            signal.context.get("market_move_before_alert_60s"),
+            signal.context.get("market_move_after_alert_60s"),
+        )
+        detect_latency_ms = int(
+            signal.context.get("lp_detect_latency_ms")
+            or signal.metadata.get("lp_detect_latency_ms")
+            or event.metadata.get("lp_detect_latency_ms")
+            or 0
+        )
+        case_started_at = int(
+            signal.context.get("asset_case_started_at")
+            or signal.metadata.get("asset_case_started_at")
+            or event.metadata.get("asset_case_started_at")
+            or 0
+        )
+        case_age_sec = int(max(int(event.ts or 0) - case_started_at, 0)) if case_started_at > 0 else 0
+        climax_reversal_score = float(
+            signal.context.get("climax_reversal_score")
+            or signal.metadata.get("climax_reversal_score")
+            or event.metadata.get("climax_reversal_score")
+            or 0.0
+        )
+
+        broader_alignment_confirmed = (
+            market_source == "live_public"
+            and signed_market_alignment >= 0.0015
+            and alert_timing in {"leading", "confirming"}
+        )
+        broader_alignment = (
+            "confirmed"
+            if broader_alignment_confirmed
+            else "unavailable"
+            if market_source == "unavailable"
+            else "weak_or_missing"
+        )
+
+        absorption_context = "pool_only_unconfirmed_pressure"
+        absorption_confidence = 0.35
+        local_vs_broad_reason = "缺 broader perp/spot 同向确认"
+        if broader_alignment_confirmed and (multi_pool_resonance >= 2 or asset_case_supporting_pairs >= 2):
+            absorption_context = (
+                "broader_buy_pressure_confirmed"
+                if intent_type == "pool_buy_pressure"
+                else "broader_sell_pressure_confirmed"
+            )
+            absorption_confidence = min(
+                0.95,
+                0.56
+                + min(multi_pool_resonance / 4.0, 1.0) * 0.18
+                + min(asset_case_supporting_pairs / 3.0, 1.0) * 0.12
+                + min(max(signed_market_alignment, 0.0) / 0.006, 1.0) * 0.14,
+            )
+            local_vs_broad_reason = "多池同向，且 broader perp/spot 同向"
+        elif stage == "confirm":
+            absorption_context = (
+                "local_buy_pressure_absorption"
+                if intent_type == "pool_buy_pressure"
+                else "local_sell_pressure_absorption"
+            )
+            absorption_confidence = min(
+                0.90,
+                0.42
+                + (0.14 if multi_pool_resonance <= 1 else 0.0)
+                + (0.10 if asset_case_supporting_pairs <= 1 else 0.0)
+                + (0.10 if market_source == "unavailable" else 0.0)
+                + min(climax_reversal_score / 0.8, 1.0) * 0.14,
+            )
+            local_vs_broad_reason = (
+                f"单池主导，{move_label}缺 broader 同向确认"
+                if market_source != "live_public"
+                else f"单池主导，perp/spot 未见更广泛同向确认"
+            )
+        else:
+            absorption_confidence = min(
+                0.78,
+                0.32
+                + (0.12 if multi_pool_resonance <= 1 else 0.0)
+                + (0.10 if asset_case_supporting_pairs <= 1 else 0.0)
+                + (0.08 if market_source == "unavailable" else 0.0),
+            )
+            local_vs_broad_reason = f"局部池子信号存在，但仍待 broader perp/spot 确认"
+
+        confirm_quality = ""
+        confirm_reason = ""
+        confirm_alignment_score = 0.0
+        chase_risk_score = 0.0
+        stage_badge = str(signal.context.get("lp_stage_badge") or "")
+        state_label = str(signal.context.get("lp_state_label") or signal.context.get("market_state_label") or "")
+        market_read = str(signal.context.get("lp_market_read") or "")
+
+        if stage == "confirm":
+            confirm_alignment_score = min(
+                1.0,
+                (0.34 if market_source == "live_public" else 0.08)
+                + (0.18 if alert_timing in {"leading", "confirming"} else 0.0)
+                + (0.18 if broader_alignment_confirmed else 0.0)
+                + min(multi_pool_resonance / 3.0, 1.0) * 0.14
+                + min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.10
+                + min(asset_case_supporting_pairs / 3.0, 1.0) * 0.06
+            )
+            chase_risk_score = min(
+                1.0,
+                min(pool_move_before_abs / 0.018, 1.0) * 0.36
+                + min(market_move_before_abs / 0.02, 1.0) * 0.12
+                + (0.18 if alert_timing == "late" else 0.0)
+                + (0.18 if market_source == "unavailable" else 0.0)
+                + min(climax_reversal_score / 0.8, 1.0) * 0.10
+                + (0.10 if multi_pool_resonance <= 1 else 0.0)
+                + (0.08 if not broader_alignment_confirmed else 0.0)
+            )
+            late_confirm = (
+                alert_timing == "late"
+                or (market_source == "unavailable" and pool_move_before_abs >= 0.010)
+                or detect_latency_ms >= 7_000
+                or case_age_sec >= 240
+            )
+            chase_risk = chase_risk_score >= 0.62 and (
+                pool_move_before_abs >= 0.012
+                or (alert_timing == "late" and not broader_alignment_confirmed)
+            )
+            if chase_risk:
+                confirm_quality = "chase_risk"
+                confirm_reason = "move_before_alert 已偏大，且 broader confirmation 不足"
+                stage_badge = "风险"
+                state_label = (
+                    f"持续{'买压' if intent_type == 'pool_buy_pressure' else '卖压'}（追{'涨' if intent_type == 'pool_buy_pressure' else '空'}风险）"
+                )
+                market_read = "已出现明显预走或局部高潮，当前更像追单风险而不是 clean confirm"
+            elif late_confirm:
+                confirm_quality = "late_confirm"
+                confirm_reason = "确认成立，但节奏偏晚或 broader confirmation 缺失"
+                state_label = f"持续{move_label}（偏晚）"
+                market_read = "确认已成立，但更像中后段确认，不应按 ultra-early 先手理解"
+            elif broader_alignment_confirmed and pool_move_before_abs < 0.010:
+                confirm_quality = "clean_confirm"
+                confirm_reason = "多池/更广泛盘口同向，且预走不大"
+                market_read = "更像 clean confirm：已有 broader perp/spot 同向确认，但仍不是首发先手"
+            else:
+                confirm_quality = "unconfirmed_confirm"
+                confirm_reason = "确认成立，但缺更广泛盘口同向确认"
+                market_read = "确认已出现，但缺 broader perp/spot 同向确认，延续性仍待跟踪"
+
+            if confirm_quality == "chase_risk":
+                market_read = f"{market_read}｜{local_vs_broad_reason}"
+            elif absorption_context == "broader_buy_pressure_confirmed":
+                state_label = "更广泛买压确认"
+            elif absorption_context == "broader_sell_pressure_confirmed":
+                state_label = "更广泛卖压确认"
+            elif absorption_context == "local_sell_pressure_absorption":
+                state_label = "局部卖压，可能被承接"
+            elif absorption_context == "local_buy_pressure_absorption":
+                state_label = f"局部买压，可能被{absorption_verb}"
+            elif absorption_context == "pool_only_unconfirmed_pressure":
+                state_label = f"局部{move_label}，仍待 broader 确认"
+
+        elif stage == "prealert":
+            if absorption_context == "broader_buy_pressure_confirmed":
+                state_label = "更广泛买压确认"
+            elif absorption_context == "broader_sell_pressure_confirmed":
+                state_label = "更广泛卖压确认"
+            else:
+                state_label = f"局部{move_label}，仍待 broader 确认"
+            if market_source == "unavailable":
+                market_read = "先手观察｜缺 broader perp/spot 确认，先看 30-90s 是否续单 / 共振"
+
+        payload = {
+            "lp_confirm_quality": confirm_quality,
+            "lp_confirm_reason": confirm_reason,
+            "lp_confirm_alignment_score": round(float(confirm_alignment_score), 3),
+            "lp_chase_risk_score": round(float(chase_risk_score), 3),
+            "lp_absorption_context": absorption_context,
+            "lp_absorption_confidence": round(float(absorption_confidence), 3),
+            "lp_broader_alignment": broader_alignment,
+            "lp_local_vs_broad_reason": local_vs_broad_reason,
+            "lp_stage_badge": stage_badge,
+            "lp_state_label": state_label,
+            "market_state_label": state_label,
+            "headline_label": state_label,
+            "lp_market_read": market_read,
+            "lp_meaning_brief": market_read,
+        }
+        event.metadata.update(payload)
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+        return payload
+
     def _apply_lp_productization_context(self, event: Event, signal, gate_metrics: dict | None = None, watch_meta: dict | None = None) -> dict:
         gate_metrics = gate_metrics or {}
         if not self._is_lp_event(event=event):
@@ -405,6 +685,7 @@ class SignalPipeline:
         asset_case_payload = self.asset_case_manager.merge_lp_signal(event, signal, gate_metrics=gate_metrics)
         market_context_payload = self._annotate_market_context(event, signal)
         quality_payload = self.quality_manager.annotate_lp_signal(event, signal, gate_metrics=gate_metrics)
+        correction_payload = self._apply_lp_signal_corrections(event, signal, gate_metrics=gate_metrics)
         self.asset_case_manager.attach_runtime_context(
             event,
             signal,
@@ -415,6 +696,7 @@ class SignalPipeline:
             "asset_case": asset_case_payload,
             "market_context": market_context_payload,
             "quality": quality_payload,
+            "lp_corrections": correction_payload,
             "user_tier": tier_payload,
         }
 
@@ -901,6 +1183,14 @@ class SignalPipeline:
                 gate_metrics=gate_decision.metrics,
                 cooldown_allowed=False,
             )
+            self._archive_signal_state(
+                signal,
+                event,
+                archive_status,
+                archive_ts,
+                sent_to_telegram=False,
+                delivery_decision="cooldown_suppressed",
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
@@ -1131,6 +1421,14 @@ class SignalPipeline:
                 gate_metrics=gate_decision.metrics,
                 cooldown_allowed=True,
             )
+            self._archive_signal_state(
+                signal,
+                event,
+                archive_status,
+                archive_ts,
+                sent_to_telegram=False,
+                delivery_decision=str(interpretation.reason or "interpreter_suppressed"),
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
@@ -1232,6 +1530,14 @@ class SignalPipeline:
                 delivery_policy_allowed=bool(event.metadata.get("delivery_policy_allowed")),
                 cooldown_allowed=True,
             )
+            self._archive_signal_state(
+                signal,
+                event,
+                archive_status,
+                archive_ts,
+                sent_to_telegram=False,
+                delivery_decision=str(event.delivery_reason or "case_notification_suppressed"),
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
@@ -1293,6 +1599,14 @@ class SignalPipeline:
                 impact_gate_allowed=False,
                 cooldown_allowed=True,
             )
+            self._archive_signal_state(
+                signal,
+                event,
+                archive_status,
+                archive_ts,
+                sent_to_telegram=False,
+                delivery_decision=str(impact_reason or "downstream_impact_gate_rejected"),
+            )
             self._archive_delivery_audit(
                 event=event,
                 signal=signal,
@@ -1315,8 +1629,6 @@ class SignalPipeline:
             )
             return None
 
-        if delivery_class == "primary" or self._is_downstream_followup_case(behavior_case):
-            self._archive_signal(signal, event, archive_status, archive_ts)
         self._mark_entered_notifier()
         self._archive_delivery_audit(
             event=event,
@@ -2083,11 +2395,197 @@ class SignalPipeline:
         except Exception as e:
             print(f"parsed event 归档失败: {e}")
 
-    def _archive_signal(self, signal, event: Event, archive_status: dict, archive_ts: int) -> None:
+    def _signal_archive_key(self, signal, event: Event | None = None) -> str:
+        signal_id = str(getattr(signal, "signal_id", "") or "")
+        if signal_id:
+            return signal_id
+        tx_hash = str(getattr(signal, "tx_hash", "") or getattr(event, "tx_hash", "") or "")
+        stage = str(
+            getattr(signal, "context", {}).get("lp_alert_stage")
+            or getattr(signal, "metadata", {}).get("lp_alert_stage")
+            or getattr(event, "metadata", {}).get("lp_alert_stage")
+            or getattr(signal, "delivery_class", "")
+            or "signal"
+        )
+        return f"{tx_hash}:{stage}"
+
+    def _build_signal_archive_record(
+        self,
+        signal,
+        event: Event,
+        *,
+        archive_ts: int,
+        sent_to_telegram: bool | None = None,
+        delivery_decision: str | None = None,
+    ) -> dict:
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        signal_context = getattr(signal, "context", {}) or {}
+        event_metadata = getattr(event, "metadata", {}) or {}
+        lp_outcome_record = dict(
+            signal_metadata.get("lp_outcome_record")
+            or signal_context.get("lp_outcome_record")
+            or event_metadata.get("lp_outcome_record")
+            or {}
+        )
+        outcome_tracking = dict(
+            signal_context.get("outcome_tracking")
+            or signal_metadata.get("outcome_tracking")
+            or event_metadata.get("outcome_tracking")
+            or {}
+        )
+        message_variant = str(
+            signal_context.get("message_variant")
+            or signal_metadata.get("message_variant")
+            or event_metadata.get("message_variant")
+            or ""
+        )
+        message_template = str(
+            signal_context.get("message_template")
+            or signal_metadata.get("message_template")
+            or event_metadata.get("message_template")
+            or ""
+        )
+        notifier_sent_at = (
+            signal_context.get("notifier_sent_at")
+            or signal_metadata.get("notifier_sent_at")
+            or event_metadata.get("notifier_sent_at")
+        )
+        delivery_class = str(getattr(signal, "delivery_class", "") or getattr(event, "delivery_class", "") or "")
+        delivery_reason = str(getattr(signal, "delivery_reason", "") or getattr(event, "delivery_reason", "") or "")
+        resolved_delivery_decision = str(delivery_decision or delivery_reason or delivery_class or "").strip()
+        signal_archive_key = self._signal_archive_key(signal, event)
+        record = {
+            "signal_archive_key": signal_archive_key,
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+            "event_id": str(getattr(signal, "event_id", "") or getattr(event, "event_id", "") or ""),
+            "asset_case_id": str(
+                signal_context.get("asset_case_id")
+                or signal_metadata.get("asset_case_id")
+                or event_metadata.get("asset_case_id")
+                or ""
+            ),
+            "tx_hash": str(getattr(signal, "tx_hash", "") or getattr(event, "tx_hash", "") or ""),
+            "stage": str(
+                signal_context.get("lp_alert_stage")
+                or signal_metadata.get("lp_alert_stage")
+                or event_metadata.get("lp_alert_stage")
+                or signal_context.get("stage")
+                or signal_metadata.get("stage")
+                or ""
+            ),
+            "canonical_semantic_key": str(
+                canonicalize_pool_semantic_key(
+                    getattr(signal, "type", "")
+                    or getattr(signal, "intent_type", "")
+                    or getattr(event, "intent_type", "")
+                )
+            ),
+            "operational_intent_key": str(
+                signal_context.get("operational_intent_key")
+                or signal_metadata.get("operational_intent_key")
+                or event_metadata.get("operational_intent_key")
+                or ""
+            ),
+            "notifier_variant": message_variant,
+            "notifier_template": message_template,
+            "delivery_decision": resolved_delivery_decision,
+            "delivery_class": delivery_class,
+            "delivery_reason": delivery_reason,
+            "sent_to_telegram": bool(sent_to_telegram) if sent_to_telegram is not None else bool(notifier_sent_at),
+            "notifier_sent_at": int(notifier_sent_at) if notifier_sent_at not in {None, ""} else None,
+            "market_context_source": str(
+                signal_context.get("market_context_source")
+                or signal_metadata.get("market_context_source")
+                or event_metadata.get("market_context_source")
+                or "unavailable"
+            ),
+            "market_context_venue": str(
+                signal_context.get("market_context_venue")
+                or signal_metadata.get("market_context_venue")
+                or event_metadata.get("market_context_venue")
+                or ""
+            ),
+            "alert_relative_timing": str(
+                signal_context.get("alert_relative_timing")
+                or signal_metadata.get("alert_relative_timing")
+                or event_metadata.get("alert_relative_timing")
+                or ""
+            ),
+            "lp_alert_stage": str(
+                signal_context.get("lp_alert_stage")
+                or signal_metadata.get("lp_alert_stage")
+                or event_metadata.get("lp_alert_stage")
+                or ""
+            ),
+            "outcome_tracking_key": str(
+                outcome_tracking.get("record_id")
+                or lp_outcome_record.get("record_id")
+                or outcome_tracking.get("outcome_tracking_key")
+                or ""
+            ),
+            "archive_written_at": int(archive_ts),
+            "asset_case_key": str(
+                signal_context.get("asset_case_key")
+                or signal_metadata.get("asset_case_key")
+                or event_metadata.get("asset_case_key")
+                or ""
+            ),
+            "pair_label": str(
+                signal_context.get("pair_label")
+                or signal_metadata.get("pair_label")
+                or event_metadata.get("pair_label")
+                or ""
+            ),
+            "lp_confirm_quality": str(
+                signal_context.get("lp_confirm_quality")
+                or signal_metadata.get("lp_confirm_quality")
+                or event_metadata.get("lp_confirm_quality")
+                or ""
+            ),
+            "lp_absorption_context": str(
+                signal_context.get("lp_absorption_context")
+                or signal_metadata.get("lp_absorption_context")
+                or event_metadata.get("lp_absorption_context")
+                or ""
+            ),
+            "market_context_attempts": list(
+                signal_context.get("market_context_attempts")
+                or signal_metadata.get("market_context_attempts")
+                or event_metadata.get("market_context_attempts")
+                or []
+            ),
+            "signal": self.archive_store._serialize(signal),
+            "event": self.archive_store._serialize(event),
+        }
+        return record
+
+    def _archive_signal_state(
+        self,
+        signal,
+        event: Event,
+        archive_status: dict,
+        archive_ts: int,
+        *,
+        sent_to_telegram: bool | None = None,
+        delivery_decision: str | None = None,
+    ) -> None:
         if self.archive_store is None:
             return
         try:
-            archive_status["signal"] = bool(self.archive_store.write_signal(signal, event=event, archive_ts=archive_ts))
+            record = self._build_signal_archive_record(
+                signal,
+                event,
+                archive_ts=archive_ts,
+                sent_to_telegram=sent_to_telegram,
+                delivery_decision=delivery_decision,
+            )
+            archive_status["signal"] = bool(
+                self.archive_store.write_signal(
+                    record,
+                    archive_ts=archive_ts,
+                    dedupe_key=str(record.get("signal_archive_key") or ""),
+                )
+            ) or bool(archive_status.get("signal"))
         except Exception as e:
             print(f"signal 归档失败: {e}")
 
@@ -2358,6 +2856,14 @@ class SignalPipeline:
         archive_ts: int,
         stage: str = "strategy",
         ) -> None:
+        self._archive_signal_state(
+            signal,
+            event,
+            archive_status,
+            archive_ts,
+            sent_to_telegram=False,
+            delivery_decision=str(reason or getattr(signal, "delivery_reason", "") or getattr(signal, "delivery_class", "") or ""),
+        )
         self._archive_delivery_audit(
             event=event,
             signal=signal,
@@ -3259,8 +3765,14 @@ class SignalPipeline:
             event_metadata.get("counterparty"),
         )
         payload = {
+            "signal_id": _text(getattr(signal, "signal_id", "")),
             "event_id": _text(event.event_id),
             "tx_hash": _text(event.tx_hash),
+            "asset_case_id": _text(
+                signal_context.get("asset_case_id"),
+                signal_metadata.get("asset_case_id"),
+                event_metadata.get("asset_case_id"),
+            ),
             "watch_address": _text(event.address),
             "strategy_role": _text(
                 signal_metadata.get("strategy_role"),
@@ -3282,6 +3794,21 @@ class SignalPipeline:
             "gate_reason": _text(gate_reason, getattr(signal, "delivery_reason", None), event.delivery_reason),
             "delivery_class": _text(getattr(signal, "delivery_class", None), event.delivery_class, "drop"),
             "delivery_reason": _text(getattr(signal, "delivery_reason", None), event.delivery_reason),
+            "message_variant": _text(
+                signal_context.get("message_variant"),
+                signal_metadata.get("message_variant"),
+                event_metadata.get("message_variant"),
+            ),
+            "message_template": _text(
+                signal_context.get("message_template"),
+                signal_metadata.get("message_template"),
+                event_metadata.get("message_template"),
+            ),
+            "notifier_sent_at": _int_value(
+                signal_context.get("notifier_sent_at"),
+                signal_metadata.get("notifier_sent_at"),
+                event_metadata.get("notifier_sent_at"),
+            ),
             "delivery_policy_evaluated": _bool_value(
                 event_metadata.get("delivery_policy_evaluated"),
                 signal_metadata.get("delivery_policy_evaluated"),
@@ -3929,6 +4456,21 @@ class SignalPipeline:
                 signal_metadata.get("lp_pool_priority_class"),
                 signal_context.get("lp_pool_priority_class"),
                 gate_metrics.get("lp_pool_priority_class"),
+            ),
+            "market_context_source": _text(
+                event_metadata.get("market_context_source"),
+                signal_metadata.get("market_context_source"),
+                signal_context.get("market_context_source"),
+            ),
+            "alert_relative_timing": _text(
+                event_metadata.get("alert_relative_timing"),
+                signal_metadata.get("alert_relative_timing"),
+                signal_context.get("alert_relative_timing"),
+            ),
+            "lp_alert_stage": _text(
+                event_metadata.get("lp_alert_stage"),
+                signal_metadata.get("lp_alert_stage"),
+                signal_context.get("lp_alert_stage"),
             ),
             "lp_burst_fastlane_reason": _text(
                 event_metadata.get("lp_burst_fastlane_reason"),
@@ -6093,6 +6635,7 @@ class SignalPipeline:
         behavior_case = behavior_case or self._resolve_behavior_case_for_signal(signal)
         delivery_reason = "notifier_delivered" if delivered else "notifier_send_failed"
         notifier_sent_at = int(time.time())
+        archive_ts = int(getattr(signal, "archive_ts", 0) or event.archive_ts or time.time())
         if self._is_lp_event(event=event):
             first_chain_seen_at = int(
                 signal.context.get("first_chain_seen_at")
@@ -6161,6 +6704,14 @@ class SignalPipeline:
                 cooldown_allowed=event.metadata.get("cooldown_allowed"),
             )
 
+        self._archive_signal_state(
+            signal,
+            event,
+            archive_status or {},
+            archive_ts,
+            sent_to_telegram=bool(delivered),
+            delivery_decision=delivery_reason,
+        )
         self._archive_delivery_audit(
             event=event,
             signal=signal,
@@ -6169,7 +6720,7 @@ class SignalPipeline:
             stage="notifier_delivery",
             gate_reason=delivery_reason,
             archive_status=archive_status or {},
-            archive_ts=int(getattr(signal, "archive_ts", 0) or event.archive_ts or time.time()),
+            archive_ts=archive_ts,
             audit_extras={
                 "delivered": bool(delivered),
                 "pending_notification_stage": str(event.metadata.get("pending_case_notification_stage") or ""),
