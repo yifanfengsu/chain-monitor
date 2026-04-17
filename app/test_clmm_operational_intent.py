@@ -356,7 +356,7 @@ class ClmmOperationalIntentTests(unittest.TestCase):
         pool_message = format_signal_message(pool_signal, pool_event)
 
         self.assertIn("Uniswap v3 Position #12345", clmm_message)
-        self.assertTrue(pool_message.splitlines()[0].startswith("ETH/USDC｜"))
+        self.assertIn("｜ETH/USDC｜", pool_message.splitlines()[0])
         self.assertNotEqual(clmm_message.splitlines()[0], pool_message.splitlines()[0])
 
     def test_outcome_tracking_seam_has_required_windows(self) -> None:

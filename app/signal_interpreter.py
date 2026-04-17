@@ -308,9 +308,14 @@ class SignalInterpreter:
             lp_action_brief = action_label
             lp_meaning_brief = market_implication
 
+        lp_stage_context = self._lp_alert_stage_context(event, signal, gate_metrics, sweep_meta)
+        lp_state_label = self._lp_stage_state_label(event, sweep_meta, lp_stage_context) if lp_stage_context else ""
+        lp_market_read = self._lp_market_read(event, lp_stage_context, sweep_meta) if lp_stage_context else ""
+        lp_followup_check, lp_invalidation = self._lp_followup_plan(event, lp_stage_context, sweep_meta) if lp_stage_context else ("", "")
+
         market_state_label = headline_label
         if not downstream_followup_active and (lp_event or liquidation_meta["active"]):
-            market_state_label = self._market_state_label(event, liquidation_meta, sweep_meta)
+            market_state_label = lp_state_label or self._market_state_label(event, liquidation_meta, sweep_meta)
             headline_label = market_state_label
             evidence_brief = self._compact_evidence_brief(
                 event=event,
@@ -322,6 +327,9 @@ class SignalInterpreter:
                 resonance_label=resonance_label,
                 continuous_label=continuous_label,
             )
+            if lp_stage_context:
+                explanation_brief = lp_market_read or explanation_brief
+                action_hint = lp_followup_check or action_hint
 
         operational_intent = self._build_operational_intent(
             event=event,
@@ -509,6 +517,41 @@ class SignalInterpreter:
             "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
             "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
+            "lp_sweep_phase": str(sweep_meta.get("lp_sweep_phase") or ""),
+            "lp_sweep_followthrough_score": float(sweep_meta.get("lp_sweep_followthrough_score") or 0.0),
+            "lp_sweep_exhaustion_score": float(sweep_meta.get("lp_sweep_exhaustion_score") or 0.0),
+            "lp_sweep_continuation_score": float(sweep_meta.get("lp_sweep_continuation_score") or 0.0),
+            "lp_impact_to_size_ratio": float(sweep_meta.get("lp_impact_to_size_ratio") or 0.0),
+            "lp_alert_stage": str(lp_stage_context.get("lp_alert_stage") or ""),
+            "lp_alert_stage_reason": str(lp_stage_context.get("lp_alert_stage_reason") or ""),
+            "lp_lead_confidence": float(lp_stage_context.get("lp_lead_confidence") or 0.0),
+            "lp_follow_confidence": float(lp_stage_context.get("lp_follow_confidence") or 0.0),
+            "lp_exhaustion_confidence": float(lp_stage_context.get("lp_exhaustion_confidence") or 0.0),
+            "lp_followup_required": bool(lp_stage_context.get("lp_followup_required")),
+            "lp_followup_window_sec": int(lp_stage_context.get("lp_followup_window_sec") or 0),
+            "lp_stage_badge": str(lp_stage_context.get("lp_stage_badge") or ""),
+            "lp_state_label": lp_state_label,
+            "lp_market_read": lp_market_read,
+            "lp_followup_check": lp_followup_check,
+            "lp_invalidation": lp_invalidation,
+            "lp_move_phase_label": str(lp_stage_context.get("lp_move_phase_label") or ""),
+            "lp_alert_quality": str(lp_stage_context.get("lp_alert_quality") or ""),
+            "lp_pre_move_lookback_sec": int(lp_stage_context.get("lp_pre_move_lookback_sec") or 0),
+            "lp_post_move_followup_sec": int(lp_stage_context.get("lp_post_move_followup_sec") or 0),
+            "first_chain_seen_at": int(event.metadata.get("first_chain_seen_at") or 0),
+            "parsed_at": int(event.metadata.get("parsed_at") or 0),
+            "gate_passed_at": int(event.metadata.get("gate_passed_at") or 0),
+            "notifier_sent_at": int(event.metadata.get("notifier_sent_at") or 0),
+            "lp_block_age_s": float(event.metadata.get("lp_block_age_s") or 0.0),
+            "lp_detect_latency_ms": int(event.metadata.get("lp_detect_latency_ms") or 0),
+            "lp_end_to_end_latency_ms": int(event.metadata.get("lp_end_to_end_latency_ms") or 0),
+            "lp_scan_path": str(event.metadata.get("lp_scan_path") or ""),
+            "lp_promoted_fastlane": bool(event.metadata.get("lp_promoted_fastlane")),
+            "lp_promote_reason": str(event.metadata.get("lp_promote_reason") or ""),
+            "pool_price_move_before_alert_30s": float(event.metadata.get("pool_price_move_before_alert_30s") or 0.0),
+            "pool_price_move_before_alert_60s": float(event.metadata.get("pool_price_move_before_alert_60s") or 0.0),
+            "pool_price_move_after_alert_60s": event.metadata.get("pool_price_move_after_alert_60s"),
+            "pool_price_move_after_alert_300s": event.metadata.get("pool_price_move_after_alert_300s"),
             "liquidation_stage": liquidation_meta["stage"],
             "liquidation_score": liquidation_meta["score"],
             "liquidation_side": liquidation_meta["side"],
@@ -567,6 +610,30 @@ class SignalInterpreter:
             "exchange_followup_ready": bool(event.metadata.get("exchange_followup_ready")),
             "exchange_external_counterparty_risk_class": str(event.metadata.get("exchange_external_counterparty_risk_class") or "none"),
             "exchange_distribution_risk_target_eligible": bool(event.metadata.get("exchange_distribution_risk_target_eligible")),
+            "lp_alert_stage": str(lp_stage_context.get("lp_alert_stage") or ""),
+            "lp_alert_stage_reason": str(lp_stage_context.get("lp_alert_stage_reason") or ""),
+            "lp_stage_badge": str(lp_stage_context.get("lp_stage_badge") or ""),
+            "lp_state_label": lp_state_label,
+            "lp_market_read": lp_market_read,
+            "lp_followup_check": lp_followup_check,
+            "lp_invalidation": lp_invalidation,
+            "lp_move_phase_label": str(lp_stage_context.get("lp_move_phase_label") or ""),
+            "lp_alert_quality": str(lp_stage_context.get("lp_alert_quality") or ""),
+            "lp_lead_confidence": float(lp_stage_context.get("lp_lead_confidence") or 0.0),
+            "lp_follow_confidence": float(lp_stage_context.get("lp_follow_confidence") or 0.0),
+            "lp_exhaustion_confidence": float(lp_stage_context.get("lp_exhaustion_confidence") or 0.0),
+            "lp_followup_required": bool(lp_stage_context.get("lp_followup_required")),
+            "lp_followup_window_sec": int(lp_stage_context.get("lp_followup_window_sec") or 0),
+            "lp_sweep_phase": str(sweep_meta.get("lp_sweep_phase") or ""),
+            "lp_sweep_followthrough_score": float(sweep_meta.get("lp_sweep_followthrough_score") or 0.0),
+            "lp_sweep_exhaustion_score": float(sweep_meta.get("lp_sweep_exhaustion_score") or 0.0),
+            "lp_sweep_continuation_score": float(sweep_meta.get("lp_sweep_continuation_score") or 0.0),
+            "lp_impact_to_size_ratio": float(sweep_meta.get("lp_impact_to_size_ratio") or 0.0),
+            "lp_scan_path": str(event.metadata.get("lp_scan_path") or ""),
+            "lp_detect_latency_ms": int(event.metadata.get("lp_detect_latency_ms") or 0),
+            "lp_end_to_end_latency_ms": int(event.metadata.get("lp_end_to_end_latency_ms") or 0),
+            "lp_promoted_fastlane": bool(event.metadata.get("lp_promoted_fastlane")),
+            "lp_promote_reason": str(event.metadata.get("lp_promote_reason") or ""),
             **operational_intent,
             **outcome_tracking,
             **market_maker_display_context,
@@ -636,6 +703,30 @@ class SignalInterpreter:
             "lp_semantic_subtype": str(sweep_meta.get("semantic_subtype") or ""),
             "sweep_confidence": str(sweep_meta.get("sweep_confidence") or ""),
             "lp_sweep_detected": bool(sweep_meta.get("detected")),
+            "lp_sweep_phase": str(sweep_meta.get("lp_sweep_phase") or ""),
+            "lp_sweep_followthrough_score": float(sweep_meta.get("lp_sweep_followthrough_score") or 0.0),
+            "lp_sweep_exhaustion_score": float(sweep_meta.get("lp_sweep_exhaustion_score") or 0.0),
+            "lp_sweep_continuation_score": float(sweep_meta.get("lp_sweep_continuation_score") or 0.0),
+            "lp_impact_to_size_ratio": float(sweep_meta.get("lp_impact_to_size_ratio") or 0.0),
+            "lp_alert_stage": str(lp_stage_context.get("lp_alert_stage") or ""),
+            "lp_alert_stage_reason": str(lp_stage_context.get("lp_alert_stage_reason") or ""),
+            "lp_stage_badge": str(lp_stage_context.get("lp_stage_badge") or ""),
+            "lp_state_label": lp_state_label,
+            "lp_market_read": lp_market_read,
+            "lp_followup_check": lp_followup_check,
+            "lp_invalidation": lp_invalidation,
+            "lp_move_phase_label": str(lp_stage_context.get("lp_move_phase_label") or ""),
+            "lp_alert_quality": str(lp_stage_context.get("lp_alert_quality") or ""),
+            "lp_lead_confidence": float(lp_stage_context.get("lp_lead_confidence") or 0.0),
+            "lp_follow_confidence": float(lp_stage_context.get("lp_follow_confidence") or 0.0),
+            "lp_exhaustion_confidence": float(lp_stage_context.get("lp_exhaustion_confidence") or 0.0),
+            "lp_followup_required": bool(lp_stage_context.get("lp_followup_required")),
+            "lp_followup_window_sec": int(lp_stage_context.get("lp_followup_window_sec") or 0),
+            "lp_scan_path": str(event.metadata.get("lp_scan_path") or ""),
+            "lp_detect_latency_ms": int(event.metadata.get("lp_detect_latency_ms") or 0),
+            "lp_end_to_end_latency_ms": int(event.metadata.get("lp_end_to_end_latency_ms") or 0),
+            "lp_promoted_fastlane": bool(event.metadata.get("lp_promoted_fastlane")),
+            "lp_promote_reason": str(event.metadata.get("lp_promote_reason") or ""),
             "smart_money_observe_label": smart_money_context["observe_label"],
             "smart_money_fact_brief": smart_money_context["fact_brief"],
             "smart_money_explanation_brief": smart_money_context["explanation_brief"],
@@ -2499,25 +2590,66 @@ class SignalInterpreter:
     ) -> dict:
         if not clmm_event and not lp_event:
             return {}
-        windows = {
-            window: {
-                "price_follow_through": None,
-                "additional_same_direction_flow": None,
-                "pool_depth_change_followup": None,
-                "position_continuation": None,
-                "invalidation": None,
+        if clmm_event and not lp_event:
+            windows = {
+                window: {
+                    "price_follow_through": None,
+                    "additional_same_direction_flow": None,
+                    "pool_depth_change_followup": None,
+                    "position_continuation": None,
+                    "invalidation": None,
+                }
+                for window in ("5m", "15m", "1h")
             }
-            for window in ("5m", "15m", "1h")
+            return {
+                "outcome_tracking_enabled": True,
+                "outcome_tracking": {
+                    "schema_version": "clmm_lp_v1",
+                    "actor_type": "clmm_position",
+                    "pair_label": pair_label,
+                    "operational_intent_key": str(operational_intent.get("operational_intent_key") or ""),
+                    "anchor_tx_hash": str(event.tx_hash or ""),
+                    "position_key": str(clmm_context.get("position_key") or ""),
+                    "windows": windows,
+                },
+            }
+
+        outcome_record = event.metadata.get("lp_outcome_record") or {}
+        windows = {
+            "30s": {
+                "followthrough_positive": outcome_record.get("followthrough_positive"),
+                "followthrough_negative": outcome_record.get("followthrough_negative"),
+                "confirm_after_prealert": outcome_record.get("confirm_after_prealert"),
+                "reversal_after_climax": outcome_record.get("reversal_after_climax"),
+            },
+            "60s": {
+                "move_after_alert": outcome_record.get("move_after_alert_60s"),
+                "confirm_after_prealert": outcome_record.get("confirm_after_prealert"),
+                "false_prealert": outcome_record.get("false_prealert"),
+                "reversal_after_climax": outcome_record.get("reversal_after_climax"),
+            },
+            "300s": {
+                "move_after_alert": outcome_record.get("move_after_alert_300s"),
+                "confirm_after_prealert": outcome_record.get("confirm_after_prealert"),
+                "false_prealert": outcome_record.get("false_prealert"),
+                "reversal_after_climax": outcome_record.get("reversal_after_climax"),
+            },
         }
         return {
             "outcome_tracking_enabled": True,
             "outcome_tracking": {
-                "schema_version": "clmm_lp_v1",
-                "actor_type": "clmm_position" if clmm_event else "lp_pool",
+                "schema_version": "lp_alert_outcome_v1",
+                "actor_type": "lp_pool",
                 "pair_label": pair_label,
                 "operational_intent_key": str(operational_intent.get("operational_intent_key") or ""),
                 "anchor_tx_hash": str(event.tx_hash or ""),
-                "position_key": str(clmm_context.get("position_key") or ""),
+                "position_key": "",
+                "lp_alert_stage": str(event.metadata.get("lp_alert_stage") or ""),
+                "move_before_alert": outcome_record.get("move_before_alert"),
+                "move_before_alert_30s": outcome_record.get("move_before_alert_30s"),
+                "move_before_alert_60s": outcome_record.get("move_before_alert_60s"),
+                "move_after_alert": outcome_record.get("move_after_alert"),
+                "time_to_confirm": outcome_record.get("time_to_confirm"),
                 "windows": windows,
             },
         }
@@ -2723,6 +2855,78 @@ class SignalInterpreter:
             )
             or ""
         )
+        lp_sweep_phase = str(
+            self._first_present(
+                gate_metrics.get("lp_sweep_phase"),
+                event.metadata.get("lp_sweep_phase"),
+                "",
+            )
+            or ""
+        )
+        lp_sweep_followthrough_score = float(
+            self._first_present(
+                gate_metrics.get("lp_sweep_followthrough_score"),
+                event.metadata.get("lp_sweep_followthrough_score"),
+                0.0,
+            )
+            or 0.0
+        )
+        lp_sweep_exhaustion_score = float(
+            self._first_present(
+                gate_metrics.get("lp_sweep_exhaustion_score"),
+                event.metadata.get("lp_sweep_exhaustion_score"),
+                0.0,
+            )
+            or 0.0
+        )
+        lp_sweep_continuation_score = float(
+            self._first_present(
+                gate_metrics.get("lp_sweep_continuation_score"),
+                event.metadata.get("lp_sweep_continuation_score"),
+                0.0,
+            )
+            or 0.0
+        )
+        lp_impact_to_size_ratio = float(
+            self._first_present(
+                gate_metrics.get("lp_impact_to_size_ratio"),
+                event.metadata.get("lp_impact_to_size_ratio"),
+                0.0,
+            )
+            or 0.0
+        )
+        needs_recompute = bool(
+            semantic_subtype in LP_SWEEP_SEMANTIC_SUBTYPES
+            and (
+                not lp_sweep_phase
+                or (
+                    lp_sweep_followthrough_score <= 0.0
+                    and lp_sweep_exhaustion_score <= 0.0
+                    and lp_sweep_continuation_score <= 0.0
+                )
+            )
+        )
+        if needs_recompute:
+            lp_analysis = event.metadata.get("lp_analysis") or {}
+            lp_burst = event.metadata.get("lp_burst") or {}
+            detected = detect_lp_liquidity_sweep(
+                event=event,
+                reserve_skew=float(self._first_present(gate_metrics.get("lp_reserve_skew"), lp_analysis.get("reserve_skew"), 0.0) or 0.0),
+                action_intensity=float(self._first_present(gate_metrics.get("lp_action_intensity"), lp_analysis.get("action_intensity"), 0.0) or 0.0),
+                same_pool_continuity=int(self._first_present(gate_metrics.get("lp_same_pool_continuity"), lp_analysis.get("same_pool_continuity"), 0) or 0),
+                multi_pool_resonance=int(self._first_present(gate_metrics.get("lp_multi_pool_resonance"), lp_analysis.get("multi_pool_resonance"), 0) or 0),
+                pool_volume_surge_ratio=float(self._first_present(gate_metrics.get("lp_pool_volume_surge_ratio"), lp_analysis.get("pool_volume_surge_ratio"), 0.0) or 0.0),
+                lp_burst_event_count=int(self._first_present(gate_metrics.get("lp_burst_event_count"), lp_burst.get("lp_burst_event_count"), 0) or 0),
+                lp_burst_window_sec=int(self._first_present(gate_metrics.get("lp_burst_window_sec"), lp_burst.get("lp_burst_window_sec"), 0) or 0),
+                price_impact_ratio=float(self._first_present(gate_metrics.get("price_impact_ratio"), event.metadata.get("price_impact_ratio"), 0.0) or 0.0),
+                min_price_impact_ratio=float(self._first_present(gate_metrics.get("lp_sweep_min_price_impact_ratio"), QUALITY_GATE_MIN_PRICE_IMPACT_RATIO) or QUALITY_GATE_MIN_PRICE_IMPACT_RATIO),
+                liquidation_stage=str(self._first_present(gate_metrics.get("liquidation_stage"), event.metadata.get("liquidation_stage"), "none") or "none"),
+            )
+            lp_sweep_phase = str(detected.get("lp_sweep_phase") or lp_sweep_phase or "")
+            lp_sweep_followthrough_score = float(detected.get("lp_sweep_followthrough_score") or lp_sweep_followthrough_score or 0.0)
+            lp_sweep_exhaustion_score = float(detected.get("lp_sweep_exhaustion_score") or lp_sweep_exhaustion_score or 0.0)
+            lp_sweep_continuation_score = float(detected.get("lp_sweep_continuation_score") or lp_sweep_continuation_score or 0.0)
+            lp_impact_to_size_ratio = float(detected.get("lp_impact_to_size_ratio") or lp_impact_to_size_ratio or 0.0)
         detected_value = self._first_present(
             gate_metrics.get("lp_sweep_detected"),
             event.metadata.get("lp_sweep_detected"),
@@ -2736,6 +2940,11 @@ class SignalInterpreter:
                 "semantic_subtype": semantic_subtype,
                 "sweep_confidence": sweep_confidence or ("likely" if detected else ""),
                 "display_label": display_label,
+                "lp_sweep_phase": lp_sweep_phase,
+                "lp_sweep_followthrough_score": lp_sweep_followthrough_score,
+                "lp_sweep_exhaustion_score": lp_sweep_exhaustion_score,
+                "lp_sweep_continuation_score": lp_sweep_continuation_score,
+                "lp_impact_to_size_ratio": lp_impact_to_size_ratio,
             }
 
         lp_analysis = event.metadata.get("lp_analysis") or {}
@@ -2758,12 +2967,21 @@ class SignalInterpreter:
             "semantic_subtype": str(detected.get("semantic_subtype") or ""),
             "sweep_confidence": str(detected.get("sweep_confidence") or ""),
             "display_label": str(detected.get("display_label") or ""),
+            "lp_sweep_phase": str(detected.get("lp_sweep_phase") or ""),
+            "lp_sweep_followthrough_score": float(detected.get("lp_sweep_followthrough_score") or 0.0),
+            "lp_sweep_exhaustion_score": float(detected.get("lp_sweep_exhaustion_score") or 0.0),
+            "lp_sweep_continuation_score": float(detected.get("lp_sweep_continuation_score") or 0.0),
+            "lp_impact_to_size_ratio": float(detected.get("lp_impact_to_size_ratio") or 0.0),
         }
 
     def _lp_sweep_action_label(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "买方清扫｜近价卖盘深度被扫薄，当前回吐风险升高"
             return "买方清扫｜主动 swap 快速吃掉近价卖盘深度"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "卖方清扫｜近价买盘深度被扫薄，当前反抽风险升高"
             return "卖方清扫｜主动 swap 快速吃掉近价买盘深度"
         return self._lp_action_brief(event, "", "")
 
@@ -2776,24 +2994,289 @@ class SignalInterpreter:
 
     def _lp_sweep_intent_detail(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "当前更像买盘清扫后的局部高潮，impact-to-size 偏高而后续跟进不足；这不是撤池，也不等于 LP 主体看多。"
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
+                return "当前更像主动买盘清扫近价深度后仍有续单与跨池共振，属于冲击确认；这不是撤池，也不等于 LP 主体看多。"
             return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型买方清扫；这不是撤池，也不等于 LP 主体看多。"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "当前更像卖盘清扫后的局部高潮，impact-to-size 偏高而后续跟进不足；这不是撤池，也不等于 LP 主体看空。"
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
+                return "当前更像主动卖盘清扫近价深度后仍有续卖与跨池共振，属于冲击确认；这不是撤池，也不等于 LP 主体看空。"
             return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型卖方清扫；这不是撤池，也不等于 LP 主体看空。"
         return self._intent_detail(event, True, False)
 
     def _lp_sweep_market_implication(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "更接近局部买盘高潮而不是稳定单边，若无续单，短线更容易回吐；本质是成交冲击，不是 LP 主体方向。"
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
+                return "更接近买盘清扫后继续冲击，短线偏多但仍需看续单是否延续；本质是成交冲击，不是 LP 主体方向。"
             return "更接近短线主动买盘清扫近价深度并带来明显冲击，短线偏多；本质是成交冲击，不是 LP 主体方向。"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                return "更接近局部卖盘高潮而不是稳定单边，若无续卖，短线更容易反抽；本质是成交冲击，不是 LP 主体方向。"
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
+                return "更接近卖盘清扫后继续冲击，短线偏空但仍需看续卖是否延续；本质是成交冲击，不是 LP 主体方向。"
             return "更接近短线主动卖盘清扫近价深度并带来明显冲击，短线偏空；本质是成交冲击，不是 LP 主体方向。"
         return self._market_implication(event, "", 1, 0.0, True)
 
     def _lp_sweep_meaning_brief(self, event: Event, sweep_meta: dict) -> str:
+        phase = str(sweep_meta.get("lp_sweep_phase") or "")
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
-            return "推断型｜主动买盘快速吃掉近价流动性并带来冲击，不等于 LP 主体看多"
+            if phase == "sweep_exhaustion_risk":
+                return "推断型｜买盘清扫后续单不足，当前更像局部高潮，回吐风险抬升"
+            if phase == "sweep_confirmed":
+                return "推断型｜买盘清扫后仍有续单与跨池共振，更像冲击延续"
+            return "推断型｜买盘清扫刚开始建立，先看 30-90s 是否继续续单"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
-            return "推断型｜主动卖盘快速吃掉近价流动性并带来冲击，不等于 LP 主体看空"
+            if phase == "sweep_exhaustion_risk":
+                return "推断型｜卖盘清扫后续单不足，当前更像局部高潮，反抽风险抬升"
+            if phase == "sweep_confirmed":
+                return "推断型｜卖盘清扫后仍有续单与跨池共振，更像冲击延续"
+            return "推断型｜卖盘清扫刚开始建立，先看 30-90s 是否继续续单"
         return self._lp_meaning_brief(event, "", "")
+
+    def _lp_alert_stage_context(self, event: Event, signal: Signal, gate_metrics: dict, sweep_meta: dict) -> dict:
+        if str(event.strategy_role or "") != "lp_pool" and str(event.intent_type or "") not in LP_INTENTS:
+            return {}
+        liquidation_stage = str(
+            self._first_present(
+                gate_metrics.get("liquidation_stage"),
+                event.metadata.get("liquidation_stage"),
+                "none",
+            )
+            or "none"
+        )
+        if liquidation_stage in {"execution", "risk"}:
+            return {}
+        lp_analysis = event.metadata.get("lp_analysis") or {}
+        same_pool_continuity = int(
+            self._first_present(
+                gate_metrics.get("lp_same_pool_continuity"),
+                lp_analysis.get("same_pool_continuity"),
+                0,
+            )
+            or 0
+        )
+        multi_pool_resonance = int(
+            self._first_present(
+                gate_metrics.get("lp_multi_pool_resonance"),
+                lp_analysis.get("multi_pool_resonance"),
+                0,
+            )
+            or 0
+        )
+        pool_volume_surge_ratio = float(
+            self._first_present(
+                gate_metrics.get("lp_pool_volume_surge_ratio"),
+                lp_analysis.get("pool_volume_surge_ratio"),
+                0.0,
+            )
+            or 0.0
+        )
+        action_intensity = float(
+            self._first_present(
+                gate_metrics.get("lp_action_intensity"),
+                lp_analysis.get("action_intensity"),
+                0.0,
+            )
+            or 0.0
+        )
+        reserve_skew = float(
+            self._first_present(
+                gate_metrics.get("lp_reserve_skew"),
+                lp_analysis.get("reserve_skew"),
+                0.0,
+            )
+            or 0.0
+        )
+        prealert_applied = bool(
+            self._first_present(
+                gate_metrics.get("lp_prealert_applied"),
+                event.metadata.get("lp_prealert_applied"),
+                signal.metadata.get("lp_prealert_applied"),
+                False,
+            )
+        )
+        move_before_30s = float(event.metadata.get("pool_price_move_before_alert_30s") or 0.0)
+        move_before_60s = float(event.metadata.get("pool_price_move_before_alert_60s") or 0.0)
+        move_before_abs = max(abs(move_before_30s), abs(move_before_60s))
+        follow_confidence = min(
+            1.0,
+            max(
+                float(event.confirmation_score or 0.0),
+                min(multi_pool_resonance / 3.0, 1.0) * 0.32
+                + min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.28
+                + min(max(pool_volume_surge_ratio - 1.0, 0.0) / 4.0, 1.0) * 0.20
+                + min(action_intensity / 0.7, 1.0) * 0.10
+                + min(reserve_skew / 0.35, 1.0) * 0.10,
+            ),
+        )
+        lead_confidence = min(
+            1.0,
+            min(action_intensity / 0.55, 1.0) * 0.30
+            + min(max(pool_volume_surge_ratio - 1.0, 0.0) / 2.2, 1.0) * 0.22
+            + min(reserve_skew / 0.25, 1.0) * 0.18
+            + min(max(multi_pool_resonance, 1) / 2.0, 1.0) * 0.14
+            + min(float(event.pricing_confidence or 0.0) / 0.9, 1.0) * 0.16,
+        )
+        exhaustion_confidence = min(
+            1.0,
+            max(
+                float(sweep_meta.get("lp_sweep_exhaustion_score") or 0.0),
+                min(float(sweep_meta.get("lp_impact_to_size_ratio") or 0.0) / 0.25, 1.0) * 0.65
+                + (0.18 if multi_pool_resonance <= 1 else 0.0)
+                + (0.12 if same_pool_continuity <= 1 else 0.0),
+            ),
+        )
+        stage = "confirm"
+        stage_reason = "lp_flow_validated"
+        followup_required = False
+        followup_window_sec = 60
+        if sweep_meta.get("semantic_subtype"):
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+                stage = "exhaustion_risk"
+                stage_reason = "lp_sweep_exhaustion_risk"
+                followup_required = True
+                followup_window_sec = 60
+            else:
+                stage = "climax"
+                stage_reason = str(sweep_meta.get("lp_sweep_phase") or "lp_sweep_impact")
+                followup_required = True
+                followup_window_sec = 90
+        elif prealert_applied and (
+            same_pool_continuity < 2
+            and multi_pool_resonance < 2
+            and float(event.confirmation_score or 0.0) < 0.72
+        ):
+            stage = "prealert"
+            stage_reason = str(event.metadata.get("lp_prealert_reason") or "lp_flow_building")
+            followup_required = True
+            followup_window_sec = 60
+        else:
+            stage = "confirm"
+            stage_reason = "lp_trend_confirmed"
+            followup_required = bool(str(event.intent_type or "") in {"pool_buy_pressure", "pool_sell_pressure"})
+            followup_window_sec = 90 if followup_required else 60
+
+        if stage == "prealert":
+            move_phase_label = "early" if move_before_abs < 0.008 else "confirming"
+            alert_quality = "leading" if move_before_abs < 0.008 else "confirming"
+        elif stage == "confirm":
+            move_phase_label = "confirming" if move_before_abs < 0.018 else "late"
+            alert_quality = "confirming" if move_before_abs < 0.018 else "late"
+        elif stage == "climax":
+            move_phase_label = "climax"
+            alert_quality = "late"
+        else:
+            move_phase_label = "late" if move_before_abs < 0.02 else "climax"
+            alert_quality = "late"
+
+        stage_badge = {
+            "prealert": "预警",
+            "confirm": "确认",
+            "climax": "高潮",
+            "exhaustion_risk": "风险",
+        }.get(stage, "确认")
+        return {
+            "lp_alert_stage": stage,
+            "lp_alert_stage_reason": stage_reason,
+            "lp_lead_confidence": round(float(lead_confidence), 3),
+            "lp_follow_confidence": round(float(follow_confidence), 3),
+            "lp_exhaustion_confidence": round(float(exhaustion_confidence), 3),
+            "lp_followup_required": bool(followup_required),
+            "lp_followup_window_sec": int(followup_window_sec),
+            "lp_move_phase_label": move_phase_label,
+            "lp_alert_quality": alert_quality,
+            "lp_pre_move_lookback_sec": 60,
+            "lp_post_move_followup_sec": int(followup_window_sec),
+            "lp_stage_badge": stage_badge,
+        }
+
+    def _lp_stage_state_label(self, event: Event, sweep_meta: dict, stage_context: dict) -> str:
+        stage = str(stage_context.get("lp_alert_stage") or "confirm")
+        intent_type = str(event.intent_type or "")
+        tentative = ""
+        try:
+            confidence = float(
+                stage_context.get("lp_follow_confidence")
+                if stage == "confirm"
+                else stage_context.get("lp_lead_confidence")
+                if stage == "prealert"
+                else stage_context.get("lp_exhaustion_confidence")
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if OP_INTENT_TENTATIVE_PREFIX_THRESHOLD <= confidence < OP_INTENT_AUTO_TEMPLATE_THRESHOLD:
+            tentative = "可能"
+
+        if stage == "prealert":
+            if intent_type == "pool_buy_pressure":
+                return f"{tentative}买盘建立中"
+            if intent_type == "pool_sell_pressure":
+                return f"{tentative}卖盘建立中"
+            if intent_type == "liquidity_removal":
+                return f"{tentative}深度抽离建立中"
+            if intent_type == "liquidity_addition":
+                return f"{tentative}深度补充建立中"
+        if stage == "exhaustion_risk":
+            if sweep_meta.get("semantic_subtype") == "buy_side_liquidity_sweep":
+                return "买方清扫（回吐风险高）"
+            if sweep_meta.get("semantic_subtype") == "sell_side_liquidity_sweep":
+                return "卖方清扫（反抽风险高）"
+            return "冲击后回吐风险高"
+        if stage == "climax":
+            if sweep_meta.get("semantic_subtype") == "buy_side_liquidity_sweep":
+                return "买方清扫"
+            if sweep_meta.get("semantic_subtype") == "sell_side_liquidity_sweep":
+                return "卖方清扫"
+            return "局部冲击高潮"
+        if intent_type == "pool_buy_pressure":
+            return f"{tentative}持续买压"
+        if intent_type == "pool_sell_pressure":
+            return f"{tentative}持续卖压"
+        if intent_type == "liquidity_addition":
+            return "流动性补充"
+        if intent_type == "liquidity_removal":
+            return "流动性抽离"
+        if intent_type == "pool_rebalance":
+            return "池子再平衡"
+        return self.INTENT_LABELS.get(intent_type, "意图未明")
+
+    def _lp_market_read(self, event: Event, stage_context: dict, sweep_meta: dict) -> str:
+        stage = str(stage_context.get("lp_alert_stage") or "confirm")
+        move_phase = str(stage_context.get("lp_move_phase_label") or "")
+        if stage == "prealert":
+            return "先手观察｜需看后续 30-90s 是否续单 / 跨池共振"
+        if stage == "confirm":
+            return "更像趋势确认，不是首发先手"
+        if stage == "climax":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
+                return "冲击已成立｜若后续续单仍在，短线可继续延伸"
+            return "冲击启动中｜若无续单，更容易回吐"
+        if move_phase == "climax":
+            return "更像局部高潮｜不宜直接当延续突破"
+        return "回吐风险抬升｜更适合等后续确认而不是直接追击"
+
+    def _lp_followup_plan(self, event: Event, stage_context: dict, sweep_meta: dict) -> tuple[str, str]:
+        stage = str(stage_context.get("lp_alert_stage") or "confirm")
+        intent_type = str(event.intent_type or "")
+        if stage == "prealert":
+            if intent_type == "pool_buy_pressure":
+                return "60s：是否跨池共振 / 是否续单", "续单消失 / 快速反向池流"
+            if intent_type == "pool_sell_pressure":
+                return "60s：是否跨池共振 / 是否续卖", "续卖消失 / 快速反向池流"
+            return "60s：是否继续结构放大", "结构迅速回落"
+        if stage == "confirm":
+            return "90s：是否继续跨池放大", "连续性中断 / 共振消失"
+        if stage == "climax":
+            if str(sweep_meta.get("semantic_subtype") or "") == "buy_side_liquidity_sweep":
+                return "30-90s：是否继续续单 / 扩散到更多池", "无续单 / 出现反向池流"
+            return "30-90s：是否继续续卖 / 扩散到更多池", "无续卖 / 出现反向池流"
+        return "30-60s：是否出现反向回补", "重新回到跨池同向冲击"
 
     def _market_state_label(self, event: Event, liquidation_meta: dict, sweep_meta: dict) -> str:
         if liquidation_meta["stage"] == "execution":
@@ -2848,6 +3331,7 @@ class SignalInterpreter:
         lp_burst_event_count = int(self._first_present(gate_metrics.get("lp_burst_event_count"), lp_burst.get("lp_burst_event_count"), 0) or 0)
         lp_burst_window_sec = int(self._first_present(gate_metrics.get("lp_burst_window_sec"), lp_burst.get("lp_burst_window_sec"), 0) or 0)
         price_impact_ratio = float(self._first_present(gate_metrics.get("price_impact_ratio"), event.metadata.get("price_impact_ratio"), 0.0) or 0.0)
+        impact_to_size_ratio = float(self._first_present(gate_metrics.get("lp_impact_to_size_ratio"), event.metadata.get("lp_impact_to_size_ratio"), 0.0) or 0.0)
         primary_pool = bool(self._first_present(gate_metrics.get("lp_trend_primary_pool"), event.metadata.get("lp_trend_primary_pool"), False))
 
         tokens = []
@@ -2867,6 +3351,8 @@ class SignalInterpreter:
             tokens.append(f"放量{pool_volume_surge_ratio:.1f}x")
         if sweep_meta["detected"] and price_impact_ratio > 0:
             tokens.append(f"冲击{price_impact_ratio:.2%}")
+        if sweep_meta["detected"] and impact_to_size_ratio >= 0.10:
+            tokens.append("冲击/金额失衡")
 
         deduped = self._dedup_text(tokens)
         if deduped:

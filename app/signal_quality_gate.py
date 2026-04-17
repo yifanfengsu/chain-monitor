@@ -24,9 +24,12 @@ from config import (
     LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY,
     LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO,
     LP_PREALERT_MIN_CONFIRMATION,
+    LP_PREALERT_MIN_USD,
     LP_PREALERT_PRIMARY_TREND_MIN_MATCHES,
     LP_PREALERT_MIN_PRICING_CONFIDENCE,
     LP_PREALERT_MIN_RESERVE_SKEW,
+    LP_SWEEP_CONTINUATION_MIN_SCORE,
+    LP_SWEEP_EXHAUSTION_MIN_SCORE,
     LP_SWEEP_MAX_BURST_WINDOW_SEC,
     LP_SWEEP_MIN_ACTION_INTENSITY,
     LP_SWEEP_MIN_BURST_EVENT_COUNT,
@@ -138,6 +141,7 @@ def detect_lp_liquidity_sweep(
     liquidation_stage: str,
 ) -> dict:
     intent_type = str(event.intent_type or "")
+    usd_value = abs(float(event.usd_value or 0.0))
     if event.kind != "swap":
         return {
             "detected": False,
@@ -145,6 +149,11 @@ def detect_lp_liquidity_sweep(
             "sweep_confidence": "",
             "display_label": "",
             "reason": "non_swap_event",
+            "lp_sweep_phase": "",
+            "lp_sweep_followthrough_score": 0.0,
+            "lp_sweep_exhaustion_score": 0.0,
+            "lp_sweep_continuation_score": 0.0,
+            "lp_impact_to_size_ratio": 0.0,
         }
     if intent_type not in {"pool_buy_pressure", "pool_sell_pressure"}:
         return {
@@ -153,6 +162,11 @@ def detect_lp_liquidity_sweep(
             "sweep_confidence": "",
             "display_label": "",
             "reason": "non_directional_lp_intent",
+            "lp_sweep_phase": "",
+            "lp_sweep_followthrough_score": 0.0,
+            "lp_sweep_exhaustion_score": 0.0,
+            "lp_sweep_continuation_score": 0.0,
+            "lp_impact_to_size_ratio": 0.0,
         }
     if str(liquidation_stage or "none") == "execution":
         return {
@@ -161,6 +175,11 @@ def detect_lp_liquidity_sweep(
             "sweep_confidence": "",
             "display_label": "",
             "reason": "liquidation_execution_priority",
+            "lp_sweep_phase": "",
+            "lp_sweep_followthrough_score": 0.0,
+            "lp_sweep_exhaustion_score": 0.0,
+            "lp_sweep_continuation_score": 0.0,
+            "lp_impact_to_size_ratio": 0.0,
         }
 
     burst_like = (
@@ -185,20 +204,78 @@ def detect_lp_liquidity_sweep(
             "sweep_confidence": "",
             "display_label": "",
             "reason": "lp_sweep_structure_not_met",
+            "lp_sweep_phase": "",
+            "lp_sweep_followthrough_score": 0.0,
+            "lp_sweep_exhaustion_score": 0.0,
+            "lp_sweep_continuation_score": 0.0,
+            "lp_impact_to_size_ratio": 0.0,
         }
 
-    del multi_pool_resonance
+    def _clamp(value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    impact_to_size_ratio = 0.0
+    if price_impact_ratio > 0:
+        impact_to_size_ratio = price_impact_ratio / max(usd_value / 100_000.0, 0.05)
+    burst_followthrough = 0.0
+    if lp_burst_window_sec > 0 and lp_burst_window_sec <= LP_SWEEP_MAX_BURST_WINDOW_SEC:
+        burst_followthrough = min(lp_burst_event_count / max(LP_SWEEP_MIN_BURST_EVENT_COUNT + 1, 1), 1.0)
+
+    followthrough_score = 0.0
+    followthrough_score += min(multi_pool_resonance / 3.0, 1.0) * 0.34
+    followthrough_score += min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.24
+    followthrough_score += min(max(pool_volume_surge_ratio - 1.0, 0.0) / 5.0, 1.0) * 0.16
+    followthrough_score += min(max(action_intensity - LP_SWEEP_MIN_ACTION_INTENSITY, 0.0) / 0.45, 1.0) * 0.10
+    followthrough_score += burst_followthrough * 0.16
+    followthrough_score = _clamp(followthrough_score)
+
+    continuation_score = 0.0
+    continuation_score += min(multi_pool_resonance / 3.0, 1.0) * 0.36
+    continuation_score += min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.24
+    continuation_score += min(max(pool_volume_surge_ratio - LP_SWEEP_MIN_VOLUME_SURGE_RATIO, 0.0) / 5.0, 1.0) * 0.14
+    continuation_score += min(max(action_intensity - LP_SWEEP_MIN_ACTION_INTENSITY, 0.0) / 0.40, 1.0) * 0.10
+    continuation_score += burst_followthrough * 0.12
+    continuation_score += min(reserve_skew / 0.45, 1.0) * 0.06
+    continuation_score -= min(max(impact_to_size_ratio - 0.18, 0.0) / 0.35, 1.0) * 0.10
+    continuation_score = _clamp(continuation_score)
+
+    exhaustion_score = 0.0
+    exhaustion_score += min(max(price_impact_ratio - float(min_price_impact_ratio or 0.0), 0.0) / 0.02, 1.0) * 0.22
+    exhaustion_score += min(max(impact_to_size_ratio - 0.08, 0.0) / 0.42, 1.0) * 0.30
+    exhaustion_score += (0.18 if multi_pool_resonance <= 1 else 0.0)
+    exhaustion_score += (0.16 if same_pool_continuity <= 1 else 0.0)
+    exhaustion_score += (0.08 if usd_value < 20_000.0 else 0.0)
+    exhaustion_score += (0.10 if burst_followthrough < 0.35 else 0.0)
+    exhaustion_score = _clamp(exhaustion_score)
+
     semantic_subtype = (
         "buy_side_liquidity_sweep"
         if intent_type == "pool_buy_pressure"
         else "sell_side_liquidity_sweep"
     )
+    if exhaustion_score >= LP_SWEEP_EXHAUSTION_MIN_SCORE and exhaustion_score > continuation_score:
+        sweep_phase = "sweep_exhaustion_risk"
+        sweep_confidence = "high"
+        reason = "single_pool_impact_spike_exhaustion_risk"
+    elif continuation_score >= LP_SWEEP_CONTINUATION_MIN_SCORE:
+        sweep_phase = "sweep_confirmed"
+        sweep_confidence = "high" if continuation_score >= 0.72 else "likely"
+        reason = "multi_pool_followthrough_confirmed"
+    else:
+        sweep_phase = "sweep_building"
+        sweep_confidence = "monitor"
+        reason = "early_impact_building"
     return {
         "detected": True,
         "semantic_subtype": semantic_subtype,
-        "sweep_confidence": "likely",
+        "sweep_confidence": sweep_confidence,
         "display_label": "买方清扫" if semantic_subtype == "buy_side_liquidity_sweep" else "卖方清扫",
-        "reason": "swap_short_window_liquidity_consumption",
+        "reason": reason,
+        "lp_sweep_phase": sweep_phase,
+        "lp_sweep_followthrough_score": round(float(followthrough_score), 3),
+        "lp_sweep_exhaustion_score": round(float(exhaustion_score), 3),
+        "lp_sweep_continuation_score": round(float(continuation_score), 3),
+        "lp_impact_to_size_ratio": round(float(impact_to_size_ratio), 6),
     }
 
 
@@ -289,6 +366,7 @@ class SignalQualityGate:
         self.lp_prealert_min_pricing_confidence = float(LP_PREALERT_MIN_PRICING_CONFIDENCE)
         self.lp_prealert_min_reserve_skew = float(LP_PREALERT_MIN_RESERVE_SKEW)
         self.lp_prealert_min_confirmation = float(LP_PREALERT_MIN_CONFIRMATION)
+        self.lp_prealert_min_usd = float(LP_PREALERT_MIN_USD)
         self.lp_prealert_primary_trend_min_matches = int(LP_PREALERT_PRIMARY_TREND_MIN_MATCHES)
         self.lp_prealert_directional_min_action_intensity = float(LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY)
         self.lp_prealert_directional_min_volume_surge_ratio = float(LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO)
@@ -296,6 +374,8 @@ class SignalQualityGate:
         self.lp_prealert_liquidity_removal_min_volume_surge_ratio = float(LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO)
         self.lp_prealert_liquidity_addition_min_action_intensity = float(LP_PREALERT_LIQUIDITY_ADDITION_MIN_ACTION_INTENSITY)
         self.lp_prealert_liquidity_addition_min_volume_surge_ratio = float(LP_PREALERT_LIQUIDITY_ADDITION_MIN_VOLUME_SURGE_RATIO)
+        self.lp_sweep_continuation_min_score = float(LP_SWEEP_CONTINUATION_MIN_SCORE)
+        self.lp_sweep_exhaustion_min_score = float(LP_SWEEP_EXHAUSTION_MIN_SCORE)
         self.lp_trend_burst_min_event_count = int(LP_TREND_BURST_MIN_EVENT_COUNT)
         self.lp_trend_burst_min_total_usd = float(LP_TREND_BURST_MIN_TOTAL_USD)
         self.lp_trend_burst_min_max_single_usd = float(LP_TREND_BURST_MIN_MAX_SINGLE_USD)
@@ -674,6 +754,11 @@ class SignalQualityGate:
             "lp_sweep_confidence": str(lp_sweep_meta.get("sweep_confidence") or ""),
             "lp_sweep_display_label": str(lp_sweep_meta.get("display_label") or ""),
             "lp_sweep_reason": str(lp_sweep_meta.get("reason") or ""),
+            "lp_sweep_phase": str(lp_sweep_meta.get("lp_sweep_phase") or ""),
+            "lp_sweep_followthrough_score": float(lp_sweep_meta.get("lp_sweep_followthrough_score") or 0.0),
+            "lp_sweep_exhaustion_score": float(lp_sweep_meta.get("lp_sweep_exhaustion_score") or 0.0),
+            "lp_sweep_continuation_score": float(lp_sweep_meta.get("lp_sweep_continuation_score") or 0.0),
+            "lp_impact_to_size_ratio": float(lp_sweep_meta.get("lp_impact_to_size_ratio") or 0.0),
             "lp_sweep_min_price_impact_ratio": float(self.min_price_impact_ratio),
         })
         lp_burst_fastlane_ready, lp_burst_fastlane_reason = self._allow_lp_burst_fastlane_exception(
@@ -686,6 +771,32 @@ class SignalQualityGate:
         metrics["lp_fastlane_ready"] = bool(lp_burst_fastlane_ready)
         if lp_burst_fastlane_reason:
             metrics["lp_burst_fastlane_reason"] = str(lp_burst_fastlane_reason)
+
+        allow_lp_prealert = False
+        lp_prealert_reason = ""
+        lp_prealert_score = 0.0
+        lp_prealert_components = {}
+        if lp_event:
+            allow_lp_prealert, lp_prealert_reason, lp_prealert_score, lp_prealert_components = self._allow_lp_prealert_exception(
+                event=event,
+                lp_trend_primary_pool=lp_trend_primary_pool,
+                pricing_status=pricing_status,
+                pricing_confidence=pricing_confidence,
+                confirmation_score=float(event.confirmation_score or 0.0),
+                usd_value=usd_value,
+                action_intensity=action_intensity,
+                reserve_skew=reserve_skew,
+                same_pool_continuity=same_pool_continuity,
+                multi_pool_resonance=multi_pool_resonance,
+                pool_volume_surge_ratio=pool_volume_surge_ratio,
+            )
+            metrics["lp_prealert_candidate"] = bool(allow_lp_prealert)
+            metrics["lp_prealert_reason"] = str(lp_prealert_reason or "")
+            metrics["lp_structure_score"] = round(lp_prealert_score, 3)
+            metrics["lp_structure_components"] = dict(lp_prealert_components or {})
+            if allow_lp_prealert:
+                metrics["lp_prealert_applied"] = True
+                metrics["lp_stage_decision"] = "gate_prealert_candidate"
 
         if lp_event and event.intent_type == "pool_noise":
             metrics["lp_stage_decision"] = "gate_rejected"
@@ -744,19 +855,6 @@ class SignalQualityGate:
             return GateDecision(False, "pricing_low_confidence_non_swap", 0.0, "DROP", self.score_threshold, metrics)
 
         if usd_value < dynamic_min_usd:
-            allow_lp_prealert, lp_prealert_reason, lp_prealert_score, lp_prealert_components = self._allow_lp_prealert_exception(
-                event=event,
-                lp_trend_primary_pool=lp_trend_primary_pool,
-                pricing_status=pricing_status,
-                pricing_confidence=pricing_confidence,
-                confirmation_score=float(event.confirmation_score or 0.0),
-                action_intensity=action_intensity,
-                reserve_skew=reserve_skew,
-                pool_volume_surge_ratio=pool_volume_surge_ratio,
-            )
-            metrics["lp_prealert_candidate"] = bool(allow_lp_prealert)
-            metrics["lp_structure_score"] = round(lp_prealert_score, 3)
-            metrics["lp_structure_components"] = dict(lp_prealert_components or {})
             if allow_lp_prealert:
                 metrics["lp_prealert_applied"] = True
                 metrics["lp_stage_decision"] = "gate_prealert_pass"
@@ -1611,12 +1709,13 @@ class SignalQualityGate:
         pricing_status: str,
         pricing_confidence: float,
         confirmation_score: float,
+        usd_value: float,
         action_intensity: float,
         reserve_skew: float,
+        same_pool_continuity: int,
+        multi_pool_resonance: int,
         pool_volume_surge_ratio: float,
     ) -> tuple[bool, str, float, dict]:
-        if not lp_trend_primary_pool:
-            return False, "", 0.0, {}
         intent_type = str(event.intent_type or "")
         if intent_type not in {
             "pool_buy_pressure",
@@ -1629,31 +1728,50 @@ class SignalQualityGate:
             return False, "lp_prealert_pricing_unavailable", 0.0, {}
         if pricing_confidence < self.lp_prealert_min_pricing_confidence:
             return False, "lp_prealert_pricing_confidence_too_low", 0.0, {}
-        if confirmation_score < self.lp_prealert_min_confirmation:
+        if usd_value < max(self.lp_notify_hard_min_usd, self.lp_prealert_min_usd):
+            return False, "lp_prealert_usd_too_low", 0.0, {}
+        if confirmation_score < max(self.lp_prealert_min_confirmation - 0.10, 0.24):
             return False, "lp_prealert_confirmation_too_low", 0.0, {}
 
         min_action_intensity = self.lp_prealert_directional_min_action_intensity
         min_volume_surge_ratio = self.lp_prealert_directional_min_volume_surge_ratio
-        min_matches = self.lp_prealert_primary_trend_min_matches
         if intent_type == "liquidity_removal":
             min_action_intensity = self.lp_prealert_liquidity_removal_min_action_intensity
             min_volume_surge_ratio = self.lp_prealert_liquidity_removal_min_volume_surge_ratio
         elif intent_type == "liquidity_addition":
             min_action_intensity = self.lp_prealert_liquidity_addition_min_action_intensity
             min_volume_surge_ratio = self.lp_prealert_liquidity_addition_min_volume_surge_ratio
-            min_matches = max(self.lp_prealert_primary_trend_min_matches + 1, 3)
+
+        combo_action_surge = (
+            action_intensity >= min_action_intensity
+            and pool_volume_surge_ratio >= min_volume_surge_ratio
+        )
+        combo_skew_emerging = (
+            reserve_skew >= self.lp_prealert_min_reserve_skew
+            and max(same_pool_continuity, multi_pool_resonance) >= 1
+        )
+        combo_multi_pool = multi_pool_resonance >= 2
+        primary_pool_bonus = bool(lp_trend_primary_pool)
 
         components = {
             "pricing_confidence": bool(pricing_confidence >= self.lp_prealert_min_pricing_confidence),
-            "action_intensity": bool(action_intensity >= min_action_intensity),
-            "reserve_skew": bool(reserve_skew >= self.lp_prealert_min_reserve_skew),
-            "volume_surge_ratio": bool(pool_volume_surge_ratio >= min_volume_surge_ratio),
+            "min_usd": bool(usd_value >= max(self.lp_notify_hard_min_usd, self.lp_prealert_min_usd)),
+            "action_plus_surge": bool(combo_action_surge),
+            "reserve_skew_emerging": bool(combo_skew_emerging),
+            "multi_pool_first_resonance": bool(combo_multi_pool),
+            "primary_pool_bonus": bool(primary_pool_bonus),
         }
         matched = sum(1 for matched in components.values() if matched)
         structure_score = round(matched / max(len(components), 1), 3)
-        if matched < min_matches:
+        if not (combo_action_surge or combo_skew_emerging or combo_multi_pool):
             return False, "lp_prealert_structure_too_weak", structure_score, components
-        return True, "lp_prealert_structured_mainstream_pool", structure_score, components
+        if matched < max(self.lp_prealert_primary_trend_min_matches, 2):
+            return False, "lp_prealert_structure_too_weak", structure_score, components
+        if combo_multi_pool:
+            return True, "lp_prealert_multi_pool_first_resonance", structure_score, components
+        if combo_skew_emerging:
+            return True, "lp_prealert_reserve_skew_emerging", structure_score, components
+        return True, "lp_prealert_direction_building", structure_score, components
 
     def _lp_fast_exception_structure_score(
         self,

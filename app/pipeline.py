@@ -23,6 +23,8 @@ from config import (
     DOWNSTREAM_EARLY_WARNING_MIN_PRICING_CONFIDENCE,
     DOWNSTREAM_EARLY_WARNING_MIN_QUALITY,
     DOWNSTREAM_EARLY_WARNING_MIN_RESONANCE,
+    LP_FASTLANE_PROMOTION_ENABLE,
+    LP_FASTLANE_PROMOTION_TTL_SEC,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
@@ -124,6 +126,196 @@ class SignalPipeline:
             ),
             key=lambda item: (-item[1], item[0]),
         )[:limit]
+
+    def _carry_runtime_candidate_fields(self, parsed: dict, raw_item: dict) -> dict:
+        carried = dict(parsed or {})
+        source = dict(raw_item or {})
+        passthrough_fields = (
+            "ingest_ts",
+            "listener_rpc_mode",
+            "listener_block_fetch_mode",
+            "listener_block_fetch_reason",
+            "listener_block_get_logs_request_count",
+            "listener_block_topic_chunk_count",
+            "listener_block_monitored_address_count",
+            "listener_block_lp_secondary_scan_used",
+            "listener_block_bloom_prefilter_used",
+            "listener_block_bloom_skipped_get_logs_count",
+            "listener_block_bloom_transfer_possible",
+            "listener_block_bloom_address_possible_count",
+            "listener_runtime_adjacent_core_count",
+            "listener_runtime_adjacent_secondary_count",
+            "listener_runtime_adjacent_secondary_scan_used",
+            "listener_runtime_adjacent_secondary_skipped_count",
+            "listener_block_lp_primary_trend_scan_used",
+            "listener_block_lp_extended_scan_used",
+            "listener_block_lp_promoted_main_scan_used",
+            "listener_block_lp_primary_trend_pool_count",
+            "listener_block_lp_extended_pool_count",
+            "listener_block_lp_promoted_pool_count",
+            "listener_block_get_logs_primary_side_count",
+            "listener_block_get_logs_secondary_side_count",
+            "listener_block_get_logs_secondary_side_skipped_count",
+            "listener_block_get_logs_empty_response_count",
+            "low_cu_mode_enabled",
+            "low_cu_mode_lp_secondary_only",
+            "low_cu_mode_poll_interval_sec",
+            "lp_scan_path",
+            "lp_scan_paths_by_pool",
+            "lp_promoted_fastlane",
+            "lp_promote_reason",
+            "tx_pool_hit_count",
+            "touched_lp_pool_count",
+            "pool_transfer_count_by_pool",
+            "pool_candidate_weight",
+            "participant_addresses",
+            "next_hop_addresses",
+            "raw_log_count",
+            "replay_source",
+        )
+        for field in passthrough_fields:
+            if field in source:
+                carried[field] = source.get(field)
+        carried["first_chain_seen_at"] = int(
+            source.get("first_chain_seen_at")
+            or source.get("ingest_ts")
+            or carried.get("first_chain_seen_at")
+            or 0
+        )
+        carried["parsed_at"] = int(time.time())
+        return carried
+
+    def _lp_price_proxy(self, event: Event) -> float:
+        raw = event.metadata.get("raw") or {}
+        lp_context = raw.get("lp_context") or {}
+        base_amount = float(lp_context.get("base_amount") or event.amount or 0.0)
+        quote_amount = float(lp_context.get("quote_amount") or event.metadata.get("quote_amount") or 0.0)
+        if base_amount <= 0 or quote_amount <= 0:
+            return 0.0
+        return quote_amount / max(base_amount, 1e-12)
+
+    def _annotate_lp_market_timing(self, event: Event) -> dict:
+        if not self._is_lp_event(event=event):
+            return {}
+        first_chain_seen_at = int(event.metadata.get("first_chain_seen_at") or 0)
+        parsed_at = int(event.metadata.get("parsed_at") or time.time())
+        block_age_s = max(parsed_at - first_chain_seen_at, 0) if first_chain_seen_at > 0 else 0
+        detect_latency_ms = int(block_age_s * 1000)
+        price_proxy = self._lp_price_proxy(event)
+        pool_address = str(event.address or "").lower()
+        move_before_30s = 0.0
+        move_before_60s = 0.0
+        if price_proxy > 0 and hasattr(self.state_manager, "_lp_price_move_from_history"):
+            move_before_30s = float(
+                self.state_manager._lp_price_move_from_history(pool_address, price_proxy, int(event.ts or time.time()), 30) or 0.0
+            )
+            move_before_60s = float(
+                self.state_manager._lp_price_move_from_history(pool_address, price_proxy, int(event.ts or time.time()), 60) or 0.0
+            )
+        payload = {
+            "first_chain_seen_at": first_chain_seen_at,
+            "parsed_at": parsed_at,
+            "lp_block_age_s": round(float(block_age_s), 3),
+            "lp_detect_latency_ms": detect_latency_ms,
+            "pool_price_move_before_alert_30s": round(float(move_before_30s), 6),
+            "pool_price_move_before_alert_60s": round(float(move_before_60s), 6),
+            "pool_price_move_after_alert_60s": None,
+            "pool_price_move_after_alert_300s": None,
+        }
+        event.metadata.update(payload)
+        return payload
+
+    def _promote_lp_fastlane_if_needed(self, event: Event, signal, gate_metrics: dict | None = None) -> dict:
+        gate_metrics = gate_metrics or {}
+        if not bool(LP_FASTLANE_PROMOTION_ENABLE):
+            return {}
+        if not self._is_lp_event(event=event):
+            return {}
+        pool_address = str(event.address or "").lower()
+        if not pool_address:
+            return {}
+        stage = str(signal.context.get("lp_alert_stage") or event.metadata.get("lp_alert_stage") or "")
+        multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or 0)
+        structure_score = float(gate_metrics.get("lp_structure_score") or 0.0)
+        lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool") or event.metadata.get("lp_trend_primary_pool"))
+        reason = ""
+        priority_score = 0.0
+        if stage == "prealert":
+            reason = str(event.metadata.get("lp_prealert_reason") or "lp_prealert_fastlane")
+            priority_score = 0.62
+        elif multi_pool_resonance >= 2:
+            reason = "lp_multi_pool_resonance_fastlane"
+            priority_score = 0.74
+        elif lp_trend_primary_pool:
+            reason = "lp_primary_trend_pool_fastlane"
+            priority_score = 0.56
+        elif structure_score >= 0.5:
+            reason = "lp_structure_hot_pool_fastlane"
+            priority_score = 0.48
+        if not reason:
+            return {}
+        payload = self.state_manager.register_lp_fastlane_pool(
+            pool_address,
+            now_ts=int(event.ts or time.time()),
+            ttl_sec=int(LP_FASTLANE_PROMOTION_TTL_SEC or 0),
+            reason=reason,
+            alert_stage=stage,
+            signal_id=str(signal.signal_id or ""),
+            priority_score=priority_score,
+        )
+        if payload:
+            event.metadata["lp_promote_reason"] = str(payload.get("promote_reason") or reason)
+            signal.metadata["lp_promote_reason"] = str(payload.get("promote_reason") or reason)
+            signal.context["lp_promote_reason"] = str(payload.get("promote_reason") or reason)
+        return payload
+
+    def _record_lp_outcome_runtime(self, event: Event, signal) -> dict:
+        payload = self.state_manager.record_lp_outcome_alert(event, signal)
+        if not payload:
+            return {}
+        event.metadata["lp_outcome_record"] = dict(payload)
+        signal.metadata["lp_outcome_record"] = dict(payload)
+        signal.context["lp_outcome_record"] = dict(payload)
+        signal.context["pool_price_move_before_alert_30s"] = float(payload.get("move_before_alert_30s") or 0.0)
+        signal.context["pool_price_move_before_alert_60s"] = float(payload.get("move_before_alert_60s") or 0.0)
+        signal.context["pool_price_move_after_alert_60s"] = payload.get("move_after_alert_60s")
+        signal.context["pool_price_move_after_alert_300s"] = payload.get("move_after_alert_300s")
+        event.metadata["pool_price_move_after_alert_60s"] = payload.get("move_after_alert_60s")
+        event.metadata["pool_price_move_after_alert_300s"] = payload.get("move_after_alert_300s")
+        outcome_tracking = dict(signal.context.get("outcome_tracking") or {})
+        if outcome_tracking:
+            outcome_tracking["move_before_alert"] = payload.get("move_before_alert")
+            outcome_tracking["move_before_alert_30s"] = payload.get("move_before_alert_30s")
+            outcome_tracking["move_before_alert_60s"] = payload.get("move_before_alert_60s")
+            outcome_tracking["move_after_alert"] = payload.get("move_after_alert")
+            outcome_tracking["time_to_confirm"] = payload.get("time_to_confirm")
+            windows = dict(outcome_tracking.get("windows") or {})
+            window_30s = dict(windows.get("30s") or {})
+            window_30s.update({
+                "followthrough_positive": payload.get("followthrough_positive"),
+                "followthrough_negative": payload.get("followthrough_negative"),
+                "confirm_after_prealert": payload.get("confirm_after_prealert"),
+                "reversal_after_climax": payload.get("reversal_after_climax"),
+            })
+            window_60s = dict(windows.get("60s") or {})
+            window_60s.update({
+                "move_after_alert": payload.get("move_after_alert_60s"),
+                "confirm_after_prealert": payload.get("confirm_after_prealert"),
+                "false_prealert": payload.get("false_prealert"),
+                "reversal_after_climax": payload.get("reversal_after_climax"),
+            })
+            window_300s = dict(windows.get("300s") or {})
+            window_300s.update({
+                "move_after_alert": payload.get("move_after_alert_300s"),
+                "confirm_after_prealert": payload.get("confirm_after_prealert"),
+                "false_prealert": payload.get("false_prealert"),
+                "reversal_after_climax": payload.get("reversal_after_climax"),
+            })
+            outcome_tracking["windows"] = {"30s": window_30s, "60s": window_60s, "300s": window_300s}
+            signal.context["outcome_tracking"] = outcome_tracking
+            event.metadata["outcome_tracking"] = outcome_tracking
+            signal.metadata["outcome_tracking"] = outcome_tracking
+        return payload
 
     def _log_runtime_notifier_stats_if_needed(self, force: bool = False) -> None:
         now = time.time()
@@ -243,6 +435,7 @@ class SignalPipeline:
         if not watch_context:
             return None
 
+        parsed = self._carry_runtime_candidate_fields(parsed, raw_item)
         parsed = self._normalize_parsed(parsed, watch_context, raw_item=raw_item)
         watch_meta = (
             get_primary_watch_meta(parsed, watch_context=watch_context)
@@ -299,6 +492,7 @@ class SignalPipeline:
         event.archive_ts = archive_ts
         event.event_id = self._build_event_id(event)
         parsed["event_id"] = event.event_id
+        self._annotate_lp_market_timing(event)
 
         preliminary_intent = self._classify_intent(
             event=event,
@@ -511,6 +705,8 @@ class SignalPipeline:
             base_token_score=float(token_score.get("score") or 0.0),
             gate_metrics=gate_decision.metrics,
         )
+        if self._is_lp_event(event=event):
+            event.metadata["gate_passed_at"] = int(time.time())
         runtime_adjacent_allowed, runtime_adjacent_gate_result = self._passes_runtime_adjacent_execution_gate(
             event=event,
             watch_meta=watch_meta,
@@ -725,6 +921,16 @@ class SignalPipeline:
             "low_cu_mode_poll_interval_sec": float(
                 event.metadata.get("low_cu_mode_poll_interval_sec") or 0.0
             ),
+            "first_chain_seen_at": int(event.metadata.get("first_chain_seen_at") or 0),
+            "parsed_at": int(event.metadata.get("parsed_at") or 0),
+            "gate_passed_at": int(event.metadata.get("gate_passed_at") or 0),
+            "lp_scan_path": str(event.metadata.get("lp_scan_path") or ""),
+            "lp_promoted_fastlane": bool(event.metadata.get("lp_promoted_fastlane")),
+            "lp_promote_reason": str(event.metadata.get("lp_promote_reason") or ""),
+            "lp_detect_latency_ms": int(event.metadata.get("lp_detect_latency_ms") or 0),
+            "lp_block_age_s": float(event.metadata.get("lp_block_age_s") or 0.0),
+            "pool_price_move_before_alert_30s": float(event.metadata.get("pool_price_move_before_alert_30s") or 0.0),
+            "pool_price_move_before_alert_60s": float(event.metadata.get("pool_price_move_before_alert_60s") or 0.0),
             "lp_adjacent_noise_skipped_in_listener": bool(event.metadata.get("lp_adjacent_noise_skipped_in_listener")),
             "lp_adjacent_noise_listener_reason": str(event.metadata.get("lp_adjacent_noise_listener_reason") or ""),
             "lp_adjacent_noise_listener_confidence": float(event.metadata.get("lp_adjacent_noise_listener_confidence") or 0.0),
@@ -843,6 +1049,8 @@ class SignalPipeline:
             gate_metrics=gate_decision.metrics,
             behavior_case=behavior_case,
         )
+        self._promote_lp_fastlane_if_needed(event, signal, gate_decision.metrics)
+        self._record_lp_outcome_runtime(event, signal)
         if delivery_class == "drop":
             self._apply_silent_reason(
                 event=event,
@@ -1341,6 +1549,7 @@ class SignalPipeline:
             "lp_reject_reason": str(_first_value(gate_metrics.get("lp_reject_reason"), existing.get("lp_reject_reason"), "") or ""),
             "lp_prealert_candidate": bool(_first_value(gate_metrics.get("lp_prealert_candidate"), existing.get("lp_prealert_candidate"), False)),
             "lp_prealert_applied": bool(_first_value(gate_metrics.get("lp_prealert_applied"), existing.get("lp_prealert_applied"), False)),
+            "lp_prealert_reason": str(_first_value(gate_metrics.get("lp_prealert_reason"), existing.get("lp_prealert_reason"), "") or ""),
             "lp_structure_score": float(_first_value(gate_metrics.get("lp_structure_score"), existing.get("lp_structure_score"), 0.0) or 0.0),
             "lp_structure_components": _first_value(gate_metrics.get("lp_structure_components"), existing.get("lp_structure_components"), {}) or {},
             "lp_fastlane_ready": bool(_first_value(gate_metrics.get("lp_fastlane_ready"), existing.get("lp_fastlane_ready"), gate_metrics.get("lp_burst_fastlane_ready"), False)),
@@ -1402,6 +1611,11 @@ class SignalPipeline:
             "lp_resonance_eligible": bool(_first_value(gate_metrics.get("lp_resonance_eligible"), existing.get("lp_resonance_eligible"), False)),
             "lp_continuity_filtered_by_min_usd": int(_first_value(gate_metrics.get("lp_continuity_filtered_by_min_usd"), existing.get("lp_continuity_filtered_by_min_usd"), 0) or 0),
             "lp_resonance_filtered_by_min_usd": int(_first_value(gate_metrics.get("lp_resonance_filtered_by_min_usd"), existing.get("lp_resonance_filtered_by_min_usd"), 0) or 0),
+            "lp_sweep_phase": str(_first_value(gate_metrics.get("lp_sweep_phase"), existing.get("lp_sweep_phase"), "") or ""),
+            "lp_sweep_followthrough_score": float(_first_value(gate_metrics.get("lp_sweep_followthrough_score"), existing.get("lp_sweep_followthrough_score"), 0.0) or 0.0),
+            "lp_sweep_exhaustion_score": float(_first_value(gate_metrics.get("lp_sweep_exhaustion_score"), existing.get("lp_sweep_exhaustion_score"), 0.0) or 0.0),
+            "lp_sweep_continuation_score": float(_first_value(gate_metrics.get("lp_sweep_continuation_score"), existing.get("lp_sweep_continuation_score"), 0.0) or 0.0),
+            "lp_impact_to_size_ratio": float(_first_value(gate_metrics.get("lp_impact_to_size_ratio"), existing.get("lp_impact_to_size_ratio"), 0.0) or 0.0),
         }
         event.metadata["lp_burst"] = {
             "lp_burst_window_sec": payload["lp_burst_window_sec"],
@@ -5758,6 +5972,33 @@ class SignalPipeline:
     ) -> None:
         behavior_case = behavior_case or self._resolve_behavior_case_for_signal(signal)
         delivery_reason = "notifier_delivered" if delivered else "notifier_send_failed"
+        notifier_sent_at = int(time.time())
+        if self._is_lp_event(event=event):
+            first_chain_seen_at = int(
+                signal.context.get("first_chain_seen_at")
+                or signal.metadata.get("first_chain_seen_at")
+                or event.metadata.get("first_chain_seen_at")
+                or 0
+            )
+            end_to_end_latency_ms = int(max(notifier_sent_at - first_chain_seen_at, 0) * 1000) if first_chain_seen_at > 0 else 0
+            lp_latency_payload = {
+                "notifier_sent_at": notifier_sent_at,
+                "lp_end_to_end_latency_ms": end_to_end_latency_ms,
+            }
+            event.metadata.update(lp_latency_payload)
+            signal.metadata.update(lp_latency_payload)
+            signal.context.update(lp_latency_payload)
+            outcome_record = dict(signal.metadata.get("lp_outcome_record") or event.metadata.get("lp_outcome_record") or {})
+            if outcome_record.get("record_id"):
+                updated_record = self.state_manager.mark_lp_outcome_notification(
+                    str(outcome_record.get("record_id") or ""),
+                    notifier_sent_at=notifier_sent_at,
+                    delivered=bool(delivered),
+                )
+                if updated_record:
+                    event.metadata["lp_outcome_record"] = updated_record
+                    signal.metadata["lp_outcome_record"] = updated_record
+                    signal.context["lp_outcome_record"] = updated_record
         self._apply_notification_delivery_metadata(
             event=event,
             signal=signal,
@@ -6839,6 +7080,8 @@ class SignalPipeline:
                 "possible_vault_or_auction": bool(parsed.get("possible_vault_or_auction")),
                 "possible_lending_protocol": bool(parsed.get("possible_lending_protocol")),
                 "ingest_ts": int(parsed.get("ingest_ts") or 0),
+                "first_chain_seen_at": int(parsed.get("first_chain_seen_at") or parsed.get("ingest_ts") or 0),
+                "parsed_at": int(parsed.get("parsed_at") or 0),
                 "source_kind": parsed.get("source_kind", ""),
                 "touched_watch_addresses": list(parsed.get("touched_watch_addresses") or []),
                 "touched_lp_pools": list(parsed.get("touched_lp_pools") or []),
@@ -6850,6 +7093,10 @@ class SignalPipeline:
                 "touched_lp_pool_count": int(parsed.get("touched_lp_pool_count") or 0),
                 "pool_transfer_count_by_pool": dict(parsed.get("pool_transfer_count_by_pool") or {}),
                 "pool_candidate_weight": float(parsed.get("pool_candidate_weight") or 0.0),
+                "lp_scan_path": str(parsed.get("lp_scan_path") or ""),
+                "lp_scan_paths_by_pool": dict(parsed.get("lp_scan_paths_by_pool") or {}),
+                "lp_promoted_fastlane": bool(parsed.get("lp_promoted_fastlane")),
+                "lp_promote_reason": str(parsed.get("lp_promote_reason") or ""),
                 "replay_source": str(parsed.get("replay_source") or ""),
                 "listener_rpc_mode": str(parsed.get("listener_rpc_mode") or ""),
                 "listener_block_fetch_mode": str(parsed.get("listener_block_fetch_mode") or ""),

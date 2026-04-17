@@ -547,6 +547,54 @@ def _lp_liquidity_structure(context: dict) -> str:
     return f"{continuity}｜{resonance}"
 
 
+def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
+    stage_badge = str(context.get("lp_stage_badge") or "确认")
+    pair_or_pool = _pair_label(signal, context)
+    state_label = str(context.get("lp_state_label") or context.get("market_state_label") or _headline_label(context, event))
+    evidence = str(
+        context.get("core_evidence_pack")
+        or context.get("evidence_brief")
+        or context.get("lp_burst_summary")
+        or _evidence_brief(context)
+    )
+    market_read = str(
+        context.get("lp_market_read")
+        or context.get("lp_meaning_brief")
+        or _explanation_brief(context, event)
+    )
+    followup_check = str(context.get("lp_followup_check") or context.get("action_hint") or _action_hint(context))
+    invalidation = str(context.get("lp_invalidation") or context.get("failure_conditions") or "结构回落")
+    scan_path = str(context.get("lp_scan_path") or "secondary")
+    latency_ms = int(
+        context.get("lp_end_to_end_latency_ms")
+        or context.get("lp_detect_latency_ms")
+        or 0
+    )
+    template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
+    show_followup = bool(
+        context.get("lp_followup_required")
+        or str(signal.delivery_class or "").strip().lower() == "primary"
+        or stage_badge in {"预警", "高潮", "风险"}
+    )
+    show_debug = bool(
+        template == "debug"
+        or str(signal.delivery_class or "").strip().lower() == "primary"
+        or float(context.get("lp_follow_confidence") or 0.0) >= 0.72
+        or float(context.get("lp_exhaustion_confidence") or 0.0) >= 0.68
+    )
+
+    lines = [
+        f"{stage_badge}｜{pair_or_pool}｜{state_label}",
+        evidence,
+        market_read,
+    ]
+    if show_followup:
+        lines.append(f"继续看：{followup_check}｜失效：{invalidation}")
+    if show_debug:
+        lines.append(f"链路：{scan_path}｜延迟 {latency_ms}ms")
+    return _join_lines(lines)
+
+
 def _is_downstream_early_warning(context: dict) -> bool:
     stage = str(
         context.get("case_notification_stage")
@@ -779,6 +827,8 @@ def _market_maker_observe_message(signal: Signal, event: Event, context: dict, r
 def _brief_message(signal: Signal, event: Event, context: dict, raw: dict) -> str:
     del raw
     variant = _select_message_variant(signal, event, context)
+    if variant in {"lp_directional", "lp_liquidity"}:
+        return _lp_stage_first_message(signal, event, context)
     label = _pair_label(signal, context) if variant in BRIEF_BY_DEFAULT_VARIANTS else _object_label(signal, context)
     line1 = f"{label}｜{_market_state_label(context, event)}｜{_usd_value_text(signal.usd_value)}"
     line2 = str(

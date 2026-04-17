@@ -1349,6 +1349,10 @@ class StrategyEngine:
                     lp_trend_primary_pool=lp_trend_primary_pool,
                     lp_prealert_applied=lp_prealert_applied,
                     pricing_confidence=pricing_confidence,
+                    confirmation_score=confirmation_score,
+                    same_pool_continuity=lp_same_pool_continuity,
+                    multi_pool_resonance=lp_multi_pool_resonance,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
                 ):
                     return self._apply_delivery(
                         event,
@@ -1483,6 +1487,10 @@ class StrategyEngine:
                     lp_trend_primary_pool=lp_trend_primary_pool,
                     lp_prealert_applied=lp_prealert_applied,
                     pricing_confidence=pricing_confidence,
+                    confirmation_score=confirmation_score,
+                    same_pool_continuity=lp_same_pool_continuity,
+                    multi_pool_resonance=lp_multi_pool_resonance,
+                    lp_volume_surge_ratio=lp_volume_surge_ratio,
                 ):
                     return self._apply_delivery(
                         event,
@@ -2105,12 +2113,23 @@ class StrategyEngine:
         lp_trend_primary_pool: bool,
         lp_prealert_applied: bool,
         pricing_confidence: float,
+        confirmation_score: float,
+        same_pool_continuity: int,
+        multi_pool_resonance: int,
+        lp_volume_surge_ratio: float,
     ) -> bool:
         if not lp_prealert_applied:
             return False
         if str(event.intent_type or "") not in LP_PREALERT_INTENTS:
             return False
         if pricing_confidence < max(LP_PREALERT_MIN_PRICING_CONFIDENCE - 0.06, 0.58):
+            return False
+        if (
+            confirmation_score >= LP_PRIMARY_MIN_CONFIDENCE
+            or same_pool_continuity >= 2
+            or multi_pool_resonance >= 2
+            or lp_volume_surge_ratio >= LP_PRIMARY_MIN_SURGE_RATIO
+        ):
             return False
         if lp_trend_primary_pool:
             return True

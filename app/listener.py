@@ -19,6 +19,7 @@ from config import (
     LOW_CU_MODE,
     LP_EXTENDED_SCAN_ENABLE,
     LP_EXTENDED_SCAN_INTERVAL_SEC,
+    LP_FASTLANE_MAIN_SCAN_INCLUDE_PROMOTED,
     LP_PRIMARY_TREND_SCAN_INTERVAL_SEC,
     LP_SECONDARY_SCAN_ENABLE,
     LP_SECONDARY_SCAN_INTERVAL_SEC,
@@ -49,7 +50,12 @@ from lp_registry import (
 )
 from processor import get_token_metadata_stats_snapshot
 from rpc_resilience import get_rpc_stats_snapshot, rpc_call_with_backoff
-from state_manager import get_runtime_adjacent_watch_addresses, maybe_get_runtime_adjacent_watch_meta
+from state_manager import (
+    get_lp_fastlane_pool_context,
+    get_lp_fastlane_promoted_pool_addresses,
+    maybe_get_runtime_adjacent_watch_meta,
+    get_runtime_adjacent_watch_addresses,
+)
 
 # 使用 HTTPProvider 做新区块轮询。
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -159,9 +165,16 @@ def _effective_poll_interval_sec() -> float:
 
 
 def _effective_lp_secondary_interval_sec() -> float:
-    base_interval = max(float(LP_PRIMARY_TREND_SCAN_INTERVAL_SEC or LP_SECONDARY_SCAN_INTERVAL_SEC or 2.0), 0.5)
+    base_interval = max(float(LP_SECONDARY_SCAN_INTERVAL_SEC or 2.0), 0.5)
     if LOW_CU_MODE:
         return max(base_interval, 12.0)
+    return base_interval
+
+
+def _effective_lp_primary_trend_interval_sec() -> float:
+    base_interval = max(float(LP_PRIMARY_TREND_SCAN_INTERVAL_SEC or 2.0), 0.5)
+    if LOW_CU_MODE:
+        return max(base_interval, 8.0)
     return base_interval
 
 
@@ -198,8 +211,10 @@ def _listener_runtime_defaults() -> dict:
         "listener_runtime_adjacent_secondary_skipped_count": 0,
         "listener_block_lp_primary_trend_scan_used": False,
         "listener_block_lp_extended_scan_used": False,
+        "listener_block_lp_promoted_main_scan_used": False,
         "listener_block_lp_primary_trend_pool_count": 0,
         "listener_block_lp_extended_pool_count": 0,
+        "listener_block_lp_promoted_pool_count": 0,
         "listener_block_get_logs_primary_side_count": 0,
         "listener_block_get_logs_secondary_side_count": 0,
         "listener_block_get_logs_secondary_side_skipped_count": 0,
@@ -272,11 +287,17 @@ def _listener_runtime_metadata(block_context: dict | None = None) -> dict:
                 "listener_block_lp_extended_scan_used": bool(
                     block_context.get("listener_block_lp_extended_scan_used")
                 ),
+                "listener_block_lp_promoted_main_scan_used": bool(
+                    block_context.get("listener_block_lp_promoted_main_scan_used")
+                ),
                 "listener_block_lp_primary_trend_pool_count": int(
                     block_context.get("listener_block_lp_primary_trend_pool_count") or 0
                 ),
                 "listener_block_lp_extended_pool_count": int(
                     block_context.get("listener_block_lp_extended_pool_count") or 0
+                ),
+                "listener_block_lp_promoted_pool_count": int(
+                    block_context.get("listener_block_lp_promoted_pool_count") or 0
                 ),
                 "listener_block_get_logs_primary_side_count": int(
                     block_context.get("listener_block_get_logs_primary_side_count") or 0
@@ -335,7 +356,7 @@ def _address_from_topic(topic) -> str:
     return "0x" + _to_hex(topic)[-40:].lower()
 
 
-def _compact_log(log):
+def _compact_log(log, *, scan_group: str = "", scan_path: str = ""):
     """仅保留后续 processor 需要的日志字段。"""
     return {
         "address": str(log.get("address", "")).lower(),
@@ -344,6 +365,8 @@ def _compact_log(log):
         "logIndex": int(log.get("logIndex", 0)) if log.get("logIndex") is not None else 0,
         "transactionHash": log.get("transactionHash"),
         "blockNumber": int(log.get("blockNumber", 0)) if log.get("blockNumber") is not None else 0,
+        "scan_group": str(scan_group or ""),
+        "lp_scan_path": str(scan_path or ""),
     }
 
 
@@ -440,6 +463,34 @@ def _pool_candidate_weight(raw_log_count: int, touched_lp_pools: list[str], pool
     pool_hits = min(0.6, len(touched_lp_pools) * 0.18)
     transfer_density = min(0.6, sum(int(value or 0) for value in pool_transfer_counts.values()) / 10.0)
     return round(min(1.0, 0.2 + base * 0.35 + pool_hits + transfer_density * 0.25), 3)
+
+
+def _lp_scan_paths_by_pool_from_logs(logs: list[dict], touched_lp_pools: list[str]) -> dict[str, str]:
+    pools = {str(address or "").lower() for address in touched_lp_pools if address}
+    if not pools:
+        return {}
+    priority = {
+        "main": 0,
+        "secondary": 1,
+        "primary_trend": 2,
+        "extended": 3,
+        "promoted_main": 4,
+    }
+    payload = {}
+    for log in logs or []:
+        topics = log.get("topics") or []
+        if len(topics) < 3:
+            continue
+        scan_path = _scan_path_for_group(log.get("scan_group") or log.get("lp_scan_path"))
+        if not scan_path:
+            continue
+        for address in (_address_from_topic(topics[1]), _address_from_topic(topics[2])):
+            if address not in pools:
+                continue
+            existing = payload.get(address)
+            if existing is None or priority.get(scan_path, 0) >= priority.get(existing, 0):
+                payload[address] = scan_path
+    return payload
 
 
 def _normalize_scan_group_name(value: str | None) -> str:
@@ -571,7 +622,13 @@ def _query_filter_for_side(block_num: int, topic_chunk: list[str], side: str) ->
     }
 
 
-def _append_grouped_logs(grouped: dict[str, list[dict]], seen: set[tuple[str, int]], logs) -> None:
+def _append_grouped_logs(
+    grouped: dict[str, list[dict]],
+    seen: set[tuple[str, int]],
+    logs,
+    *,
+    scan_group: str = "",
+) -> None:
     for log in logs or []:
         tx_hash = _to_hex(log.get("transactionHash")).lower()
         log_index = int(log.get("logIndex", 0)) if log.get("logIndex") is not None else 0
@@ -579,7 +636,13 @@ def _append_grouped_logs(grouped: dict[str, list[dict]], seen: set[tuple[str, in
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        grouped[tx_hash].append(_compact_log(log))
+        grouped[tx_hash].append(
+            _compact_log(
+                log,
+                scan_group=scan_group,
+                scan_path=_scan_path_for_group(scan_group),
+            )
+        )
 
 
 def _empty_transfer_scan_stats(scan_label: str) -> dict:
@@ -793,6 +856,36 @@ def _lp_extended_scan_addresses() -> list[str]:
     return sorted(ACTIVE_EXTENDED_LP_POOL_ADDRESSES)
 
 
+def _lp_promoted_scan_addresses(now_ts: int | None = None) -> list[str]:
+    if not bool(LP_FASTLANE_MAIN_SCAN_INCLUDE_PROMOTED):
+        return []
+    promoted = get_lp_fastlane_promoted_pool_addresses(now_ts=now_ts)
+    if not promoted:
+        return []
+    return sorted(
+        address
+        for address in promoted
+        if address
+        and address not in WATCH_ADDRESSES
+        and address in ACTIVE_LP_POOL_ADDRESSES
+    )
+
+
+def _scan_path_for_group(group_name: str | None) -> str:
+    normalized = _normalize_scan_group_name(group_name)
+    if normalized == "lp_promoted_main":
+        return "promoted_main"
+    if normalized == "lp_primary_trend":
+        return "primary_trend"
+    if normalized == "lp_extended":
+        return "extended"
+    if normalized in {"core_watch", "runtime_adjacent_core"}:
+        return "main"
+    if normalized == "runtime_adjacent_secondary":
+        return "secondary"
+    return normalized or "secondary"
+
+
 def _should_run_lp_primary_trend_scan(last_scan_ts: float) -> tuple[bool, str]:
     if not bool(LP_SECONDARY_SCAN_ENABLE):
         return False, "lp_secondary_disabled"
@@ -803,7 +896,7 @@ def _should_run_lp_primary_trend_scan(last_scan_ts: float) -> tuple[bool, str]:
     if not _lp_primary_trend_scan_addresses():
         return False, "lp_primary_trend_empty"
     now_ts = time.time()
-    if now_ts - float(last_scan_ts or 0.0) < _effective_lp_secondary_interval_sec():
+    if now_ts - float(last_scan_ts or 0.0) < _effective_lp_primary_trend_interval_sec():
         return False, "lp_primary_trend_interval_throttled"
     return True, "lp_primary_trend_scheduled"
 
@@ -830,34 +923,47 @@ def _build_lp_scan_plan(
     last_primary_scan_ts: float = 0.0,
     last_extended_scan_ts: float = 0.0,
     include_active_lp_pools: bool = False,
+    now_ts: int | None = None,
 ) -> dict:
     primary_addresses = _lp_primary_trend_scan_addresses()
     extended_addresses = _lp_extended_scan_addresses()
+    promoted_addresses = _lp_promoted_scan_addresses(now_ts=now_ts)
+    if promoted_addresses:
+        promoted_set = set(promoted_addresses)
+        primary_addresses = [address for address in primary_addresses if address not in promoted_set]
+        extended_addresses = [address for address in extended_addresses if address not in promoted_set]
 
     if include_active_lp_pools:
         return {
             "primary_addresses": primary_addresses,
             "extended_addresses": extended_addresses,
+            "promoted_addresses": promoted_addresses,
             "primary_scan_used": bool(primary_addresses),
             "extended_scan_used": bool(extended_addresses),
+            "promoted_scan_used": False,
             "secondary_scan_used": False,
             "primary_reason": "lp_included_in_main_scan",
             "extended_reason": "lp_included_in_main_scan",
+            "promoted_reason": "lp_included_in_main_scan",
         }
 
     primary_scan_used, primary_reason = _should_run_lp_primary_trend_scan(last_primary_scan_ts)
     extended_scan_used, extended_reason = _should_run_lp_extended_scan(last_extended_scan_ts)
     primary_scan_used = bool(primary_scan_used and primary_addresses)
     extended_scan_used = bool(extended_scan_used and extended_addresses)
+    promoted_scan_used = bool(promoted_addresses)
 
     return {
         "primary_addresses": primary_addresses,
         "extended_addresses": extended_addresses,
+        "promoted_addresses": promoted_addresses,
         "primary_scan_used": primary_scan_used,
         "extended_scan_used": extended_scan_used,
+        "promoted_scan_used": promoted_scan_used,
         "secondary_scan_used": bool(primary_scan_used or extended_scan_used),
         "primary_reason": primary_reason,
         "extended_reason": extended_reason,
+        "promoted_reason": "lp_promoted_main_scan" if promoted_scan_used else "lp_promoted_empty",
     }
 
 
@@ -888,6 +994,12 @@ def _build_transfer_scan_groups(
         })
 
     if include_active_lp_pools:
+        if lp_scan_plan.get("promoted_addresses"):
+            groups.append({
+                "group_name": "lp_promoted_main",
+                "scan_label": "lp_promoted_main",
+                "addresses": list(lp_scan_plan.get("promoted_addresses") or []),
+            })
         if lp_scan_plan.get("primary_addresses"):
             groups.append({
                 "group_name": "lp_primary_trend",
@@ -902,6 +1014,12 @@ def _build_transfer_scan_groups(
             })
         return groups
 
+    if lp_scan_plan.get("promoted_scan_used") and lp_scan_plan.get("promoted_addresses"):
+        groups.append({
+            "group_name": "lp_promoted_main",
+            "scan_label": "lp_promoted_main",
+            "addresses": list(lp_scan_plan.get("promoted_addresses") or []),
+        })
     if lp_scan_plan.get("primary_scan_used") and lp_scan_plan.get("primary_addresses"):
         groups.append({
             "group_name": "lp_primary_trend",
@@ -964,6 +1082,10 @@ def _build_token_flow_candidate(
     touched_targets = set(touched_watch_addresses) | set(touched_lp_pools)
     pool_transfer_counts = _pool_transfer_stats(logs, touched_lp_pools)
     pool_candidate_weight = _pool_candidate_weight(len(logs), touched_lp_pools, pool_transfer_counts)
+    lp_scan_paths_by_pool = _lp_scan_paths_by_pool_from_logs(logs, touched_lp_pools)
+    selected_lp_scan_path = ""
+    if touched_lp_pools:
+        selected_lp_scan_path = lp_scan_paths_by_pool.get(str(touched_lp_pools[0] or "").lower(), "")
     next_hop_addresses = [
         address for address in participant_addresses
         if address not in touched_targets
@@ -974,6 +1096,7 @@ def _build_token_flow_candidate(
         "logs": logs,
         "block_number": block_num,
         "ingest_ts": int(time.time()),
+        "first_chain_seen_at": int(time.time()),
         "source_kind": "token_flow_candidate",
         "touched_watch_addresses": list(touched_watch_addresses),
         "touched_lp_pools": list(touched_lp_pools),
@@ -985,6 +1108,10 @@ def _build_token_flow_candidate(
         "token_addresses": _extract_token_addresses(logs),
         "pool_transfer_count_by_pool": pool_transfer_counts,
         "pool_candidate_weight": pool_candidate_weight,
+        "lp_scan_paths_by_pool": lp_scan_paths_by_pool,
+        "lp_scan_path": selected_lp_scan_path,
+        "lp_promoted_fastlane": bool(selected_lp_scan_path == "promoted_main"),
+        "lp_promote_reason": "",
         "lp_adjacent_noise_skipped_in_listener": False,
         "lp_adjacent_noise_listener_reason": "",
         "lp_adjacent_noise_listener_confidence": 0.0,
@@ -1370,7 +1497,12 @@ async def _fetch_transfer_logs_for_block_for_addresses(
                     stats.get("listener_block_get_logs_empty_response_count") or 0
                 ) + 1
                 continue
-            _append_grouped_logs(grouped, seen, logs)
+            _append_grouped_logs(
+                grouped,
+                seen,
+                logs,
+                scan_group=scan_group,
+            )
 
         if not query_secondary_side:
             stats["listener_block_get_logs_secondary_side_skipped_count"] = int(
@@ -1607,6 +1739,7 @@ async def producer():
                     last_primary_scan_ts=last_lp_primary_trend_scan_ts,
                     last_extended_scan_ts=last_lp_extended_scan_ts,
                     include_active_lp_pools=bool(LISTENER_INCLUDE_ACTIVE_LP_POOLS_IN_MAIN_LOG_SCAN),
+                    now_ts=now_ts,
                 )
 
                 block_monitored_watch_addresses = set(WATCH_ADDRESSES) | set(
@@ -1744,11 +1877,17 @@ async def producer():
                         "listener_block_lp_extended_scan_used": bool(
                             lp_scan_plan.get("extended_scan_used")
                         ),
+                        "listener_block_lp_promoted_main_scan_used": bool(
+                            lp_scan_plan.get("promoted_scan_used")
+                        ),
                         "listener_block_lp_primary_trend_pool_count": int(
                             len(lp_scan_plan.get("primary_addresses") or [])
                         ),
                         "listener_block_lp_extended_pool_count": int(
                             len(lp_scan_plan.get("extended_addresses") or [])
+                        ),
+                        "listener_block_lp_promoted_pool_count": int(
+                            len(lp_scan_plan.get("promoted_addresses") or [])
                         ),
                         "listener_block_get_logs_primary_side_count": int(
                             scan_stats.get("listener_block_get_logs_primary_side_count") or 0
@@ -1784,6 +1923,8 @@ async def producer():
                     f"empty={block_context['listener_block_get_logs_empty_response_count']} "
                     f"adj_core={block_context['listener_runtime_adjacent_core_count']} "
                     f"adj_secondary={block_context['listener_runtime_adjacent_secondary_count']} "
+                    f"lp_promoted={int(block_context['listener_block_lp_promoted_main_scan_used'])}/"
+                    f"{block_context['listener_block_lp_promoted_pool_count']} "
                     f"lp_primary={int(block_context['listener_block_lp_primary_trend_scan_used'])}/"
                     f"{block_context['listener_block_lp_primary_trend_pool_count']} "
                     f"lp_extended={int(block_context['listener_block_lp_extended_scan_used'])}/"
@@ -1829,6 +1970,13 @@ async def producer():
                         touched_watch_addresses=sorted(touched_watch_addresses),
                         touched_lp_pools=sorted(touched_lp_pools),
                     )
+                    if touched_lp_pools:
+                        first_pool = str(sorted(touched_lp_pools)[0] or "").lower()
+                        fastlane_context = get_lp_fastlane_pool_context(first_pool, now_ts=now_ts)
+                        if fastlane_context:
+                            candidate["lp_promote_reason"] = str(
+                                fastlane_context.get("promote_reason") or ""
+                            )
                     candidate.update(block_context)
 
                     for watch_address in touched_watch_addresses:
@@ -1867,6 +2015,14 @@ async def producer():
                         enriched = dict(candidate)
                         enriched["watch_address"] = pool_address
                         enriched["monitor_type"] = "lp_pool"
+                        enriched["lp_scan_path"] = str(
+                            (candidate.get("lp_scan_paths_by_pool") or {}).get(str(pool_address or "").lower())
+                            or candidate.get("lp_scan_path")
+                            or ""
+                        )
+                        enriched["lp_promoted_fastlane"] = bool(
+                            enriched.get("lp_scan_path") == "promoted_main"
+                        )
                         enriched["lp_adjacent_noise_skipped_in_listener"] = False
                         enriched["lp_adjacent_noise_listener_reason"] = ""
                         enriched["lp_adjacent_noise_listener_confidence"] = 0.0

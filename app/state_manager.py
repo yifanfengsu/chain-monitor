@@ -6,6 +6,9 @@ import time
 from config import (
     ADJACENT_WATCH_RUNTIME_PRIORITY,
     ADJACENT_WATCH_RUNTIME_STRATEGY_ROLE,
+    LP_FASTLANE_PROMOTED_MAX_COUNT,
+    LP_FASTLANE_PROMOTION_ENABLE,
+    LP_FASTLANE_PROMOTION_TTL_SEC,
     LP_BURST_WINDOW_SEC,
     LP_STRUCTURE_MIN_USD_PER_EVENT,
     LP_TREND_CONTINUATION_MIN_SCORE,
@@ -95,12 +98,17 @@ class StateManager:
         self._open_cases_by_token: dict[str, set[str]] = defaultdict(set)
         self._adjacent_watch_states: dict[str, AdjacentWatchState] = {}
         self._adjacent_watch_meta_warning_ts: dict[str, int] = {}
+        self._lp_fastlane_promoted_pools: dict[str, dict] = {}
+        self._lp_price_history_by_pool: dict[str, deque] = defaultdict(lambda: deque(maxlen=256))
+        self._lp_outcome_records: dict[str, dict] = {}
+        self._lp_outcome_history: deque = deque(maxlen=1500)
         _PRIMARY_STATE_MANAGER = self
 
     def apply_event(self, event: Event) -> None:
         self._apply_address_event(event)
         self._apply_token_event(event)
         self._apply_pool_event(event)
+        self._apply_lp_price_history(event)
 
     def get_address_snapshot(self, address: str, window_sec: int = 3600, now_ts: int | None = None) -> dict:
         addr = (address or "").lower()
@@ -278,6 +286,188 @@ class StateManager:
             window_sec=effective_window_sec,
             trend_pool_context=trend_pool_context,
         )
+
+    def register_lp_fastlane_pool(
+        self,
+        pool_address: str,
+        *,
+        now_ts: int | None = None,
+        ttl_sec: int | None = None,
+        reason: str = "",
+        alert_stage: str = "",
+        signal_id: str = "",
+        priority_score: float = 0.0,
+    ) -> dict:
+        address = str(pool_address or "").lower()
+        if not address or not bool(LP_FASTLANE_PROMOTION_ENABLE):
+            return {}
+        reference_ts = int(now_ts or time.time())
+        self.expire_lp_fastlane_pool(None, now_ts=reference_ts)
+        effective_ttl = max(int(ttl_sec or LP_FASTLANE_PROMOTION_TTL_SEC or 0), 1)
+        existing = dict(self._lp_fastlane_promoted_pools.get(address) or {})
+        payload = {
+            "pool_address": address,
+            "promoted_until_ts": max(
+                int(existing.get("promoted_until_ts") or 0),
+                reference_ts + effective_ttl,
+            ),
+            "promote_reason": str(reason or existing.get("promote_reason") or ""),
+            "promote_count": int(existing.get("promote_count") or 0) + 1,
+            "last_signal_stage": str(alert_stage or existing.get("last_signal_stage") or ""),
+            "last_signal_id": str(signal_id or existing.get("last_signal_id") or ""),
+            "last_promoted_ts": reference_ts,
+            "priority_score": round(float(priority_score or existing.get("priority_score") or 0.0), 3),
+        }
+        self._lp_fastlane_promoted_pools[address] = payload
+        self._trim_lp_fastlane_pool_registry()
+        return dict(self._lp_fastlane_promoted_pools.get(address) or payload)
+
+    def get_lp_fastlane_pool_context(self, pool_address: str, now_ts: int | None = None) -> dict | None:
+        address = str(pool_address or "").lower()
+        if not address:
+            return None
+        self.expire_lp_fastlane_pool(None, now_ts=now_ts)
+        payload = self._lp_fastlane_promoted_pools.get(address)
+        return dict(payload) if payload else None
+
+    def get_active_lp_fastlane_pool_addresses(self, now_ts: int | None = None) -> set[str]:
+        self.expire_lp_fastlane_pool(None, now_ts=now_ts)
+        return set(self._lp_fastlane_promoted_pools.keys())
+
+    def get_active_lp_fastlane_pool_payloads(self, now_ts: int | None = None) -> list[dict]:
+        self.expire_lp_fastlane_pool(None, now_ts=now_ts)
+        ordered = sorted(
+            self._lp_fastlane_promoted_pools.values(),
+            key=lambda item: (
+                -float(item.get("priority_score") or 0.0),
+                -int(item.get("promote_count") or 0),
+                -int(item.get("promoted_until_ts") or 0),
+                -int(item.get("last_promoted_ts") or 0),
+                str(item.get("pool_address") or ""),
+            ),
+        )
+        return [dict(item) for item in ordered]
+
+    def expire_lp_fastlane_pool(self, pool_address: str | None = None, now_ts: int | None = None) -> list[str]:
+        reference_ts = int(now_ts or time.time())
+        expired = []
+        if pool_address is not None:
+            address = str(pool_address or "").lower()
+            payload = self._lp_fastlane_promoted_pools.get(address)
+            if payload is None:
+                return expired
+            if int(payload.get("promoted_until_ts") or 0) > reference_ts:
+                return expired
+            self._lp_fastlane_promoted_pools.pop(address, None)
+            expired.append(address)
+            return expired
+
+        for address, payload in list(self._lp_fastlane_promoted_pools.items()):
+            if int(payload.get("promoted_until_ts") or 0) > reference_ts:
+                continue
+            self._lp_fastlane_promoted_pools.pop(address, None)
+            expired.append(address)
+        return expired
+
+    def record_lp_outcome_alert(self, event: Event, signal) -> dict:
+        if not self._is_lp_signal_candidate(event):
+            return {}
+        alert_stage = str(
+            getattr(signal, "context", {}).get("lp_alert_stage")
+            or getattr(signal, "metadata", {}).get("lp_alert_stage")
+            or event.metadata.get("lp_alert_stage")
+            or ""
+        ).strip()
+        if alert_stage not in {"prealert", "confirm", "climax", "exhaustion_risk"}:
+            return {}
+
+        pool_address = str(event.address or "").lower()
+        pair_label = str(
+            getattr(signal, "context", {}).get("pair_label")
+            or ((event.metadata.get("raw") or {}).get("lp_context") or {}).get("pair_label")
+            or event.metadata.get("pair_label")
+            or pool_address
+        )
+        direction = self._lp_direction_bucket(event)
+        created_at = int(event.ts or time.time())
+        price_proxy = self._lp_price_proxy(event)
+        move_before_30s = self._lp_price_move_from_history(pool_address, price_proxy, created_at, 30)
+        move_before_60s = self._lp_price_move_from_history(pool_address, price_proxy, created_at, 60)
+        record_id = str(
+            getattr(signal, "signal_id", "")
+            or getattr(event, "event_id", "")
+            or f"{pool_address}:{created_at}:{alert_stage}"
+        )
+        record = {
+            "schema_version": "lp_alert_outcome_v1",
+            "record_id": record_id,
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+            "event_id": str(getattr(event, "event_id", "") or ""),
+            "pair_label": pair_label,
+            "pool_address": pool_address,
+            "intent_type": str(event.intent_type or ""),
+            "lp_alert_stage": alert_stage,
+            "lp_sweep_phase": str(
+                getattr(signal, "context", {}).get("lp_sweep_phase")
+                or getattr(signal, "metadata", {}).get("lp_sweep_phase")
+                or event.metadata.get("lp_sweep_phase")
+                or ""
+            ),
+            "direction_bucket": direction,
+            "created_at": created_at,
+            "anchor_price_proxy": round(float(price_proxy or 0.0), 8),
+            "followthrough_positive": None,
+            "followthrough_negative": None,
+            "reversal_after_climax": None,
+            "confirm_after_prealert": None,
+            "false_prealert": None,
+            "time_to_confirm": None,
+            "move_before_alert": round(float(move_before_60s or 0.0), 6),
+            "move_before_alert_30s": round(float(move_before_30s or 0.0), 6),
+            "move_before_alert_60s": round(float(move_before_60s or 0.0), 6),
+            "move_after_alert": 0.0,
+            "move_after_alert_60s": None,
+            "move_after_alert_300s": None,
+            "notifier_sent_at": None,
+            "delivered_notification": False,
+        }
+        self._update_lp_outcome_records_for_new_alert(
+            pair_label=pair_label,
+            pool_address=pool_address,
+            direction=direction,
+            created_at=created_at,
+            alert_stage=alert_stage,
+            price_proxy=price_proxy,
+        )
+        self._lp_outcome_records[record_id] = record
+        self._lp_outcome_history.append(record)
+        return dict(record)
+
+    def mark_lp_outcome_notification(
+        self,
+        record_id: str,
+        *,
+        notifier_sent_at: int | None = None,
+        delivered: bool = False,
+    ) -> dict:
+        key = str(record_id or "").strip()
+        if not key:
+            return {}
+        payload = self._lp_outcome_records.get(key)
+        if payload is None:
+            return {}
+        payload["notifier_sent_at"] = int(notifier_sent_at or time.time())
+        payload["delivered_notification"] = bool(delivered)
+        return dict(payload)
+
+    def get_lp_outcome_record(self, record_id: str) -> dict:
+        payload = self._lp_outcome_records.get(str(record_id or "").strip())
+        return dict(payload) if payload else {}
+
+    def get_recent_lp_outcome_records(self, limit: int = 20) -> list[dict]:
+        if limit <= 0:
+            return []
+        return [dict(item) for item in list(self._lp_outcome_history)[-limit:]]
 
     def can_emit_signal(self, address: str, now_ts: int, cooldown_sec: int) -> bool:
         addr = (address or "").lower()
@@ -1523,6 +1713,163 @@ class StateManager:
             return float(ordered[mid])
         return float((ordered[mid - 1] + ordered[mid]) / 2.0)
 
+    def _trim_lp_fastlane_pool_registry(self) -> None:
+        max_count = max(int(LP_FASTLANE_PROMOTED_MAX_COUNT or 0), 1)
+        ordered = sorted(
+            self._lp_fastlane_promoted_pools.items(),
+            key=lambda item: (
+                -float((item[1] or {}).get("priority_score") or 0.0),
+                -int((item[1] or {}).get("promote_count") or 0),
+                -int((item[1] or {}).get("promoted_until_ts") or 0),
+                -int((item[1] or {}).get("last_promoted_ts") or 0),
+                item[0],
+            ),
+        )
+        keep = {address for address, _ in ordered[:max_count]}
+        for address in list(self._lp_fastlane_promoted_pools.keys()):
+            if address in keep:
+                continue
+            self._lp_fastlane_promoted_pools.pop(address, None)
+
+    def _apply_lp_price_history(self, event: Event) -> None:
+        if not self._is_lp_signal_candidate(event):
+            return
+        pool_address = str(event.address or "").lower()
+        if not pool_address:
+            return
+        price_proxy = self._lp_price_proxy(event)
+        if price_proxy <= 0:
+            return
+        history = self._lp_price_history_by_pool[pool_address]
+        history.append({
+            "ts": int(event.ts or time.time()),
+            "price_proxy": float(price_proxy),
+            "intent_type": str(event.intent_type or ""),
+        })
+
+    def _lp_price_proxy(self, event: Event) -> float:
+        raw = event.metadata.get("raw") or {}
+        lp_context = raw.get("lp_context") or event.metadata.get("lp_context") or {}
+        base_amount = float(
+            lp_context.get("base_amount")
+            or event.amount
+            or 0.0
+        )
+        quote_amount = float(
+            lp_context.get("quote_amount")
+            or event.metadata.get("quote_amount")
+            or 0.0
+        )
+        if base_amount <= 0 or quote_amount <= 0:
+            return 0.0
+        return quote_amount / max(base_amount, 1e-12)
+
+    def _lp_price_move_from_history(
+        self,
+        pool_address: str,
+        current_price_proxy: float,
+        reference_ts: int,
+        lookback_sec: int,
+    ) -> float:
+        if current_price_proxy <= 0:
+            return 0.0
+        history = list(self._lp_price_history_by_pool.get(str(pool_address or "").lower(), []))
+        if not history:
+            return 0.0
+        target_ts = int(reference_ts or 0) - int(lookback_sec or 0)
+        prior = None
+        fallback = None
+        for item in history:
+            ts = int(item.get("ts") or 0)
+            if ts >= int(reference_ts or 0):
+                continue
+            fallback = item
+            if ts <= target_ts:
+                prior = item
+        anchor = prior or fallback
+        if not anchor:
+            return 0.0
+        anchor_price = float(anchor.get("price_proxy") or 0.0)
+        if anchor_price <= 0:
+            return 0.0
+        return (float(current_price_proxy) / anchor_price) - 1.0
+
+    def _update_lp_outcome_records_for_new_alert(
+        self,
+        *,
+        pair_label: str,
+        pool_address: str,
+        direction: str,
+        created_at: int,
+        alert_stage: str,
+        price_proxy: float,
+    ) -> None:
+        for payload in self._lp_outcome_records.values():
+            if str(payload.get("pair_label") or "") != str(pair_label or ""):
+                continue
+            previous_ts = int(payload.get("created_at") or 0)
+            if previous_ts <= 0 or previous_ts >= created_at:
+                continue
+            age_sec = created_at - previous_ts
+            if age_sec > 300:
+                continue
+
+            anchor_price = float(payload.get("anchor_price_proxy") or 0.0)
+            if anchor_price > 0 and price_proxy > 0:
+                move_after = (float(price_proxy) / anchor_price) - 1.0
+                payload["move_after_alert"] = round(float(move_after), 6)
+                if age_sec <= 60:
+                    payload["move_after_alert_60s"] = round(float(move_after), 6)
+                payload["move_after_alert_300s"] = round(float(move_after), 6)
+                same_direction = (
+                    (str(payload.get("direction_bucket") or "") == "buy_pressure" and move_after > 0)
+                    or (str(payload.get("direction_bucket") or "") == "sell_pressure" and move_after < 0)
+                )
+                if same_direction and abs(move_after) >= 0.002:
+                    payload["followthrough_positive"] = True
+                    if payload.get("followthrough_negative") is None:
+                        payload["followthrough_negative"] = False
+                elif abs(move_after) >= 0.002:
+                    payload["followthrough_negative"] = True
+                    if payload.get("followthrough_positive") is None:
+                        payload["followthrough_positive"] = False
+
+            previous_stage = str(payload.get("lp_alert_stage") or "")
+            previous_direction = str(payload.get("direction_bucket") or "")
+            same_direction_bucket = previous_direction and previous_direction == direction
+            if previous_stage == "prealert" and alert_stage == "confirm" and same_direction_bucket:
+                payload["confirm_after_prealert"] = True
+                payload["false_prealert"] = False
+                payload["time_to_confirm"] = age_sec
+            elif previous_stage == "prealert" and alert_stage == "exhaustion_risk" and not same_direction_bucket:
+                payload["false_prealert"] = True
+            if previous_stage == "climax" and (
+                alert_stage == "exhaustion_risk"
+                or (previous_direction and direction and previous_direction != direction)
+            ):
+                payload["reversal_after_climax"] = True
+
+    def _lp_direction_bucket(self, event: Event) -> str:
+        intent_type = str(event.intent_type or "")
+        if intent_type == "pool_buy_pressure":
+            return "buy_pressure"
+        if intent_type == "pool_sell_pressure":
+            return "sell_pressure"
+        return ""
+
+    def _is_lp_signal_candidate(self, event: Event) -> bool:
+        if str(event.strategy_role or "") == "lp_pool":
+            return True
+        return str(event.intent_type or "") in {
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "liquidity_addition",
+            "liquidity_removal",
+            "pool_rebalance",
+            "buy_side_liquidity_sweep",
+            "sell_side_liquidity_sweep",
+        }
+
 
 def get_primary_state_manager():
     return _PRIMARY_STATE_MANAGER
@@ -1561,3 +1908,24 @@ def get_all_runtime_adjacent_watch_addresses(now_ts: int | None = None) -> set[s
     if manager is None:
         return set()
     return manager.get_all_adjacent_watch_addresses(now_ts=now_ts)
+
+
+def get_lp_fastlane_promoted_pool_addresses(now_ts: int | None = None) -> set[str]:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return set()
+    return manager.get_active_lp_fastlane_pool_addresses(now_ts=now_ts)
+
+
+def get_lp_fastlane_promoted_pool_payloads(now_ts: int | None = None) -> list[dict]:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return []
+    return manager.get_active_lp_fastlane_pool_payloads(now_ts=now_ts)
+
+
+def get_lp_fastlane_pool_context(address: str, now_ts: int | None = None) -> dict:
+    manager = get_primary_state_manager()
+    if manager is None:
+        return {}
+    return manager.get_lp_fastlane_pool_context(address, now_ts=now_ts) or {}
