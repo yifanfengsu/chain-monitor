@@ -15,6 +15,7 @@ from config import (
     LP_TREND_REVERSAL_MIN_SCORE,
     LP_TREND_STATE_WINDOW_SEC,
 )
+from lp_product_helpers import asset_symbol_from_event
 from models import AdjacentWatchState, Event
 
 
@@ -405,6 +406,7 @@ class StateManager:
             "event_id": str(getattr(event, "event_id", "") or ""),
             "pair_label": pair_label,
             "pool_address": pool_address,
+            "asset_symbol": asset_symbol_from_event(event),
             "intent_type": str(event.intent_type or ""),
             "lp_alert_stage": alert_stage,
             "lp_sweep_phase": str(
@@ -428,6 +430,63 @@ class StateManager:
             "move_after_alert": 0.0,
             "move_after_alert_60s": None,
             "move_after_alert_300s": None,
+            "asset_case_id": str(
+                getattr(signal, "context", {}).get("asset_case_id")
+                or getattr(signal, "metadata", {}).get("asset_case_id")
+                or event.metadata.get("asset_case_id")
+                or ""
+            ),
+            "asset_case_key": str(
+                getattr(signal, "context", {}).get("asset_case_key")
+                or getattr(signal, "metadata", {}).get("asset_case_key")
+                or event.metadata.get("asset_case_key")
+                or ""
+            ),
+            "asset_case_stage": str(
+                getattr(signal, "context", {}).get("asset_case_stage")
+                or getattr(signal, "metadata", {}).get("asset_case_stage")
+                or event.metadata.get("asset_case_stage")
+                or alert_stage
+            ),
+            "asset_case_quality_score": float(
+                getattr(signal, "context", {}).get("asset_case_quality_score")
+                or getattr(signal, "metadata", {}).get("asset_case_quality_score")
+                or event.metadata.get("asset_case_quality_score")
+                or 0.0
+            ),
+            "market_context_source": str(
+                getattr(signal, "context", {}).get("market_context_source")
+                or getattr(signal, "metadata", {}).get("market_context_source")
+                or event.metadata.get("market_context_source")
+                or "unavailable"
+            ),
+            "alert_relative_timing": str(
+                getattr(signal, "context", {}).get("alert_relative_timing")
+                or getattr(signal, "metadata", {}).get("alert_relative_timing")
+                or event.metadata.get("alert_relative_timing")
+                or ""
+            ),
+            "market_move_before_alert_30s": getattr(signal, "context", {}).get(
+                "market_move_before_alert_30s",
+                event.metadata.get("market_move_before_alert_30s"),
+            ),
+            "market_move_before_alert_60s": getattr(signal, "context", {}).get(
+                "market_move_before_alert_60s",
+                event.metadata.get("market_move_before_alert_60s"),
+            ),
+            "market_move_after_alert_60s": getattr(signal, "context", {}).get(
+                "market_move_after_alert_60s",
+                event.metadata.get("market_move_after_alert_60s"),
+            ),
+            "market_move_after_alert_300s": getattr(signal, "context", {}).get(
+                "market_move_after_alert_300s",
+                event.metadata.get("market_move_after_alert_300s"),
+            ),
+            "lp_promoted_fastlane": bool(
+                getattr(signal, "context", {}).get("lp_promoted_fastlane")
+                or getattr(signal, "metadata", {}).get("lp_promoted_fastlane")
+                or event.metadata.get("lp_promoted_fastlane")
+            ),
             "notifier_sent_at": None,
             "delivered_notification": False,
         }

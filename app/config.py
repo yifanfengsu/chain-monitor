@@ -1,5 +1,9 @@
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency in test envs
+    def load_dotenv(*args, **kwargs):
+        return False
 
 # 从 .env 加载运行配置到进程环境变量。
 load_dotenv()
@@ -60,6 +64,14 @@ def _get_csv_env(name: str, default: list[str]) -> list[str]:
     return [item for item in values if item] or list(default)
 
 
+def _get_optional_str_env(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
 # 价格服务配置。
 PRICE_TTL_SEC = _get_int_env("PRICE_TTL_SEC", 30)
 PRICE_FAIL_TTL_SEC = _get_int_env("PRICE_FAIL_TTL_SEC", 120)
@@ -100,6 +112,7 @@ INTERPRETER_ABNORMAL_MULTIPLIER = _get_float_env("INTERPRETER_ABNORMAL_MULTIPLIE
 
 # Delivery 路由配置。
 ARCHIVE_ENABLE_DELIVERY_AUDIT = _get_bool_env("ARCHIVE_ENABLE_DELIVERY_AUDIT", True)
+DEFAULT_USER_TIER = _get_str_env("DEFAULT_USER_TIER", "research").strip().lower()
 DELIVERY_ALLOW_EXCHANGE_ANCHOR_PRIMARY = _get_bool_env("DELIVERY_ALLOW_EXCHANGE_ANCHOR_PRIMARY", False)
 DELIVERY_ALLOW_LP_OBSERVE = _get_bool_env("DELIVERY_ALLOW_LP_OBSERVE", True)
 DELIVERY_ALLOW_EXCHANGE_OBSERVE = _get_bool_env("DELIVERY_ALLOW_EXCHANGE_OBSERVE", False)
@@ -521,6 +534,25 @@ LP_FASTLANE_MAIN_SCAN_INCLUDE_PROMOTED = _get_bool_env(
     "LP_FASTLANE_MAIN_SCAN_INCLUDE_PROMOTED",
     True,
 )
+LP_ASSET_CASE_WINDOW_SEC = _get_int_env("LP_ASSET_CASE_WINDOW_SEC", 90)
+LP_ASSET_CASE_MAX_SUPPORTING_PAIRS = _get_int_env("LP_ASSET_CASE_MAX_SUPPORTING_PAIRS", 4)
+LP_ASSET_CASE_MAX_TRACKED = _get_int_env("LP_ASSET_CASE_MAX_TRACKED", 512)
+LP_QUALITY_HISTORY_LIMIT = _get_int_env("LP_QUALITY_HISTORY_LIMIT", 800)
+LP_QUALITY_MIN_PREALERT_PRECISION_FOR_TRADER = _get_float_env(
+    "LP_QUALITY_MIN_PREALERT_PRECISION_FOR_TRADER",
+    0.55,
+)
+LP_QUALITY_MIN_PREALERT_PRECISION_FOR_RETAIL = _get_float_env(
+    "LP_QUALITY_MIN_PREALERT_PRECISION_FOR_RETAIL",
+    0.66,
+)
+LP_QUALITY_MIN_FASTLANE_ROI_SCORE = _get_float_env("LP_QUALITY_MIN_FASTLANE_ROI_SCORE", 0.42)
+LP_QUALITY_EXHAUSTION_BIAS_REVERSAL_SCORE = _get_float_env(
+    "LP_QUALITY_EXHAUSTION_BIAS_REVERSAL_SCORE",
+    0.68,
+)
+MARKET_CONTEXT_ADAPTER_MODE = _get_str_env("MARKET_CONTEXT_ADAPTER_MODE", "unavailable").strip().lower()
+MARKET_CONTEXT_FIXTURE_PATH = _get_optional_str_env("MARKET_CONTEXT_FIXTURE_PATH")
 LISTENER_GET_LOGS_DIRECTIONAL_SCAN_ENABLE = _get_bool_env(
     "LISTENER_GET_LOGS_DIRECTIONAL_SCAN_ENABLE",
     True,

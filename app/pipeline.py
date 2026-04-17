@@ -3,6 +3,7 @@ import hashlib
 from collections import defaultdict
 
 from analyzer import BehaviorAnalyzer
+from asset_case_manager import AssetCaseManager
 from config import (
     ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
     ADJACENT_WATCH_NOTIFY_MIN_ABNORMAL_RATIO,
@@ -25,6 +26,7 @@ from config import (
     DOWNSTREAM_EARLY_WARNING_MIN_RESONANCE,
     LP_FASTLANE_PROMOTION_ENABLE,
     LP_FASTLANE_PROMOTION_TTL_SEC,
+    LP_QUALITY_MIN_FASTLANE_ROI_SCORE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
 )
@@ -45,16 +47,20 @@ from lp_noise_rules import (
     LP_ADJACENT_NOISE_STAGE_PIPELINE,
     lp_adjacent_noise_core_decision,
 )
+from lp_product_helpers import stage_label_for_timing
 from liquidation_detector import LiquidationDetector
+from market_context_adapter import build_market_context_adapter
 from models import Event
 from price_service import PriceService
 from processor import parse_tx
+from quality_manager import QualityManager
 from scoring import AddressScorer
 from signal_quality_gate import SignalQualityGate
 from signal_interpreter import SignalInterpreter
 from state_manager import StateManager
 from strategy_engine import StrategyEngine
 from token_scoring import TokenScorer
+from user_tiers import apply_user_tier_context
 
 
 class SignalPipeline:
@@ -82,6 +88,9 @@ class SignalPipeline:
         address_intelligence=None,
         archive_store=None,
         followup_tracker=None,
+        asset_case_manager: AssetCaseManager | None = None,
+        market_context_adapter=None,
+        quality_manager: QualityManager | None = None,
     ) -> None:
         self.price_service = price_service
         self.state_manager = state_manager
@@ -93,6 +102,9 @@ class SignalPipeline:
         self.signal_interpreter = signal_interpreter or SignalInterpreter()
         self.lp_analyzer = lp_analyzer or LPAnalyzer()
         self.liquidation_detector = liquidation_detector or LiquidationDetector()
+        self.asset_case_manager = asset_case_manager or AssetCaseManager()
+        self.market_context_adapter = market_context_adapter or build_market_context_adapter()
+        self.quality_manager = quality_manager or QualityManager(state_manager=state_manager)
         self.address_intelligence = address_intelligence
         self.archive_store = archive_store
         self.followup_tracker = followup_tracker
@@ -238,20 +250,34 @@ class SignalPipeline:
         multi_pool_resonance = int(gate_metrics.get("lp_multi_pool_resonance") or 0)
         structure_score = float(gate_metrics.get("lp_structure_score") or 0.0)
         lp_trend_primary_pool = bool(gate_metrics.get("lp_trend_primary_pool") or event.metadata.get("lp_trend_primary_pool"))
+        fastlane_roi_score = float(
+            signal.context.get("fastlane_roi_score")
+            or signal.metadata.get("fastlane_roi_score")
+            or event.metadata.get("fastlane_roi_score")
+            or 0.55
+        )
+        asset_case_quality_score = float(
+            signal.context.get("asset_case_quality_score")
+            or signal.metadata.get("asset_case_quality_score")
+            or event.metadata.get("asset_case_quality_score")
+            or 0.58
+        )
         reason = ""
         priority_score = 0.0
         if stage == "prealert":
+            if fastlane_roi_score < float(LP_QUALITY_MIN_FASTLANE_ROI_SCORE):
+                return {}
             reason = str(event.metadata.get("lp_prealert_reason") or "lp_prealert_fastlane")
-            priority_score = 0.62
+            priority_score = max(0.44, min(0.72, 0.52 + fastlane_roi_score * 0.20 + asset_case_quality_score * 0.10))
         elif multi_pool_resonance >= 2:
             reason = "lp_multi_pool_resonance_fastlane"
-            priority_score = 0.74
+            priority_score = max(0.58, min(0.84, 0.58 + fastlane_roi_score * 0.16 + asset_case_quality_score * 0.12))
         elif lp_trend_primary_pool:
             reason = "lp_primary_trend_pool_fastlane"
-            priority_score = 0.56
+            priority_score = max(0.40, min(0.70, 0.40 + fastlane_roi_score * 0.10 + asset_case_quality_score * 0.10))
         elif structure_score >= 0.5:
             reason = "lp_structure_hot_pool_fastlane"
-            priority_score = 0.48
+            priority_score = max(0.36, min(0.60, 0.34 + fastlane_roi_score * 0.08 + asset_case_quality_score * 0.08))
         if not reason:
             return {}
         payload = self.state_manager.register_lp_fastlane_pool(
@@ -316,6 +342,53 @@ class SignalPipeline:
             event.metadata["outcome_tracking"] = outcome_tracking
             signal.metadata["outcome_tracking"] = outcome_tracking
         return payload
+
+    def _annotate_market_context(self, event: Event, signal) -> dict:
+        if not self._is_lp_event(event=event):
+            return {}
+        token_or_pair = (
+            str(signal.context.get("asset_case_label") or "")
+            or str(signal.context.get("pair_label") or "")
+            or str(event.metadata.get("asset_case_label") or "")
+            or str(event.metadata.get("token_symbol") or event.token or "")
+        )
+        context_payload = dict(
+            self.market_context_adapter.get_market_context(
+                token_or_pair,
+                int(event.ts or 0),
+                venue="binance_perp",
+            )
+            or {}
+        )
+        source = str(context_payload.get("market_context_source") or "unavailable")
+        if source != "unavailable" and not context_payload.get("alert_relative_timing"):
+            context_payload["alert_relative_timing"] = self.market_context_adapter.classify_alert_relative_timing(context_payload)
+        timing = str(context_payload.get("alert_relative_timing") or "")
+        update_payload = {
+            **context_payload,
+            "market_context_available": source != "unavailable",
+            "market_timing_label": stage_label_for_timing(timing),
+            "market_context_brief": f"合约视角：{stage_label_for_timing(timing)}" if source != "unavailable" and timing else "",
+        }
+        event.metadata.update(update_payload)
+        signal.metadata.update(update_payload)
+        signal.context.update(update_payload)
+        return update_payload
+
+    def _apply_lp_productization_context(self, event: Event, signal, gate_metrics: dict | None = None, watch_meta: dict | None = None) -> dict:
+        gate_metrics = gate_metrics or {}
+        if not self._is_lp_event(event=event):
+            return {}
+        asset_case_payload = self.asset_case_manager.merge_lp_signal(event, signal, gate_metrics=gate_metrics)
+        market_context_payload = self._annotate_market_context(event, signal)
+        quality_payload = self.quality_manager.annotate_lp_signal(event, signal, gate_metrics=gate_metrics)
+        tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
+        return {
+            "asset_case": asset_case_payload,
+            "market_context": market_context_payload,
+            "quality": quality_payload,
+            "user_tier": tier_payload,
+        }
 
     def _log_runtime_notifier_stats_if_needed(self, force: bool = False) -> None:
         now = time.time()
@@ -1041,6 +1114,13 @@ class SignalPipeline:
                 archive_ts=archive_ts,
             )
             return None
+
+        self._apply_lp_productization_context(
+            event=event,
+            signal=signal,
+            gate_metrics=gate_decision.metrics,
+            watch_meta=watch_meta,
+        )
 
         delivery_class, delivery_reason = self.strategy_engine.classify_delivery(
             event=event,
@@ -2315,6 +2395,18 @@ class SignalPipeline:
                 or signal_context.get("market_maker_delivery_policy_reason")
                 or ("market_maker_execution_only_allowed" if allowed else "market_maker_execution_only_blocked")
             )
+        user_tier_reason = str(
+            event_metadata.get("user_tier_delivery_reason")
+            or signal_metadata.get("user_tier_delivery_reason")
+            or signal_context.get("user_tier_delivery_reason")
+            or ""
+        ).strip()
+        if user_tier_reason and not bool(
+            event_metadata.get("user_tier_delivery_allowed")
+            or signal_metadata.get("user_tier_delivery_allowed")
+            or signal_context.get("user_tier_delivery_allowed")
+        ):
+            return user_tier_reason
         stage_budget_reason = str(
             event_metadata.get("stage_budget_reason")
             or signal_metadata.get("stage_budget_reason")

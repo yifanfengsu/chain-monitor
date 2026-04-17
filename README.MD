@@ -15,3 +15,14 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
 CLMM replay fixture 分两层：
 - `app/test_fixtures/clmm/` 是 normalized replay，直接对齐 parser 当前稳定输入接口
 - `app/test_fixtures/clmm_decoder/` 是 decoder-aligned replay，保留更贴近上游 `decoded_logs_snapshot` 的形状，再经 `clmm_decoder_normalizer` 归一化后进入 parser/state/intent 链路
+
+本次产品化 patch 新增了 4 个应用层 seam：
+- user tiers：`retail / trader / research`，通过 `app/user_tiers.py` + `DEFAULT_USER_TIER` 控制 LP stage 准入、模板细节、debug 行展示与 asset-case 优先级
+- asset case：`app/asset_case_manager.py` 维护短窗 token/asset 级聚合，只聚合 LP pool 事件；`asset_case_id / asset_case_key / asset_case_stage / supporting_pairs` 都挂在 event/signal metadata 里
+- market context：`app/market_context_adapter.py` 提供 `fixture / unavailable / live skeleton` 三层接口；没有外部市场数据时统一回落到 `market_context_source=unavailable`
+- outcome / quality：`app/quality_manager.py` 基于 `state_manager` 里的 `lp_alert_outcome_v1` 滚动记录计算 `pool_quality_score / pair_quality_score / asset_case_quality_score / prealert_precision_score / climax_reversal_score / fastlane_roi_score`
+
+quality/outcome 本地结构说明：
+- 原始 outcome 仍由 `StateManager.record_lp_outcome_alert()` 写入 `lp_alert_outcome_v1`
+- 新增字段会把 `asset_symbol / asset_case_id / alert_relative_timing / market_context_source / lp_promoted_fastlane` 一起写进 outcome record
+- quality manager 不做黑盒 ML，而是直接从 rolling outcome history 上算可解释 heuristic，并把结果回写到 signal context / metadata 供 routing、promotion、Telegram 模板使用

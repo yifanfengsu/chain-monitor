@@ -101,6 +101,7 @@ from filter import (
     strategy_role_group,
 )
 from models import Event, Signal
+from user_tiers import apply_user_tier_context, evaluate_user_tier_lp_delivery
 
 
 EXCHANGE_SENSITIVE_INTENTS = {
@@ -2294,6 +2295,11 @@ class StrategyEngine:
         fact_type: str | None = None,
         route_context: dict | None = None,
     ) -> tuple[str, str]:
+        apply_user_tier_context(event=event, signal=signal)
+        tier_allowed, tier_reason = evaluate_user_tier_lp_delivery(event, signal, delivery_class)
+        if not tier_allowed:
+            delivery_class = "drop"
+            reason = tier_reason
         event.delivery_class = delivery_class
         event.delivery_reason = reason
         signal.delivery_class = delivery_class
@@ -2327,6 +2333,8 @@ class StrategyEngine:
             "role_priority_tier": role_priority_tier,
             "role_priority_rank": role_priority_rank,
             "role_priority_label": ROLE_PRIORITY_TIER_LABELS.get(role_priority_tier, role_priority_tier),
+            "user_tier_delivery_allowed": bool(tier_allowed),
+            "user_tier_delivery_reason": str(tier_reason or ""),
         }
         if route_context:
             stage_name = "archive_only" if delivery_class == "drop" else delivery_class

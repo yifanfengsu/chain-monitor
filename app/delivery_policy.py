@@ -28,6 +28,7 @@ from config import (
     SMART_MONEY_NOTIFY_EXECUTION_ONLY,
 )
 from filter import strategy_role_group
+from user_tiers import apply_user_tier_context, evaluate_user_tier_lp_delivery
 
 
 SMART_MONEY_LEGACY_OBSERVE_REASONS = {
@@ -584,6 +585,17 @@ def can_emit_delivery_notification(event, signal) -> bool:
         or getattr(event, "delivery_class", "drop")
         or "drop"
     )
+    apply_user_tier_context(event=event, signal=signal)
+    tier_allowed, tier_reason = evaluate_user_tier_lp_delivery(event, signal, delivery_class)
+    tier_payload = {
+        "user_tier_delivery_allowed": bool(tier_allowed),
+        "user_tier_delivery_reason": str(tier_reason or ""),
+    }
+    getattr(event, "metadata", {}).update(tier_payload)
+    getattr(signal, "metadata", {}).update(tier_payload)
+    getattr(signal, "context", {}).update(tier_payload)
+    if not tier_allowed:
+        return False
 
     event_metadata = getattr(event, "metadata", {}) or {}
     signal_metadata = getattr(signal, "metadata", {}) or {}
