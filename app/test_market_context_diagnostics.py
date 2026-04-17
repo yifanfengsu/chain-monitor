@@ -218,6 +218,41 @@ class MarketContextDiagnosticsTests(unittest.TestCase):
         self.assertEqual("perp_ticker", payload["market_context_failure_stage"])
         self.assertEqual("https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT", payload["market_context_endpoint"])
 
+    def test_symbol_mismatch_failure_is_exposed_in_unavailable_payload(self) -> None:
+        mismatch = MarketDataClientError(
+            "symbol_mismatch",
+            stage="perp_ticker",
+            venue="binance_perp",
+            symbol="SOLUSDT",
+            endpoint="https://fapi.binance.com/fapi/v1/ticker/price?symbol=SOLUSDT",
+            latency_ms=70,
+            attempts=[
+                {
+                    "venue": "binance_perp",
+                    "symbol": "SOLUSDT",
+                    "requested_symbol": "SOLUSDC",
+                    "stage": "perp_ticker",
+                    "endpoint": "https://fapi.binance.com/fapi/v1/ticker/price?symbol=SOLUSDT",
+                    "status": "failure",
+                    "failure_reason": "symbol_mismatch",
+                    "failure_stage": "perp_ticker",
+                    "http_status": None,
+                    "latency_ms": 70,
+                }
+            ],
+        )
+        adapter = LiveMarketContextAdapter(
+            clients={"binance_perp": _StubClient(error=mismatch)},
+            primary_venue="binance_perp",
+            secondary_venue="",
+        )
+
+        payload = adapter.get_market_context("SOL/USDC", 1_710_000_300)
+
+        self.assertEqual("unavailable", payload["market_context_source"])
+        self.assertEqual("symbol_mismatch", payload["market_context_failure_reason"])
+        self.assertEqual("SOLUSDC", payload["market_context_requested_symbol"])
+
     def test_symbol_fallback_prefers_usdt_for_eth_btc_and_sol(self) -> None:
         self.assertEqual(["ETHUSDT", "ETHUSDC"], candidate_symbols("ETH/USDC"))
         self.assertEqual(["BTCUSDT", "BTCUSDC"], candidate_symbols("BTC/USDC"))
@@ -280,10 +315,16 @@ class MarketContextDiagnosticsTests(unittest.TestCase):
             report = build_market_context_health_report(base_dir=Path(temp_dir))
 
         self.assertEqual(2, report["signal_rows"])
+        self.assertEqual(2, report["total_attempts"])
         self.assertEqual(0.5, report["live_public_hit_rate"])
         self.assertEqual(0.5, report["unavailable_rate"])
         self.assertEqual(1, report["failure_reason_counts"]["timeout"])
         self.assertEqual("binance_perp", report["per_venue"][0]["venue"])
+        self.assertIn(
+            "ETHUSDT",
+            {item["symbol"] for item in report["per_resolved_symbol"]},
+        )
+        self.assertEqual("timeout", report["top_failure_reasons"][0]["reason"])
 
 
 if __name__ == "__main__":

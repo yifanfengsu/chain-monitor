@@ -127,6 +127,9 @@ class LpConfirmDowngradeTests(unittest.TestCase):
                 "lp_followup_required": True,
                 "lp_same_pool_continuity": int((event.metadata.get("lp_analysis") or {}).get("same_pool_continuity") or 0),
                 "lp_multi_pool_resonance": int((event.metadata.get("lp_analysis") or {}).get("multi_pool_resonance") or 0),
+                "pool_quality_score": 0.72,
+                "pair_quality_score": 0.74,
+                "asset_case_quality_score": 0.73,
             }
         )
         signal.metadata.update(signal.context)
@@ -186,6 +189,28 @@ class LpConfirmDowngradeTests(unittest.TestCase):
 
         self.assertEqual("clean_confirm", signal.context["lp_confirm_quality"])
         self.assertTrue(message.splitlines()[0].startswith("确认｜"))
+
+    def test_single_pool_without_broader_confirmation_skews_late_or_chase(self) -> None:
+        pipeline = self._pipeline(UnavailableMarketContextAdapter())
+        event = self._event(
+            intent_type="pool_sell_pressure",
+            pool_move_before_30s=0.007,
+            pool_move_before_60s=0.009,
+            same_pool_continuity=1,
+            multi_pool_resonance=0,
+        )
+        signal = self._signal(event)
+        signal.context["asset_case_supporting_pair_count"] = 1
+        signal.metadata["asset_case_supporting_pair_count"] = 1
+
+        pipeline._annotate_market_context(event, signal)
+        pipeline._apply_lp_signal_corrections(event, signal, gate_metrics=event.metadata.get("lp_analysis") or {})
+        message = format_signal_message(signal, event)
+
+        self.assertIn(signal.context["lp_confirm_quality"], {"late_confirm", "chase_risk"})
+        self.assertTrue(
+            any(keyword in message.splitlines()[0] for keyword in ("局部卖压", "偏晚", "追空风险"))
+        )
 
 
 if __name__ == "__main__":

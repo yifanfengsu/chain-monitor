@@ -338,16 +338,17 @@ class PublicMarketDataClient:
             except MarketDataClientError as exc:
                 last_error = exc
                 if not exc.endpoint:
+                    previous_attempt = self._last_attempt(attempts, symbol=symbol)
                     attempts.append(
                         self._build_attempt(
                             symbol=symbol,
                             requested_symbol=requested_symbol,
                             stage=str(exc.stage or "payload_validation"),
-                            endpoint="",
+                            endpoint=str(previous_attempt.get("endpoint") or ""),
                             status="failure",
                             failure_reason=str(exc.reason or ""),
                             http_status=exc.http_status,
-                            latency_ms=exc.latency_ms,
+                            latency_ms=exc.latency_ms if exc.latency_ms is not None else previous_attempt.get("latency_ms"),
                         )
                     )
         raise last_error or MarketDataClientError(

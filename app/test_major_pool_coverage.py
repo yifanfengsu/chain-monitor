@@ -23,6 +23,13 @@ class MajorPoolCoverageTests(unittest.TestCase):
         self.assertTrue(report["warnings"])
         self.assertIn("lp_pools.json", report["warnings"][0])
 
+    def test_major_pool_coverage_flags_missing_btc_and_sol_assets(self) -> None:
+        report = build_major_pool_coverage_report(QualityManager(state_manager=StateManager()))
+
+        self.assertIn("BTC", report["missing_major_assets"])
+        self.assertIn("SOL", report["missing_major_assets"])
+        self.assertIn("ETH/USDC", report["covered_expected_pairs"])
+
     def test_sol_usdc_classifies_as_major_primary_pool(self) -> None:
         meta = classify_trend_pool_meta(
             {

@@ -2976,10 +2976,14 @@ class SignalInterpreter:
 
     def _lp_sweep_action_label(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "买方清扫建立中｜主动 swap 开始快速吃掉近价卖盘深度"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "买方清扫｜近价卖盘深度被扫薄，当前回吐风险升高"
             return "买方清扫｜主动 swap 快速吃掉近价卖盘深度"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "卖方清扫建立中｜主动 swap 开始快速吃掉近价买盘深度"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "卖方清扫｜近价买盘深度被扫薄，当前反抽风险升高"
             return "卖方清扫｜主动 swap 快速吃掉近价买盘深度"
@@ -2994,12 +2998,16 @@ class SignalInterpreter:
 
     def _lp_sweep_intent_detail(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "当前更像主动买盘正在清扫近价深度，冲击仍在建立中；这不是撤池，也不等于 LP 主体看多。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "当前更像买盘清扫后的局部高潮，impact-to-size 偏高而后续跟进不足；这不是撤池，也不等于 LP 主体看多。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
                 return "当前更像主动买盘清扫近价深度后仍有续单与跨池共振，属于冲击确认；这不是撤池，也不等于 LP 主体看多。"
             return "当前更像主动 swap 在短时间内快速吃掉近价可用流动性，属于推断型买方清扫；这不是撤池，也不等于 LP 主体看多。"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "当前更像主动卖盘正在清扫近价深度，冲击仍在建立中；这不是撤池，也不等于 LP 主体看空。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "当前更像卖盘清扫后的局部高潮，impact-to-size 偏高而后续跟进不足；这不是撤池，也不等于 LP 主体看空。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
@@ -3009,12 +3017,16 @@ class SignalInterpreter:
 
     def _lp_sweep_market_implication(self, event: Event, sweep_meta: dict) -> str:
         if sweep_meta["semantic_subtype"] == "buy_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "近价卖盘流动性开始被吃掉，需看 30-90s 是否继续续单 / 扩散；本质是成交冲击，不是 LP 主体方向。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "更接近局部买盘高潮而不是稳定单边，若无续单，短线更容易回吐；本质是成交冲击，不是 LP 主体方向。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
                 return "更接近买盘清扫后继续冲击，短线偏多但仍需看续单是否延续；本质是成交冲击，不是 LP 主体方向。"
             return "更接近短线主动买盘清扫近价深度并带来明显冲击，短线偏多；本质是成交冲击，不是 LP 主体方向。"
         if sweep_meta["semantic_subtype"] == "sell_side_liquidity_sweep":
+            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_building":
+                return "近价买盘流动性开始被吃掉，需看 30-90s 是否继续续卖 / 扩散；本质是成交冲击，不是 LP 主体方向。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
                 return "更接近局部卖盘高潮而不是稳定单边，若无续卖，短线更容易反抽；本质是成交冲击，不是 LP 主体方向。"
             if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
@@ -3131,19 +3143,48 @@ class SignalInterpreter:
                 + (0.12 if same_pool_continuity <= 1 else 0.0),
             ),
         )
+        sweep_phase = str(sweep_meta.get("lp_sweep_phase") or "")
+        sweep_building_confirm_ready = bool(
+            sweep_phase == "sweep_building"
+            and (
+                float(sweep_meta.get("lp_sweep_followthrough_score") or 0.0) >= 0.48
+                or float(sweep_meta.get("lp_sweep_continuation_score") or 0.0) >= 0.50
+                or follow_confidence >= 0.76
+                or multi_pool_resonance >= 2
+                or same_pool_continuity >= 3
+            )
+        )
+        sweep_confirmed_climax_ready = bool(
+            sweep_phase == "sweep_confirmed"
+            and (
+                float(sweep_meta.get("lp_sweep_continuation_score") or 0.0) >= 0.72
+                or multi_pool_resonance >= 2
+                or same_pool_continuity >= 3
+            )
+        )
         stage = "confirm"
         stage_reason = "lp_flow_validated"
         followup_required = False
         followup_window_sec = 60
         if sweep_meta.get("semantic_subtype"):
-            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_exhaustion_risk":
+            if sweep_phase == "sweep_exhaustion_risk":
                 stage = "exhaustion_risk"
                 stage_reason = "lp_sweep_exhaustion_risk"
                 followup_required = True
                 followup_window_sec = 60
+            elif sweep_phase == "sweep_building":
+                stage = "confirm" if sweep_building_confirm_ready else "prealert"
+                stage_reason = "lp_sweep_building_confirm" if stage == "confirm" else "lp_sweep_building_prealert"
+                followup_required = True
+                followup_window_sec = 90
+            elif sweep_phase == "sweep_confirmed":
+                stage = "climax" if sweep_confirmed_climax_ready else "confirm"
+                stage_reason = "lp_sweep_confirmed_climax" if stage == "climax" else "lp_sweep_confirmed_confirm"
+                followup_required = True
+                followup_window_sec = 90
             else:
-                stage = "climax"
-                stage_reason = str(sweep_meta.get("lp_sweep_phase") or "lp_sweep_impact")
+                stage = "confirm"
+                stage_reason = str(sweep_phase or "lp_sweep_impact")
                 followup_required = True
                 followup_window_sec = 90
         elif prealert_applied and (
@@ -3168,8 +3209,8 @@ class SignalInterpreter:
             move_phase_label = "confirming" if move_before_abs < 0.018 else "late"
             alert_quality = "confirming" if move_before_abs < 0.018 else "late"
         elif stage == "climax":
-            move_phase_label = "climax"
-            alert_quality = "late"
+            move_phase_label = "confirming" if sweep_phase == "sweep_confirmed" and move_before_abs < 0.015 else "climax"
+            alert_quality = "confirming" if move_phase_label == "confirming" else "late"
         else:
             move_phase_label = "late" if move_before_abs < 0.02 else "climax"
             alert_quality = "late"
@@ -3190,6 +3231,7 @@ class SignalInterpreter:
             "lp_followup_window_sec": int(followup_window_sec),
             "lp_move_phase_label": move_phase_label,
             "lp_alert_quality": alert_quality,
+            "lp_sweep_display_stage": stage if sweep_meta.get("semantic_subtype") else "",
             "lp_pre_move_lookback_sec": 60,
             "lp_post_move_followup_sec": int(followup_window_sec),
             "lp_stage_badge": stage_badge,
@@ -3198,6 +3240,7 @@ class SignalInterpreter:
     def _lp_stage_state_label(self, event: Event, sweep_meta: dict, stage_context: dict) -> str:
         stage = str(stage_context.get("lp_alert_stage") or "confirm")
         intent_type = str(event.intent_type or "")
+        sweep_phase = str(sweep_meta.get("lp_sweep_phase") or "")
         tentative = ""
         try:
             confidence = float(
@@ -3228,11 +3271,21 @@ class SignalInterpreter:
             if sweep_meta.get("semantic_subtype") == "sell_side_liquidity_sweep":
                 return "卖方清扫（反抽风险高）"
             return "冲击后回吐风险高"
+        if sweep_meta.get("semantic_subtype") == "buy_side_liquidity_sweep":
+            if stage == "prealert":
+                return f"{tentative}买方清扫建立中"
+            if stage == "confirm":
+                return "买方清扫确认" if sweep_phase == "sweep_confirmed" else "买方清扫延续待确认"
+            if stage == "climax":
+                return "买方清扫确认"
+        if sweep_meta.get("semantic_subtype") == "sell_side_liquidity_sweep":
+            if stage == "prealert":
+                return f"{tentative}卖方清扫建立中"
+            if stage == "confirm":
+                return "卖方清扫确认" if sweep_phase == "sweep_confirmed" else "卖方清扫延续待确认"
+            if stage == "climax":
+                return "卖方清扫确认"
         if stage == "climax":
-            if sweep_meta.get("semantic_subtype") == "buy_side_liquidity_sweep":
-                return "买方清扫"
-            if sweep_meta.get("semantic_subtype") == "sell_side_liquidity_sweep":
-                return "卖方清扫"
             return "局部冲击高潮"
         if intent_type == "pool_buy_pressure":
             return f"{tentative}持续买压"
@@ -3249,13 +3302,20 @@ class SignalInterpreter:
     def _lp_market_read(self, event: Event, stage_context: dict, sweep_meta: dict) -> str:
         stage = str(stage_context.get("lp_alert_stage") or "confirm")
         move_phase = str(stage_context.get("lp_move_phase_label") or "")
+        sweep_phase = str(sweep_meta.get("lp_sweep_phase") or "")
         if stage == "prealert":
+            if sweep_phase == "sweep_building":
+                return "清扫建立中｜近价流动性开始被吃掉，需看 30-90s 是否续单扩散"
             return "先手观察｜需看后续 30-90s 是否续单 / 跨池共振"
         if stage == "confirm":
+            if sweep_phase == "sweep_building":
+                return "冲击建立中｜近价流动性开始被吃掉，需看 30-90s 是否续单扩散"
+            if sweep_phase == "sweep_confirmed":
+                return "冲击已成立｜是否延续要看 broader confirmation 与后续 followthrough"
             return "更像趋势确认，不是首发先手"
         if stage == "climax":
-            if str(sweep_meta.get("lp_sweep_phase") or "") == "sweep_confirmed":
-                return "冲击已成立｜若后续续单仍在，短线可继续延伸"
+            if sweep_phase == "sweep_confirmed":
+                return "冲击确认｜冲击已成立，是否延续要看 broader confirmation 与后续 followthrough"
             return "冲击启动中｜若无续单，更容易回吐"
         if move_phase == "climax":
             return "更像局部高潮｜不宜直接当延续突破"
@@ -3264,13 +3324,20 @@ class SignalInterpreter:
     def _lp_followup_plan(self, event: Event, stage_context: dict, sweep_meta: dict) -> tuple[str, str]:
         stage = str(stage_context.get("lp_alert_stage") or "confirm")
         intent_type = str(event.intent_type or "")
+        sweep_phase = str(sweep_meta.get("lp_sweep_phase") or "")
         if stage == "prealert":
+            if sweep_phase == "sweep_building":
+                return "30-90s：是否继续续单 / 扩散到更多池", "续单消失 / 冲击未扩散"
             if intent_type == "pool_buy_pressure":
                 return "60s：是否跨池共振 / 是否续单", "续单消失 / 快速反向池流"
             if intent_type == "pool_sell_pressure":
                 return "60s：是否跨池共振 / 是否续卖", "续卖消失 / 快速反向池流"
             return "60s：是否继续结构放大", "结构迅速回落"
         if stage == "confirm":
+            if sweep_phase == "sweep_building":
+                return "30-90s：是否继续续单 / 扩散到更多池", "续单消失 / 冲击未扩散"
+            if sweep_phase == "sweep_confirmed":
+                return "30-90s：是否保持跨池扩散 / broader confirmation", "扩散中断 / broader confirmation 缺失"
             return "90s：是否继续跨池放大", "连续性中断 / 共振消失"
         if stage == "climax":
             if str(sweep_meta.get("semantic_subtype") or "") == "buy_side_liquidity_sweep":

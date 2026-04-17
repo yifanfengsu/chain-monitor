@@ -303,11 +303,29 @@ class LiveMarketContextAdapter(MarketContextAdapter):
     def _remember_failure(self, token_or_pair: str | None, venue: str, failure: dict) -> None:
         if self.failure_cache_ttl_sec <= 0:
             return
+        if not self._should_backoff_failure(failure):
+            return
         key = self._failure_cache_key(token_or_pair, venue)
         self._failure_cache[key] = (
             float(self._clock()) + self.failure_cache_ttl_sec,
             dict(failure),
         )
+
+    def _should_backoff_failure(self, failure: dict) -> bool:
+        reason = str(failure.get("failure_reason") or "").strip().lower()
+        if not reason:
+            return False
+        if reason.startswith("http_"):
+            try:
+                return int(reason.split("_", 1)[1]) >= 500
+            except (TypeError, ValueError):
+                return False
+        return reason in {
+            "timeout",
+            "network_unavailable",
+            "network_os_error",
+            "unexpected_adapter_error",
+        }
 
     def get_market_context(self, token_or_pair, ts, venue: str = "binance_perp") -> dict:
         attempts: list[dict] = []

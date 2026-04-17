@@ -384,8 +384,10 @@ class SignalPipeline:
         if not self._is_lp_event(event=event):
             return {}
         token_or_pair = (
-            str(signal.context.get("asset_case_label") or "")
-            or str(signal.context.get("pair_label") or "")
+            str(signal.context.get("pair_label") or "")
+            or str(signal.metadata.get("pair_label") or "")
+            or str(((event.metadata.get("raw") or {}).get("lp_context") or {}).get("pair_label") or "")
+            or str(signal.context.get("asset_case_label") or "")
             or str(event.metadata.get("asset_case_label") or "")
             or str(event.metadata.get("token_symbol") or event.token or "")
         )
@@ -514,6 +516,39 @@ class SignalPipeline:
             or event.metadata.get("climax_reversal_score")
             or 0.0
         )
+        pool_quality_score = float(
+            signal.context.get("pool_quality_score")
+            or signal.metadata.get("pool_quality_score")
+            or event.metadata.get("pool_quality_score")
+            or 0.58
+        )
+        pair_quality_score = float(
+            signal.context.get("pair_quality_score")
+            or signal.metadata.get("pair_quality_score")
+            or event.metadata.get("pair_quality_score")
+            or 0.58
+        )
+        asset_case_quality_score = float(
+            signal.context.get("asset_case_quality_score")
+            or signal.metadata.get("asset_case_quality_score")
+            or event.metadata.get("asset_case_quality_score")
+            or max(pool_quality_score, pair_quality_score, 0.58)
+        )
+        quality_floor = min(pool_quality_score, pair_quality_score, asset_case_quality_score)
+        quality_gap = max(pool_quality_score, pair_quality_score, asset_case_quality_score) - quality_floor
+        sweep_phase = str(
+            signal.context.get("lp_sweep_phase")
+            or signal.metadata.get("lp_sweep_phase")
+            or event.metadata.get("lp_sweep_phase")
+            or ""
+        )
+        sweep_detected = bool(
+            signal.context.get("lp_sweep_detected")
+            or signal.metadata.get("lp_sweep_detected")
+            or event.metadata.get("lp_sweep_detected")
+            or sweep_phase
+        )
+        single_pool_dominant = multi_pool_resonance <= 1 and asset_case_supporting_pairs <= 1
 
         broader_alignment_confirmed = (
             market_source == "live_public"
@@ -545,7 +580,11 @@ class SignalPipeline:
                 + min(max(signed_market_alignment, 0.0) / 0.006, 1.0) * 0.14,
             )
             local_vs_broad_reason = "多池同向，且 broader perp/spot 同向"
-        elif stage == "confirm":
+        elif stage == "confirm" and (
+            single_pool_dominant
+            or market_source == "unavailable"
+            or climax_reversal_score >= 0.60
+        ):
             absorption_context = (
                 "local_buy_pressure_absorption"
                 if intent_type == "pool_buy_pressure"
@@ -554,8 +593,7 @@ class SignalPipeline:
             absorption_confidence = min(
                 0.90,
                 0.42
-                + (0.14 if multi_pool_resonance <= 1 else 0.0)
-                + (0.10 if asset_case_supporting_pairs <= 1 else 0.0)
+                + (0.16 if single_pool_dominant else 0.0)
                 + (0.10 if market_source == "unavailable" else 0.0)
                 + min(climax_reversal_score / 0.8, 1.0) * 0.14,
             )
@@ -578,83 +616,114 @@ class SignalPipeline:
         confirm_reason = ""
         confirm_alignment_score = 0.0
         chase_risk_score = 0.0
+        confirm_timing_bucket = ""
         stage_badge = str(signal.context.get("lp_stage_badge") or "")
         state_label = str(signal.context.get("lp_state_label") or signal.context.get("market_state_label") or "")
         market_read = str(signal.context.get("lp_market_read") or "")
 
-        if stage == "confirm":
+        def _base_absorption_label() -> str:
+            if absorption_context == "broader_buy_pressure_confirmed":
+                return "更广泛买压确认"
+            if absorption_context == "broader_sell_pressure_confirmed":
+                return "更广泛卖压确认"
+            if absorption_context == "local_sell_pressure_absorption":
+                return "局部卖压，可能被承接"
+            if absorption_context == "local_buy_pressure_absorption":
+                return f"局部买压，可能被{absorption_verb}"
+            return f"局部{move_label}，仍待 broader 确认"
+
+        if stage == "confirm" and not sweep_detected:
             confirm_alignment_score = min(
                 1.0,
-                (0.34 if market_source == "live_public" else 0.08)
-                + (0.18 if alert_timing in {"leading", "confirming"} else 0.0)
-                + (0.18 if broader_alignment_confirmed else 0.0)
+                (0.30 if market_source == "live_public" else 0.02)
+                + (0.16 if alert_timing in {"leading", "confirming"} else 0.0)
+                + (0.22 if broader_alignment_confirmed else 0.0)
                 + min(multi_pool_resonance / 3.0, 1.0) * 0.14
-                + min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.10
+                + min(max(same_pool_continuity, 0) / 3.0, 1.0) * 0.08
                 + min(asset_case_supporting_pairs / 3.0, 1.0) * 0.06
+                + min(quality_floor / 0.75, 1.0) * 0.06
             )
             chase_risk_score = min(
                 1.0,
-                min(pool_move_before_abs / 0.018, 1.0) * 0.36
-                + min(market_move_before_abs / 0.02, 1.0) * 0.12
+                min(pool_move_before_abs / 0.014, 1.0) * 0.34
+                + min(market_move_before_abs / 0.015, 1.0) * 0.12
                 + (0.18 if alert_timing == "late" else 0.0)
-                + (0.18 if market_source == "unavailable" else 0.0)
-                + min(climax_reversal_score / 0.8, 1.0) * 0.10
-                + (0.10 if multi_pool_resonance <= 1 else 0.0)
-                + (0.08 if not broader_alignment_confirmed else 0.0)
+                + (0.20 if market_source == "unavailable" else 0.0)
+                + min(climax_reversal_score / 0.8, 1.0) * 0.12
+                + (0.12 if single_pool_dominant else 0.0)
+                + (0.10 if not broader_alignment_confirmed else 0.0)
+                + (0.10 if case_age_sec >= 180 else 0.0)
+                + (0.08 if detect_latency_ms >= 5_500 else 0.0)
+                + (0.10 if quality_floor < 0.56 or quality_gap >= 0.18 else 0.0)
+            )
+            clean_confirm = (
+                market_source == "live_public"
+                and broader_alignment_confirmed
+                and pool_move_before_abs < 0.006
+                and market_move_before_abs < 0.006
+                and detect_latency_ms < 4_000
+                and case_age_sec < 120
+                and quality_floor >= 0.56
             )
             late_confirm = (
                 alert_timing == "late"
-                or (market_source == "unavailable" and pool_move_before_abs >= 0.010)
-                or detect_latency_ms >= 7_000
-                or case_age_sec >= 240
+                or (market_source == "unavailable" and pool_move_before_abs >= 0.006)
+                or pool_move_before_abs >= 0.009
+                or market_move_before_abs >= 0.008
+                or (single_pool_dominant and not broader_alignment_confirmed)
+                or detect_latency_ms >= 4_500
+                or case_age_sec >= 150
+                or (climax_reversal_score >= 0.62 and quality_floor < 0.62 and not broader_alignment_confirmed)
+                or quality_gap >= 0.18
             )
-            chase_risk = chase_risk_score >= 0.62 and (
-                pool_move_before_abs >= 0.012
-                or (alert_timing == "late" and not broader_alignment_confirmed)
+            chase_risk = (
+                chase_risk_score >= 0.58
+                and (
+                    pool_move_before_abs >= 0.010
+                    or market_move_before_abs >= 0.010
+                    or (alert_timing == "late" and not broader_alignment_confirmed)
+                    or (market_source == "unavailable" and pool_move_before_abs >= 0.008 and single_pool_dominant)
+                    or detect_latency_ms >= 8_000
+                    or case_age_sec >= 240
+                    or (climax_reversal_score >= 0.70 and not broader_alignment_confirmed)
+                )
             )
             if chase_risk:
+                confirm_timing_bucket = "chase_window"
+            elif late_confirm:
+                confirm_timing_bucket = "late_window"
+            elif clean_confirm:
+                confirm_timing_bucket = "clean_window"
+            else:
+                confirm_timing_bucket = "stretched_window"
+            if chase_risk:
                 confirm_quality = "chase_risk"
-                confirm_reason = "move_before_alert 已偏大，且 broader confirmation 不足"
+                confirm_reason = "确认已明显偏后，且 broader confirmation 不足，当前更像追单风险"
                 stage_badge = "风险"
                 state_label = (
-                    f"持续{'买压' if intent_type == 'pool_buy_pressure' else '卖压'}（追{'涨' if intent_type == 'pool_buy_pressure' else '空'}风险）"
+                    f"{_base_absorption_label()}（追{'涨' if intent_type == 'pool_buy_pressure' else '空'}风险）"
                 )
-                market_read = "已出现明显预走或局部高潮，当前更像追单风险而不是 clean confirm"
+                market_read = f"已出现明显预走或局部冲击，当前更像追单风险而不是 clean confirm｜{local_vs_broad_reason}"
             elif late_confirm:
                 confirm_quality = "late_confirm"
-                confirm_reason = "确认成立，但节奏偏晚或 broader confirmation 缺失"
-                state_label = f"持续{move_label}（偏晚）"
-                market_read = "确认已成立，但更像中后段确认，不应按 ultra-early 先手理解"
-            elif broader_alignment_confirmed and pool_move_before_abs < 0.010:
+                confirm_reason = "确认成立，但节奏偏晚、单池主导或 broader confirmation 不足"
+                state_label = f"{_base_absorption_label()}（偏晚）"
+                market_read = f"确认已成立，但更像中后段确认，不应按 ultra-early 先手理解｜{local_vs_broad_reason}"
+            elif clean_confirm:
                 confirm_quality = "clean_confirm"
                 confirm_reason = "多池/更广泛盘口同向，且预走不大"
+                state_label = _base_absorption_label()
                 market_read = "更像 clean confirm：已有 broader perp/spot 同向确认，但仍不是首发先手"
             else:
                 confirm_quality = "unconfirmed_confirm"
-                confirm_reason = "确认成立，但缺更广泛盘口同向确认"
-                market_read = "确认已出现，但缺 broader perp/spot 同向确认，延续性仍待跟踪"
-
-            if confirm_quality == "chase_risk":
-                market_read = f"{market_read}｜{local_vs_broad_reason}"
-            elif absorption_context == "broader_buy_pressure_confirmed":
-                state_label = "更广泛买压确认"
-            elif absorption_context == "broader_sell_pressure_confirmed":
-                state_label = "更广泛卖压确认"
-            elif absorption_context == "local_sell_pressure_absorption":
-                state_label = "局部卖压，可能被承接"
-            elif absorption_context == "local_buy_pressure_absorption":
-                state_label = f"局部买压，可能被{absorption_verb}"
-            elif absorption_context == "pool_only_unconfirmed_pressure":
-                state_label = f"局部{move_label}，仍待 broader 确认"
+                confirm_reason = "确认成立，但缺更广泛盘口同向确认，不能当作继续追击的保证"
+                state_label = _base_absorption_label()
+                market_read = f"确认已出现，但缺 broader perp/spot 同向确认，延续性仍待跟踪｜{local_vs_broad_reason}"
 
         elif stage == "prealert":
-            if absorption_context == "broader_buy_pressure_confirmed":
-                state_label = "更广泛买压确认"
-            elif absorption_context == "broader_sell_pressure_confirmed":
-                state_label = "更广泛卖压确认"
-            else:
-                state_label = f"局部{move_label}，仍待 broader 确认"
-            if market_source == "unavailable":
+            if not sweep_detected:
+                state_label = _base_absorption_label()
+            if market_source == "unavailable" and not sweep_detected:
                 market_read = "先手观察｜缺 broader perp/spot 确认，先看 30-90s 是否续单 / 共振"
 
         payload = {
@@ -662,6 +731,7 @@ class SignalPipeline:
             "lp_confirm_reason": confirm_reason,
             "lp_confirm_alignment_score": round(float(confirm_alignment_score), 3),
             "lp_chase_risk_score": round(float(chase_risk_score), 3),
+            "lp_confirm_timing_bucket": confirm_timing_bucket,
             "lp_absorption_context": absorption_context,
             "lp_absorption_confidence": round(float(absorption_confidence), 3),
             "lp_broader_alignment": broader_alignment,
@@ -2505,6 +2575,24 @@ class SignalPipeline:
                 or event_metadata.get("market_context_venue")
                 or ""
             ),
+            "market_context_requested_symbol": str(
+                signal_context.get("market_context_requested_symbol")
+                or signal_metadata.get("market_context_requested_symbol")
+                or event_metadata.get("market_context_requested_symbol")
+                or ""
+            ),
+            "market_context_resolved_symbol": str(
+                signal_context.get("market_context_resolved_symbol")
+                or signal_metadata.get("market_context_resolved_symbol")
+                or event_metadata.get("market_context_resolved_symbol")
+                or ""
+            ),
+            "market_context_failure_reason": str(
+                signal_context.get("market_context_failure_reason")
+                or signal_metadata.get("market_context_failure_reason")
+                or event_metadata.get("market_context_failure_reason")
+                or ""
+            ),
             "alert_relative_timing": str(
                 signal_context.get("alert_relative_timing")
                 or signal_metadata.get("alert_relative_timing")
@@ -2546,6 +2634,60 @@ class SignalPipeline:
                 signal_context.get("lp_absorption_context")
                 or signal_metadata.get("lp_absorption_context")
                 or event_metadata.get("lp_absorption_context")
+                or ""
+            ),
+            "lp_absorption_confidence": float(
+                signal_context.get("lp_absorption_confidence")
+                or signal_metadata.get("lp_absorption_confidence")
+                or event_metadata.get("lp_absorption_confidence")
+                or 0.0
+            ),
+            "lp_broader_alignment": str(
+                signal_context.get("lp_broader_alignment")
+                or signal_metadata.get("lp_broader_alignment")
+                or event_metadata.get("lp_broader_alignment")
+                or ""
+            ),
+            "lp_local_vs_broad_reason": str(
+                signal_context.get("lp_local_vs_broad_reason")
+                or signal_metadata.get("lp_local_vs_broad_reason")
+                or event_metadata.get("lp_local_vs_broad_reason")
+                or ""
+            ),
+            "lp_confirm_reason": str(
+                signal_context.get("lp_confirm_reason")
+                or signal_metadata.get("lp_confirm_reason")
+                or event_metadata.get("lp_confirm_reason")
+                or ""
+            ),
+            "lp_confirm_alignment_score": float(
+                signal_context.get("lp_confirm_alignment_score")
+                or signal_metadata.get("lp_confirm_alignment_score")
+                or event_metadata.get("lp_confirm_alignment_score")
+                or 0.0
+            ),
+            "lp_chase_risk_score": float(
+                signal_context.get("lp_chase_risk_score")
+                or signal_metadata.get("lp_chase_risk_score")
+                or event_metadata.get("lp_chase_risk_score")
+                or 0.0
+            ),
+            "lp_confirm_timing_bucket": str(
+                signal_context.get("lp_confirm_timing_bucket")
+                or signal_metadata.get("lp_confirm_timing_bucket")
+                or event_metadata.get("lp_confirm_timing_bucket")
+                or ""
+            ),
+            "lp_sweep_phase": str(
+                signal_context.get("lp_sweep_phase")
+                or signal_metadata.get("lp_sweep_phase")
+                or event_metadata.get("lp_sweep_phase")
+                or ""
+            ),
+            "lp_sweep_display_stage": str(
+                signal_context.get("lp_sweep_display_stage")
+                or signal_metadata.get("lp_sweep_display_stage")
+                or event_metadata.get("lp_sweep_display_stage")
                 or ""
             ),
             "market_context_attempts": list(

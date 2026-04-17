@@ -159,8 +159,8 @@ class LpSweepNotifierTests(unittest.TestCase):
         self.assertEqual("likely", context.get("sweep_confidence"))
         self.assertEqual("sweep_confirmed", context.get("lp_sweep_phase"))
         self.assertEqual("climax", context.get("lp_alert_stage"))
-        self.assertEqual("买方清扫", context.get("market_state_label"))
-        self.assertEqual("买方清扫", context.get("headline_label"))
+        self.assertEqual("买方清扫确认", context.get("market_state_label"))
+        self.assertEqual("买方清扫确认", context.get("headline_label"))
         self.assertIn("冲击延续", context.get("lp_meaning_brief", ""))
         self.assertEqual("pool_buy_pressure", event.intent_type)
 
@@ -170,7 +170,7 @@ class LpSweepNotifierTests(unittest.TestCase):
         context = self._interpret(event, signal, self._gate_metrics(event, price_impact_ratio=0.007))
 
         self.assertEqual("sell_side_liquidity_sweep", context.get("semantic_subtype"))
-        self.assertEqual("卖方清扫", context.get("market_state_label"))
+        self.assertEqual("卖方清扫确认", context.get("market_state_label"))
         self.assertEqual("sweep_confirmed", context.get("lp_sweep_phase"))
         self.assertEqual("climax", context.get("lp_alert_stage"))
         self.assertIn("冲击延续", context.get("lp_meaning_brief", ""))
@@ -237,12 +237,12 @@ class LpSweepNotifierTests(unittest.TestCase):
         lines = message.strip().splitlines()
 
         self.assertEqual(5, len(lines))
-        self.assertEqual("高潮｜ETH/USDC｜买方清扫", lines[0])
+        self.assertEqual("高潮｜ETH/USDC｜买方清扫确认", lines[0])
         self.assertEqual("15s 4笔｜同池连续3｜跨池2｜放量2.3x", lines[1])
         self.assertIn("冲击已成立", lines[2])
         self.assertIn("继续看：30-90s：是否继续续单 / 扩散到更多池", lines[3])
         self.assertIn("链路：secondary｜延迟 0ms", lines[4])
-        self.assertEqual("买方清扫", context.get("headline_label"))
+        self.assertEqual("买方清扫确认", context.get("headline_label"))
 
 
 class MarketMakerNotifierFormattingTests(unittest.TestCase):

@@ -61,6 +61,8 @@ quality report / 导出入口：
 majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
 - 本地扩 `data/lp_pools.json` 时优先补 `ETH / BTC / SOL` 对 `USDT / USDC` 主池
+- 下一轮采样优先补 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC`，以及更多已验证的 `ETH` 主池，再考虑 long-tail
+- 先不扩 long-tail 的原因是当前质量样本和 market context 还主要集中在 majors，先把 majors 的 confirm / sweep / reversal 统计做稳更有价值
 - 公开仓库不内置 unverifiable 私有 pool 地址；缺少本地 pool book 时 coverage report 会给 warning，但不会伪造数据
 
 当前 patch 明确不做多频道真实分发：

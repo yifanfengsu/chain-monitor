@@ -106,10 +106,24 @@ class SignalArchiveIntegrityTests(unittest.TestCase):
                 "lp_market_read": "更像 clean confirm：已有 broader perp/spot 同向确认，但仍不是首发先手",
                 "market_context_source": "live_public",
                 "market_context_venue": "binance_perp",
+                "market_context_requested_symbol": "ETHUSDC",
+                "market_context_resolved_symbol": "ETHUSDT",
+                "market_context_failure_reason": "",
                 "alert_relative_timing": "confirming",
                 "message_variant": "lp_directional",
                 "message_template": "brief",
                 "operational_intent_key": "lp_pool_buy_pressure",
+                "lp_confirm_quality": "clean_confirm",
+                "lp_confirm_reason": "多池/更广泛盘口同向，且预走不大",
+                "lp_confirm_alignment_score": 0.82,
+                "lp_chase_risk_score": 0.12,
+                "lp_confirm_timing_bucket": "clean_window",
+                "lp_absorption_context": "broader_buy_pressure_confirmed",
+                "lp_absorption_confidence": 0.81,
+                "lp_broader_alignment": "confirmed",
+                "lp_local_vs_broad_reason": "多池同向，且 broader perp/spot 同向",
+                "lp_sweep_phase": "",
+                "lp_sweep_display_stage": "confirm",
                 "lp_outcome_record": {"record_id": "outcome-archive-1"},
             }
         )
@@ -159,6 +173,11 @@ class SignalArchiveIntegrityTests(unittest.TestCase):
         self.assertTrue(signal_row["sent_to_telegram"])
         self.assertIsNotNone(signal_row["notifier_sent_at"])
         self.assertEqual("confirm", signal_row["lp_alert_stage"])
+        self.assertEqual("ETHUSDC", signal_row["market_context_requested_symbol"])
+        self.assertEqual("ETHUSDT", signal_row["market_context_resolved_symbol"])
+        self.assertEqual("clean_confirm", signal_row["lp_confirm_quality"])
+        self.assertEqual("broader_buy_pressure_confirmed", signal_row["lp_absorption_context"])
+        self.assertEqual("clean_window", signal_row["lp_confirm_timing_bucket"])
 
         matching_audits = [row for row in audit_rows if row.get("signal_id") == "sig-archive-1"]
         self.assertTrue(matching_audits)
