@@ -43,6 +43,7 @@ live market context 最小 env：
 - `BINANCE_FAPI_BASE_URL=https://fapi.binance.com`
 - `BINANCE_SPOT_BASE_URL=https://api.binance.com`
 - `BYBIT_V5_BASE_URL=https://api.bybit.com`
+- live 启动时会做配置自检；若 `primary/secondary` 仍指向 `binance_perp/bybit_perp`，进程会 fail-closed 直接拒绝启动
 
 live market context 诊断补充：
 - 每条 LP signal 会带 `market_context_attempted / requested_symbol / resolved_symbol / failure_reason / failure_stage / endpoint / latency_ms`
@@ -62,6 +63,7 @@ quality report / 导出入口：
 - `python -m app.quality_reports --top-bad-prealerts`
 - `python -m app.quality_reports --fastlane-roi`
 - `python -m app.quality_reports --market-context-health`
+- `python -m app.quality_reports --market-context-config-check`
 - `python -m app.quality_reports --major-pool-coverage`
 - `python -m app.quality_reports --format csv`
 

@@ -500,3 +500,133 @@ def build_market_context_adapter() -> MarketContextAdapter:
     if mode == "live":
         return LiveMarketContextAdapter()
     return UnavailableMarketContextAdapter()
+
+
+EXPECTED_US_VPS_PRIMARY_VENUE = "okx_perp"
+EXPECTED_US_VPS_SECONDARY_VENUE = "kraken_futures"
+US_VPS_LIVE_VENUES = {
+    EXPECTED_US_VPS_PRIMARY_VENUE,
+    EXPECTED_US_VPS_SECONDARY_VENUE,
+}
+LEGACY_FALLBACK_ONLY_VENUES = set(LiveMarketContextAdapter.fallback_venues)
+KNOWN_LIVE_VENUES = tuple(sorted(US_VPS_LIVE_VENUES | LEGACY_FALLBACK_ONLY_VENUES))
+
+
+class MarketContextConfigError(RuntimeError):
+    pass
+
+
+def _normalize_runtime_mode(value: str | None) -> str:
+    return str(value or MARKET_CONTEXT_ADAPTER_MODE or "unavailable").strip().lower()
+
+
+def _normalize_runtime_venue(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def build_market_context_runtime_self_check(
+    *,
+    mode: str | None = None,
+    primary_venue: str | None = None,
+    secondary_venue: str | None = None,
+) -> dict:
+    normalized_mode = _normalize_runtime_mode(mode)
+    normalized_primary = _normalize_runtime_venue(primary_venue or MARKET_CONTEXT_PRIMARY_VENUE)
+    normalized_secondary = _normalize_runtime_venue(secondary_venue or MARKET_CONTEXT_SECONDARY_VENUE)
+
+    effective_path: list[str] = []
+    if normalized_mode == "live":
+        for venue in [normalized_primary, normalized_secondary, *LiveMarketContextAdapter.fallback_venues]:
+            normalized_venue = _normalize_runtime_venue(venue)
+            if normalized_venue and normalized_venue not in effective_path:
+                effective_path.append(normalized_venue)
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    recommended_profile_match = (
+        normalized_primary == EXPECTED_US_VPS_PRIMARY_VENUE
+        and normalized_secondary == EXPECTED_US_VPS_SECONDARY_VENUE
+    )
+
+    if normalized_mode == "live":
+        if normalized_primary not in US_VPS_LIVE_VENUES:
+            if not normalized_primary:
+                issues.append("live_mode_missing_primary_venue")
+            elif normalized_primary in LEGACY_FALLBACK_ONLY_VENUES:
+                issues.append(f"live_mode_legacy_primary_venue:{normalized_primary}")
+            elif normalized_primary not in KNOWN_LIVE_VENUES:
+                issues.append(f"live_mode_unknown_primary_venue:{normalized_primary}")
+            else:
+                issues.append(f"live_mode_invalid_primary_venue:{normalized_primary}")
+        if normalized_secondary not in US_VPS_LIVE_VENUES:
+            if not normalized_secondary:
+                issues.append("live_mode_missing_secondary_venue")
+            elif normalized_secondary in LEGACY_FALLBACK_ONLY_VENUES:
+                issues.append(f"live_mode_legacy_secondary_venue:{normalized_secondary}")
+            elif normalized_secondary not in KNOWN_LIVE_VENUES:
+                issues.append(f"live_mode_unknown_secondary_venue:{normalized_secondary}")
+            else:
+                issues.append(f"live_mode_invalid_secondary_venue:{normalized_secondary}")
+        if normalized_primary and normalized_secondary and normalized_primary == normalized_secondary:
+            issues.append(f"live_mode_duplicate_primary_secondary:{normalized_primary}")
+        if not recommended_profile_match and not issues:
+            warnings.append(
+                "live_mode_non_recommended_order:"
+                f"{normalized_primary}->{normalized_secondary}"
+            )
+    elif normalized_mode not in {"fixture", "unavailable"}:
+        issues.append(f"unsupported_market_context_adapter_mode:{normalized_mode}")
+    else:
+        warnings.append(f"startup_validation_skipped_for_mode:{normalized_mode}")
+
+    return {
+        "mode": normalized_mode,
+        "primary_venue": normalized_primary,
+        "secondary_venue": normalized_secondary,
+        "effective_path": effective_path,
+        "startup_ready": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "known_live_venues": list(KNOWN_LIVE_VENUES),
+        "legacy_fallback_only_venues": sorted(LEGACY_FALLBACK_ONLY_VENUES),
+        "expected_us_vps_profile": {
+            "primary_venue": EXPECTED_US_VPS_PRIMARY_VENUE,
+            "secondary_venue": EXPECTED_US_VPS_SECONDARY_VENUE,
+        },
+        "recommended_profile_match": recommended_profile_match,
+    }
+
+
+def validate_market_context_runtime_self_check(report: dict | None = None) -> dict:
+    payload = dict(report or build_market_context_runtime_self_check())
+    issues = [str(item).strip() for item in list(payload.get("issues") or []) if str(item).strip()]
+    if issues:
+        raise MarketContextConfigError(
+            "market context startup check failed: " + "; ".join(issues)
+        )
+    return payload
+
+
+def format_market_context_runtime_self_check(report: dict | None = None) -> str:
+    payload = dict(report or build_market_context_runtime_self_check())
+    status = "ready" if bool(payload.get("startup_ready")) else "blocked"
+    mode = str(payload.get("mode") or "")
+    primary = str(payload.get("primary_venue") or "-")
+    secondary = str(payload.get("secondary_venue") or "-")
+    effective_path = " -> ".join(str(item) for item in list(payload.get("effective_path") or [])) or "-"
+    lines = [
+        f"[market_context] startup_check={status} mode={mode} primary={primary} secondary={secondary}",
+        f"[market_context] effective_path={effective_path}",
+        (
+            "[market_context] expected_us_vps_profile="
+            f"{EXPECTED_US_VPS_PRIMARY_VENUE} -> {EXPECTED_US_VPS_SECONDARY_VENUE}; "
+            f"legacy_fallback_only={','.join(sorted(LEGACY_FALLBACK_ONLY_VENUES))}"
+        ),
+    ]
+    issues = [str(item).strip() for item in list(payload.get("issues") or []) if str(item).strip()]
+    warnings = [str(item).strip() for item in list(payload.get("warnings") or []) if str(item).strip()]
+    if issues:
+        lines.append("[market_context] issues=" + "; ".join(issues))
+    if warnings:
+        lines.append("[market_context] warnings=" + "; ".join(warnings))
+    return "\n".join(lines)

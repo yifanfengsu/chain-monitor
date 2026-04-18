@@ -16,6 +16,12 @@ from config import (
 from filter import WATCH_ADDRESSES, get_address_meta, set_address_intelligence_manager
 from followup_tracker import FollowupTracker
 from listener import producer, replay_spill_worker, set_listener_archive_store, worker
+from market_context_adapter import (
+    MarketContextConfigError,
+    build_market_context_runtime_self_check,
+    format_market_context_runtime_self_check,
+    validate_market_context_runtime_self_check,
+)
 from notifier import send_signal
 from pipeline import SignalPipeline
 from price_service import PriceService
@@ -61,19 +67,29 @@ followup_tracker = FollowupTracker()
 set_listener_archive_store(archive_store)
 set_address_intelligence_manager(address_intelligence)
 
-pipeline = SignalPipeline(
-    price_service=price_service,
-    state_manager=state_manager,
-    behavior_analyzer=behavior_analyzer,
-    address_scorer=address_scorer,
-    token_scorer=token_scorer,
-    quality_gate=quality_gate,
-    strategy_engine=strategy_engine,
-    signal_interpreter=signal_interpreter,
-    address_intelligence=address_intelligence,
-    archive_store=archive_store,
-    followup_tracker=followup_tracker,
-)
+pipeline: SignalPipeline | None = None
+
+
+def _build_pipeline() -> SignalPipeline:
+    return SignalPipeline(
+        price_service=price_service,
+        state_manager=state_manager,
+        behavior_analyzer=behavior_analyzer,
+        address_scorer=address_scorer,
+        token_scorer=token_scorer,
+        quality_gate=quality_gate,
+        strategy_engine=strategy_engine,
+        signal_interpreter=signal_interpreter,
+        address_intelligence=address_intelligence,
+        archive_store=archive_store,
+        followup_tracker=followup_tracker,
+    )
+
+
+def _run_market_context_startup_check() -> dict:
+    report = build_market_context_runtime_self_check()
+    print(format_market_context_runtime_self_check(report))
+    return validate_market_context_runtime_self_check(report)
 
 
 def _extract_counterparty_address(counterparty_entry) -> str:
@@ -295,6 +311,8 @@ def restore_persisted_exchange_adjacent() -> dict:
 async def handle_tx(raw_item):
     """worker 入口：执行完整管道并输出信号。"""
     try:
+        if pipeline is None:
+            raise RuntimeError("signal pipeline not initialized")
         result = await pipeline.process(raw_item)
         if not result:
             return
@@ -318,7 +336,11 @@ async def handle_tx(raw_item):
 
 
 async def main():
+    global pipeline
     print("🚀 系统启动...")
+    _run_market_context_startup_check()
+    if pipeline is None:
+        pipeline = _build_pipeline()
     restore_stats = restore_persisted_exchange_adjacent()
     if restore_stats["loaded_intel_count"] or restore_stats["restored_runtime_count"]:
         print(
@@ -348,5 +370,8 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except MarketContextConfigError as exc:
+        print(f"❌ market context 启动校验失败: {exc}")
+        raise SystemExit(2)
     except KeyboardInterrupt:
         print("🛑 程序已手动停止")

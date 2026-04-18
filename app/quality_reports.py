@@ -11,6 +11,7 @@ import sys
 from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
 from lp_registry import ACTIVE_LP_POOLS
+from market_context_adapter import build_market_context_runtime_self_check
 from quality_manager import QualityManager
 from state_manager import StateManager
 
@@ -21,6 +22,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-bad-prealerts", action="store_true", help="输出低 prealert precision 维度")
     parser.add_argument("--fastlane-roi", action="store_true", help="输出低 fastlane ROI 维度")
     parser.add_argument("--market-context-health", action="store_true", help="输出 live market context 健康度")
+    parser.add_argument("--market-context-config-check", action="store_true", help="输出 live market context 启动配置自检")
     parser.add_argument("--major-pool-coverage", action="store_true", help="输出 majors pool 覆盖情况")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
@@ -474,6 +476,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.market_context_health:
         payload = build_market_context_health_report()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.market_context_config_check:
+        payload = build_market_context_runtime_self_check()
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

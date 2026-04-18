@@ -1,3 +1,6 @@
+from contextlib import redirect_stdout
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +16,7 @@ from state_manager import StateManager
 from strategy_engine import StrategyEngine
 from token_scoring import TokenScorer
 from user_tiers import evaluate_user_tier_lp_delivery
+from quality_reports import main as quality_reports_main
 
 
 class QualityReportsTests(unittest.TestCase):
@@ -162,6 +166,18 @@ class QualityReportsTests(unittest.TestCase):
         )
         signal.metadata.update(signal.context)
         return signal
+
+    def test_market_context_config_check_cli_outputs_self_check_payload(self) -> None:
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = quality_reports_main(["--market-context-config-check"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, exit_code)
+        self.assertIn("startup_ready", payload)
+        self.assertIn("mode", payload)
+        self.assertIn("issues", payload)
 
     def _manager(self, state_manager: StateManager, stats_path: str, actionable_min_samples: int = 2) -> QualityManager:
         return QualityManager(
