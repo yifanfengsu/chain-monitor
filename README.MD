@@ -20,7 +20,9 @@ CLMM replay fixture 分两层：
 本次产品化 patch 新增了 4 个应用层 seam：
 - user tiers：`retail / trader / research`，通过 `app/user_tiers.py` + `DEFAULT_USER_TIER` 控制 LP stage 准入、模板细节、debug 行展示与 asset-case 优先级；当前测试/默认运行保持 `DEFAULT_USER_TIER=research`
 - asset case：`app/asset_case_manager.py` 维护短窗 token/asset 级聚合，只聚合 LP pool 事件；`asset_case_id / asset_case_key / asset_case_stage / supporting_pairs` 都挂在 event/signal metadata 里，并默认持久化到 `data/asset_cases.cache.json` 以支持跨进程/重启恢复
-- market context：`app/market_context_adapter.py` 提供 `fixture / unavailable / live` 三层接口；`live` 只接公共市场数据 API（Binance USDⓈ-M / Bybit public），没有外部市场数据时统一回落到 `market_context_source=unavailable`
+- market context：`app/market_context_adapter.py` 提供 `fixture / unavailable / live` 三层接口；`live` 只接公共市场数据 API，没有外部市场数据时统一回落到 `market_context_source=unavailable`
+  - 当前 US VPS 场景默认主路径已切到 `OKX public + Kraken Futures public`
+  - `Binance / Bybit` 只保留作 fallback / diagnostics，不再作为主成功路径
 - signal archive：`app/data/archive/signals/YYYY-MM-DD.ndjson` 现在会稳定落盘 `signal_id / asset_case_id / delivery_decision / notifier_sent_at / market_context diagnostics`，用于和 `delivery_audit` / outcome 做 1:1 对账
 - outcome / quality：`app/quality_manager.py` 基于 `state_manager` 里的 `lp_alert_outcome_v1` 滚动记录计算 `pool_quality_score / pair_quality_score / asset_case_quality_score / prealert_precision_score / climax_reversal_score / fastlane_roi_score`，并把 rolling outcome / ops summary 持久化到 `data/lp_quality_stats.cache.json`
 
@@ -31,18 +33,23 @@ quality/outcome 本地结构说明：
 
 live market context 最小 env：
 - `MARKET_CONTEXT_ADAPTER_MODE=live|fixture|unavailable`
-- `MARKET_CONTEXT_PRIMARY_VENUE=binance_perp`
-- `MARKET_CONTEXT_SECONDARY_VENUE=bybit_perp`
+- `MARKET_CONTEXT_PRIMARY_VENUE=okx_perp`
+- `MARKET_CONTEXT_SECONDARY_VENUE=kraken_futures`
 - `MARKET_CONTEXT_TIMEOUT_SEC=2.5`
 - `MARKET_CONTEXT_CACHE_TTL_SEC=2.0`
 - `MARKET_CONTEXT_FAILURE_CACHE_TTL_SEC=1.0`
+- `OKX_PUBLIC_BASE_URL=https://www.okx.com`
+- `KRAKEN_FUTURES_BASE_URL=https://futures.kraken.com`
 - `BINANCE_FAPI_BASE_URL=https://fapi.binance.com`
 - `BINANCE_SPOT_BASE_URL=https://api.binance.com`
 - `BYBIT_V5_BASE_URL=https://api.bybit.com`
 
 live market context 诊断补充：
 - 每条 LP signal 会带 `market_context_attempted / requested_symbol / resolved_symbol / failure_reason / failure_stage / endpoint / latency_ms`
-- ETH/BTC/SOL 主池默认优先尝试更广泛的 `USDT` perp reference，再回退到 `USDC`
+- 现在还会带 `attempted_venues / fallback_chain`
+- ETH/BTC/SOL 主池默认优先尝试更广泛的 majors perp reference：
+  - OKX：优先 `ETH/BTC/SOL-USDT-SWAP`，再回退同资产的 `USDC/USD` swap
+  - Kraken Futures：优先 `PF_*USD`，再回退 `PI_*USD`
 
 asset-case / quality cache：
 - asset-case cache 默认路径：`data/asset_cases.cache.json`
@@ -61,8 +68,10 @@ quality report / 导出入口：
 majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
 - 本地扩 `data/lp_pools.json` 时优先补 `ETH / BTC / SOL` 对 `USDT / USDC` 主池
-- 下一轮采样优先补 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC`，以及更多已验证的 `ETH` 主池，再考虑 long-tail
-- 先不扩 long-tail 的原因是当前质量样本和 market context 还主要集中在 majors，先把 majors 的 confirm / sweep / reversal 统计做稳更有价值
+- 下一轮研究采样明确优先补 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC`，以及更多已验证的 `ETH` 主池
+- 先不扩 long-tail 的原因：
+  - 当前 outcome / quality / market context 样本仍主要集中在 majors
+  - 先把 majors 的 `prealert -> confirm`、confirm scope、reversal / exhaustion 统计做稳更有价值
 - 公开仓库不内置 unverifiable 私有 pool 地址；缺少本地 pool book 时 coverage report 会给 warning，但不会伪造数据
 
 当前 patch 明确不做多频道真实分发：

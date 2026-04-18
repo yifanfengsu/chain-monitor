@@ -155,6 +155,32 @@ class LpUserTierTests(unittest.TestCase):
         self.assertEqual("lp_directional_prealert_observe", delivery_reason)
         self.assertTrue(can_emit_delivery_notification(event, signal))
 
+    def test_trader_can_receive_high_quality_single_pool_major_prealert(self) -> None:
+        event = self._event(tier="trader", stage="prealert")
+        signal = self._signal(
+            event,
+            tier="trader",
+            stage="prealert",
+            supporting_pairs=1,
+            asset_quality=0.66,
+            prealert_precision=0.76,
+        )
+        signal.context["lp_major_pool"] = True
+        signal.context["lp_major_priority_score"] = 1.25
+        signal.metadata["lp_major_pool"] = True
+        signal.metadata["lp_major_priority_score"] = 1.25
+
+        delivery_class, delivery_reason = self.engine._apply_delivery(
+            event,
+            signal,
+            "observe",
+            "lp_directional_prealert_observe",
+        )
+
+        self.assertEqual("observe", delivery_class)
+        self.assertEqual("lp_directional_prealert_observe", delivery_reason)
+        self.assertTrue(can_emit_delivery_notification(event, signal))
+
     def test_research_keeps_full_stage_first_message(self) -> None:
         event = self._event(tier="research", stage="prealert")
         signal = self._signal(

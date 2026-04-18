@@ -791,6 +791,7 @@ class SignalQualityGate:
             allow_lp_prealert, lp_prealert_reason, lp_prealert_score, lp_prealert_components = self._allow_lp_prealert_exception(
                 event=event,
                 lp_trend_primary_pool=lp_trend_primary_pool,
+                lp_major_pool=bool(lp_trend_pool_context.get("is_major_pool")),
                 pricing_status=pricing_status,
                 pricing_confidence=pricing_confidence,
                 confirmation_score=float(event.confirmation_score or 0.0),
@@ -1722,6 +1723,7 @@ class SignalQualityGate:
         *,
         event: Event,
         lp_trend_primary_pool: bool,
+        lp_major_pool: bool,
         pricing_status: str,
         pricing_confidence: float,
         confirmation_score: float,
@@ -1742,11 +1744,14 @@ class SignalQualityGate:
             return False, "", 0.0, {}
         if pricing_status in {"unknown", "unavailable"}:
             return False, "lp_prealert_pricing_unavailable", 0.0, {}
-        if pricing_confidence < self.lp_prealert_min_pricing_confidence:
+        major_pool_override = bool(lp_major_pool)
+        min_pricing_confidence = max(self.lp_prealert_min_pricing_confidence - (0.02 if major_pool_override else 0.0), 0.58)
+        if pricing_confidence < min_pricing_confidence:
             return False, "lp_prealert_pricing_confidence_too_low", 0.0, {}
         if usd_value < max(self.lp_notify_hard_min_usd, self.lp_prealert_min_usd):
             return False, "lp_prealert_usd_too_low", 0.0, {}
-        if confirmation_score < max(self.lp_prealert_min_confirmation - 0.10, 0.24):
+        min_confirmation = max(self.lp_prealert_min_confirmation - (0.16 if major_pool_override else 0.10), 0.24)
+        if confirmation_score < min_confirmation:
             return False, "lp_prealert_confirmation_too_low", 0.0, {}
 
         min_action_intensity = self.lp_prealert_directional_min_action_intensity
@@ -1757,36 +1762,50 @@ class SignalQualityGate:
         elif intent_type == "liquidity_addition":
             min_action_intensity = self.lp_prealert_liquidity_addition_min_action_intensity
             min_volume_surge_ratio = self.lp_prealert_liquidity_addition_min_volume_surge_ratio
+        if major_pool_override:
+            min_action_intensity = max(min_action_intensity - 0.05, 0.18)
+            min_volume_surge_ratio = max(min_volume_surge_ratio - 0.12, 1.08)
 
         combo_action_surge = (
             action_intensity >= min_action_intensity
             and pool_volume_surge_ratio >= min_volume_surge_ratio
         )
         combo_skew_emerging = (
-            reserve_skew >= self.lp_prealert_min_reserve_skew
+            reserve_skew >= max(self.lp_prealert_min_reserve_skew - (0.02 if major_pool_override else 0.0), 0.06)
             and max(same_pool_continuity, multi_pool_resonance) >= 1
         )
         combo_multi_pool = multi_pool_resonance >= 2
         primary_pool_bonus = bool(lp_trend_primary_pool)
+        non_major_guard = bool(not lp_major_pool and not lp_trend_primary_pool)
 
         components = {
-            "pricing_confidence": bool(pricing_confidence >= self.lp_prealert_min_pricing_confidence),
+            "pricing_confidence": bool(pricing_confidence >= min_pricing_confidence),
             "min_usd": bool(usd_value >= max(self.lp_notify_hard_min_usd, self.lp_prealert_min_usd)),
             "action_plus_surge": bool(combo_action_surge),
             "reserve_skew_emerging": bool(combo_skew_emerging),
             "multi_pool_first_resonance": bool(combo_multi_pool),
             "primary_pool_bonus": bool(primary_pool_bonus),
+            "major_pool_override": bool(major_pool_override),
         }
         matched = sum(1 for matched in components.values() if matched)
         structure_score = round(matched / max(len(components), 1), 3)
         if not (combo_action_surge or combo_skew_emerging or combo_multi_pool):
             return False, "lp_prealert_structure_too_weak", structure_score, components
-        if matched < max(self.lp_prealert_primary_trend_min_matches, 2):
+        required_matches = max(self.lp_prealert_primary_trend_min_matches, 2)
+        if major_pool_override:
+            required_matches = max(required_matches - 1, 2)
+        if non_major_guard:
+            required_matches = max(required_matches, 3)
+        if matched < required_matches:
             return False, "lp_prealert_structure_too_weak", structure_score, components
+        if non_major_guard and same_pool_continuity < 2 and multi_pool_resonance < 2:
+            return False, "lp_prealert_non_major_guard", structure_score, components
         if combo_multi_pool:
             return True, "lp_prealert_multi_pool_first_resonance", structure_score, components
         if combo_skew_emerging:
             return True, "lp_prealert_reserve_skew_emerging", structure_score, components
+        if major_pool_override:
+            return True, "lp_prealert_major_direction_building", structure_score, components
         return True, "lp_prealert_direction_building", structure_score, components
 
     def _lp_fast_exception_structure_score(

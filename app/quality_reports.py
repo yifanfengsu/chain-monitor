@@ -111,9 +111,12 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
     venue_stats = defaultdict(lambda: defaultdict(int))
     endpoint_stats = defaultdict(lambda: defaultdict(int))
     resolved_symbol_stats = defaultdict(lambda: defaultdict(int))
+    requested_symbol_stats = defaultdict(lambda: defaultdict(int))
     attempt_symbol_stats = defaultdict(lambda: defaultdict(int))
     failure_reason_counts = defaultdict(int)
     unavailable_reason_breakdown = defaultdict(int)
+    fallback_chain_counts = defaultdict(int)
+    symbol_fallback_stats = defaultdict(lambda: defaultdict(int))
     warnings: list[str] = []
     total_attempts = 0
 
@@ -123,9 +126,10 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
     for row in rows:
         venue = str(_signal_row_value(row, "market_context_venue") or "")
         source = str(_signal_row_value(row, "market_context_source") or "")
+        requested_symbol = str(_signal_row_value(row, "market_context_requested_symbol") or "")
         resolved_symbol = str(
             _signal_row_value(row, "market_context_resolved_symbol")
-            or _signal_row_value(row, "market_context_requested_symbol")
+            or requested_symbol
             or ""
         )
         final_failure_reason = str(_signal_row_value(row, "market_context_failure_reason") or "")
@@ -141,10 +145,36 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
                 resolved_symbol_stats[resolved_symbol]["signal_success"] += 1
             elif source == "unavailable":
                 resolved_symbol_stats[resolved_symbol]["signal_failure"] += 1
+        if requested_symbol:
+            requested_symbol_stats[requested_symbol]["signal_total"] += 1
+            if source == "live_public":
+                requested_symbol_stats[requested_symbol]["signal_success"] += 1
+            elif source == "unavailable":
+                requested_symbol_stats[requested_symbol]["signal_failure"] += 1
         if source == "unavailable" and final_failure_reason:
             unavailable_reason_breakdown[final_failure_reason] += 1
 
-        for attempt in list(_signal_row_value(row, "market_context_attempts") or []):
+        fallback_key = ""
+        attempts = list(_signal_row_value(row, "market_context_attempts") or [])
+        if attempts:
+            fallback_key = " > ".join(
+                f"{str(item.get('venue') or '')}:{str(item.get('symbol') or '')}:{str(item.get('status') or 'unknown')}"
+                for item in attempts
+                if str(item.get("venue") or "").strip() or str(item.get("symbol") or "").strip()
+            )
+        if fallback_key:
+            fallback_chain_counts[fallback_key] += 1
+        if requested_symbol and resolved_symbol:
+            fallback_pair = f"{requested_symbol}->{resolved_symbol}"
+            symbol_fallback_stats[fallback_pair]["signal_total"] += 1
+            if requested_symbol != resolved_symbol:
+                symbol_fallback_stats[fallback_pair]["fallback_total"] += 1
+            if source == "live_public":
+                symbol_fallback_stats[fallback_pair]["signal_success"] += 1
+            elif source == "unavailable":
+                symbol_fallback_stats[fallback_pair]["signal_failure"] += 1
+
+        for attempt in attempts:
             total_attempts += 1
             attempt_venue = str(attempt.get("venue") or venue or "")
             endpoint = str(attempt.get("endpoint") or "")
@@ -226,6 +256,7 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
     per_venue = _attach_rates(_sort_table(venue_stats, key_name="venue"))
     per_endpoint = _attach_rates(_sort_table(endpoint_stats, key_name="endpoint"))
     per_resolved_symbol = _attach_rates(_sort_table(resolved_symbol_stats, key_name="symbol"))
+    per_requested_symbol = _attach_rates(_sort_table(requested_symbol_stats, key_name="symbol"))
     per_attempt_symbol = _attach_rates(_sort_table(attempt_symbol_stats, key_name="symbol"))
     return {
         "archive_base_dir": str(Path(base_dir)),
@@ -237,6 +268,7 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
         "unavailable_rate": round((unavailable_count / total), 4) if total else 0.0,
         "per_venue": per_venue,
         "per_endpoint": per_endpoint,
+        "per_requested_symbol": per_requested_symbol,
         "per_resolved_symbol": per_resolved_symbol,
         "per_attempt_symbol": per_attempt_symbol,
         "per_symbol": per_resolved_symbol,
@@ -251,6 +283,17 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
         "symbol_hit_rate": [
             {"symbol": row["symbol"], "hit_rate": row["signal_hit_rate"]}
             for row in per_resolved_symbol
+        ],
+        "symbol_fallbacks": [
+            {"requested_to_resolved": key, **dict(value)}
+            for key, value in sorted(
+                symbol_fallback_stats.items(),
+                key=lambda item: (-int(item[1].get("signal_total") or 0), item[0]),
+            )
+        ],
+        "fallback_chains": [
+            {"chain": chain, "count": count}
+            for chain, count in sorted(fallback_chain_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
         ],
         "unavailable_reason_breakdown": dict(sorted(unavailable_reason_breakdown.items(), key=lambda item: (-item[1], item[0]))),
         "failure_reason_counts": dict(sorted(failure_reason_counts.items(), key=lambda item: (-item[1], item[0]))),
@@ -385,6 +428,23 @@ def build_major_pool_coverage_report(
             "样本稀少的 majors pairs："
             + ", ".join(item["pair_label"] for item in under_sampled_pairs[:6])
         )
+    recommended_next_round_pairs = []
+    for pair in missing_pairs:
+        if pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+    for item in under_sampled_pairs:
+        pair = str(item.get("pair_label") or "")
+        if pair and pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+    for item in major_pair_quality:
+        pair = str(item.get("pair_label") or "")
+        if (
+            pair
+            and bool(item.get("covered"))
+            and int(item.get("sample_size") or 0) < max(manager.actionable_min_samples * 2, 6)
+            and pair not in recommended_next_round_pairs
+        ):
+            recommended_next_round_pairs.append(pair)
 
     return {
         "pool_book_path": str(pool_book_path),
@@ -393,6 +453,7 @@ def build_major_pool_coverage_report(
         "configured_major_quotes": configured_quotes,
         "expected_major_pairs": expected_pairs,
         "covered_expected_pairs": covered_expected_pairs,
+        "covered_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
         "active_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
         "missing_expected_pairs": missing_pairs,
         "missing_major_assets": missing_assets,
@@ -400,6 +461,7 @@ def build_major_pool_coverage_report(
         "under_sampled_major_pairs": under_sampled_pairs,
         "major_pair_quality": major_pair_quality,
         "quality_converging_major_pairs": quality_converging_pairs,
+        "recommended_next_round_pairs": recommended_next_round_pairs,
         "warnings": warnings,
         "suggestions": suggestions,
     }

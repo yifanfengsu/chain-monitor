@@ -8,6 +8,7 @@ from config import (
     BINANCE_FAPI_BASE_URL,
     BINANCE_SPOT_BASE_URL,
     BYBIT_V5_BASE_URL,
+    KRAKEN_FUTURES_BASE_URL,
     MARKET_CONTEXT_ADAPTER_MODE,
     MARKET_CONTEXT_CACHE_TTL_SEC,
     MARKET_CONTEXT_FAILURE_CACHE_TTL_SEC,
@@ -16,12 +17,15 @@ from config import (
     MARKET_CONTEXT_RETRY_COUNT,
     MARKET_CONTEXT_SECONDARY_VENUE,
     MARKET_CONTEXT_TIMEOUT_SEC,
+    OKX_PUBLIC_BASE_URL,
 )
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
 from market_data_clients import (
     BinancePublicMarketClient,
     BybitPublicMarketClient,
+    KrakenFuturesPublicMarketClient,
     MarketDataClientError,
+    OKXPublicMarketClient,
     requested_symbol,
 )
 
@@ -56,6 +60,8 @@ DEFAULT_MARKET_CONTEXT = {
     "market_context_endpoint": "",
     "market_context_latency_ms": None,
     "market_context_attempts": [],
+    "market_context_attempted_venues": [],
+    "market_context_fallback_chain": [],
 }
 
 
@@ -87,6 +93,31 @@ def _latest_failure(attempts: list[dict]) -> dict:
             continue
         return dict(item)
     return {}
+
+
+def _attempted_venues(attempts: list[dict]) -> list[str]:
+    ordered: list[str] = []
+    for item in attempts or []:
+        venue = str(item.get("venue") or "").strip()
+        if venue and venue not in ordered:
+            ordered.append(venue)
+    return ordered
+
+
+def _fallback_chain(attempts: list[dict]) -> list[str]:
+    chain: list[str] = []
+    for item in attempts or []:
+        venue = str(item.get("venue") or "").strip()
+        symbol = str(item.get("symbol") or "").strip()
+        status = str(item.get("status") or "").strip() or "unknown"
+        stage = str(item.get("stage") or "").strip()
+        if not venue and not symbol:
+            continue
+        detail = f"{venue}:{symbol}:{status}" if symbol else f"{venue}:{status}"
+        if stage:
+            detail = f"{detail}@{stage}"
+        chain.append(detail)
+    return chain
 
 
 class MarketContextAdapter:
@@ -161,6 +192,8 @@ class MarketContextAdapter:
                 context["market_context_endpoint"] = str(failure.get("endpoint") or "")
             if context.get("market_context_latency_ms") in {None, ""}:
                 context["market_context_latency_ms"] = failure.get("latency_ms")
+        context["market_context_attempted_venues"] = _attempted_venues(attempts)
+        context["market_context_fallback_chain"] = _fallback_chain(attempts)
         if context.get("market_context_source") != "unavailable" and not context.get("alert_relative_timing"):
             context["alert_relative_timing"] = self.classify_alert_relative_timing(context, stage=stage)
         return context
@@ -214,6 +247,11 @@ class FixtureMarketContextAdapter(MarketContextAdapter):
         raw = str(token_or_pair or "").strip()
         normalized_key = _normalize_lookup_key(raw, venue)
         lookup_keys.append(normalized_key)
+        asset_only_key = ""
+        if raw:
+            asset_only_key = f"{venue}:{canonical_asset_symbol(raw.split('/', 1)[0])}"
+            if asset_only_key not in lookup_keys:
+                lookup_keys.append(asset_only_key)
         if raw and "/" in raw:
             lookup_keys.append(f"{venue}:{raw.strip().upper()}")
         else:
@@ -241,6 +279,8 @@ class FixtureMarketContextAdapter(MarketContextAdapter):
 
 
 class LiveMarketContextAdapter(MarketContextAdapter):
+    fallback_venues = ("binance_perp", "bybit_perp")
+
     def __init__(
         self,
         *,
@@ -259,6 +299,18 @@ class LiveMarketContextAdapter(MarketContextAdapter):
 
     def _default_clients(self) -> dict[str, object]:
         return {
+            "okx_perp": OKXPublicMarketClient(
+                base_url=OKX_PUBLIC_BASE_URL,
+                timeout_sec=MARKET_CONTEXT_TIMEOUT_SEC,
+                cache_ttl_sec=MARKET_CONTEXT_CACHE_TTL_SEC,
+                retry_count=MARKET_CONTEXT_RETRY_COUNT,
+            ),
+            "kraken_futures": KrakenFuturesPublicMarketClient(
+                base_url=KRAKEN_FUTURES_BASE_URL,
+                timeout_sec=MARKET_CONTEXT_TIMEOUT_SEC,
+                cache_ttl_sec=MARKET_CONTEXT_CACHE_TTL_SEC,
+                retry_count=MARKET_CONTEXT_RETRY_COUNT,
+            ),
             "binance_perp": BinancePublicMarketClient(
                 base_url=BINANCE_FAPI_BASE_URL,
                 spot_base_url=BINANCE_SPOT_BASE_URL,
@@ -282,6 +334,9 @@ class LiveMarketContextAdapter(MarketContextAdapter):
             self.secondary_venue,
         ]:
             if venue and venue not in ordered:
+                ordered.append(venue)
+        for venue in self.fallback_venues:
+            if venue and venue not in ordered and venue in self.clients:
                 ordered.append(venue)
         return ordered
 

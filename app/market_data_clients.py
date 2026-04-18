@@ -18,6 +18,21 @@ MAJOR_PERP_QUOTES = {
     "BTC": ["USDT", "USDC"],
     "SOL": ["USDT", "USDC"],
 }
+OKX_PERP_SYMBOLS = {
+    "ETH": ["ETH-USDT-SWAP", "ETH-USDC-SWAP", "ETH-USD-SWAP"],
+    "BTC": ["BTC-USDT-SWAP", "BTC-USDC-SWAP", "BTC-USD-SWAP"],
+    "SOL": ["SOL-USDT-SWAP", "SOL-USDC-SWAP", "SOL-USD-SWAP"],
+}
+KRAKEN_FUTURES_SYMBOLS = {
+    "ETH": ["PF_ETHUSD", "PI_ETHUSD"],
+    "BTC": ["PF_XBTUSD", "PI_XBTUSD"],
+    "SOL": ["PF_SOLUSD", "PI_SOLUSD"],
+}
+KRAKEN_BASE_SYMBOLS = {
+    "BTC": "XBT",
+    "ETH": "ETH",
+    "SOL": "SOL",
+}
 
 
 @dataclass
@@ -98,18 +113,20 @@ def requested_symbol(token_or_pair: str | None) -> str:
     return f"{base_asset}{quotes[0]}"
 
 
-def candidate_symbols(token_or_pair: str | None) -> list[str]:
+def _split_requested_asset_quote(token_or_pair: str | None) -> tuple[str, str]:
     raw = str(token_or_pair or "").strip().upper()
     if not raw:
-        return []
-    pair_quote = ""
+        return "", ""
     if "/" in raw:
         left, right = [normalize_symbol(part) for part in raw.split("/", 1)]
-        base_asset = canonical_asset_symbol(left)
-        pair_quote = _normalize_quote_symbol(right)
-    else:
-        base_asset = canonical_asset_symbol(raw)
+        return canonical_asset_symbol(left), _normalize_quote_symbol(right)
+    return canonical_asset_symbol(raw), ""
 
+
+def candidate_symbols(token_or_pair: str | None) -> list[str]:
+    base_asset, pair_quote = _split_requested_asset_quote(token_or_pair)
+    if not base_asset:
+        return []
     ordered_quotes: list[str] = []
     for quote in (MAJOR_PERP_QUOTES.get(base_asset) or []):
         normalized = _normalize_quote_symbol(quote)
@@ -120,6 +137,36 @@ def candidate_symbols(token_or_pair: str | None) -> list[str]:
         if normalized and normalized not in ordered_quotes:
             ordered_quotes.append(normalized)
     return [f"{base_asset}{quote}" for quote in ordered_quotes if base_asset and quote]
+
+
+def okx_candidate_symbols(token_or_pair: str | None) -> list[str]:
+    base_asset, _ = _split_requested_asset_quote(token_or_pair)
+    if not base_asset:
+        return []
+    configured = list(OKX_PERP_SYMBOLS.get(base_asset) or [])
+    if configured:
+        return configured
+    return [f"{base_asset}-USDT-SWAP", f"{base_asset}-USD-SWAP"]
+
+
+def kraken_futures_candidate_symbols(token_or_pair: str | None) -> list[str]:
+    base_asset, _ = _split_requested_asset_quote(token_or_pair)
+    if not base_asset:
+        return []
+    configured = list(KRAKEN_FUTURES_SYMBOLS.get(base_asset) or [])
+    if configured:
+        return configured
+    kraken_base = KRAKEN_BASE_SYMBOLS.get(base_asset, base_asset)
+    return [f"PF_{kraken_base}USD", f"PI_{kraken_base}USD"]
+
+
+def candidate_symbols_for_venue(token_or_pair: str | None, venue: str | None) -> list[str]:
+    normalized_venue = str(venue or "").strip().lower()
+    if normalized_venue == "okx_perp":
+        return okx_candidate_symbols(token_or_pair)
+    if normalized_venue == "kraken_futures":
+        return kraken_futures_candidate_symbols(token_or_pair)
+    return candidate_symbols(token_or_pair)
 
 
 class PublicMarketDataClient:
@@ -149,7 +196,7 @@ class PublicMarketDataClient:
         attempts: list[dict] = []
         last_error: MarketDataClientError | None = None
 
-        for symbol in candidate_symbols(token_or_pair):
+        for symbol in self.candidate_symbols(token_or_pair):
             try:
                 raw_payload = self._get_cached_raw_payload(symbol, attempts=attempts, requested_symbol=requested)
                 return self._build_market_context(
@@ -181,6 +228,9 @@ class PublicMarketDataClient:
             requested_symbol=requested,
             attempts=[dict(item) for item in attempts],
         )
+
+    def candidate_symbols(self, token_or_pair: str | None) -> list[str]:
+        return candidate_symbols_for_venue(token_or_pair, self.venue)
 
     def _build_market_context(
         self,
@@ -323,6 +373,30 @@ class PublicMarketDataClient:
             if not history or history[-1][0] != sampled_at:
                 history.append((sampled_at, float(mark_or_last)))
         return dict(raw_payload)
+
+    def _get_optional_json(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        stage: str,
+        symbol: str,
+        requested_symbol: str,
+        attempts: list[dict],
+        base_url: str | None = None,
+    ) -> object | None:
+        try:
+            return self._get_json(
+                path,
+                params,
+                stage=stage,
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                attempts=attempts,
+                base_url=base_url,
+            )
+        except MarketDataClientError:
+            return None
 
     def _fetch_raw_payload(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
         last_error = None
@@ -755,4 +829,357 @@ class BybitPublicMarketClient(PublicMarketDataClient):
                     "close_price": _as_float(item[4]),
                 }
             )
+        return sorted(klines, key=lambda item: int(item.get("open_time") or 0))
+
+
+class OKXPublicMarketClient(PublicMarketDataClient):
+    venue = "okx_perp"
+
+    def _fetch_raw_payload_once(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
+        perp_ticker = self._get_json(
+            "/api/v5/market/ticker",
+            {"instId": symbol},
+            stage="perp_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        mark_price = self._get_optional_json(
+            "/api/v5/public/mark-price",
+            {"instType": "SWAP", "instId": symbol},
+            stage="mark_price",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        funding_rate = self._get_optional_json(
+            "/api/v5/public/funding-rate",
+            {"instId": symbol},
+            stage="funding_rate",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        index_symbol = self._okx_index_symbol(symbol)
+        index_ticker = self._get_optional_json(
+            "/api/v5/market/index-tickers",
+            {"instId": index_symbol},
+            stage="index_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        klines = self._get_optional_json(
+            "/api/v5/market/history-candles",
+            {"instId": symbol, "bar": "1m", "limit": 8},
+            stage="klines",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+
+        perp_row = self._parse_okx_single_row(
+            perp_ticker,
+            symbol=symbol,
+            stage="perp_ticker",
+        )
+        mark_row = self._parse_okx_single_row(
+            mark_price,
+            symbol=symbol,
+            stage="mark_price",
+            allow_missing=True,
+        )
+        funding_row = self._parse_okx_single_row(
+            funding_rate,
+            symbol=symbol,
+            stage="funding_rate",
+            allow_missing=True,
+        )
+        index_row = self._parse_okx_single_row(
+            index_ticker,
+            symbol=index_symbol,
+            stage="index_ticker",
+            allow_missing=True,
+        )
+        spot_reference_price = self._okx_spot_reference_price(
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        kline_payload = self._parse_okx_klines_payload(klines)
+        perp_last_price = _as_float(perp_row.get("last"))
+        perp_mark_price = _as_float(mark_row.get("markPx")) or _as_float(perp_row.get("markPx"))
+        perp_index_price = _as_float(index_row.get("idxPx")) or _as_float(perp_row.get("idxPx"))
+        funding_estimate = (
+            _as_float(funding_row.get("nextFundingRate"))
+            or _as_float(funding_row.get("fundingRate"))
+            or _as_float(perp_row.get("fundingRate"))
+        )
+        sampled_at = int(
+            (
+                _as_float(perp_row.get("ts"))
+                or _as_float(mark_row.get("ts"))
+                or _as_float(index_row.get("ts"))
+                or time.time() * 1000
+            )
+            / 1000
+        )
+        if perp_last_price is None and perp_mark_price is None and perp_index_price is None:
+            raise MarketDataClientError("no_symbol", stage="pricing", venue=self.venue, symbol=symbol)
+        return {
+            "perp_last_price": perp_last_price,
+            "perp_mark_price": perp_mark_price,
+            "perp_index_price": perp_index_price,
+            "spot_reference_price": spot_reference_price,
+            "funding_estimate": funding_estimate,
+            "klines": kline_payload,
+            "sampled_at": sampled_at,
+        }
+
+    def _okx_index_symbol(self, symbol: str) -> str:
+        parts = str(symbol or "").split("-")
+        if len(parts) >= 2:
+            return f"{parts[0]}-{parts[1]}"
+        return str(symbol or "")
+
+    def _okx_spot_symbol_candidates(self, symbol: str) -> list[str]:
+        parts = str(symbol or "").split("-")
+        if len(parts) >= 2:
+            base = parts[0]
+            quote = parts[1]
+        else:
+            base, quote = "BTC", "USDT"
+        ordered = []
+        for candidate_quote in [quote, "USDT", "USDC"]:
+            normalized = _normalize_quote_symbol(candidate_quote)
+            candidate = f"{base}-{normalized}"
+            if candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
+
+    def _okx_spot_reference_price(
+        self,
+        *,
+        symbol: str,
+        requested_symbol: str,
+        attempts: list[dict],
+    ) -> float | None:
+        for spot_symbol in self._okx_spot_symbol_candidates(symbol):
+            payload = self._get_optional_json(
+                "/api/v5/market/ticker",
+                {"instId": spot_symbol},
+                stage="spot_ticker",
+                symbol=symbol,
+                requested_symbol=requested_symbol,
+                attempts=attempts,
+            )
+            row = self._parse_okx_single_row(
+                payload,
+                symbol=spot_symbol,
+                stage="spot_ticker",
+                allow_missing=True,
+            )
+            spot_last = _as_float(row.get("last"))
+            if spot_last is not None:
+                return spot_last
+        return None
+
+    def _parse_okx_single_row(
+        self,
+        payload: object | None,
+        *,
+        symbol: str,
+        stage: str,
+        allow_missing: bool = False,
+    ) -> dict:
+        if payload is None:
+            return {}
+        if not isinstance(payload, dict):
+            if allow_missing:
+                return {}
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            if allow_missing:
+                return {}
+            raise MarketDataClientError("malformed_payload", stage=stage, venue=self.venue, symbol=symbol)
+        if not rows:
+            if allow_missing:
+                return {}
+            raise MarketDataClientError("no_symbol", stage=stage, venue=self.venue, symbol=symbol)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            actual_symbol = str(row.get("instId") or row.get("uly") or "")
+            if actual_symbol:
+                if stage == "index_ticker":
+                    if normalize_symbol(actual_symbol.replace("-", "")) != normalize_symbol(symbol.replace("-", "")):
+                        continue
+                else:
+                    self._validate_payload_symbol(actual_symbol, symbol, stage=stage)
+            return dict(row)
+        if allow_missing:
+            return {}
+        raise MarketDataClientError("no_symbol", stage=stage, venue=self.venue, symbol=symbol)
+
+    @staticmethod
+    def _parse_okx_klines_payload(payload: object | None) -> list[dict]:
+        if payload is None:
+            return []
+        if not isinstance(payload, dict):
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="okx_perp")
+        rows = payload.get("data") or []
+        if not isinstance(rows, list):
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="okx_perp")
+        klines = []
+        for item in rows:
+            if not isinstance(item, list) or len(item) < 5:
+                raise MarketDataClientError("malformed_payload", stage="klines", venue="okx_perp")
+            open_time = int(int(item[0]) / 1000)
+            klines.append(
+                {
+                    "open_time": open_time,
+                    "close_time": open_time + 60,
+                    "open_price": _as_float(item[1]),
+                    "close_price": _as_float(item[4]),
+                }
+            )
+        return sorted(klines, key=lambda item: int(item.get("open_time") or 0))
+
+
+class KrakenFuturesPublicMarketClient(PublicMarketDataClient):
+    venue = "kraken_futures"
+
+    def _fetch_raw_payload_once(self, symbol: str, *, attempts: list[dict], requested_symbol: str) -> dict:
+        ticker = self._get_json(
+            "/derivatives/api/v3/tickers",
+            {"symbol": symbol},
+            stage="perp_ticker",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+        )
+        funding = self._get_optional_json(
+            "/api/history/v2/historical-funding-rates",
+            {"symbol": symbol},
+            stage="funding_history",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+            base_url=self.base_url,
+        )
+        candles = self._get_optional_json(
+            "/api/charts/v1/trade",
+            {"symbol": symbol, "resolution": "1m"},
+            stage="klines",
+            symbol=symbol,
+            requested_symbol=requested_symbol,
+            attempts=attempts,
+            base_url=self.base_url,
+        )
+        ticker_row = self._parse_kraken_ticker_payload(ticker, symbol=symbol)
+        funding_estimate = (
+            _as_float(ticker_row.get("fundingRatePrediction"))
+            or _as_float(ticker_row.get("funding_rate_prediction"))
+            or _as_float(ticker_row.get("fundingRate"))
+            or _as_float(ticker_row.get("funding_rate"))
+        )
+        if funding_estimate is None:
+            funding_estimate = self._parse_kraken_funding_history(funding)
+        payload = {
+            "perp_last_price": _as_float(ticker_row.get("last")) or _as_float(ticker_row.get("lastPrice")),
+            "perp_mark_price": _as_float(ticker_row.get("markPrice")) or _as_float(ticker_row.get("mark_price")),
+            "perp_index_price": _as_float(ticker_row.get("indexPrice")) or _as_float(ticker_row.get("index_price")),
+            "spot_reference_price": None,
+            "funding_estimate": funding_estimate,
+            "klines": self._parse_kraken_candles_payload(candles),
+            "sampled_at": int((_as_float(ticker_row.get("time")) or time.time() * 1000) / 1000),
+        }
+        if payload["perp_last_price"] is None and payload["perp_mark_price"] is None and payload["perp_index_price"] is None:
+            raise MarketDataClientError("no_symbol", stage="pricing", venue=self.venue, symbol=symbol)
+        return payload
+
+    def _parse_kraken_ticker_payload(self, payload: object, *, symbol: str) -> dict:
+        if not isinstance(payload, dict):
+            raise MarketDataClientError("malformed_payload", stage="perp_ticker", venue=self.venue, symbol=symbol)
+        rows = payload.get("tickers") or payload.get("contracts") or payload.get("data") or []
+        if not isinstance(rows, list):
+            raise MarketDataClientError("malformed_payload", stage="perp_ticker", venue=self.venue, symbol=symbol)
+        if not rows:
+            raise MarketDataClientError("no_symbol", stage="perp_ticker", venue=self.venue, symbol=symbol)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            actual_symbol = str(
+                row.get("symbol")
+                or row.get("product_id")
+                or row.get("productId")
+                or ""
+            )
+            if actual_symbol:
+                self._validate_payload_symbol(actual_symbol, symbol, stage="perp_ticker")
+            return dict(row)
+        raise MarketDataClientError("no_symbol", stage="perp_ticker", venue=self.venue, symbol=symbol)
+
+    @staticmethod
+    def _parse_kraken_funding_history(payload: object | None) -> float | None:
+        if not isinstance(payload, dict):
+            return None
+        rows = (
+            payload.get("rates")
+            or payload.get("historicalFundingRates")
+            or payload.get("data")
+            or []
+        )
+        if not isinstance(rows, list) or not rows:
+            return None
+        row = rows[0]
+        if not isinstance(row, dict):
+            return None
+        return (
+            _as_float(row.get("fundingRate"))
+            or _as_float(row.get("funding_rate"))
+            or _as_float(row.get("rate"))
+        )
+
+    @staticmethod
+    def _parse_kraken_candles_payload(payload: object | None) -> list[dict]:
+        if payload is None:
+            return []
+        if not isinstance(payload, dict):
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="kraken_futures")
+        rows = payload.get("candles") or payload.get("result") or payload.get("data") or []
+        if isinstance(rows, dict):
+            rows = rows.get("candles") or rows.get("data") or []
+        if not isinstance(rows, list):
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="kraken_futures")
+        klines = []
+        for item in rows:
+            if isinstance(item, dict):
+                open_time = int((_as_float(item.get("time")) or _as_float(item.get("openTime")) or 0) / 1000)
+                if open_time <= 0:
+                    continue
+                klines.append(
+                    {
+                        "open_time": open_time,
+                        "close_time": open_time + 60,
+                        "open_price": _as_float(item.get("open")),
+                        "close_price": _as_float(item.get("close")),
+                    }
+                )
+                continue
+            if isinstance(item, list) and len(item) >= 5:
+                open_time = int((_as_float(item[0]) or 0) / 1000)
+                if open_time <= 0:
+                    continue
+                klines.append(
+                    {
+                        "open_time": open_time,
+                        "close_time": open_time + 60,
+                        "open_price": _as_float(item[1]),
+                        "close_price": _as_float(item[4]),
+                    }
+                )
+                continue
+            raise MarketDataClientError("malformed_payload", stage="klines", venue="kraken_futures")
         return sorted(klines, key=lambda item: int(item.get("open_time") or 0))

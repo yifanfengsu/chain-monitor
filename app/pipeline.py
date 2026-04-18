@@ -597,11 +597,12 @@ class SignalPipeline:
                 + (0.10 if market_source == "unavailable" else 0.0)
                 + min(climax_reversal_score / 0.8, 1.0) * 0.14,
             )
-            local_vs_broad_reason = (
-                f"单池主导，{move_label}缺 broader 同向确认"
-                if market_source != "live_public"
-                else f"单池主导，perp/spot 未见更广泛同向确认"
-            )
+            if market_source == "unavailable":
+                local_vs_broad_reason = f"市场上下文不可用，单池主导，{move_label}缺 broader 同向确认"
+            elif market_source == "live_public":
+                local_vs_broad_reason = f"单池主导，perp/spot 未见更广泛同向确认"
+            else:
+                local_vs_broad_reason = f"单池主导，{move_label}缺 broader 同向确认"
         else:
             absorption_confidence = min(
                 0.78,
@@ -610,8 +611,13 @@ class SignalPipeline:
                 + (0.10 if asset_case_supporting_pairs <= 1 else 0.0)
                 + (0.08 if market_source == "unavailable" else 0.0),
             )
-            local_vs_broad_reason = f"局部池子信号存在，但仍待 broader perp/spot 确认"
+            local_vs_broad_reason = (
+                "市场上下文不可用，局部池子信号存在，但仍待 broader perp/spot 确认"
+                if market_source == "unavailable"
+                else "局部池子信号存在，但仍待 broader perp/spot 确认"
+            )
 
+        confirm_scope = ""
         confirm_quality = ""
         confirm_reason = ""
         confirm_alignment_score = 0.0
@@ -629,10 +635,37 @@ class SignalPipeline:
             if absorption_context == "local_sell_pressure_absorption":
                 return "局部卖压，可能被承接"
             if absorption_context == "local_buy_pressure_absorption":
-                return f"局部买压，可能被{absorption_verb}"
+                return "局部买压，仍待 broader 确认"
             return f"局部{move_label}，仍待 broader 确认"
 
+        def _building_label() -> str:
+            if intent_type == "pool_sell_pressure":
+                return "局部卖压建立中，待确认"
+            if intent_type == "pool_buy_pressure":
+                return "局部买压建立中，待确认"
+            if intent_type == "liquidity_removal":
+                return "局部深度抽离建立中，待确认"
+            if intent_type == "liquidity_addition":
+                return "局部深度补充建立中，待确认"
+            return "局部结构建立中，待确认"
+
+        def _late_label() -> str:
+            if intent_type == "pool_sell_pressure":
+                return "持续卖压（偏晚）"
+            if intent_type == "pool_buy_pressure":
+                return "持续买压（偏晚）"
+            return f"局部{move_label}（偏晚）"
+
+        def _chase_label() -> str:
+            if intent_type == "pool_sell_pressure":
+                return "持续卖压（追空风险）"
+            if intent_type == "pool_buy_pressure":
+                return "持续买压（追涨风险）"
+            return f"局部{move_label}（追单风险）"
+
         if stage == "confirm" and not sweep_detected:
+            broader_scope_confirmed = broader_alignment_confirmed and (multi_pool_resonance >= 2 or asset_case_supporting_pairs >= 2)
+            confirm_scope = "broader_confirm" if broader_scope_confirmed else "local_confirm"
             confirm_alignment_score = min(
                 1.0,
                 (0.30 if market_source == "live_public" else 0.02)
@@ -667,10 +700,9 @@ class SignalPipeline:
             )
             late_confirm = (
                 alert_timing == "late"
-                or (market_source == "unavailable" and pool_move_before_abs >= 0.006)
+                or (market_source == "unavailable" and pool_move_before_abs >= 0.007)
                 or pool_move_before_abs >= 0.009
                 or market_move_before_abs >= 0.008
-                or (single_pool_dominant and not broader_alignment_confirmed)
                 or detect_latency_ms >= 4_500
                 or case_age_sec >= 150
                 or (climax_reversal_score >= 0.62 and quality_floor < 0.62 and not broader_alignment_confirmed)
@@ -700,15 +732,19 @@ class SignalPipeline:
                 confirm_quality = "chase_risk"
                 confirm_reason = "确认已明显偏后，且 broader confirmation 不足，当前更像追单风险"
                 stage_badge = "风险"
-                state_label = (
-                    f"{_base_absorption_label()}（追{'涨' if intent_type == 'pool_buy_pressure' else '空'}风险）"
+                state_label = _chase_label()
+                market_read = (
+                    "已出现明显预走或局部冲击，当前更像追单风险而不是 clean confirm｜"
+                    f"{local_vs_broad_reason}"
                 )
-                market_read = f"已出现明显预走或局部冲击，当前更像追单风险而不是 clean confirm｜{local_vs_broad_reason}"
             elif late_confirm:
                 confirm_quality = "late_confirm"
                 confirm_reason = "确认成立，但节奏偏晚、单池主导或 broader confirmation 不足"
-                state_label = f"{_base_absorption_label()}（偏晚）"
-                market_read = f"确认已成立，但更像中后段确认，不应按 ultra-early 先手理解｜{local_vs_broad_reason}"
+                state_label = _late_label()
+                market_read = (
+                    "确认已成立，但更像中后段确认，不应按 ultra-early 先手理解｜"
+                    f"{local_vs_broad_reason}"
+                )
             elif clean_confirm:
                 confirm_quality = "clean_confirm"
                 confirm_reason = "多池/更广泛盘口同向，且预走不大"
@@ -716,17 +752,32 @@ class SignalPipeline:
                 market_read = "更像 clean confirm：已有 broader perp/spot 同向确认，但仍不是首发先手"
             else:
                 confirm_quality = "unconfirmed_confirm"
-                confirm_reason = "确认成立，但缺更广泛盘口同向确认，不能当作继续追击的保证"
-                state_label = _base_absorption_label()
-                market_read = f"确认已出现，但缺 broader perp/spot 同向确认，延续性仍待跟踪｜{local_vs_broad_reason}"
+                if broader_scope_confirmed:
+                    confirm_reason = "已见多池与 live public 同向，但预走/质量一般，仍不能当成下一根 K 线预测"
+                    state_label = _base_absorption_label()
+                    market_read = (
+                        "已见 broader perp/spot 同向，但这仍只是结构确认，不是下一根 K 线预测｜"
+                        f"{local_vs_broad_reason}"
+                    )
+                else:
+                    confirm_reason = "确认成立，但缺更广泛盘口同向确认，不能当作继续追击的保证"
+                    state_label = _base_absorption_label()
+                    market_read = (
+                        "确认已出现，但缺 broader perp/spot 同向确认，延续性仍待跟踪｜"
+                        f"{local_vs_broad_reason}"
+                    )
 
         elif stage == "prealert":
             if not sweep_detected:
-                state_label = _base_absorption_label()
-            if market_source == "unavailable" and not sweep_detected:
-                market_read = "先手观察｜缺 broader perp/spot 确认，先看 30-90s 是否续单 / 共振"
+                state_label = _building_label()
+            if not sweep_detected:
+                if market_source == "unavailable":
+                    market_read = "先手观察｜市场上下文不可用，先看 30-90s 是否续单 / 共振"
+                else:
+                    market_read = "先手观察｜结构建立中，先看 30-90s 是否续单 / 跨池共振"
 
         payload = {
+            "lp_confirm_scope": confirm_scope,
             "lp_confirm_quality": confirm_quality,
             "lp_confirm_reason": confirm_reason,
             "lp_confirm_alignment_score": round(float(confirm_alignment_score), 3),
@@ -2593,6 +2644,26 @@ class SignalPipeline:
                 or event_metadata.get("market_context_failure_reason")
                 or ""
             ),
+            "market_context_endpoint": str(
+                signal_context.get("market_context_endpoint")
+                or signal_metadata.get("market_context_endpoint")
+                or event_metadata.get("market_context_endpoint")
+                or ""
+            ),
+            "market_context_http_status": (
+                signal_context.get("market_context_http_status")
+                if signal_context.get("market_context_http_status") not in {None, ""}
+                else signal_metadata.get("market_context_http_status")
+                if signal_metadata.get("market_context_http_status") not in {None, ""}
+                else event_metadata.get("market_context_http_status")
+            ),
+            "market_context_latency_ms": (
+                signal_context.get("market_context_latency_ms")
+                if signal_context.get("market_context_latency_ms") not in {None, ""}
+                else signal_metadata.get("market_context_latency_ms")
+                if signal_metadata.get("market_context_latency_ms") not in {None, ""}
+                else event_metadata.get("market_context_latency_ms")
+            ),
             "alert_relative_timing": str(
                 signal_context.get("alert_relative_timing")
                 or signal_metadata.get("alert_relative_timing")
@@ -2628,6 +2699,12 @@ class SignalPipeline:
                 signal_context.get("lp_confirm_quality")
                 or signal_metadata.get("lp_confirm_quality")
                 or event_metadata.get("lp_confirm_quality")
+                or ""
+            ),
+            "lp_confirm_scope": str(
+                signal_context.get("lp_confirm_scope")
+                or signal_metadata.get("lp_confirm_scope")
+                or event_metadata.get("lp_confirm_scope")
                 or ""
             ),
             "lp_absorption_context": str(
@@ -2694,6 +2771,18 @@ class SignalPipeline:
                 signal_context.get("market_context_attempts")
                 or signal_metadata.get("market_context_attempts")
                 or event_metadata.get("market_context_attempts")
+                or []
+            ),
+            "market_context_attempted_venues": list(
+                signal_context.get("market_context_attempted_venues")
+                or signal_metadata.get("market_context_attempted_venues")
+                or event_metadata.get("market_context_attempted_venues")
+                or []
+            ),
+            "market_context_fallback_chain": list(
+                signal_context.get("market_context_fallback_chain")
+                or signal_metadata.get("market_context_fallback_chain")
+                or event_metadata.get("market_context_fallback_chain")
                 or []
             ),
             "signal": self.archive_store._serialize(signal),
@@ -3950,6 +4039,41 @@ class SignalPipeline:
                 signal_context.get("notifier_sent_at"),
                 signal_metadata.get("notifier_sent_at"),
                 event_metadata.get("notifier_sent_at"),
+            ),
+            "market_context_requested_symbol": _text(
+                signal_context.get("market_context_requested_symbol"),
+                signal_metadata.get("market_context_requested_symbol"),
+                event_metadata.get("market_context_requested_symbol"),
+            ),
+            "market_context_resolved_symbol": _text(
+                signal_context.get("market_context_resolved_symbol"),
+                signal_metadata.get("market_context_resolved_symbol"),
+                event_metadata.get("market_context_resolved_symbol"),
+            ),
+            "market_context_failure_reason": _text(
+                signal_context.get("market_context_failure_reason"),
+                signal_metadata.get("market_context_failure_reason"),
+                event_metadata.get("market_context_failure_reason"),
+            ),
+            "market_context_endpoint": _text(
+                signal_context.get("market_context_endpoint"),
+                signal_metadata.get("market_context_endpoint"),
+                event_metadata.get("market_context_endpoint"),
+            ),
+            "market_context_http_status": _int_value(
+                signal_context.get("market_context_http_status"),
+                signal_metadata.get("market_context_http_status"),
+                event_metadata.get("market_context_http_status"),
+            ),
+            "market_context_latency_ms": _int_value(
+                signal_context.get("market_context_latency_ms"),
+                signal_metadata.get("market_context_latency_ms"),
+                event_metadata.get("market_context_latency_ms"),
+            ),
+            "lp_confirm_scope": _text(
+                signal_context.get("lp_confirm_scope"),
+                signal_metadata.get("lp_confirm_scope"),
+                event_metadata.get("lp_confirm_scope"),
             ),
             "delivery_policy_evaluated": _bool_value(
                 event_metadata.get("delivery_policy_evaluated"),

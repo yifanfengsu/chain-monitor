@@ -29,6 +29,9 @@ class MajorPoolCoverageTests(unittest.TestCase):
         self.assertIn("BTC", report["missing_major_assets"])
         self.assertIn("SOL", report["missing_major_assets"])
         self.assertIn("ETH/USDC", report["covered_expected_pairs"])
+        self.assertTrue(report["covered_major_pools"])
+        self.assertIn("BTC/USDT", report["recommended_next_round_pairs"])
+        self.assertIn("SOL/USDC", report["recommended_next_round_pairs"])
 
     def test_sol_usdc_classifies_as_major_primary_pool(self) -> None:
         meta = classify_trend_pool_meta(

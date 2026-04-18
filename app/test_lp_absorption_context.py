@@ -181,7 +181,7 @@ class LpAbsorptionContextTests(unittest.TestCase):
 
         self.assertIn(signal.context["lp_absorption_context"], {"local_buy_pressure_absorption", "pool_only_unconfirmed_pressure"})
         self.assertIn("局部买压", message.splitlines()[0])
-        self.assertIn("broader", message.splitlines()[0])
+        self.assertIn("待确认", message.splitlines()[0])
         self.assertNotIn("LP 主体", message)
 
 

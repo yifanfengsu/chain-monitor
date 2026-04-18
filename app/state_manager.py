@@ -483,10 +483,36 @@ class StateManager:
                 or event.metadata.get("market_context_failure_reason")
                 or ""
             ),
+            "market_context_endpoint": str(
+                getattr(signal, "context", {}).get("market_context_endpoint")
+                or getattr(signal, "metadata", {}).get("market_context_endpoint")
+                or event.metadata.get("market_context_endpoint")
+                or ""
+            ),
+            "market_context_http_status": (
+                getattr(signal, "context", {}).get("market_context_http_status")
+                if getattr(signal, "context", {}).get("market_context_http_status") not in {None, ""}
+                else getattr(signal, "metadata", {}).get("market_context_http_status")
+                if getattr(signal, "metadata", {}).get("market_context_http_status") not in {None, ""}
+                else event.metadata.get("market_context_http_status")
+            ),
+            "market_context_latency_ms": (
+                getattr(signal, "context", {}).get("market_context_latency_ms")
+                if getattr(signal, "context", {}).get("market_context_latency_ms") not in {None, ""}
+                else getattr(signal, "metadata", {}).get("market_context_latency_ms")
+                if getattr(signal, "metadata", {}).get("market_context_latency_ms") not in {None, ""}
+                else event.metadata.get("market_context_latency_ms")
+            ),
             "alert_relative_timing": str(
                 getattr(signal, "context", {}).get("alert_relative_timing")
                 or getattr(signal, "metadata", {}).get("alert_relative_timing")
                 or event.metadata.get("alert_relative_timing")
+                or ""
+            ),
+            "lp_confirm_scope": str(
+                getattr(signal, "context", {}).get("lp_confirm_scope")
+                or getattr(signal, "metadata", {}).get("lp_confirm_scope")
+                or event.metadata.get("lp_confirm_scope")
                 or ""
             ),
             "lp_confirm_quality": str(

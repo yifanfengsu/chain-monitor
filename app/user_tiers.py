@@ -217,11 +217,17 @@ def evaluate_user_tier_lp_delivery(event, signal, delivery_class: str) -> tuple[
         not is_major_asset_symbol(asset_symbol)
         and max(asset_case_quality_score, pair_quality_score, pool_quality_score) < 0.64
     )
+    high_quality_major_prealert = bool(
+        major_pool
+        and prealert_precision_score >= max(profile.min_prealert_quality, 0.68)
+        and asset_case_quality_score >= max(profile.min_asset_case_quality, 0.60)
+        and max(pool_quality_score, pair_quality_score) >= 0.60
+    )
 
     if lp_stage == "prealert":
         if not profile.allow_prealert:
             return False, f"user_tier_{tier}_prealert_disabled"
-        if supporting_pair_count <= 1 and not profile.allow_single_pool_prealert:
+        if supporting_pair_count <= 1 and not profile.allow_single_pool_prealert and not (tier == "trader" and high_quality_major_prealert):
             return False, f"user_tier_{tier}_single_pool_prealert_filtered"
         if prealert_precision_score < profile.min_prealert_quality:
             return False, f"user_tier_{tier}_prealert_precision_filtered"
