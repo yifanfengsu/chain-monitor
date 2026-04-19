@@ -136,7 +136,7 @@ class LpAssetCaseAggregationTests(unittest.TestCase):
 
         message = format_signal_message(signal2, event2)
 
-        self.assertTrue(message.splitlines()[0].startswith("预警｜ETH｜"))
+        self.assertTrue(message.splitlines()[0].startswith("数据缺口，不交易｜ETH｜"))
         self.assertIn("ETH/USDT", message)
         self.assertIn("ETH/USDC", message)
 
@@ -195,7 +195,7 @@ class LpAssetCaseAggregationTests(unittest.TestCase):
 
         message = format_signal_message(signal, event)
 
-        self.assertTrue(message.splitlines()[0].startswith("预警｜ETH/USDC｜"))
+        self.assertTrue(message.splitlines()[0].startswith("数据缺口，不交易｜ETH/USDC｜"))
 
 
 if __name__ == "__main__":

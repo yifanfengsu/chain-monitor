@@ -214,7 +214,7 @@ class LpMajorPrealertTests(unittest.TestCase):
         self.assertEqual(payload1["asset_case_id"], payload2["asset_case_id"])
         self.assertEqual("prealert", payload2["asset_case_stage"])
         self.assertEqual(2, payload2["asset_case_supporting_pair_count"])
-        self.assertTrue(message.splitlines()[0].startswith("预警｜ETH｜"))
+        self.assertTrue(message.splitlines()[0].startswith("数据缺口，不交易｜ETH｜"))
         self.assertIn("ETH/USDT", message)
         self.assertIn("ETH/USDC", message)
 

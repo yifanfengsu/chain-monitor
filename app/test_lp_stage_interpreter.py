@@ -184,10 +184,9 @@ class LpStageInterpreterTests(unittest.TestCase):
         lines = message.strip().splitlines()
 
         self.assertEqual("prealert", context.get("lp_alert_stage"))
-        self.assertTrue(lines[0].startswith("预警｜ETH/USDC｜"))
-        self.assertIn("建立中", lines[0])
-        self.assertIn("先手观察", lines[2])
-        self.assertIn("继续看：60s：是否跨池共振 / 是否续单", lines[3])
+        self.assertTrue(lines[0].startswith("数据缺口，不交易｜ETH/USDC｜"))
+        self.assertTrue(lines[2].startswith("为什么："))
+        self.assertTrue(lines[3].startswith("触发："))
 
     def test_confirm_message_marks_trend_confirmation_and_shows_scan_path(self) -> None:
         event = self._event(
@@ -208,9 +207,9 @@ class LpStageInterpreterTests(unittest.TestCase):
         lines = message.strip().splitlines()
 
         self.assertEqual("confirm", context.get("lp_alert_stage"))
-        self.assertEqual("确认｜ETH/USDC｜持续买压", lines[0])
-        self.assertIn("更像趋势确认，不是首发先手", lines[2])
-        self.assertIn("链路：promoted_main｜延迟 4200ms", lines[-1])
+        self.assertEqual("数据缺口，不交易｜ETH/USDC｜缺 broader live context", lines[0])
+        self.assertTrue(lines[2].startswith("为什么："))
+        self.assertIn("调试：stage=confirm｜scope=-｜context=unavailable｜quality=-｜latency=4200ms", lines[-1])
 
     def test_exhaustion_message_marks_risk_instead_of_continuation(self) -> None:
         event = self._event(
@@ -231,8 +230,8 @@ class LpStageInterpreterTests(unittest.TestCase):
 
         self.assertEqual("exhaustion_risk", context.get("lp_alert_stage"))
         self.assertEqual("sweep_exhaustion_risk", context.get("lp_sweep_phase"))
-        self.assertEqual("风险｜ETH/USDC｜买方清扫（回吐风险高）", lines[0])
-        self.assertIn("回吐风险", lines[2])
+        self.assertEqual("不追多｜ETH/USDC｜买方清扫后回吐风险", lines[0])
+        self.assertTrue(lines[2].startswith("为什么："))
 
     def test_medium_confidence_prealert_keeps_tentative_prefix(self) -> None:
         event = self._event()

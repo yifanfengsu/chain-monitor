@@ -236,12 +236,13 @@ class LpSweepNotifierTests(unittest.TestCase):
         message = format_signal_message(signal, event)
         lines = message.strip().splitlines()
 
-        self.assertEqual(5, len(lines))
-        self.assertEqual("高潮｜ETH/USDC｜买方清扫确认", lines[0])
-        self.assertEqual("15s 4笔｜同池连续3｜跨池2｜放量2.3x", lines[1])
-        self.assertIn("冲击已成立", lines[2])
-        self.assertIn("继续看：30-90s：是否继续续单 / 扩散到更多池", lines[3])
-        self.assertIn("链路：secondary｜延迟 0ms", lines[4])
+        self.assertEqual(6, len(lines))
+        self.assertEqual("数据缺口，不交易｜ETH/USDC｜缺 broader live context", lines[0])
+        self.assertTrue(lines[1].startswith("证据："))
+        self.assertTrue(lines[2].startswith("为什么："))
+        self.assertTrue(lines[3].startswith("触发："))
+        self.assertTrue(lines[4].startswith("失效："))
+        self.assertIn("调试：stage=climax｜scope=-｜context=unavailable｜quality=-｜latency=0ms", lines[5])
         self.assertEqual("买方清扫确认", context.get("headline_label"))
 
 

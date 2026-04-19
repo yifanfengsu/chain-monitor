@@ -39,11 +39,15 @@ CLMM replay fixture 分两层：
   - `Binance / Bybit` 只保留作 fallback / diagnostics，不再作为主成功路径
 - signal archive：`app/data/archive/signals/YYYY-MM-DD.ndjson` 现在会稳定落盘 `signal_id / asset_case_id / delivery_decision / notifier_sent_at / market_context diagnostics`，用于和 `delivery_audit` / outcome 做 1:1 对账
 - outcome / quality：`app/quality_manager.py` 基于 `state_manager` 里的 `lp_alert_outcome_v1` 滚动记录计算 `pool_quality_score / pair_quality_score / asset_case_quality_score / prealert_precision_score / climax_reversal_score / fastlane_roi_score`，并把 rolling outcome / ops summary 持久化到 `data/lp_quality_stats.cache.json`
+- trade action layer：`app/trade_action.py` 把已有 LP stage / sweep / broader-confirm / live market context / quality / asset-case 聚合成 trader-facing `trade_action_*` 字段；Telegram 第一行优先显示 `可顺势追多 / 可顺势追空 / 等待确认 / 不追多 / 不追空 / 不交易 / 数据缺口，不交易`
 
 quality/outcome 本地结构说明：
 - 原始 outcome 仍由 `StateManager.record_lp_outcome_alert()` 写入 `lp_alert_outcome_v1`
 - 新增字段会把 `asset_symbol / asset_case_id / alert_relative_timing / market_context_source / lp_promoted_fastlane` 一起写进 outcome record
 - quality manager 不做黑盒 ML，而是直接从 rolling outcome history 上算可解释 heuristic，并把结果回写到 signal context / metadata 供 routing、promotion、Telegram 模板使用
+- trade action 只是规则化风险提示，不是自动下单，也不会接私有账户 API
+- `LONG_CHASE_ALLOWED / SHORT_CHASE_ALLOWED` 表示“严格条件下允许顺势观察”，不是收益保证，也不提供仓位/止损/止盈建议
+- 如果用户用 `trade_action` 做交易，仍应自行结合仓位、止损和整体风险管理
 
 live market context 最小 env：
 - `MARKET_CONTEXT_ADAPTER_MODE=live|fixture|unavailable`

@@ -157,8 +157,10 @@ class LpConfirmScopeTests(unittest.TestCase):
 
         self.assertEqual("local_confirm", signal.context["lp_confirm_scope"])
         self.assertIn(signal.context["lp_confirm_quality"], {"late_confirm", "chase_risk"})
-        self.assertNotIn("更广泛", first_line)
-        self.assertTrue("偏晚" in first_line or "追空风险" in first_line)
+        self.assertTrue(
+            first_line.startswith("数据缺口，不交易｜ETH｜")
+            or first_line.startswith("不追空｜ETH｜")
+        )
 
     def test_live_multi_pool_broader_alignment_marks_broader_confirm(self) -> None:
         adapter = LiveMarketContextAdapter(
@@ -197,7 +199,11 @@ class LpConfirmScopeTests(unittest.TestCase):
         first_line = format_signal_message(signal, event).splitlines()[0]
 
         self.assertEqual("broader_confirm", signal.context["lp_confirm_scope"])
-        self.assertIn(first_line, {"确认｜ETH｜更广泛卖压确认", "确认｜ETH｜持续卖压（偏晚）"})
+        self.assertTrue(
+            first_line.startswith("可顺势追空｜ETH｜")
+            or first_line.startswith("偏空观察｜ETH｜")
+            or first_line.startswith("等待确认｜ETH｜")
+        )
         self.assertEqual("confirmed", signal.context["lp_broader_alignment"])
 
     def test_single_pool_sell_without_broader_confirmation_stays_local_confirm(self) -> None:
@@ -216,7 +222,10 @@ class LpConfirmScopeTests(unittest.TestCase):
         first_line = format_signal_message(signal, event).splitlines()[0]
 
         self.assertEqual("local_confirm", signal.context["lp_confirm_scope"])
-        self.assertEqual("确认｜ETH｜局部卖压，可能被承接", first_line)
+        self.assertTrue(
+            first_line.startswith("数据缺口，不交易｜ETH｜")
+            or first_line.startswith("不追空｜ETH｜")
+        )
 
     def test_single_pool_buy_without_broader_confirmation_stays_local_confirm(self) -> None:
         pipeline = self._pipeline(UnavailableMarketContextAdapter())
@@ -234,7 +243,10 @@ class LpConfirmScopeTests(unittest.TestCase):
         first_line = format_signal_message(signal, event).splitlines()[0]
 
         self.assertEqual("local_confirm", signal.context["lp_confirm_scope"])
-        self.assertEqual("确认｜ETH｜局部买压，仍待 broader 确认", first_line)
+        self.assertTrue(
+            first_line.startswith("数据缺口，不交易｜ETH｜")
+            or first_line.startswith("不追多｜ETH｜")
+        )
 
     def test_chase_risk_first_line_is_explicit_risk(self) -> None:
         pipeline = self._pipeline(UnavailableMarketContextAdapter())
@@ -254,7 +266,10 @@ class LpConfirmScopeTests(unittest.TestCase):
 
         self.assertEqual("local_confirm", signal.context["lp_confirm_scope"])
         self.assertEqual("chase_risk", signal.context["lp_confirm_quality"])
-        self.assertEqual("风险｜ETH｜持续买压（追涨风险）", first_line)
+        self.assertTrue(
+            first_line.startswith("数据缺口，不交易｜ETH｜")
+            or first_line.startswith("不追多｜ETH｜")
+        )
 
 
 if __name__ == "__main__":

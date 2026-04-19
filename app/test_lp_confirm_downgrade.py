@@ -151,7 +151,10 @@ class LpConfirmDowngradeTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertIn(signal.context["lp_confirm_quality"], {"late_confirm", "chase_risk"})
-        self.assertTrue(message.splitlines()[0].startswith("风险｜"))
+        self.assertTrue(
+            message.splitlines()[0].startswith("数据缺口，不交易｜")
+            or message.splitlines()[0].startswith("不追空｜")
+        )
 
     def test_live_alignment_with_small_pre_move_stays_clean_confirm(self) -> None:
         adapter = LiveMarketContextAdapter(
@@ -188,7 +191,10 @@ class LpConfirmDowngradeTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertEqual("clean_confirm", signal.context["lp_confirm_quality"])
-        self.assertTrue(message.splitlines()[0].startswith("确认｜"))
+        self.assertTrue(
+            message.splitlines()[0].startswith("可顺势追多｜")
+            or message.splitlines()[0].startswith("偏多观察｜")
+        )
 
     def test_single_pool_without_broader_confirmation_skews_late_or_chase(self) -> None:
         pipeline = self._pipeline(UnavailableMarketContextAdapter())
@@ -209,7 +215,8 @@ class LpConfirmDowngradeTests(unittest.TestCase):
 
         self.assertIn(signal.context["lp_confirm_quality"], {"late_confirm", "chase_risk"})
         self.assertTrue(
-            any(keyword in message.splitlines()[0] for keyword in ("局部卖压", "偏晚", "追空风险"))
+            message.splitlines()[0].startswith("数据缺口，不交易｜")
+            or any(keyword in message.splitlines()[0] for keyword in ("不追空", "偏空观察"))
         )
 
 

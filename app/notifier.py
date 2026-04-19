@@ -6,11 +6,14 @@ from telegram import Bot
 from config import (
     CHAT_ID,
     TELEGRAM_BOT_TOKEN,
+    TRADE_ACTION_HIDE_POOL_DETAILS_FOR_TRADER,
+    TRADE_ACTION_RESEARCH_DEBUG,
 )
 from constants import OP_INTENT_AUTO_TEMPLATE_THRESHOLD, OP_INTENT_TENTATIVE_PREFIX_THRESHOLD
 from filter import format_address_label, strategy_role_group
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
+from trade_action import apply_trade_action
 from user_tiers import get_user_tier_profile, should_use_asset_case_primary
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -549,6 +552,15 @@ def _lp_liquidity_structure(context: dict) -> str:
 
 
 def _lp_case_label(context: dict) -> str:
+    user_tier = str(context.get("user_tier") or "").strip().lower()
+    if bool(TRADE_ACTION_HIDE_POOL_DETAILS_FOR_TRADER) and user_tier in {"retail", "trader"}:
+        return str(
+            context.get("asset_case_label")
+            or context.get("asset_symbol")
+            or context.get("pair_label")
+            or context.get("pool_label")
+            or "资产"
+        )
     if should_use_asset_case_primary(context):
         return str(context.get("asset_case_label") or context.get("asset_symbol") or context.get("pair_label") or context.get("pool_label") or "资产")
     return str(context.get("pair_label") or context.get("pool_label") or "池子")
@@ -590,22 +602,74 @@ def _market_context_short(context: dict) -> str:
     return f"合约视角：{timing_label}"
 
 
-def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
-    stage_badge = str(context.get("lp_stage_badge") or "确认")
-    pair_or_pool = _lp_case_label(context)
-    state_label = str(context.get("lp_state_label") or context.get("market_state_label") or _headline_label(context, event))
-    evidence = _lp_evidence_line(signal, context)
-    market_read = str(
-        context.get("lp_market_read")
+def _ensure_lp_trade_action(signal: Signal, event: Event, context: dict) -> dict:
+    if context.get("trade_action_key"):
+        return context
+    variant = _select_message_variant(signal, event, context)
+    if variant not in {"lp_directional", "lp_liquidity"}:
+        return context
+    payload = apply_trade_action(event, signal)
+    if payload:
+        context.update(payload)
+    return context
+
+
+def _trade_action_label(context: dict, event: Event) -> str:
+    del event
+    return str(context.get("trade_action_label") or context.get("lp_stage_badge") or "观察")
+
+
+def _trade_action_conclusion(context: dict, event: Event) -> str:
+    return str(
+        context.get("trade_action_conclusion")
+        or context.get("lp_state_label")
+        or context.get("market_state_label")
+        or _headline_label(context, event)
+    )
+
+
+def _trade_action_reason(context: dict, event: Event) -> str:
+    return str(
+        context.get("trade_action_reason")
+        or context.get("lp_market_read")
         or context.get("lp_meaning_brief")
         or _explanation_brief(context, event)
     )
-    market_context_short = _market_context_short(context)
-    if market_context_short and market_context_short not in market_read:
-        market_read = f"{market_read}｜{market_context_short}"
-    followup_check = str(context.get("lp_followup_check") or context.get("action_hint") or _action_hint(context))
-    invalidation = str(context.get("lp_invalidation") or context.get("failure_conditions") or "结构回落")
-    scan_path = str(context.get("lp_scan_path") or "secondary")
+
+
+def _trade_action_required_confirmation(context: dict) -> str:
+    return str(
+        context.get("trade_action_required_confirmation")
+        or context.get("lp_followup_check")
+        or context.get("action_hint")
+        or "等待更清晰的单方向确认"
+    )
+
+
+def _trade_action_invalidated_by(context: dict) -> str:
+    return str(
+        context.get("trade_action_invalidated_by")
+        or context.get("lp_invalidation")
+        or context.get("failure_conditions")
+        or "无"
+    )
+
+
+def _trade_action_evidence_line(signal: Signal, context: dict) -> str:
+    evidence = str(context.get("trade_action_evidence_pack") or _lp_evidence_line(signal, context) or "").strip()
+    segments = [segment.strip() for segment in evidence.split("｜") if segment.strip()]
+    return "｜".join(segments[:4]) if segments else "结构证据有限"
+
+
+def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
+    context = _ensure_lp_trade_action(signal, event, context)
+    pair_or_pool = _lp_case_label(context)
+    action_label = _trade_action_label(context, event)
+    conclusion = _trade_action_conclusion(context, event)
+    evidence = _trade_action_evidence_line(signal, context)
+    reason = _trade_action_reason(context, event)
+    required_confirmation = _trade_action_required_confirmation(context)
+    invalidation = _trade_action_invalidated_by(context)
     latency_ms = int(
         context.get("lp_end_to_end_latency_ms")
         or context.get("lp_detect_latency_ms")
@@ -613,61 +677,24 @@ def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
     )
     template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
     user_tier = str(context.get("user_tier") or "research")
-    profile = get_user_tier_profile(user_tier)
-    show_followup = bool(
-        context.get("show_followup_line")
-        if "show_followup_line" in context else profile.show_followup_line
-    ) and bool(
-        context.get("lp_followup_required")
-        or str(signal.delivery_class or "").strip().lower() == "primary"
-        or stage_badge in {"预警", "高潮", "风险"}
-        or str(context.get("market_timing_label") or "")
-    )
-    show_debug = bool(
-        context.get("show_debug_latency")
-        if "show_debug_latency" in context else profile.show_debug_latency
-    ) and bool(
-        user_tier == "research"
-        or stage_badge in {"预警", "高潮", "风险"}
-        or template == "debug"
-        or str(signal.delivery_class or "").strip().lower() == "primary"
-        or float(context.get("lp_follow_confidence") or 0.0) >= 0.72
-        or float(context.get("lp_exhaustion_confidence") or 0.0) >= 0.68
-    )
-    quality_hint = ""
-    if bool(context.get("show_quality_hint") if "show_quality_hint" in context else profile.show_quality_hint):
-        quality_hint = str(context.get("quality_score_brief") or "").strip()
+    quality_hint = str(context.get("quality_score_brief") or "").strip() or "-"
+    show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
 
     lines = [
-        f"{stage_badge}｜{pair_or_pool}｜{state_label}",
-        evidence,
-        market_read,
+        f"{action_label}｜{pair_or_pool}｜{conclusion}",
+        f"证据：{evidence}",
+        f"为什么：{reason}",
+        f"触发：{required_confirmation}",
+        f"失效：{invalidation}",
     ]
-    if show_followup:
-        followup_line = f"继续看：{followup_check}"
-        if market_context_short and bool(context.get("show_market_context_line") if "show_market_context_line" in context else profile.show_market_context_line):
-            followup_line = f"{market_context_short}｜继续看：{followup_check}"
-        if user_tier != "retail":
-            followup_line = f"{followup_line}｜失效：{invalidation}"
-        lines.append(followup_line)
     if show_debug:
-        debug_parts = [f"链路：{scan_path}", f"延迟 {latency_ms}ms"]
-        if quality_hint:
-            debug_parts.append(f"质量 {quality_hint}")
-        if (
-            not bool(context.get("market_context_available"))
-            and str(context.get("market_context_failure_reason") or "").strip()
-            and user_tier == "research"
-        ):
-            failure_reason = str(context.get("market_context_failure_reason") or "").strip()
-            failure_venue = str(
-                context.get("market_context_venue")
-                or context.get("market_context_primary_venue")
-                or ""
-            ).strip()
-            debug_parts.append(
-                f"合约缺口 {failure_reason}" + (f"@{failure_venue}" if failure_venue else "")
-            )
+        debug_parts = [
+            f"调试：stage={str(context.get('lp_alert_stage') or '-')}",
+            f"scope={str(context.get('lp_confirm_scope') or '-')}",
+            f"context={str(context.get('market_context_source') or 'unavailable')}",
+            f"quality={quality_hint}",
+            f"latency={latency_ms}ms",
+        ]
         lines.append("｜".join(debug_parts))
     return _join_lines(lines)
 
@@ -1019,9 +1046,9 @@ def _long_message(signal: Signal, event: Event, context: dict, raw: dict) -> str
     if variant == "followup":
         return _followup_message(signal, event, context, raw)
     if variant == "lp_directional":
-        return _lp_directional_message(signal, event, context, raw)
+        return _lp_stage_first_message(signal, event, context)
     if variant == "lp_liquidity":
-        return _lp_liquidity_message(signal, event, context, raw)
+        return _lp_stage_first_message(signal, event, context)
     if variant in {"liquidation_risk", "liquidation_execution"}:
         return _liquidation_message(signal, event, context, raw)
     if variant == "smart_money_primary":

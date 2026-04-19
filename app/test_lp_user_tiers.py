@@ -202,8 +202,8 @@ class LpUserTierTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertEqual("observe", delivery_class)
-        self.assertTrue(message.splitlines()[0].startswith("预警｜ETH/USDC｜"))
-        self.assertIn("链路：secondary｜延迟 1200ms", message)
+        self.assertTrue(message.splitlines()[0].startswith("数据缺口，不交易｜ETH/USDC｜"))
+        self.assertIn("调试：stage=prealert｜scope=-｜context=unavailable｜quality=历史传导较强｜latency=1200ms", message)
 
     def test_retail_still_receives_confirm_and_exhaustion_risk(self) -> None:
         for stage in ("confirm", "exhaustion_risk"):

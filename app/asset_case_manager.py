@@ -570,5 +570,7 @@ class AssetCaseManager:
             "fastlane_roi_score": source_payload.get("fastlane_roi_score"),
             "lp_confirm_quality": str(source_payload.get("lp_confirm_quality") or ""),
             "lp_absorption_context": str(source_payload.get("lp_absorption_context") or ""),
+            "trade_action_key": str(source_payload.get("trade_action_key") or ""),
+            "trade_action_label": str(source_payload.get("trade_action_label") or ""),
             "quality_score_brief": str(source_payload.get("quality_score_brief") or ""),
         }

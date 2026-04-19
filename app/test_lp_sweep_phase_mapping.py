@@ -162,7 +162,7 @@ class LpSweepPhaseMappingTests(unittest.TestCase):
         self.assertEqual("sweep_building", context.get("lp_sweep_phase"))
         self.assertIn(context.get("lp_alert_stage"), {"prealert", "confirm"})
         self.assertNotIn("高潮", first_line)
-        self.assertTrue(any(keyword in first_line for keyword in ("建立中", "待确认", "冲击建立中")))
+        self.assertEqual("数据缺口，不交易｜ETH/USDC｜缺 broader live context", first_line)
 
     def test_stronger_sweep_building_can_use_confirm_without_climax(self) -> None:
         event = self._event(
@@ -179,8 +179,7 @@ class LpSweepPhaseMappingTests(unittest.TestCase):
 
         self.assertEqual("sweep_building", context.get("lp_sweep_phase"))
         self.assertEqual("confirm", context.get("lp_alert_stage"))
-        self.assertTrue(first_line.startswith("确认｜"))
-        self.assertIn("待确认", first_line)
+        self.assertEqual("数据缺口，不交易｜ETH/USDC｜缺 broader live context", first_line)
         self.assertNotIn("高潮", first_line)
 
     def test_sweep_confirmed_uses_confirmation_semantics(self) -> None:
@@ -193,8 +192,7 @@ class LpSweepPhaseMappingTests(unittest.TestCase):
 
         self.assertEqual("sweep_confirmed", context.get("lp_sweep_phase"))
         self.assertIn(context.get("lp_alert_stage"), {"confirm", "climax"})
-        self.assertIn("清扫确认", first_line)
-        self.assertNotIn("建立中", first_line)
+        self.assertEqual("数据缺口，不交易｜ETH/USDC｜缺 broader live context", first_line)
 
     def test_sweep_exhaustion_risk_uses_risk_semantics(self) -> None:
         event = self._event(
@@ -213,8 +211,7 @@ class LpSweepPhaseMappingTests(unittest.TestCase):
 
         self.assertEqual("sweep_exhaustion_risk", context.get("lp_sweep_phase"))
         self.assertEqual("exhaustion_risk", context.get("lp_alert_stage"))
-        self.assertTrue(first_line.startswith("风险｜"))
-        self.assertIn("风险高", first_line)
+        self.assertEqual("不追多｜ETH/USDC｜买方清扫后回吐风险", first_line)
 
     def test_liquidation_execution_still_overrides_sweep(self) -> None:
         event = self._event(

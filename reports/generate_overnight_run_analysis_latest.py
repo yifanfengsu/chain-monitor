@@ -207,15 +207,40 @@ def first_value(row: dict[str, Any], *keys: str) -> Any:
 
 
 def notifier_line1(row: dict[str, Any]) -> str:
-    stage_badge = str(row.get("lp_stage_badge") or "确认")
+    stage_badge = str(row.get("trade_action_label") or row.get("lp_stage_badge") or "确认")
     pair_or_pool = str(row.get("pair_label") or row.get("pool_address") or "unknown")
     state_label = str(
-        row.get("lp_state_label")
+        row.get("trade_action_conclusion")
+        or row.get("trade_action_reason")
+        or row.get("lp_state_label")
         or row.get("market_state_label")
         or row.get("headline_label")
         or ""
     )
     return f"{stage_badge}｜{pair_or_pool}｜{state_label}"
+
+
+def _default_no_trade_saved(row: dict[str, Any], field: str) -> bool | None:
+    direction_adjusted = to_float(row.get(field))
+    if direction_adjusted is None:
+        return None
+    if direction_adjusted <= 0:
+        return True
+    adverse_field = field.replace("direction_adjusted_move_after", "adverse_by_direction")
+    adverse_value = row.get(adverse_field)
+    if adverse_value in {None, ""}:
+        return None
+    return bool(adverse_value)
+
+
+def _followthrough_result(row: dict[str, Any], field: str) -> tuple[bool | None, bool | None]:
+    direction_adjusted = to_float(row.get(field))
+    if direction_adjusted is None:
+        return None, None
+    adverse_field = field.replace("direction_adjusted_move_after", "adverse_by_direction")
+    adverse_value = row.get(adverse_field)
+    adverse = None if adverse_value in {None, ""} else bool(adverse_value)
+    return direction_adjusted > 0, adverse
 
 
 def env_whitelist() -> dict[str, dict[str, Any]]:
@@ -369,6 +394,24 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                     "lp_absorption_context": str(first_value(data, "lp_absorption_context") or ""),
                     "lp_broader_alignment": str(first_value(data, "lp_broader_alignment") or ""),
                     "lp_local_vs_broad_reason": str(first_value(data, "lp_local_vs_broad_reason") or ""),
+                    "trade_action_key": str(first_value(data, "trade_action_key") or ""),
+                    "trade_action_label": str(first_value(data, "trade_action_label") or ""),
+                    "trade_action_direction": str(first_value(data, "trade_action_direction") or ""),
+                    "trade_action_confidence": to_float(first_value(data, "trade_action_confidence")),
+                    "trade_action_reason": str(first_value(data, "trade_action_reason") or ""),
+                    "trade_action_required_confirmation": str(first_value(data, "trade_action_required_confirmation") or ""),
+                    "trade_action_invalidated_by": str(first_value(data, "trade_action_invalidated_by") or ""),
+                    "trade_action_time_horizon_sec": to_int(first_value(data, "trade_action_time_horizon_sec")),
+                    "trade_action_source": str(first_value(data, "trade_action_source") or ""),
+                    "trade_action_is_instruction": bool(first_value(data, "trade_action_is_instruction")),
+                    "trade_action_requires_user_confirmation": bool(first_value(data, "trade_action_requires_user_confirmation")),
+                    "trade_action_blockers": list(first_value(data, "trade_action_blockers") or []),
+                    "trade_action_conclusion": str(first_value(data, "trade_action_conclusion") or ""),
+                    "lp_conflict_context": str(first_value(data, "lp_conflict_context") or ""),
+                    "lp_conflict_score": to_float(first_value(data, "lp_conflict_score")),
+                    "lp_conflict_window_sec": to_int(first_value(data, "lp_conflict_window_sec")),
+                    "lp_conflicting_signals": list(first_value(data, "lp_conflicting_signals") or []),
+                    "lp_conflict_resolution": str(first_value(data, "lp_conflict_resolution") or ""),
                     "lp_sweep_phase": str(first_value(data, "lp_sweep_phase") or ""),
                     "lp_sweep_display_stage": str(first_value(data, "lp_sweep_display_stage") or ""),
                     "lp_stage_badge": str(first_value(data, "lp_stage_badge") or ""),
@@ -1118,6 +1161,130 @@ def compute_absorption(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_trade_actions(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    keys = [
+        "LONG_CHASE_ALLOWED",
+        "SHORT_CHASE_ALLOWED",
+        "NO_TRADE",
+        "WAIT_CONFIRMATION",
+        "DO_NOT_CHASE_LONG",
+        "DO_NOT_CHASE_SHORT",
+        "CONFLICT_NO_TRADE",
+        "DATA_GAP_NO_TRADE",
+        "LONG_BIAS_OBSERVE",
+        "SHORT_BIAS_OBSERVE",
+        "REVERSAL_WATCH_LONG",
+        "REVERSAL_WATCH_SHORT",
+    ]
+    counter = Counter(str(row.get("trade_action_key") or "") for row in lp_rows if str(row.get("trade_action_key") or "").strip())
+
+    def summarize(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+        resolved = []
+        followthrough = 0
+        adverse = 0
+        for row in rows:
+            ft, adv = _followthrough_result(row, field)
+            if ft is None:
+                continue
+            resolved.append(row)
+            if ft:
+                followthrough += 1
+            if adv is True:
+                adverse += 1
+        return {
+            "resolved_count": len(resolved),
+            "followthrough_count": followthrough,
+            "followthrough_rate": rate(followthrough, len(resolved)),
+            "adverse_count": adverse,
+            "adverse_rate": rate(adverse, len(resolved)),
+        }
+
+    action_windows: dict[str, dict[str, Any]] = {}
+    for field in (
+        "direction_adjusted_move_after_30s",
+        "direction_adjusted_move_after_60s",
+        "direction_adjusted_move_after_300s",
+    ):
+        window_name = field.split("_")[-1]
+        action_windows[window_name] = {
+            key: summarize([row for row in lp_rows if str(row.get("trade_action_key") or "") == key], field)
+            for key in keys
+            if counter.get(key, 0) > 0
+        }
+
+    chase_rows = [
+        row for row in lp_rows
+        if str(row.get("trade_action_key") or "") in {"LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED"}
+    ]
+    confirm_rows = [
+        row for row in lp_rows
+        if str(row.get("lp_alert_stage") or "") in {"confirm", "climax"}
+    ]
+    no_trade_rows = [
+        row for row in lp_rows
+        if str(row.get("trade_action_key") or "") in {"NO_TRADE", "CONFLICT_NO_TRADE", "DATA_GAP_NO_TRADE"}
+    ]
+    saved_estimates = [
+        _default_no_trade_saved(row, "direction_adjusted_move_after_300s")
+        for row in no_trade_rows
+    ]
+    saved_known = [item for item in saved_estimates if item is not None]
+    conflict_rows = [row for row in lp_rows if str(row.get("trade_action_key") or "") == "CONFLICT_NO_TRADE"]
+    conflict_reversal = [
+        row for row in conflict_rows
+        if adverse_move(row, "move_after_alert_300s") is True
+        or _default_no_trade_saved(row, "direction_adjusted_move_after_300s") is True
+    ]
+    action_label_counter = Counter(
+        str(row.get("trade_action_label") or "") for row in lp_rows if str(row.get("trade_action_label") or "").strip()
+    )
+    return {
+        "trade_action_distribution": dict(sorted(counter.items())),
+        "trade_action_label_distribution": dict(sorted(action_label_counter.items())),
+        "long_chase_allowed_count": counter.get("LONG_CHASE_ALLOWED", 0),
+        "short_chase_allowed_count": counter.get("SHORT_CHASE_ALLOWED", 0),
+        "no_trade_count": counter.get("NO_TRADE", 0),
+        "wait_confirmation_count": counter.get("WAIT_CONFIRMATION", 0),
+        "do_not_chase_long_count": counter.get("DO_NOT_CHASE_LONG", 0),
+        "do_not_chase_short_count": counter.get("DO_NOT_CHASE_SHORT", 0),
+        "conflict_no_trade_count": counter.get("CONFLICT_NO_TRADE", 0),
+        "data_gap_no_trade_count": counter.get("DATA_GAP_NO_TRADE", 0),
+        "trade_action_adverse_30s": action_windows["30s"],
+        "trade_action_adverse_60s": action_windows["60s"],
+        "trade_action_adverse_300s": action_windows["300s"],
+        "trade_action_followthrough_30s": action_windows["30s"],
+        "trade_action_followthrough_60s": action_windows["60s"],
+        "trade_action_followthrough_300s": action_windows["300s"],
+        "chase_allowed_success_rate": action_windows["300s"].get("LONG_CHASE_ALLOWED", {}).get("followthrough_rate", 0.0)
+        if counter.get("SHORT_CHASE_ALLOWED", 0) == 0
+        else rate(
+            sum(
+                action_windows["300s"].get(key, {}).get("followthrough_count", 0)
+                for key in ("LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED")
+            ),
+            sum(
+                action_windows["300s"].get(key, {}).get("resolved_count", 0)
+                for key in ("LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED")
+            ),
+        ),
+        "chase_allowed_adverse_rate": rate(
+            sum(
+                action_windows["300s"].get(key, {}).get("adverse_count", 0)
+                for key in ("LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED")
+            ),
+            sum(
+                action_windows["300s"].get(key, {}).get("resolved_count", 0)
+                for key in ("LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED")
+            ),
+        ),
+        "generic_confirm_success_rate_300s": summarize(confirm_rows, "direction_adjusted_move_after_300s")["followthrough_rate"],
+        "generic_confirm_adverse_rate_300s": summarize(confirm_rows, "direction_adjusted_move_after_300s")["adverse_rate"],
+        "no_trade_would_have_saved_rate": rate(sum(1 for item in saved_known if item is True), len(saved_known)),
+        "conflict_after_message_reversal_rate": rate(len(conflict_reversal), len(conflict_rows)),
+        "chase_allowed_rows_resolved_300s": summarize(chase_rows, "direction_adjusted_move_after_300s")["resolved_count"],
+    }
+
+
 def compute_reversal_special(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     confirm_rows = [row for row in lp_rows if row.get("lp_alert_stage") == "confirm"]
     def summarize(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
@@ -1405,6 +1572,7 @@ def build_csv_rows(
     confirm: dict[str, Any],
     sweeps: dict[str, Any],
     absorption: dict[str, Any],
+    trade_actions: dict[str, Any],
     majors: dict[str, Any],
     archive_integrity: dict[str, Any],
     scores: dict[str, Any],
@@ -1438,6 +1606,10 @@ def build_csv_rows(
         if isinstance(value, dict):
             continue
         add_metric(rows, "absorption", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in trade_actions.items():
+        if isinstance(value, dict) or isinstance(value, list):
+            continue
+        add_metric(rows, "trade_action", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
     add_metric(rows, "majors", "covered_major_pairs", "|".join(majors["covered_major_pairs"]), sample_size=len(majors["covered_major_pairs"]), window=window_label)
     add_metric(rows, "majors", "missing_major_pairs", "|".join(majors["missing_major_pairs"]), sample_size=len(majors["missing_major_pairs"]), window=window_label)
     add_metric(rows, "majors", "eth_signal_count", majors["eth_signal_count"], asset="ETH", sample_size=run_overview["lp_signal_rows"], window=window_label)
@@ -1494,6 +1666,7 @@ def build_markdown(
     confirm: dict[str, Any],
     sweeps: dict[str, Any],
     absorption: dict[str, Any],
+    trade_actions: dict[str, Any],
     reversal: dict[str, Any],
     majors: dict[str, Any],
     archive_integrity: dict[str, Any],
@@ -1522,6 +1695,9 @@ def build_markdown(
     )
     lines.append(
         f"- `sweep_building` 样本 `{sweeps['sweep_building_count']}` 条，显示层残留 `climax/高潮` 为 `{sweeps['sweep_building_display_climax_residual_count']}`。"
+    )
+    lines.append(
+        f"- trade action 分布：`{trade_actions['trade_action_distribution']}`；可追类总数 `long={trade_actions['long_chase_allowed_count']}` `short={trade_actions['short_chase_allowed_count']}`。"
     )
     lines.append(
         f"- majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。"
@@ -1653,7 +1829,24 @@ def build_markdown(
         "- 判断：`sweep_building` 在显示层彻底不再冒充高潮。`sweep_confirmed` 的主窗口 300s 已解析样本里没有出现反向；`sweep_exhaustion_risk` 300s 解析样本里出现了部分反向，但样本很少。"
     )
     lines.append("")
-    lines.append("## 10. “卖压后涨 / 买压后跌”反例专项")
+    lines.append("## 10. trade_action 层评估")
+    lines.append("")
+    lines.append(f"- `trade_action_distribution={trade_actions['trade_action_distribution']}`")
+    lines.append(f"- `long_chase_allowed_count={trade_actions['long_chase_allowed_count']}` `short_chase_allowed_count={trade_actions['short_chase_allowed_count']}`")
+    lines.append(f"- `no_trade_count={trade_actions['no_trade_count']}` `wait_confirmation_count={trade_actions['wait_confirmation_count']}`")
+    lines.append(f"- `do_not_chase_long_count={trade_actions['do_not_chase_long_count']}` `do_not_chase_short_count={trade_actions['do_not_chase_short_count']}`")
+    lines.append(f"- `conflict_no_trade_count={trade_actions['conflict_no_trade_count']}` `data_gap_no_trade_count={trade_actions['data_gap_no_trade_count']}`")
+    lines.append(f"- `chase_allowed_success_rate={trade_actions['chase_allowed_success_rate']}` `chase_allowed_adverse_rate={trade_actions['chase_allowed_adverse_rate']}`")
+    lines.append(f"- `generic_confirm_success_rate_300s={trade_actions['generic_confirm_success_rate_300s']}` `generic_confirm_adverse_rate_300s={trade_actions['generic_confirm_adverse_rate_300s']}`")
+    lines.append(f"- `no_trade_would_have_saved_rate={trade_actions['no_trade_would_have_saved_rate']}`")
+    lines.append(f"- `conflict_after_message_reversal_rate={trade_actions['conflict_after_message_reversal_rate']}`")
+    lines.append("- 判断 1：`LONG/SHORT_CHASE_ALLOWED` 必须始终是少数样本；计数过高说明动作层仍过于宽松。")
+    lines.append("- 判断 2：如果 `chase_allowed_success_rate` 明显高于 generic confirm，说明严格 chase gate 确实带来了后验提升。")
+    lines.append("- 判断 3：`do_not_chase_*` 与 `no_trade_would_have_saved_rate` 可以用来估算系统是否减少了不利追单。")
+    lines.append("- 判断 4：`conflict_no_trade_count` 与 `conflict_after_message_reversal_rate` 用来验证双向噪音时 abstain 是否合理。")
+    lines.append("- 判断 5：trade_action 把 Telegram 首行从结构词改成动作词，本质上是在降低误用而不是增加方向幻觉。")
+    lines.append("")
+    lines.append("## 11. “卖压后涨 / 买压后跌”反例专项")
     lines.append("")
     lines.append(f"- `sell_confirm_count={reversal['sell_confirm_count']}` `buy_confirm_count={reversal['buy_confirm_count']}`")
     lines.append(f"- `sell_after_30s_rise_ratio={reversal['sell_after_30s_rise_ratio']}`")
@@ -1671,7 +1864,7 @@ def build_markdown(
         lines.append("- 主窗口没有找到可落为“可能代码误判”的 confirm 反例。")
     lines.append("- 限制：主窗口没有可靠的 `30s` 数值回写，`60s` 数值也几乎为空，所以本专题只能对 `300s` 做定量结论。")
     lines.append("")
-    lines.append("## 11. majors 覆盖与样本代表性")
+    lines.append("## 12. majors 覆盖与样本代表性")
     lines.append("")
     lines.append(f"- `covered_major_pairs={majors['covered_major_pairs']}`")
     lines.append(f"- `missing_major_pairs={majors['missing_major_pairs']}`")
@@ -1679,13 +1872,13 @@ def build_markdown(
     lines.append(f"- `major_cli_summary={majors['major_cli_summary']}`")
     lines.append("- 判断：主窗口仍然只来自 ETH 双主池。CLI 同时确认 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC` 属于 pool book 覆盖缺口，而不是夜里单纯无事件。")
     lines.append("")
-    lines.append("## 12. signal archive 对账完整性")
+    lines.append("## 13. signal archive 对账完整性")
     lines.append("")
     for key, value in archive_integrity.items():
         lines.append(f"- `{key}` = `{value}`")
     lines.append("- 判断：`signals -> delivery_audit -> cases.signal_attached -> case_followups` 在已送达 LP 子集上都是 1:1。flat/new 与 nested/old 格式并存，但 stage 字段未发现冲突。")
     lines.append("")
-    lines.append("## 13. quality/outcome 与 fastlane ROI")
+    lines.append("## 14. quality/outcome 与 fastlane ROI")
     lines.append("")
     lines.append(f"- `fastlane_promoted_count_window={quality_and_fastlane['fastlane_promoted_count_window']}`")
     lines.append(f"- `fastlane_promoted_delivered_count_window={quality_and_fastlane['fastlane_promoted_delivered_count_window']}`")
@@ -1694,13 +1887,13 @@ def build_markdown(
     lines.append(f"- `full_summary_cli.overall={quality_and_fastlane['full_summary_cli']['overall']}`")
     lines.append("- 判断：quality/outcome ledger 已能支撑对账和 pair-level 对比，但夜间 fastlane 与 60s outcome 样本仍偏薄。")
     lines.append("")
-    lines.append("## 14. 噪音与误判风险评估")
+    lines.append("## 15. 噪音与误判风险评估")
     lines.append("")
     for key, value in noise.items():
         lines.append(f"- `{key}` = `{value}`")
     lines.append("- 判断：噪音的主要来源已不再是 market context unavailable，而是 `ETH-only sample + no prealert + sparse 60s/300s resolved outcomes`。")
     lines.append("")
-    lines.append("## 15. 最终评分")
+    lines.append("## 16. 最终评分")
     lines.append("")
     for key, value in scores.items():
         lines.append(f"- `{key}` = `{value}/10`")
@@ -1804,6 +1997,7 @@ def main() -> int:
     confirm = compute_confirms(lp_rows_window)
     sweeps = compute_sweeps(lp_rows_window)
     absorption = compute_absorption(lp_rows_window)
+    trade_actions = compute_trade_actions(lp_rows_window)
     reversal = compute_reversal_special(lp_rows_window)
     majors = compute_majors(lp_rows_window, cli_major_pool_coverage, runtime_config)
     archive = compute_archive_integrity(lp_rows_window, delivery_summary, cases_summary, followup_summary)
@@ -1838,6 +2032,7 @@ def main() -> int:
         confirm,
         sweeps,
         absorption,
+        trade_actions,
         reversal,
         majors,
         archive,
@@ -1859,6 +2054,7 @@ def main() -> int:
         confirm,
         sweeps,
         absorption,
+        trade_actions,
         majors,
         archive,
         scores,
@@ -1906,6 +2102,7 @@ def main() -> int:
         "confirm_summary": confirm,
         "sweep_summary": sweeps,
         "absorption_summary": absorption,
+        "trade_action_summary": trade_actions,
         "majors_coverage_summary": majors,
         "archive_integrity_summary": archive,
         "quality_outcome_fastlane_summary": quality_and_fastlane,

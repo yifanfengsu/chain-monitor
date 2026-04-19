@@ -1,6 +1,6 @@
 import time
 import hashlib
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from analyzer import BehaviorAnalyzer
 from asset_case_manager import AssetCaseManager
@@ -30,6 +30,7 @@ from config import (
     MARKET_CONTEXT_PRIMARY_VENUE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_PRICING_CONFIDENCE,
     PERSISTED_EXCHANGE_ADJACENT_EXCHANGE_RELATED_MIN_USD,
+    TRADE_ACTION_CONFLICT_WINDOW_SEC,
 )
 from constants import STABLE_TOKEN_CONTRACTS
 from delivery_policy import can_emit_delivery_notification, record_delivery_notification
@@ -62,6 +63,7 @@ from signal_interpreter import SignalInterpreter
 from state_manager import StateManager
 from strategy_engine import StrategyEngine
 from token_scoring import TokenScorer
+from trade_action import apply_trade_action, build_trade_action_signal_summary
 from user_tiers import apply_user_tier_context
 
 
@@ -130,6 +132,7 @@ class SignalPipeline:
         self._low_pricing_confidence_by_token_symbol = defaultdict(int)
         self._low_pricing_confidence_by_strategy_role = defaultdict(int)
         self._low_pricing_confidence_by_watch_address = defaultdict(int)
+        self._lp_trade_action_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=96))
 
     def _top_counter_items(self, counter: dict[str, int], limit: int = 3) -> list[tuple[str, int]]:
         return sorted(
@@ -140,6 +143,37 @@ class SignalPipeline:
             ),
             key=lambda item: (-item[1], item[0]),
         )[:limit]
+
+    def _recent_trade_action_signals(
+        self,
+        asset_symbol: str,
+        *,
+        now_ts: int,
+        window_sec: int | None = None,
+    ) -> list[dict]:
+        symbol = str(asset_symbol or "").strip().upper()
+        if not symbol:
+            return []
+        effective_window = max(int(window_sec or TRADE_ACTION_CONFLICT_WINDOW_SEC), 1)
+        history = self._lp_trade_action_history.get(symbol)
+        if history is None:
+            return []
+        recent: list[dict] = []
+        while history and now_ts - int(history[0].get("ts") or 0) > effective_window:
+            history.popleft()
+        for item in history:
+            if now_ts - int(item.get("ts") or 0) <= effective_window:
+                recent.append(dict(item))
+        return recent
+
+    def _register_trade_action_signal(self, event: Event, signal) -> dict:
+        summary = build_trade_action_signal_summary(event, signal)
+        asset_symbol = str(summary.get("asset_symbol") or "").strip().upper()
+        direction = str(summary.get("direction") or "")
+        if not asset_symbol or direction not in {"long", "short"}:
+            return summary
+        self._lp_trade_action_history[asset_symbol].append(summary)
+        return summary
 
     def _carry_runtime_candidate_fields(self, parsed: dict, raw_item: dict) -> dict:
         carried = dict(parsed or {})
@@ -923,17 +957,37 @@ class SignalPipeline:
         market_context_payload = self._annotate_market_context(event, signal)
         quality_payload = self.quality_manager.annotate_lp_signal(event, signal, gate_metrics=gate_metrics)
         correction_payload = self._apply_lp_signal_corrections(event, signal, gate_metrics=gate_metrics)
-        self.asset_case_manager.attach_runtime_context(
-            event,
-            signal,
-            gate_metrics=gate_metrics,
-        )
         prealert_payload = self._apply_lp_prealert_diagnostics(
             event,
             signal,
             gate_metrics=gate_metrics,
             asset_case_payload=asset_case_payload,
         )
+        recent_trade_signals = self._recent_trade_action_signals(
+            str(
+                getattr(signal, "context", {}).get("asset_symbol")
+                or getattr(signal, "context", {}).get("asset_case_label")
+                or getattr(event, "metadata", {}).get("asset_symbol")
+                or getattr(event, "metadata", {}).get("asset_case_label")
+                or getattr(event, "metadata", {}).get("token_symbol")
+                or getattr(event, "token", "")
+                or ""
+            ),
+            now_ts=int(getattr(event, "ts", 0) or 0),
+            window_sec=int(TRADE_ACTION_CONFLICT_WINDOW_SEC),
+        )
+        trade_action_payload = apply_trade_action(
+            event,
+            signal,
+            recent_signals=recent_trade_signals,
+            conflict_window_sec=int(TRADE_ACTION_CONFLICT_WINDOW_SEC),
+        )
+        self.asset_case_manager.attach_runtime_context(
+            event,
+            signal,
+            gate_metrics=gate_metrics,
+        )
+        self._register_trade_action_signal(event, signal)
         tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
         return {
             "asset_case": asset_case_payload,
@@ -941,6 +995,7 @@ class SignalPipeline:
             "quality": quality_payload,
             "lp_corrections": correction_payload,
             "prealert_diagnostics": prealert_payload,
+            "trade_action": trade_action_payload,
             "user_tier": tier_payload,
         }
 
@@ -3054,6 +3109,80 @@ class SignalPipeline:
                 or event_metadata.get("lp_confirm_timing_bucket")
                 or ""
             ),
+            "trade_action_key": str(
+                signal_context.get("trade_action_key")
+                or signal_metadata.get("trade_action_key")
+                or event_metadata.get("trade_action_key")
+                or ""
+            ),
+            "trade_action_label": str(
+                signal_context.get("trade_action_label")
+                or signal_metadata.get("trade_action_label")
+                or event_metadata.get("trade_action_label")
+                or ""
+            ),
+            "trade_action_direction": str(
+                signal_context.get("trade_action_direction")
+                or signal_metadata.get("trade_action_direction")
+                or event_metadata.get("trade_action_direction")
+                or ""
+            ),
+            "trade_action_confidence": float(
+                signal_context.get("trade_action_confidence")
+                or signal_metadata.get("trade_action_confidence")
+                or event_metadata.get("trade_action_confidence")
+                or 0.0
+            ),
+            "trade_action_reason": str(
+                signal_context.get("trade_action_reason")
+                or signal_metadata.get("trade_action_reason")
+                or event_metadata.get("trade_action_reason")
+                or ""
+            ),
+            "trade_action_blockers": list(
+                signal_context.get("trade_action_blockers")
+                or signal_metadata.get("trade_action_blockers")
+                or event_metadata.get("trade_action_blockers")
+                or []
+            ),
+            "trade_action_required_confirmation": str(
+                signal_context.get("trade_action_required_confirmation")
+                or signal_metadata.get("trade_action_required_confirmation")
+                or event_metadata.get("trade_action_required_confirmation")
+                or ""
+            ),
+            "trade_action_invalidated_by": str(
+                signal_context.get("trade_action_invalidated_by")
+                or signal_metadata.get("trade_action_invalidated_by")
+                or event_metadata.get("trade_action_invalidated_by")
+                or ""
+            ),
+            "trade_action_time_horizon_sec": int(
+                signal_context.get("trade_action_time_horizon_sec")
+                or signal_metadata.get("trade_action_time_horizon_sec")
+                or event_metadata.get("trade_action_time_horizon_sec")
+                or 0
+            ),
+            "trade_action_source": str(
+                signal_context.get("trade_action_source")
+                or signal_metadata.get("trade_action_source")
+                or event_metadata.get("trade_action_source")
+                or ""
+            ),
+            "trade_action_is_instruction": bool(
+                signal_context.get("trade_action_is_instruction")
+                if signal_context.get("trade_action_is_instruction") is not None
+                else signal_metadata.get("trade_action_is_instruction")
+                if signal_metadata.get("trade_action_is_instruction") is not None
+                else event_metadata.get("trade_action_is_instruction")
+            ),
+            "trade_action_requires_user_confirmation": bool(
+                signal_context.get("trade_action_requires_user_confirmation")
+                if signal_context.get("trade_action_requires_user_confirmation") is not None
+                else signal_metadata.get("trade_action_requires_user_confirmation")
+                if signal_metadata.get("trade_action_requires_user_confirmation") is not None
+                else event_metadata.get("trade_action_requires_user_confirmation")
+            ),
             "lp_sweep_phase": str(
                 signal_context.get("lp_sweep_phase")
                 or signal_metadata.get("lp_sweep_phase")
@@ -3064,6 +3193,36 @@ class SignalPipeline:
                 signal_context.get("lp_sweep_display_stage")
                 or signal_metadata.get("lp_sweep_display_stage")
                 or event_metadata.get("lp_sweep_display_stage")
+                or ""
+            ),
+            "lp_conflict_context": str(
+                signal_context.get("lp_conflict_context")
+                or signal_metadata.get("lp_conflict_context")
+                or event_metadata.get("lp_conflict_context")
+                or ""
+            ),
+            "lp_conflict_score": float(
+                signal_context.get("lp_conflict_score")
+                or signal_metadata.get("lp_conflict_score")
+                or event_metadata.get("lp_conflict_score")
+                or 0.0
+            ),
+            "lp_conflict_window_sec": int(
+                signal_context.get("lp_conflict_window_sec")
+                or signal_metadata.get("lp_conflict_window_sec")
+                or event_metadata.get("lp_conflict_window_sec")
+                or 0
+            ),
+            "lp_conflicting_signals": list(
+                signal_context.get("lp_conflicting_signals")
+                or signal_metadata.get("lp_conflicting_signals")
+                or event_metadata.get("lp_conflicting_signals")
+                or []
+            ),
+            "lp_conflict_resolution": str(
+                signal_context.get("lp_conflict_resolution")
+                or signal_metadata.get("lp_conflict_resolution")
+                or event_metadata.get("lp_conflict_resolution")
                 or ""
             ),
             "market_context_attempts": list(

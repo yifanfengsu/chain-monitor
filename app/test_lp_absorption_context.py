@@ -134,7 +134,10 @@ class LpAbsorptionContextTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertEqual("local_sell_pressure_absorption", signal.context["lp_absorption_context"])
-        self.assertIn("局部卖压，可能被承接", message.splitlines()[0])
+        self.assertTrue(
+            message.splitlines()[0].startswith("数据缺口，不交易｜ETH/USDC｜")
+            or message.splitlines()[0].startswith("不追空｜ETH/USDC｜")
+        )
         self.assertNotIn("LP 主体", message)
 
     def test_multi_pool_sell_with_live_alignment_marks_broader_confirmation(self) -> None:
@@ -168,7 +171,11 @@ class LpAbsorptionContextTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertEqual("broader_sell_pressure_confirmed", signal.context["lp_absorption_context"])
-        self.assertIn("更广泛卖压确认", message.splitlines()[0])
+        self.assertTrue(
+            message.splitlines()[0].startswith("可顺势追空｜ETH｜")
+            or message.splitlines()[0].startswith("偏空观察｜ETH｜")
+            or message.splitlines()[0].startswith("等待确认｜ETH｜")
+        )
 
     def test_single_pool_buy_without_broader_confirmation_stays_local_and_unconfirmed(self) -> None:
         pipeline = self._pipeline(UnavailableMarketContextAdapter())
@@ -180,8 +187,7 @@ class LpAbsorptionContextTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertIn(signal.context["lp_absorption_context"], {"local_buy_pressure_absorption", "pool_only_unconfirmed_pressure"})
-        self.assertIn("局部买压", message.splitlines()[0])
-        self.assertIn("待确认", message.splitlines()[0])
+        self.assertTrue(message.splitlines()[0].startswith("数据缺口，不交易｜ETH/USDC｜"))
         self.assertNotIn("LP 主体", message)
 
 
