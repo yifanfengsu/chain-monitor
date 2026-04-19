@@ -7,6 +7,8 @@ run_overview,lp_signal_rows,,,,68,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52
 run_overview,delivered_lp_signals,,,,55,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 run_overview,asset_case_count,,,,54,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 run_overview,case_followup_count,,,,55,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+run_overview,compression_ratio,,,,1.2593,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+run_overview,avg_signals_per_case,,,,1.2593,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 lp_stage,prealert_count,,,,0,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 lp_stage,confirm_count,,,,37,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 lp_stage,climax_count,,,,9,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
@@ -30,6 +32,12 @@ market_context,bybit_attempts,,,,0,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:5
 prealert,prealert_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 prealert,major_prealert_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 prealert,non_major_prealert_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_candidates,,,,68,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_gate_passed_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_delivered_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_merged_into_case_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_upgraded_to_confirm_count,,,,0,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+prealert,prealert_dropped_by_reason,,,,{},0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 prealert,prealert_to_confirm_30s,,,,,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 prealert,prealert_to_confirm_60s,,,,,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 prealert,prealert_to_confirm_90s,,,,,0,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
@@ -84,3 +92,7 @@ score,majors_coverage,,,,3.2,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 U
 score,signal_archive_integrity,,,,9.2,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 score,noise_control,,,,5.7,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
 score,overall_self_use_score,,,,5.8,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,
+outcome_window,30s_pending,,,,68,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,window outcome status count
+outcome_window,60s_pending,,,,68,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,window outcome status count
+outcome_window,300s_pending,,,,52,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,window outcome status count
+outcome_window,300s_completed,,,,16,68,2026-04-18 18:33:40 UTC -> 2026-04-19 07:52:41 UTC,window outcome status count

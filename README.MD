@@ -12,6 +12,20 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
 - `address_aliases.json` 用来本地覆盖地址别名、钱包职能和实体补丁（如 `wallet_function/entity_source/entity_confidence`）
 - `clmm_managers.json` 用来本地启用 Uniswap v3 / v4 PositionManager registry；缺失时 CLMM parser 会优雅降级为不识别 manager
 - 需要本地注入时，直接把对应 JSON 文件放到 `data/` 目录即可；公开仓库提供 `data/entities.example.json`、`data/address_aliases.example.json` 和 `data/clmm_managers.example.json` 作为最小 schema 参考
+- `data/lp_pools.json` 推荐本地 schema：
+  - `pool_address`
+  - `chain`
+  - `pair_label`
+  - `base_symbol`
+  - `quote_symbol`
+  - `dex`
+  - `protocol`
+  - `pool_type`
+  - `enabled`
+  - `priority`
+  - 可选：`placeholder` / `note`
+- 可直接参考 `data/lp_pools.example.json`
+- placeholder 地址必须保持 `enabled=false`；coverage validator 会把 `placeholder_enabled` 当成 malformed entry
 
 CLMM replay fixture 分两层：
 - `app/test_fixtures/clmm/` 是 normalized replay，直接对齐 parser 当前稳定输入接口
@@ -71,6 +85,12 @@ majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
 - 本地扩 `data/lp_pools.json` 时优先补 `ETH / BTC / SOL` 对 `USDT / USDC` 主池
 - 下一轮研究采样明确优先补 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC`，以及更多已验证的 `ETH` 主池
+- `python -m app.quality_reports --major-pool-coverage` 现在会额外输出：
+  - `covered_major_pairs`
+  - `missing_major_pairs`
+  - `configured_but_disabled_major_pools`
+  - `malformed_major_pool_entries`
+  - `recommended_local_config_actions`
 - 先不扩 long-tail 的原因：
   - 当前 outcome / quality / market context 样本仍主要集中在 majors
   - 先把 majors 的 `prealert -> confirm`、confirm scope、reversal / exhaustion 统计做稳更有价值

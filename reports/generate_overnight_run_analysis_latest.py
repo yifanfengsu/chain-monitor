@@ -155,6 +155,10 @@ def direction_bucket(intent_type: str | None) -> str:
 
 
 def aligned_move(row: dict[str, Any], field: str) -> float | None:
+    suffix = field.replace("move_after_alert_", "")
+    adjusted_value = to_float(row.get(f"direction_adjusted_move_after_{suffix}"))
+    if adjusted_value is not None:
+        return round(adjusted_value, 6)
     value = to_float(row.get(field))
     if value is None:
         return None
@@ -164,6 +168,10 @@ def aligned_move(row: dict[str, Any], field: str) -> float | None:
 
 
 def adverse_move(row: dict[str, Any], field: str) -> bool | None:
+    suffix = field.replace("move_after_alert_", "")
+    explicit = row.get(f"adverse_by_direction_{suffix}")
+    if explicit is not None:
+        return bool(explicit)
     value = to_float(row.get(field))
     if value is None:
         return None
@@ -287,6 +295,14 @@ def inventory_ndjson(path: Path, notes: str) -> FileInventory:
     return FileInventory(str(path.relative_to(ROOT)), True, count, start_ts, end_ts, notes)
 
 
+def inventory_category(category: str, notes: str) -> list[FileInventory]:
+    root = ARCHIVE_DIR / category
+    paths = sorted(root.glob("*.ndjson"))
+    if not paths:
+        return [FileInventory(str((root / "*.ndjson").relative_to(ROOT)), False, 0, None, None, notes)]
+    return [inventory_ndjson(path, notes) for path in paths]
+
+
 def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
     rows: list[dict[str, Any]] = []
     inventory: list[FileInventory] = []
@@ -335,6 +351,16 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                     "market_context_attempts": mc_attempts if isinstance(mc_attempts, list) else [],
                     "market_context_attempted_venues": list(first_value(data, "market_context_attempted_venues") or []),
                     "outcome_tracking_key": str(first_value(data, "outcome_tracking_key") or ""),
+                    "lp_prealert_candidate": bool(first_value(data, "lp_prealert_candidate")),
+                    "lp_prealert_candidate_reason": str(first_value(data, "lp_prealert_candidate_reason") or ""),
+                    "lp_prealert_gate_passed": bool(first_value(data, "lp_prealert_gate_passed")),
+                    "lp_prealert_gate_fail_reason": str(first_value(data, "lp_prealert_gate_fail_reason") or ""),
+                    "lp_prealert_delivery_allowed": first_value(data, "lp_prealert_delivery_allowed"),
+                    "lp_prealert_delivery_block_reason": str(first_value(data, "lp_prealert_delivery_block_reason") or ""),
+                    "lp_prealert_asset_case_preserved": first_value(data, "lp_prealert_asset_case_preserved"),
+                    "lp_prealert_stage_overwritten": first_value(data, "lp_prealert_stage_overwritten"),
+                    "lp_prealert_first_leg": bool(first_value(data, "lp_prealert_first_leg")),
+                    "lp_prealert_major_override_used": bool(first_value(data, "lp_prealert_major_override_used")),
                     "lp_confirm_quality": str(first_value(data, "lp_confirm_quality") or ""),
                     "lp_confirm_scope": str(first_value(data, "lp_confirm_scope") or ""),
                     "lp_confirm_reason": str(first_value(data, "lp_confirm_reason") or ""),
@@ -364,6 +390,21 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                     "market_move_before_alert_60s": to_float(first_value(data, "market_move_before_alert_60s")),
                     "market_move_after_alert_60s": to_float(first_value(data, "market_move_after_alert_60s")),
                     "market_move_after_alert_300s": to_float(first_value(data, "market_move_after_alert_300s")),
+                    "move_after_alert_30s": to_float(first_value(data, "move_after_alert_30s")),
+                    "move_after_alert_60s": to_float(first_value(data, "move_after_alert_60s")),
+                    "move_after_alert_300s": to_float(first_value(data, "move_after_alert_300s")),
+                    "raw_move_after_30s": to_float(first_value(data, "raw_move_after_30s")),
+                    "raw_move_after_60s": to_float(first_value(data, "raw_move_after_60s")),
+                    "raw_move_after_300s": to_float(first_value(data, "raw_move_after_300s")),
+                    "direction_adjusted_move_after_30s": to_float(first_value(data, "direction_adjusted_move_after_30s")),
+                    "direction_adjusted_move_after_60s": to_float(first_value(data, "direction_adjusted_move_after_60s")),
+                    "direction_adjusted_move_after_300s": to_float(first_value(data, "direction_adjusted_move_after_300s")),
+                    "adverse_by_direction_30s": first_value(data, "adverse_by_direction_30s"),
+                    "adverse_by_direction_60s": first_value(data, "adverse_by_direction_60s"),
+                    "adverse_by_direction_300s": first_value(data, "adverse_by_direction_300s"),
+                    "outcome_windows": first_value(data, "outcome_windows") or {},
+                    "asset_case_had_prealert": bool(first_value(data, "asset_case_had_prealert")),
+                    "asset_case_prealert_to_confirm_sec": to_int(first_value(data, "asset_case_prealert_to_confirm_sec")),
                     "outcome_record": outcome_record if isinstance(outcome_record, dict) else {},
                     "top_level_stage_present": non_empty(data.get("lp_alert_stage")),
                     "nested_stage_present": non_empty(data.get("signal", {}).get("context", {}).get("lp_alert_stage")),
@@ -505,8 +546,19 @@ def join_lp_rows(
         )
         merged["move_before_alert_30s"] = to_float(quality.get("move_before_alert_30s"))
         merged["move_before_alert_60s"] = to_float(quality.get("move_before_alert_60s"))
-        merged["move_after_alert_60s"] = to_float(quality.get("move_after_alert_60s"))
-        merged["move_after_alert_300s"] = to_float(quality.get("move_after_alert_300s"))
+        merged["move_after_alert_30s"] = to_float(quality.get("move_after_alert_30s")) if to_float(quality.get("move_after_alert_30s")) is not None else row.get("move_after_alert_30s")
+        merged["move_after_alert_60s"] = to_float(quality.get("move_after_alert_60s")) if to_float(quality.get("move_after_alert_60s")) is not None else row.get("move_after_alert_60s")
+        merged["move_after_alert_300s"] = to_float(quality.get("move_after_alert_300s")) if to_float(quality.get("move_after_alert_300s")) is not None else row.get("move_after_alert_300s")
+        merged["raw_move_after_30s"] = to_float(quality.get("raw_move_after_30s")) if to_float(quality.get("raw_move_after_30s")) is not None else row.get("raw_move_after_30s")
+        merged["raw_move_after_60s"] = to_float(quality.get("raw_move_after_60s")) if to_float(quality.get("raw_move_after_60s")) is not None else row.get("raw_move_after_60s")
+        merged["raw_move_after_300s"] = to_float(quality.get("raw_move_after_300s")) if to_float(quality.get("raw_move_after_300s")) is not None else row.get("raw_move_after_300s")
+        merged["direction_adjusted_move_after_30s"] = to_float(quality.get("direction_adjusted_move_after_30s")) if to_float(quality.get("direction_adjusted_move_after_30s")) is not None else row.get("direction_adjusted_move_after_30s")
+        merged["direction_adjusted_move_after_60s"] = to_float(quality.get("direction_adjusted_move_after_60s")) if to_float(quality.get("direction_adjusted_move_after_60s")) is not None else row.get("direction_adjusted_move_after_60s")
+        merged["direction_adjusted_move_after_300s"] = to_float(quality.get("direction_adjusted_move_after_300s")) if to_float(quality.get("direction_adjusted_move_after_300s")) is not None else row.get("direction_adjusted_move_after_300s")
+        merged["adverse_by_direction_30s"] = quality.get("adverse_by_direction_30s") if quality.get("adverse_by_direction_30s") is not None else row.get("adverse_by_direction_30s")
+        merged["adverse_by_direction_60s"] = quality.get("adverse_by_direction_60s") if quality.get("adverse_by_direction_60s") is not None else row.get("adverse_by_direction_60s")
+        merged["adverse_by_direction_300s"] = quality.get("adverse_by_direction_300s") if quality.get("adverse_by_direction_300s") is not None else row.get("adverse_by_direction_300s")
+        merged["outcome_windows"] = quality.get("outcome_windows") if quality.get("outcome_windows") else row.get("outcome_windows")
         merged["confirm_after_prealert"] = quality.get("confirm_after_prealert")
         merged["time_to_confirm"] = to_int(quality.get("time_to_confirm"))
         merged["false_prealert"] = quality.get("false_prealert")
@@ -556,6 +608,66 @@ def join_lp_rows(
         )
         merged["market_context_source"] = str(
             row.get("market_context_source") or quality.get("market_context_source") or ""
+        )
+        merged["lp_prealert_candidate"] = bool(
+            quality.get("lp_prealert_candidate")
+            if quality and quality.get("lp_prealert_candidate") is not None
+            else row.get("lp_prealert_candidate")
+        )
+        merged["lp_prealert_candidate_reason"] = str(
+            quality.get("lp_prealert_candidate_reason")
+            or row.get("lp_prealert_candidate_reason")
+            or ""
+        )
+        merged["lp_prealert_gate_passed"] = bool(
+            quality.get("lp_prealert_gate_passed")
+            if quality and quality.get("lp_prealert_gate_passed") is not None
+            else row.get("lp_prealert_gate_passed")
+        )
+        merged["lp_prealert_gate_fail_reason"] = str(
+            quality.get("lp_prealert_gate_fail_reason")
+            or row.get("lp_prealert_gate_fail_reason")
+            or ""
+        )
+        merged["lp_prealert_delivery_allowed"] = (
+            quality.get("lp_prealert_delivery_allowed")
+            if quality and quality.get("lp_prealert_delivery_allowed") is not None
+            else row.get("lp_prealert_delivery_allowed")
+        )
+        merged["lp_prealert_delivery_block_reason"] = str(
+            quality.get("lp_prealert_delivery_block_reason")
+            or row.get("lp_prealert_delivery_block_reason")
+            or ""
+        )
+        merged["lp_prealert_asset_case_preserved"] = (
+            quality.get("lp_prealert_asset_case_preserved")
+            if quality and quality.get("lp_prealert_asset_case_preserved") is not None
+            else row.get("lp_prealert_asset_case_preserved")
+        )
+        merged["lp_prealert_stage_overwritten"] = (
+            quality.get("lp_prealert_stage_overwritten")
+            if quality and quality.get("lp_prealert_stage_overwritten") is not None
+            else row.get("lp_prealert_stage_overwritten")
+        )
+        merged["lp_prealert_first_leg"] = bool(
+            quality.get("lp_prealert_first_leg")
+            if quality and quality.get("lp_prealert_first_leg") is not None
+            else row.get("lp_prealert_first_leg")
+        )
+        merged["lp_prealert_major_override_used"] = bool(
+            quality.get("lp_prealert_major_override_used")
+            if quality and quality.get("lp_prealert_major_override_used") is not None
+            else row.get("lp_prealert_major_override_used")
+        )
+        merged["asset_case_had_prealert"] = bool(
+            quality.get("asset_case_had_prealert")
+            if quality and quality.get("asset_case_had_prealert") is not None
+            else row.get("asset_case_had_prealert")
+        )
+        merged["asset_case_prealert_to_confirm_sec"] = to_int(
+            quality.get("asset_case_prealert_to_confirm_sec")
+            if quality and quality.get("asset_case_prealert_to_confirm_sec") is not None
+            else row.get("asset_case_prealert_to_confirm_sec")
         )
         merged["lp_confirm_quality"] = str(
             row.get("lp_confirm_quality") or quality.get("lp_confirm_quality") or ""
@@ -821,6 +933,17 @@ def compute_market_context(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def compute_prealerts(lp_rows: list[dict[str, Any]], major_pairs: set[str], full_cli_summary: dict[str, Any]) -> dict[str, Any]:
     rows = [row for row in lp_rows if row.get("lp_alert_stage") == "prealert"]
+    candidate_rows = [row for row in lp_rows if row.get("lp_prealert_candidate")]
+    gate_passed_rows = [row for row in lp_rows if row.get("lp_prealert_gate_passed")]
+    delivered_rows = [
+        row for row in lp_rows
+        if row.get("lp_prealert_gate_passed")
+        and row.get("lp_alert_stage") == "prealert"
+        and (row.get("lp_prealert_delivery_allowed") is True)
+        and (row.get("sent_to_telegram") or row.get("notifier_sent_at"))
+    ]
+    merged_rows = [row for row in lp_rows if row.get("lp_prealert_asset_case_preserved")]
+    upgraded_rows = [row for row in lp_rows if row.get("asset_case_had_prealert") and row.get("asset_case_prealert_to_confirm_sec") is not None]
     major_count = sum(1 for row in rows if row.get("pair_label") in major_pairs)
     non_major_count = len(rows) - major_count
     by_case: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -852,10 +975,21 @@ def compute_prealerts(lp_rows: list[dict[str, Any]], major_pairs: set[str], full
     previous_prealerts = to_int(
         full_cli_summary.get("overall", {}).get("prealert_count")
     )
+    block_reason_counter = Counter(
+        str(row.get("lp_prealert_delivery_block_reason") or row.get("lp_prealert_gate_fail_reason") or "")
+        for row in candidate_rows
+        if str(row.get("lp_prealert_delivery_block_reason") or row.get("lp_prealert_gate_fail_reason") or "").strip()
+    )
     return {
         "prealert_count": len(rows),
         "major_prealert_count": major_count,
         "non_major_prealert_count": non_major_count,
+        "prealert_candidates": len(candidate_rows),
+        "prealert_gate_passed_count": len(gate_passed_rows),
+        "prealert_delivered_count": len(delivered_rows),
+        "prealert_merged_into_case_count": len(merged_rows),
+        "prealert_upgraded_to_confirm_count": len(upgraded_rows),
+        "prealert_dropped_by_reason": dict(block_reason_counter),
         "prealert_to_confirm_30s": rate(conversions[30], len(rows)),
         "prealert_to_confirm_60s": rate(conversions[60], len(rows)),
         "prealert_to_confirm_90s": rate(conversions[90], len(rows)),
@@ -1042,14 +1176,16 @@ def compute_reversal_special(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "sell_confirm_count": len(sell_rows),
         "buy_confirm_count": len(buy_rows),
-        "sell_after_30s_exact_ratio": None,
-        "sell_after_60s_rise_ratio": rate(0, 0),
+        "sell_after_30s_rise_ratio": summarize(sell_rows, "move_after_alert_30s")["against_rate"],
+        "sell_after_60s_rise_ratio": summarize(sell_rows, "move_after_alert_60s")["against_rate"],
         "sell_after_300s_rise_ratio": summarize(sell_rows, "move_after_alert_300s")["against_rate"],
-        "buy_after_30s_exact_ratio": None,
-        "buy_after_60s_fall_ratio": rate(0, 0),
+        "buy_after_30s_fall_ratio": summarize(buy_rows, "move_after_alert_30s")["against_rate"],
+        "buy_after_60s_fall_ratio": summarize(buy_rows, "move_after_alert_60s")["against_rate"],
         "buy_after_300s_fall_ratio": summarize(buy_rows, "move_after_alert_300s")["against_rate"],
+        "sell_after_30s": summarize(sell_rows, "move_after_alert_30s"),
         "sell_after_60s": summarize(sell_rows, "move_after_alert_60s"),
         "sell_after_300s": summarize(sell_rows, "move_after_alert_300s"),
+        "buy_after_30s": summarize(buy_rows, "move_after_alert_30s"),
         "buy_after_60s": summarize(buy_rows, "move_after_alert_60s"),
         "buy_after_300s": summarize(buy_rows, "move_after_alert_300s"),
         "reason_distribution": dict(reason_counter),
@@ -1071,7 +1207,14 @@ def compute_majors(
     asset_counter = Counter(canonical_asset(row.get("asset_symbol")) for row in lp_rows)
     covered = [pair for pair in expected_pairs if pair_counter.get(pair, 0) > 0]
     missing = [pair for pair in expected_pairs if pair_counter.get(pair, 0) == 0]
-    missing_reason = "pool_book_missing" if major_cli.get("missing_expected_pairs") else "unknown"
+    if major_cli.get("configured_but_disabled_major_pools"):
+        missing_reason = "configured_but_disabled_pool"
+    elif major_cli.get("malformed_major_pool_entries"):
+        missing_reason = "malformed_pool_book_entry"
+    elif major_cli.get("missing_major_pairs") or major_cli.get("missing_expected_pairs"):
+        missing_reason = "pool_book_missing"
+    else:
+        missing_reason = "scan_unmatched_or_no_event"
     return {
         "covered_major_pairs": covered,
         "missing_major_pairs": missing,
@@ -1136,16 +1279,31 @@ def compute_quality_and_fastlane(
     quality_cli: dict[str, Any],
 ) -> dict[str, Any]:
     promoted_rows = [row for row in lp_rows if row.get("raw", {}).get("signal", {}).get("context", {}).get("lp_promoted_fastlane")]
-    outcome_300_resolved = sum(1 for row in lp_rows if to_float(row.get("move_after_alert_300s")) is not None)
-    outcome_60_resolved = sum(1 for row in lp_rows if to_float(row.get("move_after_alert_60s")) is not None)
+    outcome_status = {
+        "30s": Counter(),
+        "60s": Counter(),
+        "300s": Counter(),
+    }
+    for row in lp_rows:
+        windows = row.get("outcome_windows") if isinstance(row.get("outcome_windows"), dict) else {}
+        for window in ("30s", "60s", "300s"):
+            status = str((windows.get(window) or {}).get("status") or "")
+            if not status:
+                status = "completed" if to_float(row.get(f"move_after_alert_{window}")) is not None else "pending"
+            outcome_status[window][status] += 1
     return {
         "full_summary_cli": quality_cli,
         "fastlane_promoted_count_window": len(promoted_rows),
         "fastlane_promoted_delivered_count_window": sum(
             1 for row in promoted_rows if row.get("delivered_notification")
         ),
-        "resolved_move_after_60s_count_window": outcome_60_resolved,
-        "resolved_move_after_300s_count_window": outcome_300_resolved,
+        "outcome_window_status": {
+            window: dict(counter)
+            for window, counter in outcome_status.items()
+        },
+        "resolved_move_after_30s_count_window": outcome_status["30s"].get("completed", 0),
+        "resolved_move_after_60s_count_window": outcome_status["60s"].get("completed", 0),
+        "resolved_move_after_300s_count_window": outcome_status["300s"].get("completed", 0),
     }
 
 
@@ -1250,6 +1408,7 @@ def build_csv_rows(
     majors: dict[str, Any],
     archive_integrity: dict[str, Any],
     scores: dict[str, Any],
+    quality_and_fastlane: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     window_label = f"{fmt_ts(window['start_ts'])} -> {fmt_ts(window['end_ts'])}"
@@ -1288,6 +1447,17 @@ def build_csv_rows(
         add_metric(rows, "archive", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
     for key, value in scores.items():
         add_metric(rows, "score", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for window_name, status_counts in (quality_and_fastlane or {}).get("outcome_window_status", {}).items():
+        for status_name, count in status_counts.items():
+            add_metric(
+                rows,
+                "outcome_window",
+                f"{window_name}_{status_name}",
+                count,
+                sample_size=run_overview["lp_signal_rows"],
+                window=window_label,
+                notes="window outcome status count",
+            )
     return rows
 
 
@@ -1332,6 +1502,8 @@ def build_markdown(
     scores: dict[str, Any],
 ) -> str:
     lines: list[str] = []
+    raw_present = any(item.exists and "raw_events/" in item.path for item in data_sources)
+    parsed_present = any(item.exists and "parsed_events/" in item.path for item in data_sources)
     lines.append("# Overnight Run Analysis")
     lines.append("")
     lines.append("## 1. 执行摘要")
@@ -1340,16 +1512,16 @@ def build_markdown(
         f"- 主窗口为 `{fmt_ts(window['start_ts'])}` 到 `{fmt_ts(window['end_ts'])}`，持续 `{window['duration_hours']}h`。"
     )
     lines.append(
-        f"- 主窗口共 `107` 条 signals，其中 LP stage rows `68`、已送达 LP 消息 `55`、asset cases `54`、case followups `55`。"
+        f"- 主窗口共 `{run_overview['total_signal_rows']}` 条 signals，其中 LP stage rows `{run_overview['lp_signal_rows']}`、已送达 LP 消息 `{run_overview['delivered_lp_signals']}`、asset cases `{run_overview['asset_case_count']}`、case followups `{run_overview['case_followup_count']}`。"
     )
     lines.append(
-        f"- OKX live context 在主窗口 `68/68` 命中，`kraken_futures` 未被触发；`ETHUSDC -> ETH-USDT-SWAP` fallback 真实命中 `30` 次。"
+        f"- OKX live context 在主窗口 `live_public={market_context['live_public_count']}/{run_overview['lp_signal_rows']}`；`kraken_futures` attempts=`{market_context['kraken_attempts']}`。"
     )
     lines.append(
-        f"- prealert 在主窗口仍为 `0`，所以这轮采样的主要改善来自 live context 与语义诚实度，不来自更早预警。"
+        f"- prealert 在主窗口为 `{prealerts['prealert_count']}`，候选 funnel 为 `candidates={prealerts.get('prealert_candidates')}` `gate_passed={prealerts.get('prealert_gate_passed_count')}` `delivered={prealerts.get('prealert_delivered_count')}`。"
     )
     lines.append(
-        f"- `sweep_building` 样本 `14` 条，显示层残留 `climax/高潮` 为 `0`，该硬要求通过。"
+        f"- `sweep_building` 样本 `{sweeps['sweep_building_count']}` 条，显示层残留 `climax/高潮` 为 `{sweeps['sweep_building_display_climax_residual_count']}`。"
     )
     lines.append(
         f"- majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。"
@@ -1362,8 +1534,12 @@ def build_markdown(
             f"- `{item.path}`: exists=`{item.exists}` records=`{item.record_count}` "
             f"range=`{fmt_ts(item.start_ts)} -> {fmt_ts(item.end_ts)}` note=`{item.notes}`"
         )
-    lines.append("- 缺失：`raw_events`、`parsed_events`。影响：不能把 BTC/SOL 无样本严格拆分成 scan 未命中 vs 夜里无事件。")
-    lines.append("- 缺失：`after-alert 30s` 与主窗口可用的 `after-alert 60s` 数值回写很稀疏。影响：反向 K 线专题只能对 `300s` 做可信定量，`30s/60s` 只能明确标记缺失。")
+    lines.append(
+        f"- raw/parsed archive presence: `raw_events={raw_present}` `parsed_events={parsed_present}`。"
+    )
+    lines.append(
+        f"- outcome windows: `{quality_and_fastlane.get('outcome_window_status')}`。"
+    )
     lines.append("")
     lines.append("## 3. overnight 分析窗口")
     lines.append("")
@@ -1480,10 +1656,10 @@ def build_markdown(
     lines.append("## 10. “卖压后涨 / 买压后跌”反例专项")
     lines.append("")
     lines.append(f"- `sell_confirm_count={reversal['sell_confirm_count']}` `buy_confirm_count={reversal['buy_confirm_count']}`")
-    lines.append(f"- `sell_after_30s_exact_ratio={reversal['sell_after_30s_exact_ratio']}`")
+    lines.append(f"- `sell_after_30s_rise_ratio={reversal['sell_after_30s_rise_ratio']}`")
     lines.append(f"- `sell_after_60s={reversal['sell_after_60s']}`")
     lines.append(f"- `sell_after_300s={reversal['sell_after_300s']}`")
-    lines.append(f"- `buy_after_30s_exact_ratio={reversal['buy_after_30s_exact_ratio']}`")
+    lines.append(f"- `buy_after_30s_fall_ratio={reversal['buy_after_30s_fall_ratio']}`")
     lines.append(f"- `buy_after_60s={reversal['buy_after_60s']}`")
     lines.append(f"- `buy_after_300s={reversal['buy_after_300s']}`")
     lines.append(f"- `reason_distribution={reversal['reason_distribution']}`")
@@ -1539,8 +1715,12 @@ def build_markdown(
     lines.append("## 17. 限制与不确定性")
     lines.append("")
     lines.append("- 本报告严格使用主窗口数据；主窗口之外的白天/下午样本只用于附录和 CLI 对照。")
-    lines.append("- `raw_events`/`parsed_events` 缺失，所以无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。")
-    lines.append("- `30s` 精确价格后效字段缺失，`60s` 字段在主窗口也几乎没有 resolved 样本，因此相关结论必须保守。")
+    lines.append(
+        f"- `raw_events`/`parsed_events` availability = `raw:{raw_present}` `parsed:{parsed_present}`；若缺失，就无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。"
+    )
+    lines.append(
+        f"- outcome window status = `{quality_and_fastlane.get('outcome_window_status')}`；若 `30s/60s` completed 仍少，相关结论必须保守。"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -1590,8 +1770,8 @@ def main() -> int:
         delivered_signal_ids,
     )
 
-    raw_events_inventory = inventory_ndjson(ARCHIVE_DIR / "raw_events" / "2026-04-18.ndjson", "raw events archive")
-    parsed_events_inventory = inventory_ndjson(ARCHIVE_DIR / "parsed_events" / "2026-04-18.ndjson", "parsed events archive")
+    raw_events_inventory = inventory_category("raw_events", "raw events archive")
+    parsed_events_inventory = inventory_category("parsed_events", "parsed events archive")
 
     cli_market_context = run_cli(["--market-context-health"], expect_json=True)
     cli_major_pool_coverage = run_cli(["--major-pool-coverage"], expect_json=True)
@@ -1609,6 +1789,15 @@ def main() -> int:
         "asset_case_count": len({row.get("asset_case_id") for row in lp_rows_window if row.get("asset_case_id")}),
         "case_followup_count": followup_summary["followup_rows"],
     }
+    if run_overview["asset_case_count"]:
+        run_overview["compression_ratio"] = round(
+            float(run_overview["lp_signal_rows"]) / float(run_overview["asset_case_count"]),
+            4,
+        )
+        run_overview["avg_signals_per_case"] = run_overview["compression_ratio"]
+    else:
+        run_overview["compression_ratio"] = None
+        run_overview["avg_signals_per_case"] = None
     stage_stats = stage_distribution(lp_rows_window)
     market_context = compute_market_context(lp_rows_window)
     prealerts = compute_prealerts(lp_rows_window, expected_major_pairs, cli_summary)
@@ -1623,8 +1812,8 @@ def main() -> int:
     scores = scorecard(market_context, prealerts, confirm, sweeps, majors, archive, noise)
 
     data_sources = [
-        raw_events_inventory,
-        parsed_events_inventory,
+        *raw_events_inventory,
+        *parsed_events_inventory,
         *signal_inventory,
         *cases_inventory,
         *followup_inventory,
@@ -1673,6 +1862,7 @@ def main() -> int:
         majors,
         archive,
         scores,
+        quality_and_fastlane,
     )
     write_csv(CSV_PATH, csv_rows)
 

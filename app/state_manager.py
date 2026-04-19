@@ -428,8 +428,24 @@ class StateManager:
             "move_before_alert_30s": round(float(move_before_30s or 0.0), 6),
             "move_before_alert_60s": round(float(move_before_60s or 0.0), 6),
             "move_after_alert": 0.0,
+            "move_after_alert_30s": None,
             "move_after_alert_60s": None,
             "move_after_alert_300s": None,
+            "raw_move_after_30s": None,
+            "raw_move_after_60s": None,
+            "raw_move_after_300s": None,
+            "direction_adjusted_move_after_30s": None,
+            "direction_adjusted_move_after_60s": None,
+            "direction_adjusted_move_after_300s": None,
+            "adverse_by_direction_30s": None,
+            "adverse_by_direction_60s": None,
+            "adverse_by_direction_300s": None,
+            "outcome_price_source": "pool_quote_proxy" if price_proxy > 0 else "unavailable",
+            "outcome_windows": self._init_lp_outcome_windows(
+                anchor_price=price_proxy,
+                price_source="pool_quote_proxy",
+                created_at=created_at,
+            ),
             "asset_case_id": str(
                 getattr(signal, "context", {}).get("asset_case_id")
                 or getattr(signal, "metadata", {}).get("asset_case_id")
@@ -555,6 +571,65 @@ class StateManager:
                 "market_move_after_alert_300s",
                 event.metadata.get("market_move_after_alert_300s"),
             ),
+            "lp_prealert_candidate": bool(
+                getattr(signal, "context", {}).get("lp_prealert_candidate")
+                or getattr(signal, "metadata", {}).get("lp_prealert_candidate")
+                or event.metadata.get("lp_prealert_candidate")
+            ),
+            "lp_prealert_candidate_reason": str(
+                getattr(signal, "context", {}).get("lp_prealert_candidate_reason")
+                or getattr(signal, "metadata", {}).get("lp_prealert_candidate_reason")
+                or event.metadata.get("lp_prealert_candidate_reason")
+                or ""
+            ),
+            "lp_prealert_gate_passed": bool(
+                getattr(signal, "context", {}).get("lp_prealert_gate_passed")
+                or getattr(signal, "metadata", {}).get("lp_prealert_gate_passed")
+                or event.metadata.get("lp_prealert_gate_passed")
+            ),
+            "lp_prealert_gate_fail_reason": str(
+                getattr(signal, "context", {}).get("lp_prealert_gate_fail_reason")
+                or getattr(signal, "metadata", {}).get("lp_prealert_gate_fail_reason")
+                or event.metadata.get("lp_prealert_gate_fail_reason")
+                or ""
+            ),
+            "lp_prealert_delivery_allowed": getattr(signal, "context", {}).get(
+                "lp_prealert_delivery_allowed",
+                getattr(signal, "metadata", {}).get(
+                    "lp_prealert_delivery_allowed",
+                    event.metadata.get("lp_prealert_delivery_allowed"),
+                ),
+            ),
+            "lp_prealert_delivery_block_reason": str(
+                getattr(signal, "context", {}).get("lp_prealert_delivery_block_reason")
+                or getattr(signal, "metadata", {}).get("lp_prealert_delivery_block_reason")
+                or event.metadata.get("lp_prealert_delivery_block_reason")
+                or ""
+            ),
+            "lp_prealert_asset_case_preserved": getattr(signal, "context", {}).get(
+                "lp_prealert_asset_case_preserved",
+                getattr(signal, "metadata", {}).get(
+                    "lp_prealert_asset_case_preserved",
+                    event.metadata.get("lp_prealert_asset_case_preserved"),
+                ),
+            ),
+            "lp_prealert_stage_overwritten": getattr(signal, "context", {}).get(
+                "lp_prealert_stage_overwritten",
+                getattr(signal, "metadata", {}).get(
+                    "lp_prealert_stage_overwritten",
+                    event.metadata.get("lp_prealert_stage_overwritten"),
+                ),
+            ),
+            "lp_prealert_first_leg": bool(
+                getattr(signal, "context", {}).get("lp_prealert_first_leg")
+                or getattr(signal, "metadata", {}).get("lp_prealert_first_leg")
+                or event.metadata.get("lp_prealert_first_leg")
+            ),
+            "lp_prealert_major_override_used": bool(
+                getattr(signal, "context", {}).get("lp_prealert_major_override_used")
+                or getattr(signal, "metadata", {}).get("lp_prealert_major_override_used")
+                or event.metadata.get("lp_prealert_major_override_used")
+            ),
             "lp_promoted_fastlane": bool(
                 getattr(signal, "context", {}).get("lp_promoted_fastlane")
                 or getattr(signal, "metadata", {}).get("lp_promoted_fastlane")
@@ -606,6 +681,31 @@ class StateManager:
         if limit <= 0:
             return []
         return [dict(item) for item in list(self._lp_outcome_history)[-limit:]]
+
+    def restore_lp_outcome_records(self, records: list[dict] | None) -> int:
+        restored = 0
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            record_id = str(record.get("record_id") or "").strip()
+            if not record_id:
+                continue
+            normalized = dict(record)
+            current = self._lp_outcome_records.get(record_id)
+            if current == normalized:
+                continue
+            self._lp_outcome_records[record_id] = normalized
+            restored += 1
+        if restored:
+            ordered = sorted(
+                self._lp_outcome_records.values(),
+                key=lambda item: (
+                    int(item.get("created_at") or 0),
+                    str(item.get("record_id") or ""),
+                ),
+            )
+            self._lp_outcome_history = deque(ordered[-1500:], maxlen=1500)
+        return restored
 
     def can_emit_signal(self, address: str, now_ts: int, cooldown_sec: int) -> bool:
         addr = (address or "").lower()
@@ -1950,27 +2050,40 @@ class StateManager:
                 continue
             age_sec = created_at - previous_ts
             if age_sec > 300:
+                self._expire_lp_outcome_windows(payload, created_at=created_at)
                 continue
 
             anchor_price = float(payload.get("anchor_price_proxy") or 0.0)
             if anchor_price > 0 and price_proxy > 0:
                 move_after = (float(price_proxy) / anchor_price) - 1.0
                 payload["move_after_alert"] = round(float(move_after), 6)
-                if age_sec <= 60:
-                    payload["move_after_alert_60s"] = round(float(move_after), 6)
-                payload["move_after_alert_300s"] = round(float(move_after), 6)
-                same_direction = (
-                    (str(payload.get("direction_bucket") or "") == "buy_pressure" and move_after > 0)
-                    or (str(payload.get("direction_bucket") or "") == "sell_pressure" and move_after < 0)
-                )
-                if same_direction and abs(move_after) >= 0.002:
-                    payload["followthrough_positive"] = True
-                    if payload.get("followthrough_negative") is None:
-                        payload["followthrough_negative"] = False
-                elif abs(move_after) >= 0.002:
-                    payload["followthrough_negative"] = True
-                    if payload.get("followthrough_positive") is None:
-                        payload["followthrough_positive"] = False
+                for window_sec in (30, 60, 300):
+                    if age_sec >= window_sec:
+                        self._complete_lp_outcome_window(
+                            payload,
+                            window_sec=window_sec,
+                            move_after=move_after,
+                            completed_at=created_at,
+                            price_source="pool_quote_proxy",
+                        )
+                follow_move = self._window_value(payload, 30, "direction_adjusted_move_after")
+                if follow_move is None:
+                    follow_move = self._window_value(payload, 60, "direction_adjusted_move_after")
+                if follow_move is None:
+                    follow_move = self._window_value(payload, 300, "direction_adjusted_move_after")
+                if follow_move is not None and abs(float(follow_move)) >= 0.002:
+                    payload["followthrough_positive"] = bool(float(follow_move) > 0)
+                    payload["followthrough_negative"] = bool(float(follow_move) < 0)
+            elif price_proxy <= 0:
+                for window_sec in (30, 60, 300):
+                    if age_sec >= window_sec:
+                        self._mark_lp_outcome_window_unavailable(
+                            payload,
+                            window_sec=window_sec,
+                            completed_at=created_at,
+                            reason="price_proxy_unavailable",
+                            price_source="unavailable",
+                        )
 
             previous_stage = str(payload.get("lp_alert_stage") or "")
             previous_direction = str(payload.get("direction_bucket") or "")
@@ -1986,6 +2099,139 @@ class StateManager:
                 or (previous_direction and direction and previous_direction != direction)
             ):
                 payload["reversal_after_climax"] = True
+
+    def _init_lp_outcome_windows(self, *, anchor_price: float, price_source: str, created_at: int) -> dict:
+        windows: dict[str, dict] = {}
+        for window_sec in (30, 60, 300):
+            windows[f"{window_sec}s"] = {
+                "status": "pending" if anchor_price > 0 else "unavailable",
+                "window_sec": int(window_sec),
+                "raw_move_after": None,
+                "direction_adjusted_move_after": None,
+                "followthrough_positive": None,
+                "followthrough_negative": None,
+                "reversal": None,
+                "adverse_by_direction": None,
+                "price_source": str(price_source or "pool_quote_proxy"),
+                "completed_at": None if anchor_price > 0 else int(created_at),
+                "failure_reason": "" if anchor_price > 0 else "anchor_price_unavailable",
+            }
+        return windows
+
+    def _window_value(self, payload: dict, window_sec: int, field: str):
+        windows = payload.get("outcome_windows") if isinstance(payload.get("outcome_windows"), dict) else {}
+        window = windows.get(f"{int(window_sec)}s") if isinstance(windows, dict) else {}
+        if isinstance(window, dict):
+            return window.get(field)
+        return None
+
+    def _direction_adjusted_move(self, move_after: float, direction_bucket: str | None) -> float | None:
+        try:
+            numeric_move = float(move_after)
+        except (TypeError, ValueError):
+            return None
+        bucket = str(direction_bucket or "")
+        if bucket == "sell_pressure":
+            return -numeric_move
+        if bucket == "buy_pressure":
+            return numeric_move
+        return None
+
+    def _adverse_by_direction(self, move_after: float, direction_bucket: str | None) -> bool | None:
+        try:
+            numeric_move = float(move_after)
+        except (TypeError, ValueError):
+            return None
+        bucket = str(direction_bucket or "")
+        if bucket == "buy_pressure":
+            return numeric_move < 0
+        if bucket == "sell_pressure":
+            return numeric_move > 0
+        return None
+
+    def _complete_lp_outcome_window(
+        self,
+        payload: dict,
+        *,
+        window_sec: int,
+        move_after: float,
+        completed_at: int,
+        price_source: str,
+    ) -> None:
+        windows = payload.setdefault(
+            "outcome_windows",
+            self._init_lp_outcome_windows(anchor_price=1.0, price_source=price_source, created_at=completed_at),
+        )
+        key = f"{int(window_sec)}s"
+        window = dict(windows.get(key) or {})
+        adjusted_move = self._direction_adjusted_move(move_after, payload.get("direction_bucket"))
+        adverse = self._adverse_by_direction(move_after, payload.get("direction_bucket"))
+        raw_move = round(float(move_after), 6)
+        window.update({
+            "status": "completed",
+            "raw_move_after": raw_move,
+            "direction_adjusted_move_after": round(float(adjusted_move), 6) if adjusted_move is not None else None,
+            "followthrough_positive": bool(adjusted_move is not None and adjusted_move > 0.002),
+            "followthrough_negative": bool(adjusted_move is not None and adjusted_move < -0.002),
+            "reversal": bool(adjusted_move is not None and adjusted_move < -0.002),
+            "adverse_by_direction": adverse,
+            "price_source": str(price_source or "pool_quote_proxy"),
+            "completed_at": int(completed_at),
+            "failure_reason": "",
+        })
+        windows[key] = window
+        payload["outcome_windows"] = windows
+        payload[f"move_after_alert_{key}"] = raw_move
+        payload[f"raw_move_after_{key}"] = raw_move
+        payload[f"direction_adjusted_move_after_{key}"] = window.get("direction_adjusted_move_after")
+        payload[f"adverse_by_direction_{key}"] = adverse
+
+    def _mark_lp_outcome_window_unavailable(
+        self,
+        payload: dict,
+        *,
+        window_sec: int,
+        completed_at: int,
+        reason: str,
+        price_source: str,
+    ) -> None:
+        windows = payload.setdefault(
+            "outcome_windows",
+            self._init_lp_outcome_windows(anchor_price=0.0, price_source=price_source, created_at=completed_at),
+        )
+        key = f"{int(window_sec)}s"
+        window = dict(windows.get(key) or {})
+        if str(window.get("status") or "") == "completed":
+            return
+        window.update({
+            "status": "unavailable",
+            "price_source": str(price_source or "unavailable"),
+            "completed_at": int(completed_at),
+            "failure_reason": str(reason or "price_unavailable"),
+        })
+        windows[key] = window
+        payload["outcome_windows"] = windows
+
+    def _expire_lp_outcome_windows(self, payload: dict, *, created_at: int) -> None:
+        windows = payload.setdefault(
+            "outcome_windows",
+            self._init_lp_outcome_windows(anchor_price=0.0, price_source="unavailable", created_at=created_at),
+        )
+        mutated = False
+        for key, window in list(windows.items()):
+            item = dict(window or {})
+            if str(item.get("status") or "") != "pending":
+                continue
+            item.update({
+                "status": "expired",
+                "price_source": str(item.get("price_source") or "pool_quote_proxy"),
+                "completed_at": int(created_at),
+                "failure_reason": "window_elapsed_without_price_update",
+            })
+            windows[key] = item
+            mutated = True
+        if mutated:
+            payload["outcome_windows"] = windows
 
     def _lp_direction_bucket(self, event: Event) -> str:
         intent_type = str(event.intent_type or "")

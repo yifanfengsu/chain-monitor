@@ -145,6 +145,21 @@ def _normalize_priority(value) -> int:
     return priority if priority in (1, 2, 3) else 3
 
 
+def _is_hex_address(value: str | None) -> bool:
+    raw = str(value or "").strip().lower()
+    return bool(raw.startswith("0x") and len(raw) == 42 and all(ch in "0123456789abcdef" for ch in raw[2:]))
+
+
+def is_placeholder_pool_address(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    normalized = raw.lower()
+    if not raw:
+        return True
+    if any(marker in normalized for marker in ("placeholder", "todo", "fill_me", "replace_me", "<", ">")):
+        return True
+    return not _is_hex_address(raw)
+
+
 def _display_symbol(symbol: str | None) -> str:
     normalized = str(symbol or "").upper()
     return "ETH" if normalized == "WETH" else normalized
@@ -171,6 +186,13 @@ def _is_eth_like(token_contract: str | None, token_symbol: str | None) -> bool:
 
 
 def _resolve_base_quote(item: dict) -> tuple[str, str, str, str]:
+    explicit_base_symbol = _display_symbol(item.get("base_symbol"))
+    explicit_quote_symbol = _display_symbol(item.get("quote_symbol"))
+    explicit_base_contract = str(item.get("base_contract") or item.get("base_token_contract") or "").lower()
+    explicit_quote_contract = str(item.get("quote_contract") or item.get("quote_token_contract") or "").lower()
+    if explicit_base_symbol and explicit_quote_symbol:
+        return explicit_base_contract, explicit_base_symbol, explicit_quote_contract, explicit_quote_symbol
+
     token0_contract = str(item.get("token0_contract") or "").lower()
     token1_contract = str(item.get("token1_contract") or "").lower()
     token0_symbol = str(item.get("token0_symbol") or "").upper()
@@ -272,12 +294,14 @@ def classify_trend_pool_meta(meta: dict | None) -> dict:
 
 def _normalize_pool(item: dict) -> dict | None:
     pool_address = str(item.get("pool_address") or "").lower()
-    if not pool_address:
+    if not pool_address or is_placeholder_pool_address(pool_address):
         return None
 
     pair_label = str(item.get("pair_label") or "").strip()
     dex = str(item.get("dex") or "").strip() or "DEX"
     protocol = str(item.get("protocol") or "").strip() or dex.lower().replace(" ", "_")
+    chain = str(item.get("chain") or "ethereum").strip().lower() or "ethereum"
+    pool_type = str(item.get("pool_type") or "spot_lp").strip().lower() or "spot_lp"
     base_contract, base_symbol, quote_contract, quote_symbol = _resolve_base_quote(item)
     trend_context = classify_trend_pool_meta(
         {
@@ -308,8 +332,10 @@ def _normalize_pool(item: dict) -> dict | None:
         "quote_token_symbol": quote_symbol,
         "dex": dex,
         "protocol": protocol,
+        "chain": chain,
+        "pool_type": pool_type,
         "priority": _normalize_priority(item.get("priority", 3)),
-        "is_active": bool(item.get("is_active", True)),
+        "is_active": bool(item.get("enabled", item.get("is_active", True))),
         "category": "lp_pool",
         "category_label": "流动性池",
         "role": "liquidity_pool",
@@ -381,6 +407,130 @@ ACTIVE_EXTENDED_LP_POOL_ADDRESSES = {
     for address in ACTIVE_LP_POOL_ADDRESSES
     if address not in ACTIVE_PRIMARY_TREND_SCAN_LP_POOL_ADDRESSES
 }
+
+
+def normalize_lp_pool_entries(entries: list[dict] | None) -> dict[str, dict]:
+    pools: dict[str, dict] = {}
+    for raw_item in entries or []:
+        normalized = _normalize_pool(raw_item)
+        if normalized is None:
+            continue
+        pools[normalized["pool_address"]] = normalized
+    return pools
+
+
+def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
+    payload = list(entries or LP_POOL_BOOK or [])
+    expected_pairs = []
+    for asset in sorted(MAJOR_BASE_SYMBOLS):
+        if asset not in {"ETH", "BTC", "SOL"}:
+            continue
+        for quote in sorted(MAJOR_QUOTE_SYMBOLS):
+            if quote not in {"USDT", "USDC"}:
+                continue
+            expected_pairs.append(f"{asset}/{quote}")
+
+    covered_major_pairs: set[str] = set()
+    configured_but_disabled_major_pools: list[dict] = []
+    malformed_major_pool_entries: list[dict] = []
+    recommended_local_config_actions: list[str] = []
+
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            malformed_major_pool_entries.append(
+                {
+                    "index": index,
+                    "reason": "entry_not_object",
+                    "pair_label": "",
+                    "pool_address": "",
+                }
+            )
+            continue
+        pool_address = str(item.get("pool_address") or "").strip()
+        enabled = bool(item.get("enabled", item.get("is_active", True)))
+        placeholder = bool(item.get("placeholder")) or is_placeholder_pool_address(pool_address)
+        base_contract, base_symbol, quote_contract, quote_symbol = _resolve_base_quote(item)
+        del base_contract, quote_contract
+        pair_label = normalize_lp_pair_label(item.get("pair_label") or f"{base_symbol}/{quote_symbol}")
+        canonical_pair = ""
+        if base_symbol and quote_symbol:
+            canonical_pair = f"{_canonical_asset_symbol(base_symbol)}/{_normalize_symbol_key(quote_symbol)}"
+        is_major_candidate = canonical_pair in expected_pairs
+        dex = str(item.get("dex") or "").strip()
+        protocol = str(item.get("protocol") or "").strip()
+        chain = str(item.get("chain") or "ethereum").strip().lower() or "ethereum"
+        pool_type = str(item.get("pool_type") or "spot_lp").strip().lower() or "spot_lp"
+        priority = item.get("priority")
+        malformed_reasons = []
+        if not pool_address:
+            malformed_reasons.append("missing_pool_address")
+        elif placeholder and enabled:
+            malformed_reasons.append("placeholder_enabled")
+        elif not placeholder and not _is_hex_address(pool_address):
+            malformed_reasons.append("invalid_pool_address")
+        if not pair_label or "/" not in pair_label:
+            malformed_reasons.append("missing_pair_label")
+        if not base_symbol:
+            malformed_reasons.append("missing_base_symbol")
+        if not quote_symbol:
+            malformed_reasons.append("missing_quote_symbol")
+        if not dex:
+            malformed_reasons.append("missing_dex")
+        if not protocol:
+            malformed_reasons.append("missing_protocol")
+        if priority in (None, ""):
+            malformed_reasons.append("missing_priority")
+        if not chain:
+            malformed_reasons.append("missing_chain")
+        if not pool_type:
+            malformed_reasons.append("missing_pool_type")
+
+        if is_major_candidate and malformed_reasons:
+            malformed_major_pool_entries.append(
+                {
+                    "index": index,
+                    "pair_label": canonical_pair or pair_label,
+                    "pool_address": pool_address,
+                    "enabled": enabled,
+                    "reasons": malformed_reasons,
+                }
+            )
+            continue
+        if not is_major_candidate:
+            continue
+        if enabled:
+            covered_major_pairs.add(canonical_pair)
+        else:
+            configured_but_disabled_major_pools.append(
+                {
+                    "index": index,
+                    "pair_label": canonical_pair,
+                    "pool_address": pool_address,
+                    "placeholder": placeholder,
+                }
+            )
+
+    missing_major_pairs = [pair for pair in expected_pairs if pair not in covered_major_pairs]
+    if missing_major_pairs:
+        recommended_local_config_actions.append(
+            "补齐本地 data/lp_pools.json：优先补 " + ", ".join(missing_major_pairs[:6])
+        )
+    if configured_but_disabled_major_pools:
+        recommended_local_config_actions.append(
+            "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
+        )
+    if malformed_major_pool_entries:
+        recommended_local_config_actions.append(
+            "修正 malformed major pool entries；placeholder 地址必须保持 disabled"
+        )
+    return {
+        "expected_major_pairs": expected_pairs,
+        "covered_major_pairs": sorted(covered_major_pairs),
+        "missing_major_pairs": missing_major_pairs,
+        "configured_but_disabled_major_pools": configured_but_disabled_major_pools,
+        "malformed_major_pool_entries": malformed_major_pool_entries,
+        "recommended_local_config_actions": recommended_local_config_actions,
+    }
 
 
 def is_lp_pool(address: str | None, active_only: bool = False) -> bool:

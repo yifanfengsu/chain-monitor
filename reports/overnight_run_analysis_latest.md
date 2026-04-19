@@ -4,15 +4,15 @@
 
 - 主窗口为 `2026-04-18 18:33:40 UTC` 到 `2026-04-19 07:52:41 UTC`，持续 `13.32h`。
 - 主窗口共 `107` 条 signals，其中 LP stage rows `68`、已送达 LP 消息 `55`、asset cases `54`、case followups `55`。
-- OKX live context 在主窗口 `68/68` 命中，`kraken_futures` 未被触发；`ETHUSDC -> ETH-USDT-SWAP` fallback 真实命中 `30` 次。
-- prealert 在主窗口仍为 `0`，所以这轮采样的主要改善来自 live context 与语义诚实度，不来自更早预警。
-- `sweep_building` 样本 `14` 条，显示层残留 `climax/高潮` 为 `0`，该硬要求通过。
+- OKX live context 在主窗口 `live_public=68/68`；`kraken_futures` attempts=`0`。
+- prealert 在主窗口为 `0`，候选 funnel 为 `candidates=68` `gate_passed=0` `delivered=0`。
+- `sweep_building` 样本 `14` 条，显示层残留 `climax/高潮` 为 `0`。
 - majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。
 
 ## 2. 数据源与完整性说明
 
-- `app/data/archive/raw_events/2026-04-18.ndjson`: exists=`False` records=`0` range=`n/a -> n/a` note=`raw events archive`
-- `app/data/archive/parsed_events/2026-04-18.ndjson`: exists=`False` records=`0` range=`n/a -> n/a` note=`parsed events archive`
+- `app/data/archive/raw_events/*.ndjson`: exists=`False` records=`0` range=`n/a -> n/a` note=`raw events archive`
+- `app/data/archive/parsed_events/*.ndjson`: exists=`False` records=`0` range=`n/a -> n/a` note=`parsed events archive`
 - `app/data/archive/signals/2026-04-18.ndjson`: exists=`True` records=`424` range=`2026-04-18 05:26:52 UTC -> 2026-04-18 15:57:32 UTC` note=`signals archive`
 - `app/data/archive/signals/2026-04-19.ndjson`: exists=`True` records=`158` range=`2026-04-18 16:02:05 UTC -> 2026-04-19 07:52:41 UTC` note=`signals archive`
 - `app/data/archive/cases/2026-04-18.ndjson`: exists=`True` records=`40383` range=`2026-04-18 05:26:16 UTC -> 2026-04-18 15:59:55 UTC` note=`case archive`
@@ -23,8 +23,8 @@
 - `app/data/archive/delivery_audit/2026-04-19.ndjson`: exists=`True` records=`31253` range=`2026-04-18 16:00:04 UTC -> 2026-04-19 07:53:54 UTC` note=`delivery audit archive`
 - `data/asset_cases.cache.json`: exists=`True` records=`1` range=`2026-04-19 07:52:39 UTC -> 2026-04-19 07:52:41 UTC` note=`asset case snapshot cache`
 - `data/lp_quality_stats.cache.json`: exists=`True` records=`340` range=`2026-04-17 06:16:14 UTC -> 2026-04-19 07:52:44 UTC` note=`quality stats cache`
-- 缺失：`raw_events`、`parsed_events`。影响：不能把 BTC/SOL 无样本严格拆分成 scan 未命中 vs 夜里无事件。
-- 缺失：`after-alert 30s` 与主窗口可用的 `after-alert 60s` 数值回写很稀疏。影响：反向 K 线专题只能对 `300s` 做可信定量，`30s/60s` 只能明确标记缺失。
+- raw/parsed archive presence: `raw_events=False` `parsed_events=False`。
+- outcome windows: `{'30s': {'pending': 68}, '60s': {'pending': 68}, '300s': {'pending': 52, 'completed': 16}}`。
 
 ## 3. overnight 分析窗口
 
@@ -40,15 +40,15 @@
 ## 4. 非敏感运行配置摘要
 
 - `DEFAULT_USER_TIER` = `research`
-- `MARKET_CONTEXT_ADAPTER_MODE` = `live`
+- `MARKET_CONTEXT_ADAPTER_MODE` = `unavailable`
 - `MARKET_CONTEXT_PRIMARY_VENUE` = `okx_perp`
 - `MARKET_CONTEXT_SECONDARY_VENUE` = `kraken_futures`
 - `OKX_PUBLIC_BASE_URL` = `https://www.okx.com`
 - `KRAKEN_FUTURES_BASE_URL` = `https://futures.kraken.com`
-- `ARCHIVE_ENABLE_RAW_EVENTS` = `False`
-- `ARCHIVE_ENABLE_PARSED_EVENTS` = `False`
+- `ARCHIVE_ENABLE_RAW_EVENTS` = `True`
+- `ARCHIVE_ENABLE_PARSED_EVENTS` = `True`
 - `ARCHIVE_ENABLE_SIGNALS` = `True`
-- `ARCHIVE_ENABLE_CASES` = `True`
+- `ARCHIVE_ENABLE_CASES` = `False`
 - `ARCHIVE_ENABLE_CASE_FOLLOWUPS` = `True`
 - `ARCHIVE_ENABLE_DELIVERY_AUDIT` = `True`
 - `LP_ASSET_CASE_PERSIST_ENABLE` = `True`
@@ -74,6 +74,8 @@
 - `delivered_lp_signals` = `55`
 - `asset_case_count` = `54`
 - `case_followup_count` = `55`
+- `compression_ratio` = `1.2593`
+- `avg_signals_per_case` = `1.2593`
 - `stage_distribution_pct` = `{'prealert': 0.0, 'confirm': 54.41, 'climax': 13.24, 'exhaustion_risk': 32.35}`
 - 覆盖资产 = `{'ETH': 68}`
 - 覆盖 pairs = `{'ETH/USDT': 38, 'ETH/USDC': 30}`
@@ -86,7 +88,7 @@
 - 主窗口 `binance_attempts=0` `bybit_attempts=0`。
 - 主窗口 requested->resolved = `{'ETHUSDC->ETH-USDT-SWAP': 30, 'ETHUSDT->ETH-USDT-SWAP': 38}`
 - CLI full archive live_public_hit_rate = `0.2526`
-- CLI full archive per_venue = `[{'attempt_cache_hit': 36, 'attempt_failure_rate': 0.0, 'attempt_hit_rate': 1.9487, 'attempt_success': 1368, 'attempt_total': 702, 'signal_hit_rate': 1.0, 'signal_success': 147, 'signal_total': 147, 'venue': 'okx_perp'}]`
+- CLI full archive per_venue = `[{'attempt_failure_rate': 0.0, 'attempt_hit_rate': 1.0, 'attempt_status_cache_hit': 36, 'attempt_status_success': 666, 'attempt_success': 666, 'attempt_total': 666, 'cache_hit_rate': 0.2449, 'cache_hit_total': 36, 'context_request_hit_rate': 1.0, 'signal_hit_rate': 1.0, 'signal_success': 147, 'signal_total': 147, 'venue': 'okx_perp', 'venue_attempt_success_rate': 1.0}]`
 - 判断：OKX 主路径已在真实 overnight 样本中生效；Kraken fallback 未被触发，所以只能确认配置已切到二级位，不能确认其夜间实战成功率。
 
 ## 7. prealert 真实表现
@@ -132,10 +134,10 @@
 ## 10. “卖压后涨 / 买压后跌”反例专项
 
 - `sell_confirm_count=19` `buy_confirm_count=18`
-- `sell_after_30s_exact_ratio=None`
+- `sell_after_30s_rise_ratio=None`
 - `sell_after_60s={'resolved_count': 0, 'against_count': 0, 'against_rate': None}`
 - `sell_after_300s={'resolved_count': 3, 'against_count': 0, 'against_rate': 0.0}`
-- `buy_after_30s_exact_ratio=None`
+- `buy_after_30s_fall_ratio=None`
 - `buy_after_60s={'resolved_count': 0, 'against_count': 0, 'against_rate': None}`
 - `buy_after_300s={'resolved_count': 1, 'against_count': 1, 'against_rate': 1.0}`
 - `reason_distribution={'late_or_chase': 1, 'local_confirm_not_broader': 1, 'single_pool_or_low_resonance': 1, 'local_buy_pressure_absorption': 1}`
@@ -148,7 +150,7 @@
 - `covered_major_pairs=['ETH/USDT', 'ETH/USDC']`
 - `missing_major_pairs=['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC']`
 - `eth_signal_count=68` `btc_signal_count=0` `sol_signal_count=0`
-- `major_cli_summary={'active_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'priority': 1, 'sample_size': 162, 'trend_pool_match_mode': 'explicit_whitelist'}, {'canonical_pair_label': 'ETH/USDT', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'priority': 1, 'sample_size': 178, 'trend_pool_match_mode': 'explicit_whitelist'}], 'configured_major_assets': ['ETH', 'BTC', 'SOL'], 'configured_major_quotes': ['USDT', 'USDC'], 'covered_expected_pairs': ['ETH/USDT', 'ETH/USDC'], 'covered_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'priority': 1, 'sample_size': 162, 'trend_pool_match_mode': 'explicit_whitelist'}, {'canonical_pair_label': 'ETH/USDT', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'priority': 1, 'sample_size': 178, 'trend_pool_match_mode': 'explicit_whitelist'}], 'expected_major_pairs': ['ETH/USDT', 'ETH/USDC', 'BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'major_pair_quality': [{'actionable': True, 'climax_reversal_score': 0.1793, 'covered': True, 'market_context_alignment_score': 0.956, 'pair_label': 'ETH/USDT', 'quality_score': 0.7143, 'sample_size': 178}, {'actionable': True, 'climax_reversal_score': 0.0957, 'covered': True, 'market_context_alignment_score': 0.9409, 'pair_label': 'ETH/USDC', 'quality_score': 0.7028, 'sample_size': 162}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDT', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDC', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDT', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDC', 'quality_score': 0.5864, 'sample_size': 0}], 'missing_expected_pairs': ['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'missing_major_assets': ['BTC', 'SOL'], 'pool_book_exists': True, 'pool_book_path': '/run-project/chain-monitor/data/lp_pools.json', 'quality_converging_major_pairs': [{'actionable': True, 'climax_reversal_score': 0.1793, 'covered': True, 'market_context_alignment_score': 0.956, 'pair_label': 'ETH/USDT', 'quality_score': 0.7143, 'sample_size': 178}, {'actionable': True, 'climax_reversal_score': 0.0957, 'covered': True, 'market_context_alignment_score': 0.9409, 'pair_label': 'ETH/USDC', 'quality_score': 0.7028, 'sample_size': 162}], 'recommended_next_round_pairs': ['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'suggestions': ['优先补齐：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC', '当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池', '样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC'], 'under_sampled_major_assets': [{'asset_symbol': 'BTC', 'sample_size': 0}, {'asset_symbol': 'SOL', 'sample_size': 0}], 'under_sampled_major_pairs': [{'pair_label': 'BTC/USDT', 'sample_size': 0}, {'pair_label': 'BTC/USDC', 'sample_size': 0}, {'pair_label': 'SOL/USDT', 'sample_size': 0}, {'pair_label': 'SOL/USDC', 'sample_size': 0}], 'warnings': ['majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail', '缺少 major 资产覆盖：BTC, SOL']}`
+- `major_cli_summary={'active_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'priority': 1, 'sample_size': 162, 'trend_pool_match_mode': 'explicit_whitelist'}, {'canonical_pair_label': 'ETH/USDT', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'priority': 1, 'sample_size': 178, 'trend_pool_match_mode': 'explicit_whitelist'}], 'configured_but_disabled_major_pools': [{'index': 2, 'pair_label': 'BTC/USDT', 'placeholder': False, 'pool_address': '0x9db9e0e53058c89e5b94e29621a205198648425b'}, {'index': 3, 'pair_label': 'BTC/USDC', 'placeholder': False, 'pool_address': '0x004375dff511095cc5a197a54140a24efef3a416'}], 'configured_major_assets': ['ETH', 'BTC', 'SOL'], 'configured_major_quotes': ['USDT', 'USDC'], 'covered_expected_pairs': ['ETH/USDT', 'ETH/USDC'], 'covered_major_pairs': ['ETH/USDT', 'ETH/USDC'], 'covered_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'priority': 1, 'sample_size': 162, 'trend_pool_match_mode': 'explicit_whitelist'}, {'canonical_pair_label': 'ETH/USDT', 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'priority': 1, 'sample_size': 178, 'trend_pool_match_mode': 'explicit_whitelist'}], 'expected_major_pairs': ['ETH/USDT', 'ETH/USDC', 'BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'major_pair_quality': [{'actionable': True, 'climax_reversal_score': 0.1793, 'covered': True, 'market_context_alignment_score': 0.956, 'pair_label': 'ETH/USDT', 'quality_score': 0.7143, 'sample_size': 178}, {'actionable': True, 'climax_reversal_score': 0.0957, 'covered': True, 'market_context_alignment_score': 0.9409, 'pair_label': 'ETH/USDC', 'quality_score': 0.7028, 'sample_size': 162}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDT', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDC', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDT', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDC', 'quality_score': 0.5864, 'sample_size': 0}], 'malformed_major_pool_entries': [], 'missing_expected_pairs': ['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'missing_major_assets': ['BTC', 'SOL'], 'missing_major_pairs': ['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'pool_book_exists': True, 'pool_book_path': '/run-project/chain-monitor/data/lp_pools.json', 'quality_converging_major_pairs': [{'actionable': True, 'climax_reversal_score': 0.1793, 'covered': True, 'market_context_alignment_score': 0.956, 'pair_label': 'ETH/USDT', 'quality_score': 0.7143, 'sample_size': 178}, {'actionable': True, 'climax_reversal_score': 0.0957, 'covered': True, 'market_context_alignment_score': 0.9409, 'pair_label': 'ETH/USDC', 'quality_score': 0.7028, 'sample_size': 162}], 'recommended_local_config_actions': ['补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT', '校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH'], 'recommended_next_round_pairs': ['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'suggestions': ['优先补齐：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC', '当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池', '样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC', '补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT', '校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH'], 'under_sampled_major_assets': [{'asset_symbol': 'BTC', 'sample_size': 0}, {'asset_symbol': 'SOL', 'sample_size': 0}], 'under_sampled_major_pairs': [{'pair_label': 'BTC/USDT', 'sample_size': 0}, {'pair_label': 'BTC/USDC', 'sample_size': 0}, {'pair_label': 'SOL/USDT', 'sample_size': 0}, {'pair_label': 'SOL/USDC', 'sample_size': 0}], 'warnings': ['majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail', '缺少 major 资产覆盖：BTC, SOL', '存在 configured but disabled 的 major pools；覆盖缺口不一定是识别问题']}`
 - 判断：主窗口仍然只来自 ETH 双主池。CLI 同时确认 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC` 属于 pool book 覆盖缺口，而不是夜里单纯无事件。
 
 ## 12. signal archive 对账完整性
@@ -207,5 +209,5 @@
 ## 17. 限制与不确定性
 
 - 本报告严格使用主窗口数据；主窗口之外的白天/下午样本只用于附录和 CLI 对照。
-- `raw_events`/`parsed_events` 缺失，所以无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。
-- `30s` 精确价格后效字段缺失，`60s` 字段在主窗口也几乎没有 resolved 样本，因此相关结论必须保守。
+- `raw_events`/`parsed_events` availability = `raw:False` `parsed:False`；若缺失，就无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。
+- outcome window status = `{'30s': {'pending': 68}, '60s': {'pending': 68}, '300s': {'pending': 52, 'completed': 16}}`；若 `30s/60s` completed 仍少，相关结论必须保守。

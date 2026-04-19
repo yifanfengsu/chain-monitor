@@ -1,0 +1,71 @@
+[
+  {
+    "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+    "chain": "ethereum",
+    "pair_label": "ETH/USDT",
+    "base_symbol": "ETH",
+    "quote_symbol": "USDT",
+    "dex": "Uniswap V2",
+    "protocol": "uniswap_v2",
+    "pool_type": "spot_lp",
+    "enabled": true,
+    "priority": 1,
+    "note": "已验证的 ETH/USDT 主池示例。"
+  },
+  {
+    "pool_address": "0xPLACEHOLDER_BTC_USDT",
+    "chain": "ethereum",
+    "pair_label": "BTC/USDT",
+    "base_symbol": "BTC",
+    "quote_symbol": "USDT",
+    "dex": "REPLACE_ME",
+    "protocol": "replace_me",
+    "pool_type": "spot_lp",
+    "enabled": false,
+    "priority": 1,
+    "placeholder": true,
+    "note": "本地补充真实地址前必须保持 disabled；coverage validator 会提示 placeholder。"
+  },
+  {
+    "pool_address": "0xPLACEHOLDER_BTC_USDC",
+    "chain": "ethereum",
+    "pair_label": "BTC/USDC",
+    "base_symbol": "BTC",
+    "quote_symbol": "USDC",
+    "dex": "REPLACE_ME",
+    "protocol": "replace_me",
+    "pool_type": "spot_lp",
+    "enabled": false,
+    "priority": 1,
+    "placeholder": true,
+    "note": "补齐本地 BTC/USDC 主池后会被 runtime major-pool coverage 自动识别。"
+  },
+  {
+    "pool_address": "0xPLACEHOLDER_SOL_USDT",
+    "chain": "ethereum",
+    "pair_label": "SOL/USDT",
+    "base_symbol": "SOL",
+    "quote_symbol": "USDT",
+    "dex": "REPLACE_ME",
+    "protocol": "replace_me",
+    "pool_type": "spot_lp",
+    "enabled": false,
+    "priority": 1,
+    "placeholder": true,
+    "note": "补齐本地 SOL/USDT 主池后会被 runtime major-pool coverage 自动识别。"
+  },
+  {
+    "pool_address": "0xPLACEHOLDER_SOL_USDC",
+    "chain": "ethereum",
+    "pair_label": "SOL/USDC",
+    "base_symbol": "SOL",
+    "quote_symbol": "USDC",
+    "dex": "REPLACE_ME",
+    "protocol": "replace_me",
+    "pool_type": "spot_lp",
+    "enabled": false,
+    "priority": 1,
+    "placeholder": true,
+    "note": "placeholder 地址不得被当成真实 enabled pool。"
+  }
+]

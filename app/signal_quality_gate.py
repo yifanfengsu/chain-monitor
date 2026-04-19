@@ -706,6 +706,15 @@ class SignalQualityGate:
             "lp_reject_reason": "",
             "lp_prealert_candidate": False,
             "lp_prealert_applied": False,
+            "lp_prealert_candidate_reason": "",
+            "lp_prealert_gate_passed": False,
+            "lp_prealert_gate_fail_reason": "",
+            "lp_prealert_delivery_allowed": False,
+            "lp_prealert_delivery_block_reason": "",
+            "lp_prealert_asset_case_preserved": False,
+            "lp_prealert_stage_overwritten": False,
+            "lp_prealert_first_leg": False,
+            "lp_prealert_major_override_used": False,
             "lp_structure_score": 0.0,
             "lp_structure_components": {},
             "lp_pool_priority_class": (
@@ -787,6 +796,12 @@ class SignalQualityGate:
         lp_prealert_reason = ""
         lp_prealert_score = 0.0
         lp_prealert_components = {}
+        prealert_audit = self._build_lp_prealert_audit(
+            event=event,
+            lp_major_pool=bool(lp_trend_pool_context.get("is_major_pool")),
+            same_pool_continuity=same_pool_continuity,
+            multi_pool_resonance=multi_pool_resonance,
+        )
         if lp_event:
             allow_lp_prealert, lp_prealert_reason, lp_prealert_score, lp_prealert_components = self._allow_lp_prealert_exception(
                 event=event,
@@ -802,13 +817,39 @@ class SignalQualityGate:
                 multi_pool_resonance=multi_pool_resonance,
                 pool_volume_surge_ratio=pool_volume_surge_ratio,
             )
-            metrics["lp_prealert_candidate"] = bool(allow_lp_prealert)
+            metrics["lp_prealert_candidate"] = bool(prealert_audit["lp_prealert_candidate"])
             metrics["lp_prealert_reason"] = str(lp_prealert_reason or "")
+            metrics["lp_prealert_candidate_reason"] = str(
+                prealert_audit["lp_prealert_candidate_reason"]
+                or ""
+            )
+            metrics["lp_prealert_gate_passed"] = bool(allow_lp_prealert)
+            metrics["lp_prealert_gate_fail_reason"] = "" if allow_lp_prealert else str(lp_prealert_reason or "")
+            metrics["lp_prealert_first_leg"] = bool(prealert_audit["lp_prealert_first_leg"])
+            metrics["lp_prealert_major_override_used"] = bool(prealert_audit["lp_prealert_major_override_used"])
             metrics["lp_structure_score"] = round(lp_prealert_score, 3)
             metrics["lp_structure_components"] = dict(lp_prealert_components or {})
             if allow_lp_prealert:
                 metrics["lp_prealert_applied"] = True
                 metrics["lp_stage_decision"] = "gate_prealert_candidate"
+        metrics["lp_prealert_candidate_reason"] = str(
+            metrics.get("lp_prealert_candidate_reason")
+            or prealert_audit["lp_prealert_candidate_reason"]
+            or metrics.get("lp_prealert_reason")
+            or ""
+        )
+        metrics["lp_prealert_gate_fail_reason"] = str(
+            metrics.get("lp_prealert_gate_fail_reason")
+            or prealert_audit["lp_prealert_gate_fail_reason"]
+            or ""
+        )
+        metrics["lp_prealert_first_leg"] = bool(
+            metrics.get("lp_prealert_first_leg") or prealert_audit["lp_prealert_first_leg"]
+        )
+        metrics["lp_prealert_major_override_used"] = bool(
+            metrics.get("lp_prealert_major_override_used")
+            or prealert_audit["lp_prealert_major_override_used"]
+        )
 
         if lp_event and event.intent_type == "pool_noise":
             metrics["lp_stage_decision"] = "gate_rejected"
@@ -1745,6 +1786,7 @@ class SignalQualityGate:
         if pricing_status in {"unknown", "unavailable"}:
             return False, "lp_prealert_pricing_unavailable", 0.0, {}
         major_pool_override = bool(lp_major_pool)
+        first_leg = same_pool_continuity <= 0 and multi_pool_resonance <= 0
         min_pricing_confidence = max(self.lp_prealert_min_pricing_confidence - (0.02 if major_pool_override else 0.0), 0.58)
         if pricing_confidence < min_pricing_confidence:
             return False, "lp_prealert_pricing_confidence_too_low", 0.0, {}
@@ -1775,6 +1817,15 @@ class SignalQualityGate:
             and max(same_pool_continuity, multi_pool_resonance) >= 1
         )
         combo_multi_pool = multi_pool_resonance >= 2
+        combo_major_first_leg = self._should_allow_major_prealert(
+            lp_major_pool=major_pool_override,
+            first_leg=first_leg,
+            action_intensity=action_intensity,
+            pool_volume_surge_ratio=pool_volume_surge_ratio,
+            reserve_skew=reserve_skew,
+            min_action_intensity=min_action_intensity,
+            min_volume_surge_ratio=min_volume_surge_ratio,
+        )
         primary_pool_bonus = bool(lp_trend_primary_pool)
         non_major_guard = bool(not lp_major_pool and not lp_trend_primary_pool)
 
@@ -1784,16 +1835,19 @@ class SignalQualityGate:
             "action_plus_surge": bool(combo_action_surge),
             "reserve_skew_emerging": bool(combo_skew_emerging),
             "multi_pool_first_resonance": bool(combo_multi_pool),
+            "major_first_leg_ready": bool(combo_major_first_leg),
             "primary_pool_bonus": bool(primary_pool_bonus),
             "major_pool_override": bool(major_pool_override),
         }
         matched = sum(1 for matched in components.values() if matched)
         structure_score = round(matched / max(len(components), 1), 3)
-        if not (combo_action_surge or combo_skew_emerging or combo_multi_pool):
+        if not (combo_action_surge or combo_skew_emerging or combo_multi_pool or combo_major_first_leg):
             return False, "lp_prealert_structure_too_weak", structure_score, components
         required_matches = max(self.lp_prealert_primary_trend_min_matches, 2)
         if major_pool_override:
             required_matches = max(required_matches - 1, 2)
+        if combo_major_first_leg:
+            required_matches = min(required_matches, 2)
         if non_major_guard:
             required_matches = max(required_matches, 3)
         if matched < required_matches:
@@ -1804,9 +1858,59 @@ class SignalQualityGate:
             return True, "lp_prealert_multi_pool_first_resonance", structure_score, components
         if combo_skew_emerging:
             return True, "lp_prealert_reserve_skew_emerging", structure_score, components
+        if combo_major_first_leg:
+            return True, "lp_prealert_major_first_leg", structure_score, components
         if major_pool_override:
             return True, "lp_prealert_major_direction_building", structure_score, components
         return True, "lp_prealert_direction_building", structure_score, components
+
+    def _build_lp_prealert_audit(
+        self,
+        *,
+        event: Event,
+        lp_major_pool: bool,
+        same_pool_continuity: int,
+        multi_pool_resonance: int,
+    ) -> dict:
+        intent_type = str(event.intent_type or "")
+        supported = intent_type in {
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "liquidity_removal",
+            "liquidity_addition",
+        }
+        first_leg = same_pool_continuity <= 0 and multi_pool_resonance <= 0
+        if supported:
+            candidate_reason = "lp_prealert_supported_intent"
+            fail_reason = ""
+        else:
+            candidate_reason = "lp_prealert_intent_not_supported"
+            fail_reason = candidate_reason
+        return {
+            "lp_prealert_candidate": bool(supported),
+            "lp_prealert_first_leg": bool(first_leg),
+            "lp_prealert_major_override_used": bool(lp_major_pool),
+            "lp_prealert_candidate_reason": str(candidate_reason or ""),
+            "lp_prealert_gate_fail_reason": str(fail_reason or ""),
+        }
+
+    def _should_allow_major_prealert(
+        self,
+        *,
+        lp_major_pool: bool,
+        first_leg: bool,
+        action_intensity: float,
+        pool_volume_surge_ratio: float,
+        reserve_skew: float,
+        min_action_intensity: float,
+        min_volume_surge_ratio: float,
+    ) -> bool:
+        if not lp_major_pool or not first_leg:
+            return False
+        action_ready = action_intensity >= max(min_action_intensity - 0.04, 0.18)
+        surge_ready = pool_volume_surge_ratio >= max(min_volume_surge_ratio - 0.10, 1.05)
+        skew_ready = reserve_skew >= max(self.lp_prealert_min_reserve_skew - 0.02, 0.06)
+        return bool((action_ready and skew_ready) or (action_ready and surge_ready))
 
     def _lp_fast_exception_structure_score(
         self,

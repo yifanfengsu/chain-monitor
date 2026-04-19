@@ -154,15 +154,41 @@ class LpMajorPrealertTests(unittest.TestCase):
         self.assertTrue(decision.passed)
         self.assertTrue(decision.metrics.get("lp_prealert_candidate"))
         self.assertTrue(decision.metrics.get("lp_prealert_applied"))
+        self.assertTrue(decision.metrics.get("lp_prealert_gate_passed"))
+        self.assertTrue(decision.metrics.get("lp_prealert_major_override_used"))
         self.assertEqual("major_pool", decision.metrics.get("lp_pool_priority_class"))
         self.assertIn(decision.metrics.get("lp_prealert_reason"), {"lp_prealert_major_direction_building", "lp_prealert_reserve_skew_emerging"})
+
+    def test_major_first_leg_sets_prealert_diagnostics(self) -> None:
+        event = self._event(
+            token="BTC",
+            pair_label="BTC/USDC",
+            same_pool_continuity=0,
+            multi_pool_resonance=0,
+            action_intensity=0.22,
+            reserve_skew=0.10,
+            pool_volume_surge_ratio=1.12,
+            confirmation_score=0.28,
+        )
+
+        decision = self._gate_decision(event)
+
+        self.assertTrue(decision.metrics.get("lp_prealert_first_leg"))
+        self.assertTrue(decision.metrics.get("lp_prealert_major_override_used"))
+        self.assertIn(
+            decision.metrics.get("lp_prealert_reason"),
+            {"lp_prealert_major_first_leg", "lp_prealert_major_direction_building", "lp_prealert_reserve_skew_emerging"},
+        )
 
     def test_non_major_same_shape_is_blocked_by_guard(self) -> None:
         event = self._event(token="PEPE", pair_label="PEPE/USDC")
 
         decision = self._gate_decision(event)
 
+        self.assertTrue(decision.metrics.get("lp_prealert_candidate"))
         self.assertFalse(decision.metrics.get("lp_prealert_applied"))
+        self.assertFalse(decision.metrics.get("lp_prealert_gate_passed"))
+        self.assertEqual("lp_prealert_supported_intent", decision.metrics.get("lp_prealert_candidate_reason"))
         self.assertEqual("standard_pool", decision.metrics.get("lp_pool_priority_class"))
         self.assertNotEqual("gate_prealert_observe_pass", decision.metrics.get("lp_stage_decision"))
 

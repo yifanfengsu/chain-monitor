@@ -49,6 +49,13 @@ class AssetCase:
     aggregate_metrics: dict = field(default_factory=dict)
     market_context_snapshot: dict = field(default_factory=dict)
     quality_snapshot: dict = field(default_factory=dict)
+    had_prealert: bool = False
+    first_prealert_at: int = 0
+    last_prealert_signal_id: str = ""
+    last_prealert_delivery_allowed: bool | None = None
+    last_prealert_delivery_block_reason: str = ""
+    prealert_upgraded_to_confirm_at: int = 0
+    prealert_to_confirm_sec: int | None = None
     restored_from_cache: bool = False
 
 
@@ -260,12 +267,13 @@ class AssetCaseManager:
         ts: int,
     ) -> AssetCase | None:
         candidate_ids = list(self._index.get((chain, asset_symbol, direction, venue_family)) or [])
-        candidates = [
-            self._cases[candidate_id]
-            for candidate_id in candidate_ids
-            if candidate_id in self._cases
-            and ts - int(self._cases[candidate_id].asset_case_updated_at or 0) <= self.window_sec
-        ]
+        candidates = []
+        for candidate_id in candidate_ids:
+            if candidate_id not in self._cases:
+                continue
+            case = self._cases[candidate_id]
+            if ts - int(case.asset_case_updated_at or 0) <= self._effective_case_window(case):
+                candidates.append(case)
         if not candidates:
             return None
         return sorted(
@@ -289,6 +297,27 @@ class AssetCaseManager:
             if stage != case.asset_case_stage:
                 case.last_stage_transition_at = int(getattr(event, "ts", 0) or case.asset_case_updated_at)
             case.asset_case_stage = stage or case.asset_case_stage
+        signal_id = str(getattr(signal, "signal_id", "") or "")
+        prealert_delivery_allowed = getattr(signal, "context", {}).get("lp_prealert_delivery_allowed")
+        prealert_delivery_block_reason = str(
+            getattr(signal, "context", {}).get("lp_prealert_delivery_block_reason")
+            or getattr(signal, "metadata", {}).get("lp_prealert_delivery_block_reason")
+            or getattr(event, "metadata", {}).get("lp_prealert_delivery_block_reason")
+            or ""
+        )
+        event_ts = int(getattr(event, "ts", 0) or case.asset_case_updated_at)
+        if stage == "prealert":
+            case.had_prealert = True
+            if not int(case.first_prealert_at or 0):
+                case.first_prealert_at = event_ts
+            case.last_prealert_signal_id = signal_id or case.last_prealert_signal_id
+            if prealert_delivery_allowed is not None:
+                case.last_prealert_delivery_allowed = bool(prealert_delivery_allowed)
+            case.last_prealert_delivery_block_reason = prealert_delivery_block_reason
+        elif stage in {"confirm", "climax", "exhaustion_risk"} and case.had_prealert and int(case.first_prealert_at or 0) > 0:
+            if not int(case.prealert_upgraded_to_confirm_at or 0):
+                case.prealert_upgraded_to_confirm_at = event_ts
+                case.prealert_to_confirm_sec = max(event_ts - int(case.first_prealert_at or 0), 0)
         case.asset_case_confidence = round(max(float(case.asset_case_confidence or 0.0), confidence), 3)
         case.asset_case_updated_at = int(getattr(event, "ts", 0) or case.asset_case_updated_at)
         case.last_signal_at = int(getattr(event, "ts", 0) or case.last_signal_at or case.asset_case_updated_at)
@@ -375,13 +404,20 @@ class AssetCaseManager:
             "asset_case_recovered": bool(case.restored_from_cache),
             "asset_case_market_context_snapshot": dict(case.market_context_snapshot),
             "asset_case_quality_snapshot": dict(case.quality_snapshot),
+            "asset_case_had_prealert": bool(case.had_prealert),
+            "asset_case_first_prealert_at": int(case.first_prealert_at or 0),
+            "asset_case_last_prealert_signal_id": case.last_prealert_signal_id,
+            "asset_case_last_prealert_delivery_allowed": case.last_prealert_delivery_allowed,
+            "asset_case_last_prealert_delivery_block_reason": case.last_prealert_delivery_block_reason,
+            "asset_case_prealert_upgraded_to_confirm_at": int(case.prealert_upgraded_to_confirm_at or 0),
+            "asset_case_prealert_to_confirm_sec": case.prealert_to_confirm_sec,
         }
 
     def _prune(self, *, now_ts: int) -> list[str]:
         stale_case_ids = [
             case_id
             for case_id, case in self._cases.items()
-            if now_ts - int(case.asset_case_updated_at or 0) > self.window_sec
+            if now_ts - int(case.asset_case_updated_at or 0) > self._effective_case_window(case)
         ]
         for case_id in stale_case_ids:
             case = self._cases.pop(case_id, None)
@@ -424,6 +460,11 @@ class AssetCaseManager:
     def _mark_dirty(self) -> None:
         self._dirty = True
 
+    def _effective_case_window(self, case: AssetCase) -> int:
+        if lp_stage_rank(case.asset_case_stage) >= lp_stage_rank("confirm") or bool(case.had_prealert):
+            return max(int(self.window_sec), 300)
+        return int(self.window_sec)
+
     def _serialize_case(self, case: AssetCase) -> dict:
         return {
             "asset_case_id": case.asset_case_id,
@@ -447,6 +488,13 @@ class AssetCaseManager:
             "pool_addresses": list(case.pool_addresses),
             "event_ids": list(case.event_ids),
             "venue_family": case.venue_family,
+            "had_prealert": bool(case.had_prealert),
+            "first_prealert_at": int(case.first_prealert_at or 0),
+            "last_prealert_signal_id": case.last_prealert_signal_id,
+            "last_prealert_delivery_allowed": case.last_prealert_delivery_allowed,
+            "last_prealert_delivery_block_reason": case.last_prealert_delivery_block_reason,
+            "prealert_upgraded_to_confirm_at": int(case.prealert_upgraded_to_confirm_at or 0),
+            "prealert_to_confirm_sec": case.prealert_to_confirm_sec,
         }
 
     def _deserialize_case(self, payload: dict) -> AssetCase | None:
@@ -478,6 +526,13 @@ class AssetCaseManager:
             aggregate_metrics=dict(payload.get("aggregate_metrics") or {}),
             market_context_snapshot=dict(payload.get("market_context_snapshot") or {}),
             quality_snapshot=dict(payload.get("quality_snapshot") or {}),
+            had_prealert=bool(payload.get("had_prealert")),
+            first_prealert_at=int(payload.get("first_prealert_at") or 0),
+            last_prealert_signal_id=str(payload.get("last_prealert_signal_id") or ""),
+            last_prealert_delivery_allowed=payload.get("last_prealert_delivery_allowed"),
+            last_prealert_delivery_block_reason=str(payload.get("last_prealert_delivery_block_reason") or ""),
+            prealert_upgraded_to_confirm_at=int(payload.get("prealert_upgraded_to_confirm_at") or 0),
+            prealert_to_confirm_sec=payload.get("prealert_to_confirm_sec"),
             restored_from_cache=True,
         )
 

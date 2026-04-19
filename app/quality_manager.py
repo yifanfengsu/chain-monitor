@@ -50,6 +50,7 @@ class QualityManager:
         self._last_load_status = "not_loaded"
         if self.persistence_enabled:
             self.load_from_disk()
+            self._rehydrate_state_manager()
             atexit.register(self.flush, True)
 
     def annotate_lp_signal(self, event, signal, gate_metrics: dict | None = None) -> dict:
@@ -171,6 +172,11 @@ class QualityManager:
         self._trim_persisted_records()
         self._last_load_status = "loaded"
         return len(self._persisted_records)
+
+    def _rehydrate_state_manager(self) -> int:
+        if self.state_manager is None or not hasattr(self.state_manager, "restore_lp_outcome_records"):
+            return 0
+        return int(self.state_manager.restore_lp_outcome_records(list(self._persisted_records.values())) or 0)
 
     def build_report(
         self,
@@ -449,7 +455,7 @@ class QualityManager:
             return True
         if record.get("false_prealert") is True:
             return False
-        return aligned_move(record.get("move_after_alert_300s"), record.get("direction_bucket")) > 0.002
+        return self._direction_adjusted_move(record, 300) > 0.002
 
     def _confirm_resolved(self, record: dict) -> bool:
         return (
@@ -463,7 +469,7 @@ class QualityManager:
             return True
         if record.get("followthrough_negative") is True:
             return False
-        return aligned_move(record.get("move_after_alert_60s"), record.get("direction_bucket")) > 0.002
+        return self._direction_adjusted_move(record, 60) > 0.002
 
     def _climax_resolved(self, record: dict) -> bool:
         return (
@@ -475,10 +481,10 @@ class QualityManager:
     def _climax_reversal(self, record: dict) -> bool:
         if record.get("reversal_after_climax") is True:
             return True
-        move = record.get("move_after_alert_60s")
+        move = self._direction_adjusted_move(record, 60, allow_none=True)
         if move is None:
-            move = record.get("move_after_alert_300s")
-        return aligned_move(move, record.get("direction_bucket")) < -0.002
+            move = self._direction_adjusted_move(record, 300, allow_none=True)
+        return bool(move is not None and move < -0.002)
 
     def _market_alignment_score(self, records: list[dict]) -> float:
         if not records:
@@ -497,7 +503,19 @@ class QualityManager:
         return self._bayesian_rate(successes=total, total=counted, prior=0.50)
 
     def _fastlane_success(self, record: dict) -> bool:
-        return aligned_move(record.get("move_after_alert_60s"), record.get("direction_bucket")) > 0.003
+        return self._direction_adjusted_move(record, 60) > 0.003
+
+    def _direction_adjusted_move(self, record: dict, window_sec: int, *, allow_none: bool = False) -> float | None:
+        key = f"direction_adjusted_move_after_{int(window_sec)}s"
+        value = record.get(key)
+        if value is None:
+            value = aligned_move(record.get(f"move_after_alert_{int(window_sec)}s"), record.get("direction_bucket"))
+        if allow_none and value in (None, ""):
+            return None
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return None if allow_none else 0.0
 
     def _record_asset_symbol(self, record: dict) -> str:
         return str(record.get("asset_symbol") or record.get("asset_case_label") or "")

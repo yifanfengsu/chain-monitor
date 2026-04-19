@@ -322,8 +322,10 @@ class SignalPipeline:
         signal.context["lp_outcome_record"] = dict(payload)
         signal.context["pool_price_move_before_alert_30s"] = float(payload.get("move_before_alert_30s") or 0.0)
         signal.context["pool_price_move_before_alert_60s"] = float(payload.get("move_before_alert_60s") or 0.0)
+        signal.context["pool_price_move_after_alert_30s"] = payload.get("move_after_alert_30s")
         signal.context["pool_price_move_after_alert_60s"] = payload.get("move_after_alert_60s")
         signal.context["pool_price_move_after_alert_300s"] = payload.get("move_after_alert_300s")
+        event.metadata["pool_price_move_after_alert_30s"] = payload.get("move_after_alert_30s")
         event.metadata["pool_price_move_after_alert_60s"] = payload.get("move_after_alert_60s")
         event.metadata["pool_price_move_after_alert_300s"] = payload.get("move_after_alert_300s")
         outcome_tracking = dict(signal.context.get("outcome_tracking") or {})
@@ -336,6 +338,14 @@ class SignalPipeline:
             windows = dict(outcome_tracking.get("windows") or {})
             window_30s = dict(windows.get("30s") or {})
             window_30s.update({
+                "status": ((payload.get("outcome_windows") or {}).get("30s") or {}).get("status"),
+                "move_after_alert": payload.get("move_after_alert_30s"),
+                "raw_move_after": payload.get("raw_move_after_30s"),
+                "direction_adjusted_move_after": payload.get("direction_adjusted_move_after_30s"),
+                "adverse_by_direction": payload.get("adverse_by_direction_30s"),
+                "price_source": ((payload.get("outcome_windows") or {}).get("30s") or {}).get("price_source"),
+                "completed_at": ((payload.get("outcome_windows") or {}).get("30s") or {}).get("completed_at"),
+                "failure_reason": ((payload.get("outcome_windows") or {}).get("30s") or {}).get("failure_reason"),
                 "followthrough_positive": payload.get("followthrough_positive"),
                 "followthrough_negative": payload.get("followthrough_negative"),
                 "confirm_after_prealert": payload.get("confirm_after_prealert"),
@@ -343,14 +353,28 @@ class SignalPipeline:
             })
             window_60s = dict(windows.get("60s") or {})
             window_60s.update({
+                "status": ((payload.get("outcome_windows") or {}).get("60s") or {}).get("status"),
                 "move_after_alert": payload.get("move_after_alert_60s"),
+                "raw_move_after": payload.get("raw_move_after_60s"),
+                "direction_adjusted_move_after": payload.get("direction_adjusted_move_after_60s"),
+                "adverse_by_direction": payload.get("adverse_by_direction_60s"),
+                "price_source": ((payload.get("outcome_windows") or {}).get("60s") or {}).get("price_source"),
+                "completed_at": ((payload.get("outcome_windows") or {}).get("60s") or {}).get("completed_at"),
+                "failure_reason": ((payload.get("outcome_windows") or {}).get("60s") or {}).get("failure_reason"),
                 "confirm_after_prealert": payload.get("confirm_after_prealert"),
                 "false_prealert": payload.get("false_prealert"),
                 "reversal_after_climax": payload.get("reversal_after_climax"),
             })
             window_300s = dict(windows.get("300s") or {})
             window_300s.update({
+                "status": ((payload.get("outcome_windows") or {}).get("300s") or {}).get("status"),
                 "move_after_alert": payload.get("move_after_alert_300s"),
+                "raw_move_after": payload.get("raw_move_after_300s"),
+                "direction_adjusted_move_after": payload.get("direction_adjusted_move_after_300s"),
+                "adverse_by_direction": payload.get("adverse_by_direction_300s"),
+                "price_source": ((payload.get("outcome_windows") or {}).get("300s") or {}).get("price_source"),
+                "completed_at": ((payload.get("outcome_windows") or {}).get("300s") or {}).get("completed_at"),
+                "failure_reason": ((payload.get("outcome_windows") or {}).get("300s") or {}).get("failure_reason"),
                 "confirm_after_prealert": payload.get("confirm_after_prealert"),
                 "false_prealert": payload.get("false_prealert"),
                 "reversal_after_climax": payload.get("reversal_after_climax"),
@@ -359,7 +383,7 @@ class SignalPipeline:
             signal.context["outcome_tracking"] = outcome_tracking
             event.metadata["outcome_tracking"] = outcome_tracking
             signal.metadata["outcome_tracking"] = outcome_tracking
-        self.quality_manager.sync_from_state_manager()
+        self.quality_manager.sync_from_state_manager(force=True)
         return payload
 
     def _market_context_brief(self, context_payload: dict) -> str:
@@ -799,6 +823,98 @@ class SignalPipeline:
         signal.context.update(payload)
         return payload
 
+    def _apply_lp_prealert_diagnostics(
+        self,
+        event: Event,
+        signal,
+        *,
+        gate_metrics: dict | None = None,
+        asset_case_payload: dict | None = None,
+        delivery_allowed: bool | None = None,
+        delivery_block_reason: str | None = None,
+    ) -> dict:
+        gate_metrics = gate_metrics or {}
+        if not self._is_lp_event(event=event):
+            return {}
+        existing = getattr(signal, "context", {}) or getattr(event, "metadata", {}) or {}
+        final_stage = str(
+            getattr(signal, "context", {}).get("lp_alert_stage")
+            or getattr(signal, "metadata", {}).get("lp_alert_stage")
+            or event.metadata.get("lp_alert_stage")
+            or ""
+        ).strip()
+        candidate = bool(
+            gate_metrics.get("lp_prealert_candidate")
+            or existing.get("lp_prealert_candidate")
+        )
+        gate_passed = bool(
+            gate_metrics.get("lp_prealert_gate_passed")
+            or gate_metrics.get("lp_prealert_applied")
+            or existing.get("lp_prealert_gate_passed")
+            or existing.get("lp_prealert_applied")
+        )
+        stage_overwritten = bool(candidate and gate_passed and final_stage and final_stage != "prealert")
+        if asset_case_payload is None:
+            asset_case_payload = {}
+        asset_case_preserved = bool(
+            asset_case_payload.get("asset_case_had_prealert")
+            or asset_case_payload.get("asset_case_stage") == "prealert"
+            or existing.get("asset_case_had_prealert")
+            or existing.get("asset_case_stage") == "prealert"
+        )
+        resolved_delivery_allowed = delivery_allowed
+        resolved_delivery_block_reason = str(delivery_block_reason or "").strip()
+        if resolved_delivery_allowed is None:
+            if not candidate:
+                resolved_delivery_allowed = False
+                resolved_delivery_block_reason = resolved_delivery_block_reason or str(
+                    gate_metrics.get("lp_prealert_candidate_reason")
+                    or existing.get("lp_prealert_candidate_reason")
+                    or "lp_prealert_not_candidate"
+                )
+            elif not gate_passed:
+                resolved_delivery_allowed = False
+                resolved_delivery_block_reason = resolved_delivery_block_reason or str(
+                    gate_metrics.get("lp_prealert_gate_fail_reason")
+                    or existing.get("lp_prealert_gate_fail_reason")
+                    or "lp_prealert_gate_failed"
+                )
+            elif stage_overwritten:
+                resolved_delivery_allowed = False
+                resolved_delivery_block_reason = resolved_delivery_block_reason or "lp_prealert_stage_overwritten"
+        payload = {
+            "lp_prealert_candidate": bool(candidate),
+            "lp_prealert_candidate_reason": str(
+                gate_metrics.get("lp_prealert_candidate_reason")
+                or existing.get("lp_prealert_candidate_reason")
+                or gate_metrics.get("lp_prealert_reason")
+                or existing.get("lp_prealert_reason")
+                or ""
+            ),
+            "lp_prealert_gate_passed": bool(gate_passed),
+            "lp_prealert_gate_fail_reason": str(
+                gate_metrics.get("lp_prealert_gate_fail_reason")
+                or existing.get("lp_prealert_gate_fail_reason")
+                or ""
+            ),
+            "lp_prealert_delivery_allowed": resolved_delivery_allowed,
+            "lp_prealert_delivery_block_reason": resolved_delivery_block_reason,
+            "lp_prealert_asset_case_preserved": bool(asset_case_preserved),
+            "lp_prealert_stage_overwritten": bool(stage_overwritten),
+            "lp_prealert_first_leg": bool(
+                gate_metrics.get("lp_prealert_first_leg")
+                or existing.get("lp_prealert_first_leg")
+            ),
+            "lp_prealert_major_override_used": bool(
+                gate_metrics.get("lp_prealert_major_override_used")
+                or existing.get("lp_prealert_major_override_used")
+            ),
+        }
+        event.metadata.update(payload)
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+        return payload
+
     def _apply_lp_productization_context(self, event: Event, signal, gate_metrics: dict | None = None, watch_meta: dict | None = None) -> dict:
         gate_metrics = gate_metrics or {}
         if not self._is_lp_event(event=event):
@@ -812,12 +928,19 @@ class SignalPipeline:
             signal,
             gate_metrics=gate_metrics,
         )
+        prealert_payload = self._apply_lp_prealert_diagnostics(
+            event,
+            signal,
+            gate_metrics=gate_metrics,
+            asset_case_payload=asset_case_payload,
+        )
         tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
         return {
             "asset_case": asset_case_payload,
             "market_context": market_context_payload,
             "quality": quality_payload,
             "lp_corrections": correction_payload,
+            "prealert_diagnostics": prealert_payload,
             "user_tier": tier_payload,
         }
 
@@ -1527,11 +1650,23 @@ class SignalPipeline:
             token_snapshot=token_snapshot,
             gate_metrics=gate_decision.metrics,
         )
+        self._apply_lp_prealert_diagnostics(
+            event,
+            signal,
+            gate_metrics=gate_decision.metrics,
+        )
         if not interpretation.should_notify:
             event.delivery_class = "drop"
             event.delivery_reason = interpretation.reason
             signal.delivery_class = "drop"
             signal.delivery_reason = interpretation.reason
+            self._apply_lp_prealert_diagnostics(
+                event,
+                signal,
+                gate_metrics=gate_decision.metrics,
+                delivery_allowed=False,
+                delivery_block_reason=str(interpretation.reason or "interpreter_suppressed"),
+            )
             self._apply_silent_reason(
                 event=event,
                 signal=signal,
@@ -1576,6 +1711,13 @@ class SignalPipeline:
             gate_metrics=gate_decision.metrics,
             behavior_case=behavior_case,
         )
+        self._apply_lp_prealert_diagnostics(
+            event,
+            signal,
+            gate_metrics=gate_decision.metrics,
+            delivery_allowed=bool(delivery_class != "drop"),
+            delivery_block_reason="" if delivery_class != "drop" else str(delivery_reason or "strategy_blocked"),
+        )
         self._promote_lp_fastlane_if_needed(event, signal, gate_decision.metrics)
         self._record_lp_outcome_runtime(event, signal)
         if delivery_class == "drop":
@@ -1611,6 +1753,13 @@ class SignalPipeline:
             event.delivery_reason = delivery_policy_reason
             signal.delivery_class = "drop"
             signal.delivery_reason = delivery_policy_reason
+            self._apply_lp_prealert_diagnostics(
+                event,
+                signal,
+                gate_metrics=gate_decision.metrics,
+                delivery_allowed=False,
+                delivery_block_reason=delivery_policy_reason,
+            )
             self._apply_silent_reason(
                 event=event,
                 signal=signal,
@@ -2091,6 +2240,15 @@ class SignalPipeline:
             "lp_prealert_candidate": bool(_first_value(gate_metrics.get("lp_prealert_candidate"), existing.get("lp_prealert_candidate"), False)),
             "lp_prealert_applied": bool(_first_value(gate_metrics.get("lp_prealert_applied"), existing.get("lp_prealert_applied"), False)),
             "lp_prealert_reason": str(_first_value(gate_metrics.get("lp_prealert_reason"), existing.get("lp_prealert_reason"), "") or ""),
+            "lp_prealert_candidate_reason": str(_first_value(gate_metrics.get("lp_prealert_candidate_reason"), existing.get("lp_prealert_candidate_reason"), "") or ""),
+            "lp_prealert_gate_passed": bool(_first_value(gate_metrics.get("lp_prealert_gate_passed"), existing.get("lp_prealert_gate_passed"), False)),
+            "lp_prealert_gate_fail_reason": str(_first_value(gate_metrics.get("lp_prealert_gate_fail_reason"), existing.get("lp_prealert_gate_fail_reason"), "") or ""),
+            "lp_prealert_delivery_allowed": _first_value(gate_metrics.get("lp_prealert_delivery_allowed"), existing.get("lp_prealert_delivery_allowed"), None),
+            "lp_prealert_delivery_block_reason": str(_first_value(gate_metrics.get("lp_prealert_delivery_block_reason"), existing.get("lp_prealert_delivery_block_reason"), "") or ""),
+            "lp_prealert_asset_case_preserved": _first_value(gate_metrics.get("lp_prealert_asset_case_preserved"), existing.get("lp_prealert_asset_case_preserved"), None),
+            "lp_prealert_stage_overwritten": _first_value(gate_metrics.get("lp_prealert_stage_overwritten"), existing.get("lp_prealert_stage_overwritten"), None),
+            "lp_prealert_first_leg": bool(_first_value(gate_metrics.get("lp_prealert_first_leg"), existing.get("lp_prealert_first_leg"), False)),
+            "lp_prealert_major_override_used": bool(_first_value(gate_metrics.get("lp_prealert_major_override_used"), existing.get("lp_prealert_major_override_used"), False)),
             "lp_structure_score": float(_first_value(gate_metrics.get("lp_structure_score"), existing.get("lp_structure_score"), 0.0) or 0.0),
             "lp_structure_components": _first_value(gate_metrics.get("lp_structure_components"), existing.get("lp_structure_components"), {}) or {},
             "lp_fastlane_ready": bool(_first_value(gate_metrics.get("lp_fastlane_ready"), existing.get("lp_fastlane_ready"), gate_metrics.get("lp_burst_fastlane_ready"), False)),
@@ -2452,6 +2610,46 @@ class SignalPipeline:
             },
         )
 
+    def _raw_archive_payload(self, raw_item: dict, *, archive_ts: int) -> dict:
+        lp_debug = dict(raw_item.get("lp_parse_debug") or {})
+        watched_pool = str(
+            raw_item.get("address")
+            or raw_item.get("watch_address")
+            or (raw_item.get("touched_lp_pools") or [""])[0]
+            or ""
+        ).lower()
+        tx_hash = str(raw_item.get("tx_hash") or "")
+        raw_kind = str(
+            raw_item.get("kind")
+            or raw_item.get("raw_kind")
+            or raw_item.get("event_type")
+            or "raw_event"
+        )
+        captured_at = int(
+            raw_item.get("captured_at")
+            or raw_item.get("block_ts")
+            or raw_item.get("ts")
+            or archive_ts
+        )
+        event_id_seed = "|".join([tx_hash, watched_pool or "unknown", raw_kind, str(captured_at)])
+        event_id = str(raw_item.get("event_id") or f"raw_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}")
+        return {
+            **raw_item,
+            "event_id": event_id,
+            "tx_hash": tx_hash,
+            "block_number": raw_item.get("block_number"),
+            "watch_address": watched_pool,
+            "pool_address": watched_pool,
+            "raw_kind": raw_kind,
+            "captured_at": captured_at,
+            "listener_scan_path": str(
+                raw_item.get("listener_scan_path")
+                or raw_item.get("lp_scan_path")
+                or lp_debug.get("scan_path")
+                or ""
+            ),
+        }
+
     def _restored_top_counterparty_addresses(self, watch_meta: dict | None, limit: int = 3) -> set[str]:
         watch_meta = watch_meta or {}
         entries = list(watch_meta.get("restored_top_counterparties") or [])[: max(int(limit), 0)]
@@ -2471,7 +2669,12 @@ class SignalPipeline:
         if self.archive_store is None:
             return
         try:
-            archive_status["raw_event"] = bool(self.archive_store.write_raw_event(raw_item, archive_ts=archive_ts))
+            archive_status["raw_event"] = bool(
+                self.archive_store.write_raw_event(
+                    self._raw_archive_payload(raw_item, archive_ts=archive_ts),
+                    archive_ts=archive_ts,
+                )
+            )
         except Exception as e:
             print(f"raw event 归档失败: {e}")
 
@@ -2676,18 +2879,114 @@ class SignalPipeline:
                 or event_metadata.get("lp_alert_stage")
                 or ""
             ),
+            "lp_prealert_candidate": bool(
+                signal_context.get("lp_prealert_candidate")
+                or signal_metadata.get("lp_prealert_candidate")
+                or event_metadata.get("lp_prealert_candidate")
+            ),
+            "lp_prealert_candidate_reason": str(
+                signal_context.get("lp_prealert_candidate_reason")
+                or signal_metadata.get("lp_prealert_candidate_reason")
+                or event_metadata.get("lp_prealert_candidate_reason")
+                or ""
+            ),
+            "lp_prealert_gate_passed": bool(
+                signal_context.get("lp_prealert_gate_passed")
+                or signal_metadata.get("lp_prealert_gate_passed")
+                or event_metadata.get("lp_prealert_gate_passed")
+            ),
+            "lp_prealert_gate_fail_reason": str(
+                signal_context.get("lp_prealert_gate_fail_reason")
+                or signal_metadata.get("lp_prealert_gate_fail_reason")
+                or event_metadata.get("lp_prealert_gate_fail_reason")
+                or ""
+            ),
+            "lp_prealert_delivery_allowed": (
+                signal_context.get("lp_prealert_delivery_allowed")
+                if signal_context.get("lp_prealert_delivery_allowed") is not None
+                else signal_metadata.get("lp_prealert_delivery_allowed")
+                if signal_metadata.get("lp_prealert_delivery_allowed") is not None
+                else event_metadata.get("lp_prealert_delivery_allowed")
+            ),
+            "lp_prealert_delivery_block_reason": str(
+                signal_context.get("lp_prealert_delivery_block_reason")
+                or signal_metadata.get("lp_prealert_delivery_block_reason")
+                or event_metadata.get("lp_prealert_delivery_block_reason")
+                or ""
+            ),
+            "lp_prealert_asset_case_preserved": (
+                signal_context.get("lp_prealert_asset_case_preserved")
+                if signal_context.get("lp_prealert_asset_case_preserved") is not None
+                else signal_metadata.get("lp_prealert_asset_case_preserved")
+                if signal_metadata.get("lp_prealert_asset_case_preserved") is not None
+                else event_metadata.get("lp_prealert_asset_case_preserved")
+            ),
+            "lp_prealert_stage_overwritten": (
+                signal_context.get("lp_prealert_stage_overwritten")
+                if signal_context.get("lp_prealert_stage_overwritten") is not None
+                else signal_metadata.get("lp_prealert_stage_overwritten")
+                if signal_metadata.get("lp_prealert_stage_overwritten") is not None
+                else event_metadata.get("lp_prealert_stage_overwritten")
+            ),
+            "lp_prealert_first_leg": bool(
+                signal_context.get("lp_prealert_first_leg")
+                or signal_metadata.get("lp_prealert_first_leg")
+                or event_metadata.get("lp_prealert_first_leg")
+            ),
+            "lp_prealert_major_override_used": bool(
+                signal_context.get("lp_prealert_major_override_used")
+                or signal_metadata.get("lp_prealert_major_override_used")
+                or event_metadata.get("lp_prealert_major_override_used")
+            ),
             "outcome_tracking_key": str(
                 outcome_tracking.get("record_id")
                 or lp_outcome_record.get("record_id")
                 or outcome_tracking.get("outcome_tracking_key")
                 or ""
             ),
+            "move_after_alert_30s": (
+                lp_outcome_record.get("move_after_alert_30s")
+                if lp_outcome_record.get("move_after_alert_30s") is not None
+                else outcome_tracking.get("move_after_alert_30s")
+            ),
+            "move_after_alert_60s": (
+                lp_outcome_record.get("move_after_alert_60s")
+                if lp_outcome_record.get("move_after_alert_60s") is not None
+                else outcome_tracking.get("move_after_alert_60s")
+            ),
+            "move_after_alert_300s": (
+                lp_outcome_record.get("move_after_alert_300s")
+                if lp_outcome_record.get("move_after_alert_300s") is not None
+                else outcome_tracking.get("move_after_alert_300s")
+            ),
+            "raw_move_after_30s": lp_outcome_record.get("raw_move_after_30s"),
+            "raw_move_after_60s": lp_outcome_record.get("raw_move_after_60s"),
+            "raw_move_after_300s": lp_outcome_record.get("raw_move_after_300s"),
+            "direction_adjusted_move_after_30s": lp_outcome_record.get("direction_adjusted_move_after_30s"),
+            "direction_adjusted_move_after_60s": lp_outcome_record.get("direction_adjusted_move_after_60s"),
+            "direction_adjusted_move_after_300s": lp_outcome_record.get("direction_adjusted_move_after_300s"),
+            "adverse_by_direction_30s": lp_outcome_record.get("adverse_by_direction_30s"),
+            "adverse_by_direction_60s": lp_outcome_record.get("adverse_by_direction_60s"),
+            "adverse_by_direction_300s": lp_outcome_record.get("adverse_by_direction_300s"),
+            "outcome_windows": dict(lp_outcome_record.get("outcome_windows") or {}),
             "archive_written_at": int(archive_ts),
             "asset_case_key": str(
                 signal_context.get("asset_case_key")
                 or signal_metadata.get("asset_case_key")
                 or event_metadata.get("asset_case_key")
                 or ""
+            ),
+            "asset_case_had_prealert": bool(
+                signal_context.get("asset_case_had_prealert")
+                or signal_metadata.get("asset_case_had_prealert")
+                or event_metadata.get("asset_case_had_prealert")
+            ),
+            "asset_case_prealert_to_confirm_sec": (
+                signal_context.get("asset_case_prealert_to_confirm_sec")
+                if signal_context.get("asset_case_prealert_to_confirm_sec") not in {None, ""}
+                else signal_metadata.get("asset_case_prealert_to_confirm_sec")
+                if signal_metadata.get("asset_case_prealert_to_confirm_sec") not in {None, ""}
+                else event_metadata.get("asset_case_prealert_to_confirm_sec")
             ),
             "pair_label": str(
                 signal_context.get("pair_label")
@@ -6929,6 +7228,12 @@ class SignalPipeline:
                     signal.metadata["lp_outcome_record"] = updated_record
                     signal.context["lp_outcome_record"] = updated_record
                     self.quality_manager.sync_from_state_manager(force=True)
+            self._apply_lp_prealert_diagnostics(
+                event,
+                signal,
+                delivery_allowed=bool(delivered),
+                delivery_block_reason="" if delivered else "notifier_send_failed",
+            )
         self._apply_notification_delivery_metadata(
             event=event,
             signal=signal,
@@ -7047,6 +7352,11 @@ class SignalPipeline:
         return {
             **parsed,
             "event_id": event.event_id,
+            "tx_hash": str(event.tx_hash or parsed.get("tx_hash") or ""),
+            "parsed_kind": str(parsed.get("parsed_kind") or event.kind or "parsed_event"),
+            "role_group": str(parsed.get("role_group") or event.metadata.get("role_group") or ""),
+            "parse_status": str(parsed.get("parse_status") or parsed.get("status") or "parsed"),
+            "parsed_at": int(parsed.get("parsed_at") or event.metadata.get("parsed_at") or event.ts or 0),
             "case_id": event.case_id,
             "followup_stage": event.followup_stage,
             "followup_status": event.followup_status,
@@ -7066,6 +7376,17 @@ class SignalPipeline:
                 event.metadata.get("delivered_notification_stage")
                 or event.metadata.get("pending_case_notification_stage")
                 or event.metadata.get("case_notification_stage")
+                or ""
+            ),
+            "lp_prealert_candidate": bool(event.metadata.get("lp_prealert_candidate")),
+            "lp_prealert_candidate_reason": str(event.metadata.get("lp_prealert_candidate_reason") or ""),
+            "lp_prealert_gate_passed": bool(event.metadata.get("lp_prealert_gate_passed")),
+            "lp_prealert_gate_fail_reason": str(event.metadata.get("lp_prealert_gate_fail_reason") or ""),
+            "lp_prealert_first_leg": bool(event.metadata.get("lp_prealert_first_leg")),
+            "lp_prealert_major_override_used": bool(event.metadata.get("lp_prealert_major_override_used")),
+            "lp_alert_stage_candidate": str(
+                event.metadata.get("lp_alert_stage")
+                or event.metadata.get("lp_stage_decision")
                 or ""
             ),
             "pending_notification_stage": str(event.metadata.get("pending_case_notification_stage") or ""),

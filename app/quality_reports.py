@@ -10,7 +10,7 @@ import sys
 
 from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
-from lp_registry import ACTIVE_LP_POOLS
+from lp_registry import ACTIVE_LP_POOLS, normalize_lp_pool_entries, validate_lp_pool_book_entries
 from market_context_adapter import build_market_context_runtime_self_check
 from quality_manager import QualityManager
 from state_manager import StateManager
@@ -121,6 +121,7 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
     symbol_fallback_stats = defaultdict(lambda: defaultdict(int))
     warnings: list[str] = []
     total_attempts = 0
+    cache_hit_request_count = 0
 
     unavailable_count = sum(1 for row in rows if str(_signal_row_value(row, "market_context_source") or "") == "unavailable")
     live_public_count = sum(1 for row in rows if str(_signal_row_value(row, "market_context_source") or "") == "live_public")
@@ -176,19 +177,26 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
             elif source == "unavailable":
                 symbol_fallback_stats[fallback_pair]["signal_failure"] += 1
 
+        if any(str(item.get("status") or "") == "cache_hit" for item in attempts):
+            cache_hit_request_count += 1
+
         for attempt in attempts:
-            total_attempts += 1
+            status = str(attempt.get("status") or "")
             attempt_venue = str(attempt.get("venue") or venue or "")
             endpoint = str(attempt.get("endpoint") or "")
             attempt_symbol = str(attempt.get("symbol") or resolved_symbol or "")
-            status = str(attempt.get("status") or "")
             failure_reason = str(attempt.get("failure_reason") or "")
             http_status = attempt.get("http_status")
+            is_cache_hit = status == "cache_hit" or endpoint == "cache"
 
             if attempt_venue:
-                venue_stats[attempt_venue]["attempt_total"] += 1
-                venue_stats[attempt_venue][f"attempt_{status or 'unknown'}"] += 1
-                if status in {"success", "cache_hit"}:
+                venue_stats[attempt_venue][f"attempt_status_{status or 'unknown'}"] += 1
+                if is_cache_hit:
+                    venue_stats[attempt_venue]["cache_hit_total"] += 1
+                else:
+                    venue_stats[attempt_venue]["attempt_total"] += 1
+                    total_attempts += 1
+                if status == "success":
                     venue_stats[attempt_venue]["attempt_success"] += 1
                 if status == "failure":
                     venue_stats[attempt_venue]["attempt_failure"] += 1
@@ -202,17 +210,23 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
                     venue_stats[attempt_venue]["no_symbol_count"] += 1
                 if http_status is not None:
                     venue_stats[attempt_venue][f"http_{int(http_status)}"] += 1
-            if endpoint and endpoint != "cache":
-                endpoint_stats[endpoint]["attempt_total"] += 1
-                endpoint_stats[endpoint][f"attempt_{status or 'unknown'}"] += 1
-                if status in {"success", "cache_hit"}:
-                    endpoint_stats[endpoint]["attempt_success"] += 1
-                if status == "failure":
-                    endpoint_stats[endpoint]["attempt_failure"] += 1
+            if endpoint:
+                endpoint_stats[endpoint][f"attempt_status_{status or 'unknown'}"] += 1
+                if is_cache_hit:
+                    endpoint_stats[endpoint]["cache_hit_total"] += 1
+                else:
+                    endpoint_stats[endpoint]["attempt_total"] += 1
+                    if status == "success":
+                        endpoint_stats[endpoint]["attempt_success"] += 1
+                    if status == "failure":
+                        endpoint_stats[endpoint]["attempt_failure"] += 1
             if attempt_symbol:
-                attempt_symbol_stats[attempt_symbol]["attempt_total"] += 1
-                attempt_symbol_stats[attempt_symbol][f"attempt_{status or 'unknown'}"] += 1
-                if status in {"success", "cache_hit"}:
+                attempt_symbol_stats[attempt_symbol][f"attempt_status_{status or 'unknown'}"] += 1
+                if is_cache_hit:
+                    attempt_symbol_stats[attempt_symbol]["cache_hit_total"] += 1
+                else:
+                    attempt_symbol_stats[attempt_symbol]["attempt_total"] += 1
+                if status == "success":
                     attempt_symbol_stats[attempt_symbol]["attempt_success"] += 1
                 if status == "failure":
                     attempt_symbol_stats[attempt_symbol]["attempt_failure"] += 1
@@ -239,7 +253,7 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
             )
         ]
     
-    def _attach_rates(table: list[dict]) -> list[dict]:
+    def _attach_rates(table: list[dict], *, label: str) -> list[dict]:
         enriched = []
         for row in table:
             item = dict(row)
@@ -248,26 +262,33 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
             signal_success = int(item.get("signal_success") or 0)
             attempt_success = int(item.get("attempt_success") or 0)
             attempt_failure = int(item.get("attempt_failure") or 0)
+            cache_hit_total = int(item.get("cache_hit_total") or 0)
             item["signal_hit_rate"] = round(signal_success / signal_total, 4) if signal_total else 0.0
-            item["attempt_hit_rate"] = round(attempt_success / attempt_total, 4) if attempt_total else 0.0
+            item["context_request_hit_rate"] = round(signal_success / signal_total, 4) if signal_total else 0.0
+            item[f"{label}_attempt_success_rate"] = round(attempt_success / attempt_total, 4) if attempt_total else 0.0
+            item["attempt_hit_rate"] = item[f"{label}_attempt_success_rate"]
             item["attempt_failure_rate"] = round(attempt_failure / attempt_total, 4) if attempt_total else 0.0
+            item["cache_hit_rate"] = round(cache_hit_total / signal_total, 4) if signal_total else 0.0
             enriched.append(item)
         return enriched
 
     total = len(rows)
-    per_venue = _attach_rates(_sort_table(venue_stats, key_name="venue"))
-    per_endpoint = _attach_rates(_sort_table(endpoint_stats, key_name="endpoint"))
-    per_resolved_symbol = _attach_rates(_sort_table(resolved_symbol_stats, key_name="symbol"))
-    per_requested_symbol = _attach_rates(_sort_table(requested_symbol_stats, key_name="symbol"))
-    per_attempt_symbol = _attach_rates(_sort_table(attempt_symbol_stats, key_name="symbol"))
+    per_venue = _attach_rates(_sort_table(venue_stats, key_name="venue"), label="venue")
+    per_endpoint = _attach_rates(_sort_table(endpoint_stats, key_name="endpoint"), label="endpoint")
+    per_resolved_symbol = _attach_rates(_sort_table(resolved_symbol_stats, key_name="symbol"), label="symbol")
+    per_requested_symbol = _attach_rates(_sort_table(requested_symbol_stats, key_name="symbol"), label="symbol")
+    per_attempt_symbol = _attach_rates(_sort_table(attempt_symbol_stats, key_name="symbol"), label="symbol")
     return {
         "archive_base_dir": str(Path(base_dir)),
         "signal_rows": total,
+        "total_context_requests": total,
         "total_attempts": total_attempts,
         "live_public_count": live_public_count,
         "unavailable_count": unavailable_count,
+        "context_request_hit_rate": round((live_public_count / total), 4) if total else 0.0,
         "live_public_hit_rate": round((live_public_count / total), 4) if total else 0.0,
         "unavailable_rate": round((unavailable_count / total), 4) if total else 0.0,
+        "cache_hit_rate": round((cache_hit_request_count / total), 4) if total else 0.0,
         "per_venue": per_venue,
         "per_endpoint": per_endpoint,
         "per_requested_symbol": per_requested_symbol,
@@ -275,15 +296,15 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
         "per_attempt_symbol": per_attempt_symbol,
         "per_symbol": per_resolved_symbol,
         "venue_hit_rate": [
-            {"venue": row["venue"], "hit_rate": row["signal_hit_rate"]}
+            {"venue": row["venue"], "hit_rate": row["context_request_hit_rate"]}
             for row in per_venue
         ],
         "endpoint_hit_rate": [
-            {"endpoint": row["endpoint"], "hit_rate": row["attempt_hit_rate"]}
+            {"endpoint": row["endpoint"], "hit_rate": row["endpoint_attempt_success_rate"]}
             for row in per_endpoint
         ],
         "symbol_hit_rate": [
-            {"symbol": row["symbol"], "hit_rate": row["signal_hit_rate"]}
+            {"symbol": row["symbol"], "hit_rate": row["context_request_hit_rate"]}
             for row in per_resolved_symbol
         ],
         "symbol_fallbacks": [
@@ -318,6 +339,14 @@ def build_major_pool_coverage_report(
     pool_book_exists = pool_book_path.exists()
     warnings: list[str] = []
     suggestions: list[str] = []
+    raw_pool_entries = []
+    if pool_book_exists:
+        try:
+            raw_pool_entries = json.loads(pool_book_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warnings.append("data/lp_pools.json 无法解析；coverage 只能基于已加载 runtime pool metadata")
+            raw_pool_entries = []
+    validator_payload = validate_lp_pool_book_entries(raw_pool_entries)
 
     configured_assets = []
     for item in LP_MAJOR_ASSETS:
@@ -349,9 +378,15 @@ def build_major_pool_coverage_report(
         if pair_label:
             sample_count_by_pair[pair_label] += 1
 
+    runtime_pools = ACTIVE_LP_POOLS if not raw_pool_entries else {
+        address: meta
+        for address, meta in normalize_lp_pool_entries(raw_pool_entries).items()
+        if bool(meta.get("is_active", True))
+    }
+
     active_major_pools = []
     covered_pairs = set()
-    for meta in ACTIVE_LP_POOLS.values():
+    for meta in runtime_pools.values():
         if not bool(meta.get("is_major_pool")):
             continue
         pair_label = str(meta.get("pair_label") or "")
@@ -430,6 +465,20 @@ def build_major_pool_coverage_report(
             "样本稀少的 majors pairs："
             + ", ".join(item["pair_label"] for item in under_sampled_pairs[:6])
         )
+    if validator_payload.get("configured_but_disabled_major_pools"):
+        warnings.append("存在 configured but disabled 的 major pools；覆盖缺口不一定是识别问题")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
+    if validator_payload.get("malformed_major_pool_entries"):
+        warnings.append("存在 malformed major pool entries；当前不会被静默当成有效 major pools")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
     recommended_next_round_pairs = []
     for pair in missing_pairs:
         if pair not in recommended_next_round_pairs:
@@ -455,15 +504,20 @@ def build_major_pool_coverage_report(
         "configured_major_quotes": configured_quotes,
         "expected_major_pairs": expected_pairs,
         "covered_expected_pairs": covered_expected_pairs,
+        "covered_major_pairs": covered_expected_pairs,
         "covered_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
         "active_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
         "missing_expected_pairs": missing_pairs,
+        "missing_major_pairs": missing_pairs,
         "missing_major_assets": missing_assets,
         "under_sampled_major_assets": under_sampled_assets,
         "under_sampled_major_pairs": under_sampled_pairs,
+        "configured_but_disabled_major_pools": list(validator_payload.get("configured_but_disabled_major_pools") or []),
+        "malformed_major_pool_entries": list(validator_payload.get("malformed_major_pool_entries") or []),
         "major_pair_quality": major_pair_quality,
         "quality_converging_major_pairs": quality_converging_pairs,
         "recommended_next_round_pairs": recommended_next_round_pairs,
+        "recommended_local_config_actions": list(validator_payload.get("recommended_local_config_actions") or []),
         "warnings": warnings,
         "suggestions": suggestions,
     }

@@ -127,8 +127,10 @@ class LpLatencyOutcomeTests(unittest.TestCase):
         self.assertFalse(updated_prealert.get("false_prealert"))
         self.assertEqual(40, updated_prealert.get("time_to_confirm"))
         self.assertGreater(float(updated_prealert.get("move_before_alert") or 0.0), 0.0)
-        self.assertGreater(float(updated_prealert.get("move_after_alert_60s") or 0.0), 0.0)
+        self.assertGreater(float(updated_prealert.get("move_after_alert_30s") or 0.0), 0.0)
         self.assertTrue(updated_prealert.get("followthrough_positive"))
+        self.assertEqual("completed", ((updated_prealert.get("outcome_windows") or {}).get("30s") or {}).get("status"))
+        self.assertEqual("pending", ((updated_prealert.get("outcome_windows") or {}).get("60s") or {}).get("status"))
 
     def test_climax_to_reversal_chain_is_recorded(self) -> None:
         history = self._event(ts=1_900, quote_amount=1_000.0, usd_value=1_000.0)
@@ -155,6 +157,7 @@ class LpLatencyOutcomeTests(unittest.TestCase):
         self.assertTrue(updated_climax.get("reversal_after_climax"))
         self.assertLess(float(updated_climax.get("move_after_alert") or 0.0), 0.0)
         self.assertTrue(updated_climax.get("followthrough_negative"))
+        self.assertTrue(updated_climax.get("adverse_by_direction_30s"))
 
     def test_move_fields_and_latency_are_exposed(self) -> None:
         history = self._event(ts=2_950, quote_amount=1_000.0, usd_value=1_000.0)
@@ -182,6 +185,57 @@ class LpLatencyOutcomeTests(unittest.TestCase):
         self.assertIn("move_after_alert", signal.context.get("outcome_tracking") or {})
         self.assertEqual(17_000, signal.context.get("lp_end_to_end_latency_ms"))
         self.assertEqual(3_005, (signal.context.get("lp_outcome_record") or {}).get("notifier_sent_at"))
+        self.assertIn("30s", (signal.context.get("outcome_tracking") or {}).get("windows") or {})
+
+    def test_sell_pressure_price_rise_is_marked_adverse(self) -> None:
+        history = self._event(ts=5_950, quote_amount=1_000.0, usd_value=1_000.0)
+        alert = self._event(
+            ts=6_000,
+            quote_amount=1_020.0,
+            usd_value=80_000.0,
+            intent_type="pool_sell_pressure",
+            confirmation_score=0.86,
+        )
+        followup = self._event(
+            ts=6_040,
+            quote_amount=1_060.0,
+            usd_value=25_000.0,
+            intent_type="pool_buy_pressure",
+            confirmation_score=0.52,
+        )
+
+        self.state_manager.apply_event(history)
+        self.state_manager.apply_event(alert)
+        alert_signal = self._signal(alert, stage="confirm")
+        record = self.pipeline._record_lp_outcome_runtime(alert, alert_signal)
+
+        self.state_manager.apply_event(followup)
+        followup_signal = self._signal(followup, stage="prealert")
+        self.pipeline._record_lp_outcome_runtime(followup, followup_signal)
+
+        updated = self.state_manager.get_lp_outcome_record(str(record.get("record_id") or ""))
+
+        self.assertGreater(float(updated.get("raw_move_after_30s") or 0.0), 0.0)
+        self.assertLess(float(updated.get("direction_adjusted_move_after_30s") or 0.0), 0.0)
+        self.assertTrue(updated.get("adverse_by_direction_30s"))
+
+    def test_outcome_windows_can_be_restored_after_sync(self) -> None:
+        history = self._event(ts=4_950, quote_amount=1_000.0, usd_value=1_000.0)
+        event = self._event(ts=5_000, quote_amount=1_010.0, usd_value=4_000.0, confirmation_score=0.34)
+        signal = self._signal(event, stage="prealert")
+
+        self.state_manager.apply_event(history)
+        self.state_manager.apply_event(event)
+        self.pipeline._record_lp_outcome_runtime(event, signal)
+
+        records = self.state_manager.get_recent_lp_outcome_records(limit=10)
+        restored = StateManager()
+        restored.restore_lp_outcome_records(records)
+        reloaded = restored.get_recent_lp_outcome_records(limit=10)[0]
+
+        self.assertEqual("pending", ((reloaded.get("outcome_windows") or {}).get("30s") or {}).get("status"))
+        self.assertEqual("pending", ((reloaded.get("outcome_windows") or {}).get("60s") or {}).get("status"))
+        self.assertEqual("pending", ((reloaded.get("outcome_windows") or {}).get("300s") or {}).get("status"))
 
 
 if __name__ == "__main__":

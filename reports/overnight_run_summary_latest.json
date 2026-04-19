@@ -119,7 +119,7 @@
       "end_ts": null,
       "exists": false,
       "notes": "raw events archive",
-      "path": "app/data/archive/raw_events/2026-04-18.ndjson",
+      "path": "app/data/archive/raw_events/*.ndjson",
       "record_count": 0,
       "start_ts": null
     },
@@ -127,7 +127,7 @@
       "end_ts": null,
       "exists": false,
       "notes": "parsed events archive",
-      "path": "app/data/archive/parsed_events/2026-04-18.ndjson",
+      "path": "app/data/archive/parsed_events/*.ndjson",
       "record_count": 0,
       "start_ts": null
     },
@@ -221,8 +221,10 @@
     "analysis_window_end": "2026-04-19 07:52:41 UTC",
     "analysis_window_start": "2026-04-18 18:33:40 UTC",
     "asset_case_count": 54,
+    "avg_signals_per_case": 1.2593,
     "case_followup_count": 55,
     "climax_count": 9,
+    "compression_ratio": 1.2593,
     "confirm_count": 37,
     "delivered_lp_signals": 55,
     "duration_hours": 13.32,
@@ -242,7 +244,7 @@
       "ETH": 68
     },
     "btc_signal_count": 0,
-    "btc_sol_missing_reason": "pool_book_missing",
+    "btc_sol_missing_reason": "configured_but_disabled_pool",
     "configured_major_assets": [
       "ETH",
       "WETH",
@@ -288,6 +290,20 @@
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
+      "configured_but_disabled_major_pools": [
+        {
+          "index": 2,
+          "pair_label": "BTC/USDT",
+          "placeholder": false,
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+        },
+        {
+          "index": 3,
+          "pair_label": "BTC/USDC",
+          "placeholder": false,
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+        }
+      ],
       "configured_major_assets": [
         "ETH",
         "BTC",
@@ -298,6 +314,10 @@
         "USDC"
       ],
       "covered_expected_pairs": [
+        "ETH/USDT",
+        "ETH/USDC"
+      ],
+      "covered_major_pairs": [
         "ETH/USDT",
         "ETH/USDC"
       ],
@@ -389,6 +409,7 @@
           "sample_size": 0
         }
       ],
+      "malformed_major_pool_entries": [],
       "missing_expected_pairs": [
         "BTC/USDT",
         "BTC/USDC",
@@ -398,6 +419,12 @@
       "missing_major_assets": [
         "BTC",
         "SOL"
+      ],
+      "missing_major_pairs": [
+        "BTC/USDT",
+        "BTC/USDC",
+        "SOL/USDT",
+        "SOL/USDC"
       ],
       "pool_book_exists": true,
       "pool_book_path": "/run-project/chain-monitor/data/lp_pools.json",
@@ -421,6 +448,10 @@
           "sample_size": 162
         }
       ],
+      "recommended_local_config_actions": [
+        "补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
+        "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
+      ],
       "recommended_next_round_pairs": [
         "BTC/USDT",
         "BTC/USDC",
@@ -430,7 +461,9 @@
       "suggestions": [
         "优先补齐：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
         "当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池",
-        "样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC"
+        "样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
+        "补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
+        "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
       ],
       "under_sampled_major_assets": [
         {
@@ -462,7 +495,8 @@
       ],
       "warnings": [
         "majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail",
-        "缺少 major 资产覆盖：BTC, SOL"
+        "缺少 major 资产覆盖：BTC, SOL",
+        "存在 configured but disabled 的 major pools；覆盖缺口不一定是识别问题"
       ]
     },
     "missing_major_pairs": [
@@ -480,30 +514,36 @@
   "market_context_health": {
     "quality_reports_cli": {
       "archive_base_dir": "/run-project/chain-monitor/app/data/archive",
+      "cache_hit_rate": 0.0619,
+      "context_request_hit_rate": 0.2526,
       "endpoint_hit_rate": [
         {
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
         },
         {
           "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
         },
         {
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
         },
         {
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
         },
         {
           "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
         },
         {
           "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
-          "hit_rate": 2.0
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "cache",
+          "hit_rate": 0.0
         }
       ],
       "failure_reason_counts": {},
@@ -521,62 +561,102 @@
       "live_public_hit_rate": 0.2526,
       "per_attempt_symbol": [
         {
-          "attempt_cache_hit": 36,
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 1.9487,
-          "attempt_success": 1368,
-          "attempt_total": 702,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_cache_hit": 36,
+          "attempt_status_success": 666,
+          "attempt_success": 666,
+          "attempt_total": 666,
+          "cache_hit_rate": 0.0,
+          "cache_hit_total": 36,
+          "context_request_hit_rate": 0.0,
           "signal_hit_rate": 0.0,
-          "symbol": "ETH-USDT-SWAP"
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 1.0
         }
       ],
       "per_endpoint": [
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
+          "endpoint_attempt_success_rate": 1.0,
           "signal_hit_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
+          "endpoint_attempt_success_rate": 1.0,
           "signal_hit_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
+          "endpoint_attempt_success_rate": 1.0,
           "signal_hit_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
           "signal_hit_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
           "signal_hit_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 2.0,
-          "attempt_success": 222,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 111,
+          "attempt_success": 111,
           "attempt_total": 111,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "attempt_status_cache_hit": 36,
+          "cache_hit_rate": 0.0,
+          "cache_hit_total": 36,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "cache",
+          "endpoint_attempt_success_rate": 0.0,
           "signal_hit_rate": 0.0
         }
       ],
@@ -584,51 +664,68 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
           "signal_success": 82,
           "signal_total": 82,
-          "symbol": "ETHUSDT"
+          "symbol": "ETHUSDT",
+          "symbol_attempt_success_rate": 0.0
         },
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
           "signal_success": 65,
           "signal_total": 65,
-          "symbol": "ETHUSDC"
+          "symbol": "ETHUSDC",
+          "symbol_attempt_success_rate": 0.0
         }
       ],
       "per_resolved_symbol": [
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
           "signal_success": 147,
           "signal_total": 147,
-          "symbol": "ETH-USDT-SWAP"
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 0.0
         }
       ],
       "per_symbol": [
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
           "signal_success": 147,
           "signal_total": 147,
-          "symbol": "ETH-USDT-SWAP"
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 0.0
         }
       ],
       "per_venue": [
         {
-          "attempt_cache_hit": 36,
           "attempt_failure_rate": 0.0,
-          "attempt_hit_rate": 1.9487,
-          "attempt_success": 1368,
-          "attempt_total": 702,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_cache_hit": 36,
+          "attempt_status_success": 666,
+          "attempt_success": 666,
+          "attempt_total": 666,
+          "cache_hit_rate": 0.2449,
+          "cache_hit_total": 36,
+          "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
           "signal_success": 147,
           "signal_total": 147,
-          "venue": "okx_perp"
+          "venue": "okx_perp",
+          "venue_attempt_success_rate": 1.0
         }
       ],
       "signal_rows": 582,
@@ -653,7 +750,8 @@
         }
       ],
       "top_failure_reasons": [],
-      "total_attempts": 702,
+      "total_attempts": 666,
+      "total_context_requests": 582,
       "unavailable_count": 435,
       "unavailable_rate": 0.7474,
       "unavailable_reason_breakdown": {},
@@ -698,10 +796,16 @@
   "prealert_summary": {
     "major_prealert_count": 0,
     "non_major_prealert_count": 0,
+    "prealert_candidates": 68,
     "prealert_count": 0,
+    "prealert_delivered_count": 0,
+    "prealert_dropped_by_reason": {},
+    "prealert_gate_passed_count": 0,
+    "prealert_merged_into_case_count": 0,
     "prealert_to_confirm_30s": null,
     "prealert_to_confirm_60s": null,
     "prealert_to_confirm_90s": null,
+    "prealert_upgraded_to_confirm_count": 0,
     "previous_report_reference_prealert_count": 1
   },
   "quality_outcome_fastlane_summary": {
@@ -1145,7 +1249,7 @@
         "limit": null,
         "top_n": 10
       },
-      "generated_at": 1776587903,
+      "generated_at": 1776594866,
       "overall": {
         "actionable": true,
         "climax_count": 101,
@@ -1482,7 +1586,20 @@
         }
       ]
     },
+    "outcome_window_status": {
+      "300s": {
+        "completed": 16,
+        "pending": 52
+      },
+      "30s": {
+        "pending": 68
+      },
+      "60s": {
+        "pending": 68
+      }
+    },
     "resolved_move_after_300s_count_window": 16,
+    "resolved_move_after_30s_count_window": 0,
     "resolved_move_after_60s_count_window": 0
   },
   "reversal_special_cases": {
@@ -1492,7 +1609,12 @@
       "resolved_count": 1
     },
     "buy_after_300s_fall_ratio": 1.0,
-    "buy_after_30s_exact_ratio": null,
+    "buy_after_30s": {
+      "against_count": 0,
+      "against_rate": null,
+      "resolved_count": 0
+    },
+    "buy_after_30s_fall_ratio": null,
     "buy_after_60s": {
       "against_count": 0,
       "against_rate": null,
@@ -1526,7 +1648,12 @@
       "resolved_count": 3
     },
     "sell_after_300s_rise_ratio": 0.0,
-    "sell_after_30s_exact_ratio": null,
+    "sell_after_30s": {
+      "against_count": 0,
+      "against_rate": null,
+      "resolved_count": 0
+    },
+    "sell_after_30s_rise_ratio": null,
     "sell_after_60s": {
       "against_count": 0,
       "against_rate": null,
@@ -1539,7 +1666,7 @@
     "ARCHIVE_ENABLE_CASES": {
       "env_present": true,
       "env_value": "true",
-      "runtime_value": true
+      "runtime_value": false
     },
     "ARCHIVE_ENABLE_CASE_FOLLOWUPS": {
       "env_present": true,
@@ -1554,12 +1681,12 @@
     "ARCHIVE_ENABLE_PARSED_EVENTS": {
       "env_present": true,
       "env_value": "false",
-      "runtime_value": false
+      "runtime_value": true
     },
     "ARCHIVE_ENABLE_RAW_EVENTS": {
       "env_present": true,
       "env_value": "false",
-      "runtime_value": false
+      "runtime_value": true
     },
     "ARCHIVE_ENABLE_SIGNALS": {
       "env_present": true,
@@ -1676,7 +1803,7 @@
     "MARKET_CONTEXT_ADAPTER_MODE": {
       "env_present": true,
       "env_value": "live",
-      "runtime_value": "live"
+      "runtime_value": "unavailable"
     },
     "MARKET_CONTEXT_PRIMARY_VENUE": {
       "env_present": true,

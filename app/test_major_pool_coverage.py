@@ -32,6 +32,73 @@ class MajorPoolCoverageTests(unittest.TestCase):
         self.assertTrue(report["covered_major_pools"])
         self.assertIn("BTC/USDT", report["recommended_next_round_pairs"])
         self.assertIn("SOL/USDC", report["recommended_next_round_pairs"])
+        self.assertTrue(report["configured_but_disabled_major_pools"])
+
+    def test_major_pool_coverage_uses_custom_pool_book_and_marks_btc_sol_covered(self) -> None:
+        payload = [
+            {
+                "pool_address": "0x1111111111111111111111111111111111111111",
+                "chain": "ethereum",
+                "pair_label": "BTC/USDT",
+                "base_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "dex": "UnitTest",
+                "protocol": "unit_test",
+                "pool_type": "spot_lp",
+                "enabled": True,
+                "priority": 1,
+            },
+            {
+                "pool_address": "0x2222222222222222222222222222222222222222",
+                "chain": "ethereum",
+                "pair_label": "SOL/USDC",
+                "base_symbol": "SOL",
+                "quote_symbol": "USDC",
+                "dex": "UnitTest",
+                "protocol": "unit_test",
+                "pool_type": "spot_lp",
+                "enabled": True,
+                "priority": 1,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "lp_pools.json"
+            path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+            report = build_major_pool_coverage_report(
+                QualityManager(state_manager=StateManager()),
+                pool_book_path=path,
+            )
+
+        self.assertIn("BTC/USDT", report["covered_major_pairs"])
+        self.assertIn("SOL/USDC", report["covered_major_pairs"])
+        self.assertNotIn("BTC/USDT", report["missing_major_pairs"])
+
+    def test_placeholder_enabled_major_pool_is_reported_as_malformed(self) -> None:
+        payload = [
+            {
+                "pool_address": "0xPLACEHOLDER_SOL_USDT",
+                "chain": "ethereum",
+                "pair_label": "SOL/USDT",
+                "base_symbol": "SOL",
+                "quote_symbol": "USDT",
+                "dex": "UnitTest",
+                "protocol": "unit_test",
+                "pool_type": "spot_lp",
+                "enabled": True,
+                "priority": 1,
+                "placeholder": True,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "lp_pools.json"
+            path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+            report = build_major_pool_coverage_report(
+                QualityManager(state_manager=StateManager()),
+                pool_book_path=path,
+            )
+
+        self.assertTrue(report["malformed_major_pool_entries"])
+        self.assertIn("placeholder", ",".join(report["malformed_major_pool_entries"][0]["reasons"]))
 
     def test_sol_usdc_classifies_as_major_primary_pool(self) -> None:
         meta = classify_trend_pool_meta(

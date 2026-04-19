@@ -30,7 +30,12 @@ class ArchiveStore:
     }
     _BJ_TZ = ZoneInfo("Asia/Shanghai")
 
-    def __init__(self, base_dir: str | Path = ARCHIVE_BASE_DIR) -> None:
+    def __init__(
+        self,
+        base_dir: str | Path = ARCHIVE_BASE_DIR,
+        *,
+        category_enabled: dict[str, bool] | None = None,
+    ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._global_lock = threading.Lock()
@@ -44,6 +49,8 @@ class ArchiveStore:
             "cases": bool(ARCHIVE_ENABLE_CASES),
             "case_followups": bool(ARCHIVE_ENABLE_CASE_FOLLOWUPS),
         }
+        for category, enabled in dict(category_enabled or {}).items():
+            self._category_enabled[str(category)] = bool(enabled)
 
     def write_raw_event(self, raw_item: dict, archive_ts: int | None = None) -> bool:
         return self._write("raw_events", self._payload(raw_item, archive_ts=archive_ts))
