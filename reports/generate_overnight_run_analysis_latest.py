@@ -407,6 +407,30 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                     "trade_action_requires_user_confirmation": bool(first_value(data, "trade_action_requires_user_confirmation")),
                     "trade_action_blockers": list(first_value(data, "trade_action_blockers") or []),
                     "trade_action_conclusion": str(first_value(data, "trade_action_conclusion") or ""),
+                    "asset_market_state_key": str(first_value(data, "asset_market_state_key") or ""),
+                    "asset_market_state_label": str(first_value(data, "asset_market_state_label") or ""),
+                    "asset_market_state_reason": str(first_value(data, "asset_market_state_reason") or ""),
+                    "asset_market_state_confidence": to_float(first_value(data, "asset_market_state_confidence")),
+                    "asset_market_state_changed": bool(first_value(data, "asset_market_state_changed")),
+                    "previous_asset_market_state_key": str(first_value(data, "previous_asset_market_state_key") or ""),
+                    "first_seen_stage": str(first_value(data, "first_seen_stage") or ""),
+                    "first_seen_at": to_int(first_value(data, "first_seen_at")),
+                    "prealert_lifecycle_state": str(first_value(data, "prealert_lifecycle_state") or ""),
+                    "prealert_expires_at": to_int(first_value(data, "prealert_expires_at")),
+                    "prealert_to_confirm_sec": to_int(first_value(data, "prealert_to_confirm_sec")),
+                    "prealert_visible_to_user": bool(first_value(data, "prealert_visible_to_user")),
+                    "no_trade_lock_active": bool(first_value(data, "no_trade_lock_active")),
+                    "no_trade_lock_reason": str(first_value(data, "no_trade_lock_reason") or ""),
+                    "no_trade_lock_started_at": to_int(first_value(data, "no_trade_lock_started_at")),
+                    "no_trade_lock_until": to_int(first_value(data, "no_trade_lock_until")),
+                    "no_trade_lock_conflict_score": to_float(first_value(data, "no_trade_lock_conflict_score")),
+                    "no_trade_lock_released_by": str(first_value(data, "no_trade_lock_released_by") or ""),
+                    "telegram_should_send": bool(first_value(data, "telegram_should_send")),
+                    "telegram_suppression_reason": str(first_value(data, "telegram_suppression_reason") or ""),
+                    "telegram_state_change_reason": str(first_value(data, "telegram_state_change_reason") or ""),
+                    "telegram_update_kind": str(first_value(data, "telegram_update_kind") or ""),
+                    "suppressed_signal_count_in_state": to_int(first_value(data, "suppressed_signal_count_in_state")),
+                    "last_telegram_state_key": str(first_value(data, "last_telegram_state_key") or ""),
                     "lp_conflict_context": str(first_value(data, "lp_conflict_context") or ""),
                     "lp_conflict_score": to_float(first_value(data, "lp_conflict_score")),
                     "lp_conflict_window_sec": to_int(first_value(data, "lp_conflict_window_sec")),
@@ -445,6 +469,11 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                     "adverse_by_direction_30s": first_value(data, "adverse_by_direction_30s"),
                     "adverse_by_direction_60s": first_value(data, "adverse_by_direction_60s"),
                     "adverse_by_direction_300s": first_value(data, "adverse_by_direction_300s"),
+                    "outcome_price_source": str(first_value(data, "outcome_price_source") or ""),
+                    "outcome_price_start": to_float(first_value(data, "outcome_price_start")),
+                    "outcome_price_end": to_float(first_value(data, "outcome_price_end")),
+                    "outcome_window_status": str(first_value(data, "outcome_window_status") or ""),
+                    "outcome_failure_reason": str(first_value(data, "outcome_failure_reason") or ""),
                     "outcome_windows": first_value(data, "outcome_windows") or {},
                     "asset_case_had_prealert": bool(first_value(data, "asset_case_had_prealert")),
                     "asset_case_prealert_to_confirm_sec": to_int(first_value(data, "asset_case_prealert_to_confirm_sec")),
@@ -1285,6 +1314,175 @@ def compute_trade_actions(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_asset_market_states(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    state_rows = [row for row in lp_rows if str(row.get("asset_market_state_key") or "").strip()]
+    counter = Counter(str(row.get("asset_market_state_key") or "") for row in state_rows)
+    transitions = Counter()
+    final_state_by_asset: dict[str, dict[str, Any]] = {}
+    for row in sorted(state_rows, key=lambda item: (int(item["archive_ts"]), str(item.get("signal_id") or ""))):
+        asset = canonical_asset(row.get("asset_symbol"))
+        if not asset:
+            continue
+        if row.get("asset_market_state_changed"):
+            transitions[
+                f"{str(row.get('previous_asset_market_state_key') or 'none')}->{str(row.get('asset_market_state_key') or '')}"
+            ] += 1
+        final_state_by_asset[asset] = {
+            "state_key": str(row.get("asset_market_state_key") or ""),
+            "state_label": str(row.get("asset_market_state_label") or ""),
+            "updated_at": int(row.get("archive_ts") or 0),
+            "telegram_update_kind": str(row.get("telegram_update_kind") or ""),
+            "telegram_should_send": bool(row.get("telegram_should_send")),
+        }
+    return {
+        "state_distribution": dict(sorted(counter.items())),
+        "state_transitions": dict(sorted(transitions.items())),
+        "current_final_state_per_asset": dict(sorted(final_state_by_asset.items())),
+        "state_change_count": sum(1 for row in state_rows if row.get("asset_market_state_changed")),
+    }
+
+
+def compute_no_trade_lock_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    entered_rows = [row for row in lp_rows if row.get("asset_market_state_key") == "NO_TRADE_LOCK" and row.get("asset_market_state_changed")]
+    suppressed_rows = [row for row in lp_rows if str(row.get("telegram_suppression_reason") or "").startswith("no_trade_lock")]
+    release_rows = [row for row in lp_rows if str(row.get("no_trade_lock_released_by") or "").strip()]
+    durations = []
+    for row in entered_rows:
+        started = to_int(row.get("no_trade_lock_started_at"))
+        until = to_int(row.get("no_trade_lock_until"))
+        if started and until and until >= started:
+            durations.append(until - started)
+    return {
+        "lock_entered_count": len(entered_rows),
+        "suppressed_count": len(suppressed_rows),
+        "release_count": len(release_rows),
+        "lock_duration_median_sec": median(durations),
+        "lock_duration_max_sec": max(durations) if durations else None,
+    }
+
+
+def compute_prealert_lifecycle_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counter = Counter(str(row.get("prealert_lifecycle_state") or "") for row in lp_rows if str(row.get("prealert_lifecycle_state") or "").strip())
+    return {
+        "distribution": dict(sorted(counter.items())),
+        "active_count": counter.get("active", 0),
+        "delivered_count": counter.get("delivered", 0),
+        "merged_count": counter.get("merged", 0),
+        "upgraded_count": counter.get("upgraded_to_confirm", 0),
+        "expired_count": counter.get("expired", 0),
+        "suppressed_by_lock_count": counter.get("suppressed_by_lock", 0),
+    }
+
+
+def compute_candidate_tradeable_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    candidate_keys = {"LONG_CANDIDATE", "SHORT_CANDIDATE"}
+    tradeable_keys = {"TRADEABLE_LONG", "TRADEABLE_SHORT"}
+
+    def summarize(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+        resolved = []
+        followthrough = 0
+        adverse = 0
+        for row in rows:
+            ft, adv = _followthrough_result(row, field)
+            if ft is None:
+                continue
+            resolved.append(row)
+            if ft:
+                followthrough += 1
+            if adv is True:
+                adverse += 1
+        return {
+            "resolved_count": len(resolved),
+            "followthrough_count": followthrough,
+            "followthrough_rate": rate(followthrough, len(resolved)),
+            "adverse_count": adverse,
+            "adverse_rate": rate(adverse, len(resolved)),
+        }
+
+    candidate_rows = [row for row in lp_rows if str(row.get("asset_market_state_key") or "") in candidate_keys]
+    tradeable_rows = [row for row in lp_rows if str(row.get("asset_market_state_key") or "") in tradeable_keys]
+    return {
+        "candidate_distribution": dict(sorted(Counter(str(row.get("asset_market_state_key") or "") for row in candidate_rows).items())),
+        "tradeable_distribution": dict(sorted(Counter(str(row.get("asset_market_state_key") or "") for row in tradeable_rows).items())),
+        "candidate_outcome_60s": summarize(candidate_rows, "direction_adjusted_move_after_60s"),
+        "tradeable_outcome_60s": summarize(tradeable_rows, "direction_adjusted_move_after_60s"),
+        "candidate_count": len(candidate_rows),
+        "tradeable_count": len(tradeable_rows),
+    }
+
+
+def compute_outcome_price_sources(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counter = Counter()
+    window_status = {"30s": Counter(), "60s": Counter(), "300s": Counter()}
+    failure_reasons = Counter()
+    for row in lp_rows:
+        source = str(row.get("outcome_price_source") or "")
+        if source:
+            counter[source] += 1
+        reason = str(row.get("outcome_failure_reason") or "")
+        if reason:
+            failure_reasons[reason] += 1
+        windows = row.get("outcome_windows") if isinstance(row.get("outcome_windows"), dict) else {}
+        for window in ("30s", "60s", "300s"):
+            item = dict(windows.get(window) or {})
+            status = str(item.get("status") or row.get("outcome_window_status") or "")
+            if status:
+                window_status[window][status] += 1
+            item_reason = str(item.get("failure_reason") or "")
+            if item_reason:
+                failure_reasons[item_reason] += 1
+            item_source = str(item.get("price_source") or "")
+            if item_source:
+                counter[item_source] += 1
+    return {
+        "source_distribution": dict(sorted(counter.items())),
+        "window_status": {key: dict(value) for key, value in window_status.items()},
+        "failure_reasons": dict(sorted(failure_reasons.items())),
+    }
+
+
+def compute_telegram_suppression(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counter = Counter(str(row.get("telegram_suppression_reason") or "") for row in lp_rows if str(row.get("telegram_suppression_reason") or "").strip())
+    update_kinds = Counter(str(row.get("telegram_update_kind") or "") for row in lp_rows if str(row.get("telegram_update_kind") or "").strip())
+    sent_rows = [row for row in lp_rows if row.get("sent_to_telegram") or row.get("notifier_sent_at")]
+    return {
+        "total_suppressed": sum(counter.values()),
+        "suppression_reasons": dict(sorted(counter.items())),
+        "messages_before_after_suppression_estimate": {
+            "raw_lp_signals": len(lp_rows),
+            "sent_telegram_messages": len(sent_rows),
+        },
+        "update_kind_distribution": dict(sorted(update_kinds.items())),
+    }
+
+
+def compute_noise_reduction(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    sent_rows = [row for row in lp_rows if row.get("sent_to_telegram") or row.get("notifier_sent_at")]
+    state_changes_sent = sum(
+        1
+        for row in sent_rows
+        if str(row.get("telegram_update_kind") or "") == "state_change"
+    )
+    risk_blockers_sent = sum(
+        1
+        for row in sent_rows
+        if str(row.get("telegram_update_kind") or "") == "risk_blocker"
+    )
+    candidates_sent = sum(
+        1
+        for row in sent_rows
+        if str(row.get("telegram_update_kind") or "") == "candidate"
+    )
+    return {
+        "raw_lp_signals": len(lp_rows),
+        "sent_telegram_lp_messages": len(sent_rows),
+        "suppressed_ratio": rate(max(len(lp_rows) - len(sent_rows), 0), len(lp_rows)),
+        "state_changes_sent": state_changes_sent,
+        "risk_blockers_sent": risk_blockers_sent,
+        "candidates_sent": candidates_sent,
+    }
+
+
 def compute_reversal_special(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     confirm_rows = [row for row in lp_rows if row.get("lp_alert_stage") == "confirm"]
     def summarize(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
@@ -1573,6 +1771,13 @@ def build_csv_rows(
     sweeps: dict[str, Any],
     absorption: dict[str, Any],
     trade_actions: dict[str, Any],
+    asset_market_states: dict[str, Any],
+    no_trade_lock_summary: dict[str, Any],
+    prealert_lifecycle: dict[str, Any],
+    candidate_tradeable: dict[str, Any],
+    outcome_price_sources: dict[str, Any],
+    telegram_suppression: dict[str, Any],
+    noise_reduction: dict[str, Any],
     majors: dict[str, Any],
     archive_integrity: dict[str, Any],
     scores: dict[str, Any],
@@ -1610,6 +1815,25 @@ def build_csv_rows(
         if isinstance(value, dict) or isinstance(value, list):
             continue
         add_metric(rows, "trade_action", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in asset_market_states.get("state_distribution", {}).items():
+        add_metric(rows, "asset_market_state", "state_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in no_trade_lock_summary.items():
+        add_metric(rows, "no_trade_lock", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in prealert_lifecycle.items():
+        if isinstance(value, dict):
+            continue
+        add_metric(rows, "prealert_lifecycle", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in candidate_tradeable.items():
+        if isinstance(value, dict):
+            continue
+        add_metric(rows, "candidate_tradeable", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in outcome_price_sources.get("source_distribution", {}).items():
+        add_metric(rows, "outcome_price_source", "source_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(rows, "telegram", "total_suppressed", telegram_suppression.get("total_suppressed"), sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(rows, "noise_reduction", "suppressed_ratio", noise_reduction.get("suppressed_ratio"), sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(rows, "noise_reduction", "state_changes_sent", noise_reduction.get("state_changes_sent"), sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(rows, "noise_reduction", "risk_blockers_sent", noise_reduction.get("risk_blockers_sent"), sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(rows, "noise_reduction", "candidates_sent", noise_reduction.get("candidates_sent"), sample_size=run_overview["lp_signal_rows"], window=window_label)
     add_metric(rows, "majors", "covered_major_pairs", "|".join(majors["covered_major_pairs"]), sample_size=len(majors["covered_major_pairs"]), window=window_label)
     add_metric(rows, "majors", "missing_major_pairs", "|".join(majors["missing_major_pairs"]), sample_size=len(majors["missing_major_pairs"]), window=window_label)
     add_metric(rows, "majors", "eth_signal_count", majors["eth_signal_count"], asset="ETH", sample_size=run_overview["lp_signal_rows"], window=window_label)
@@ -1667,6 +1891,13 @@ def build_markdown(
     sweeps: dict[str, Any],
     absorption: dict[str, Any],
     trade_actions: dict[str, Any],
+    asset_market_states: dict[str, Any],
+    no_trade_lock_summary: dict[str, Any],
+    prealert_lifecycle: dict[str, Any],
+    candidate_tradeable: dict[str, Any],
+    outcome_price_sources: dict[str, Any],
+    telegram_suppression: dict[str, Any],
+    noise_reduction: dict[str, Any],
     reversal: dict[str, Any],
     majors: dict[str, Any],
     archive_integrity: dict[str, Any],
@@ -1700,6 +1931,15 @@ def build_markdown(
         f"- trade action 分布：`{trade_actions['trade_action_distribution']}`；可追类总数 `long={trade_actions['long_chase_allowed_count']}` `short={trade_actions['short_chase_allowed_count']}`。"
     )
     lines.append(
+        f"- asset state 分布：`{asset_market_states['state_distribution']}`；state change sent=`{noise_reduction['state_changes_sent']}` risk blockers=`{noise_reduction['risk_blockers_sent']}` candidates=`{noise_reduction['candidates_sent']}`。"
+    )
+    lines.append(
+        f"- no-trade lock: entered=`{no_trade_lock_summary['lock_entered_count']}` suppressed=`{no_trade_lock_summary['suppressed_count']}` released=`{no_trade_lock_summary['release_count']}`。"
+    )
+    lines.append(
+        f"- candidate vs tradeable: candidate=`{candidate_tradeable['candidate_count']}` tradeable=`{candidate_tradeable['tradeable_count']}` 60s_source=`{outcome_price_sources['source_distribution']}`。"
+    )
+    lines.append(
         f"- majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。"
     )
     lines.append("")
@@ -1715,6 +1955,9 @@ def build_markdown(
     )
     lines.append(
         f"- outcome windows: `{quality_and_fastlane.get('outcome_window_status')}`。"
+    )
+    lines.append(
+        f"- telegram suppression: `{telegram_suppression.get('suppression_reasons')}`。"
     )
     lines.append("")
     lines.append("## 3. overnight 分析窗口")
@@ -1998,6 +2241,13 @@ def main() -> int:
     sweeps = compute_sweeps(lp_rows_window)
     absorption = compute_absorption(lp_rows_window)
     trade_actions = compute_trade_actions(lp_rows_window)
+    asset_market_states = compute_asset_market_states(lp_rows_window)
+    no_trade_lock_summary = compute_no_trade_lock_summary(lp_rows_window)
+    prealert_lifecycle = compute_prealert_lifecycle_summary(lp_rows_window)
+    candidate_tradeable = compute_candidate_tradeable_summary(lp_rows_window)
+    outcome_price_sources = compute_outcome_price_sources(lp_rows_window)
+    telegram_suppression = compute_telegram_suppression(lp_rows_window)
+    noise_reduction = compute_noise_reduction(lp_rows_window)
     reversal = compute_reversal_special(lp_rows_window)
     majors = compute_majors(lp_rows_window, cli_major_pool_coverage, runtime_config)
     archive = compute_archive_integrity(lp_rows_window, delivery_summary, cases_summary, followup_summary)
@@ -2033,6 +2283,13 @@ def main() -> int:
         sweeps,
         absorption,
         trade_actions,
+        asset_market_states,
+        no_trade_lock_summary,
+        prealert_lifecycle,
+        candidate_tradeable,
+        outcome_price_sources,
+        telegram_suppression,
+        noise_reduction,
         reversal,
         majors,
         archive,
@@ -2055,6 +2312,13 @@ def main() -> int:
         sweeps,
         absorption,
         trade_actions,
+        asset_market_states,
+        no_trade_lock_summary,
+        prealert_lifecycle,
+        candidate_tradeable,
+        outcome_price_sources,
+        telegram_suppression,
+        noise_reduction,
         majors,
         archive,
         scores,
@@ -2103,6 +2367,13 @@ def main() -> int:
         "sweep_summary": sweeps,
         "absorption_summary": absorption,
         "trade_action_summary": trade_actions,
+        "asset_market_state_summary": asset_market_states,
+        "no_trade_lock_summary": no_trade_lock_summary,
+        "prealert_lifecycle_summary": prealert_lifecycle,
+        "candidate_tradeable_summary": candidate_tradeable,
+        "outcome_price_source_summary": outcome_price_sources,
+        "telegram_suppression_summary": telegram_suppression,
+        "noise_reduction_summary": noise_reduction,
         "majors_coverage_summary": majors,
         "archive_integrity_summary": archive,
         "quality_outcome_fastlane_summary": quality_and_fastlane,

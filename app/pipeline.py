@@ -3,6 +3,7 @@ import hashlib
 from collections import defaultdict, deque
 
 from analyzer import BehaviorAnalyzer
+from asset_market_state import AssetMarketStateManager
 from asset_case_manager import AssetCaseManager
 from config import (
     ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
@@ -93,6 +94,7 @@ class SignalPipeline:
         archive_store=None,
         followup_tracker=None,
         asset_case_manager: AssetCaseManager | None = None,
+        asset_market_state_manager: AssetMarketStateManager | None = None,
         market_context_adapter=None,
         quality_manager: QualityManager | None = None,
     ) -> None:
@@ -107,6 +109,9 @@ class SignalPipeline:
         self.lp_analyzer = lp_analyzer or LPAnalyzer()
         self.liquidation_detector = liquidation_detector or LiquidationDetector()
         self.asset_case_manager = asset_case_manager or AssetCaseManager()
+        self.asset_market_state_manager = asset_market_state_manager or AssetMarketStateManager(
+            state_manager=state_manager,
+        )
         self.market_context_adapter = market_context_adapter or build_market_context_adapter()
         self.quality_manager = quality_manager or QualityManager(state_manager=state_manager)
         self.address_intelligence = address_intelligence
@@ -369,6 +374,11 @@ class SignalPipeline:
             outcome_tracking["move_before_alert_60s"] = payload.get("move_before_alert_60s")
             outcome_tracking["move_after_alert"] = payload.get("move_after_alert")
             outcome_tracking["time_to_confirm"] = payload.get("time_to_confirm")
+            outcome_tracking["outcome_price_source"] = payload.get("outcome_price_source")
+            outcome_tracking["outcome_price_start"] = payload.get("outcome_price_start")
+            outcome_tracking["outcome_price_end"] = payload.get("outcome_price_end")
+            outcome_tracking["outcome_window_status"] = payload.get("outcome_window_status")
+            outcome_tracking["outcome_failure_reason"] = payload.get("outcome_failure_reason")
             windows = dict(outcome_tracking.get("windows") or {})
             window_30s = dict(windows.get("30s") or {})
             window_30s.update({
@@ -982,13 +992,14 @@ class SignalPipeline:
             recent_signals=recent_trade_signals,
             conflict_window_sec=int(TRADE_ACTION_CONFLICT_WINDOW_SEC),
         )
+        tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
+        asset_market_state_payload = self.asset_market_state_manager.apply_lp_signal(event, signal)
         self.asset_case_manager.attach_runtime_context(
             event,
             signal,
             gate_metrics=gate_metrics,
         )
         self._register_trade_action_signal(event, signal)
-        tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
         return {
             "asset_case": asset_case_payload,
             "market_context": market_context_payload,
@@ -996,6 +1007,7 @@ class SignalPipeline:
             "lp_corrections": correction_payload,
             "prealert_diagnostics": prealert_payload,
             "trade_action": trade_action_payload,
+            "asset_market_state": asset_market_state_payload,
             "user_tier": tier_payload,
         }
 
@@ -1953,6 +1965,83 @@ class SignalPipeline:
                 archive_ts=archive_ts,
             )
             return None
+
+        if self._is_lp_event(event=event):
+            telegram_should_send = bool(
+                event.metadata.get("telegram_should_send")
+                if event.metadata.get("telegram_should_send") is not None
+                else signal.metadata.get("telegram_should_send")
+                if signal.metadata.get("telegram_should_send") is not None
+                else signal.context.get("telegram_should_send")
+            )
+            if not telegram_should_send:
+                suppression_reason = str(
+                    event.metadata.get("telegram_suppression_reason")
+                    or signal.metadata.get("telegram_suppression_reason")
+                    or signal.context.get("telegram_suppression_reason")
+                    or "asset_market_state_suppressed"
+                )
+                event.delivery_class = "drop"
+                event.delivery_reason = suppression_reason
+                signal.delivery_class = "drop"
+                signal.delivery_reason = suppression_reason
+                self._apply_lp_prealert_diagnostics(
+                    event,
+                    signal,
+                    gate_metrics=gate_decision.metrics,
+                    delivery_allowed=False,
+                    delivery_block_reason=suppression_reason,
+                )
+                self._apply_silent_reason(
+                    event=event,
+                    signal=signal,
+                    stage="asset_market_state",
+                    reason_code=suppression_reason,
+                    reason_detail=suppression_reason,
+                    behavior_case=behavior_case,
+                    gate_metrics=gate_decision.metrics,
+                    delivery_policy_allowed=bool(event.metadata.get("delivery_policy_allowed")),
+                    impact_gate_allowed=event.metadata.get("downstream_impact_gate_allowed"),
+                    cooldown_allowed=True,
+                    would_have_been_delivery_class=delivery_class,
+                )
+                self._archive_signal_state(
+                    signal,
+                    event,
+                    archive_status,
+                    archive_ts,
+                    sent_to_telegram=False,
+                    delivery_decision=suppression_reason,
+                )
+                self._archive_delivery_audit(
+                    event=event,
+                    signal=signal,
+                    behavior=behavior,
+                    gate_metrics=gate_decision.metrics,
+                    stage="asset_market_state",
+                    gate_reason=suppression_reason,
+                    archive_status=archive_status,
+                    archive_ts=archive_ts,
+                    audit_extras={
+                        "telegram_should_send": False,
+                        "telegram_suppression_reason": suppression_reason,
+                        "telegram_update_kind": str(
+                            event.metadata.get("telegram_update_kind")
+                            or signal.metadata.get("telegram_update_kind")
+                            or signal.context.get("telegram_update_kind")
+                            or "suppressed"
+                        ),
+                    },
+                )
+                if behavior_case is not None:
+                    self._archive_case_decision_followup(
+                        behavior_case=behavior_case,
+                        event=event,
+                        signal=signal,
+                        archive_status=archive_status,
+                        archive_ts=archive_ts,
+                    )
+                return None
 
         self._mark_entered_notifier()
         self._archive_delivery_audit(
@@ -3023,6 +3112,31 @@ class SignalPipeline:
             "adverse_by_direction_30s": lp_outcome_record.get("adverse_by_direction_30s"),
             "adverse_by_direction_60s": lp_outcome_record.get("adverse_by_direction_60s"),
             "adverse_by_direction_300s": lp_outcome_record.get("adverse_by_direction_300s"),
+            "outcome_price_source": str(
+                lp_outcome_record.get("outcome_price_source")
+                or outcome_tracking.get("outcome_price_source")
+                or ""
+            ),
+            "outcome_price_start": (
+                lp_outcome_record.get("outcome_price_start")
+                if lp_outcome_record.get("outcome_price_start") not in {None, ""}
+                else outcome_tracking.get("outcome_price_start")
+            ),
+            "outcome_price_end": (
+                lp_outcome_record.get("outcome_price_end")
+                if lp_outcome_record.get("outcome_price_end") not in {None, ""}
+                else outcome_tracking.get("outcome_price_end")
+            ),
+            "outcome_window_status": str(
+                lp_outcome_record.get("outcome_window_status")
+                or outcome_tracking.get("outcome_window_status")
+                or ""
+            ),
+            "outcome_failure_reason": str(
+                lp_outcome_record.get("outcome_failure_reason")
+                or outcome_tracking.get("outcome_failure_reason")
+                or ""
+            ),
             "outcome_windows": dict(lp_outcome_record.get("outcome_windows") or {}),
             "archive_written_at": int(archive_ts),
             "asset_case_key": str(
@@ -3182,6 +3296,210 @@ class SignalPipeline:
                 else signal_metadata.get("trade_action_requires_user_confirmation")
                 if signal_metadata.get("trade_action_requires_user_confirmation") is not None
                 else event_metadata.get("trade_action_requires_user_confirmation")
+            ),
+            "asset_market_state_key": str(
+                signal_context.get("asset_market_state_key")
+                or signal_metadata.get("asset_market_state_key")
+                or event_metadata.get("asset_market_state_key")
+                or ""
+            ),
+            "asset_market_state_label": str(
+                signal_context.get("asset_market_state_label")
+                or signal_metadata.get("asset_market_state_label")
+                or event_metadata.get("asset_market_state_label")
+                or ""
+            ),
+            "asset_market_state_reason": str(
+                signal_context.get("asset_market_state_reason")
+                or signal_metadata.get("asset_market_state_reason")
+                or event_metadata.get("asset_market_state_reason")
+                or ""
+            ),
+            "asset_market_state_confidence": float(
+                signal_context.get("asset_market_state_confidence")
+                or signal_metadata.get("asset_market_state_confidence")
+                or event_metadata.get("asset_market_state_confidence")
+                or 0.0
+            ),
+            "asset_market_state_changed": bool(
+                signal_context.get("asset_market_state_changed")
+                if signal_context.get("asset_market_state_changed") is not None
+                else signal_metadata.get("asset_market_state_changed")
+                if signal_metadata.get("asset_market_state_changed") is not None
+                else event_metadata.get("asset_market_state_changed")
+            ),
+            "previous_asset_market_state_key": str(
+                signal_context.get("previous_asset_market_state_key")
+                or signal_metadata.get("previous_asset_market_state_key")
+                or event_metadata.get("previous_asset_market_state_key")
+                or ""
+            ),
+            "asset_market_state_started_at": (
+                signal_context.get("asset_market_state_started_at")
+                if signal_context.get("asset_market_state_started_at") not in {None, ""}
+                else signal_metadata.get("asset_market_state_started_at")
+                if signal_metadata.get("asset_market_state_started_at") not in {None, ""}
+                else event_metadata.get("asset_market_state_started_at")
+            ),
+            "asset_market_state_updated_at": (
+                signal_context.get("asset_market_state_updated_at")
+                if signal_context.get("asset_market_state_updated_at") not in {None, ""}
+                else signal_metadata.get("asset_market_state_updated_at")
+                if signal_metadata.get("asset_market_state_updated_at") not in {None, ""}
+                else event_metadata.get("asset_market_state_updated_at")
+            ),
+            "asset_market_state_ttl_sec": (
+                signal_context.get("asset_market_state_ttl_sec")
+                if signal_context.get("asset_market_state_ttl_sec") not in {None, ""}
+                else signal_metadata.get("asset_market_state_ttl_sec")
+                if signal_metadata.get("asset_market_state_ttl_sec") not in {None, ""}
+                else event_metadata.get("asset_market_state_ttl_sec")
+            ),
+            "asset_market_state_evidence_pack": str(
+                signal_context.get("asset_market_state_evidence_pack")
+                or signal_metadata.get("asset_market_state_evidence_pack")
+                or event_metadata.get("asset_market_state_evidence_pack")
+                or ""
+            ),
+            "asset_market_state_required_confirmation": str(
+                signal_context.get("asset_market_state_required_confirmation")
+                or signal_metadata.get("asset_market_state_required_confirmation")
+                or event_metadata.get("asset_market_state_required_confirmation")
+                or ""
+            ),
+            "asset_market_state_invalidated_by": str(
+                signal_context.get("asset_market_state_invalidated_by")
+                or signal_metadata.get("asset_market_state_invalidated_by")
+                or event_metadata.get("asset_market_state_invalidated_by")
+                or ""
+            ),
+            "first_seen_stage": str(
+                signal_context.get("first_seen_stage")
+                or signal_metadata.get("first_seen_stage")
+                or event_metadata.get("first_seen_stage")
+                or ""
+            ),
+            "first_seen_at": (
+                signal_context.get("first_seen_at")
+                if signal_context.get("first_seen_at") not in {None, ""}
+                else signal_metadata.get("first_seen_at")
+                if signal_metadata.get("first_seen_at") not in {None, ""}
+                else event_metadata.get("first_seen_at")
+            ),
+            "prealert_lifecycle_state": str(
+                signal_context.get("prealert_lifecycle_state")
+                or signal_metadata.get("prealert_lifecycle_state")
+                or event_metadata.get("prealert_lifecycle_state")
+                or ""
+            ),
+            "prealert_expires_at": (
+                signal_context.get("prealert_expires_at")
+                if signal_context.get("prealert_expires_at") not in {None, ""}
+                else signal_metadata.get("prealert_expires_at")
+                if signal_metadata.get("prealert_expires_at") not in {None, ""}
+                else event_metadata.get("prealert_expires_at")
+            ),
+            "prealert_to_confirm_sec": (
+                signal_context.get("prealert_to_confirm_sec")
+                if signal_context.get("prealert_to_confirm_sec") not in {None, ""}
+                else signal_metadata.get("prealert_to_confirm_sec")
+                if signal_metadata.get("prealert_to_confirm_sec") not in {None, ""}
+                else event_metadata.get("prealert_to_confirm_sec")
+            ),
+            "prealert_visible_to_user": bool(
+                signal_context.get("prealert_visible_to_user")
+                if signal_context.get("prealert_visible_to_user") is not None
+                else signal_metadata.get("prealert_visible_to_user")
+                if signal_metadata.get("prealert_visible_to_user") is not None
+                else event_metadata.get("prealert_visible_to_user")
+            ),
+            "no_trade_lock_active": bool(
+                signal_context.get("no_trade_lock_active")
+                if signal_context.get("no_trade_lock_active") is not None
+                else signal_metadata.get("no_trade_lock_active")
+                if signal_metadata.get("no_trade_lock_active") is not None
+                else event_metadata.get("no_trade_lock_active")
+            ),
+            "no_trade_lock_reason": str(
+                signal_context.get("no_trade_lock_reason")
+                or signal_metadata.get("no_trade_lock_reason")
+                or event_metadata.get("no_trade_lock_reason")
+                or ""
+            ),
+            "no_trade_lock_started_at": (
+                signal_context.get("no_trade_lock_started_at")
+                if signal_context.get("no_trade_lock_started_at") not in {None, ""}
+                else signal_metadata.get("no_trade_lock_started_at")
+                if signal_metadata.get("no_trade_lock_started_at") not in {None, ""}
+                else event_metadata.get("no_trade_lock_started_at")
+            ),
+            "no_trade_lock_until": (
+                signal_context.get("no_trade_lock_until")
+                if signal_context.get("no_trade_lock_until") not in {None, ""}
+                else signal_metadata.get("no_trade_lock_until")
+                if signal_metadata.get("no_trade_lock_until") not in {None, ""}
+                else event_metadata.get("no_trade_lock_until")
+            ),
+            "no_trade_lock_conflict_score": float(
+                signal_context.get("no_trade_lock_conflict_score")
+                or signal_metadata.get("no_trade_lock_conflict_score")
+                or event_metadata.get("no_trade_lock_conflict_score")
+                or 0.0
+            ),
+            "no_trade_lock_conflicting_signals": list(
+                signal_context.get("no_trade_lock_conflicting_signals")
+                or signal_metadata.get("no_trade_lock_conflicting_signals")
+                or event_metadata.get("no_trade_lock_conflicting_signals")
+                or []
+            ),
+            "no_trade_lock_release_condition": str(
+                signal_context.get("no_trade_lock_release_condition")
+                or signal_metadata.get("no_trade_lock_release_condition")
+                or event_metadata.get("no_trade_lock_release_condition")
+                or ""
+            ),
+            "no_trade_lock_released_by": str(
+                signal_context.get("no_trade_lock_released_by")
+                or signal_metadata.get("no_trade_lock_released_by")
+                or event_metadata.get("no_trade_lock_released_by")
+                or ""
+            ),
+            "telegram_should_send": bool(
+                signal_context.get("telegram_should_send")
+                if signal_context.get("telegram_should_send") is not None
+                else signal_metadata.get("telegram_should_send")
+                if signal_metadata.get("telegram_should_send") is not None
+                else event_metadata.get("telegram_should_send")
+            ),
+            "telegram_suppression_reason": str(
+                signal_context.get("telegram_suppression_reason")
+                or signal_metadata.get("telegram_suppression_reason")
+                or event_metadata.get("telegram_suppression_reason")
+                or ""
+            ),
+            "telegram_state_change_reason": str(
+                signal_context.get("telegram_state_change_reason")
+                or signal_metadata.get("telegram_state_change_reason")
+                or event_metadata.get("telegram_state_change_reason")
+                or ""
+            ),
+            "telegram_update_kind": str(
+                signal_context.get("telegram_update_kind")
+                or signal_metadata.get("telegram_update_kind")
+                or event_metadata.get("telegram_update_kind")
+                or ""
+            ),
+            "suppressed_signal_count_in_state": int(
+                signal_context.get("suppressed_signal_count_in_state")
+                or signal_metadata.get("suppressed_signal_count_in_state")
+                or event_metadata.get("suppressed_signal_count_in_state")
+                or 0
+            ),
+            "last_telegram_state_key": str(
+                signal_context.get("last_telegram_state_key")
+                or signal_metadata.get("last_telegram_state_key")
+                or event_metadata.get("last_telegram_state_key")
+                or ""
             ),
             "lp_sweep_phase": str(
                 signal_context.get("lp_sweep_phase")
@@ -4527,6 +4845,66 @@ class SignalPipeline:
                 signal_context.get("market_context_latency_ms"),
                 signal_metadata.get("market_context_latency_ms"),
                 event_metadata.get("market_context_latency_ms"),
+            ),
+            "asset_market_state_key": _text(
+                signal_context.get("asset_market_state_key"),
+                signal_metadata.get("asset_market_state_key"),
+                event_metadata.get("asset_market_state_key"),
+            ),
+            "asset_market_state_label": _text(
+                signal_context.get("asset_market_state_label"),
+                signal_metadata.get("asset_market_state_label"),
+                event_metadata.get("asset_market_state_label"),
+            ),
+            "asset_market_state_changed": _bool_value(
+                signal_context.get("asset_market_state_changed"),
+                signal_metadata.get("asset_market_state_changed"),
+                event_metadata.get("asset_market_state_changed"),
+            ),
+            "previous_asset_market_state_key": _text(
+                signal_context.get("previous_asset_market_state_key"),
+                signal_metadata.get("previous_asset_market_state_key"),
+                event_metadata.get("previous_asset_market_state_key"),
+            ),
+            "no_trade_lock_active": _bool_value(
+                signal_context.get("no_trade_lock_active"),
+                signal_metadata.get("no_trade_lock_active"),
+                event_metadata.get("no_trade_lock_active"),
+            ),
+            "no_trade_lock_reason": _text(
+                signal_context.get("no_trade_lock_reason"),
+                signal_metadata.get("no_trade_lock_reason"),
+                event_metadata.get("no_trade_lock_reason"),
+            ),
+            "no_trade_lock_conflict_score": _num(
+                signal_context.get("no_trade_lock_conflict_score"),
+                signal_metadata.get("no_trade_lock_conflict_score"),
+                event_metadata.get("no_trade_lock_conflict_score"),
+            ),
+            "prealert_lifecycle_state": _text(
+                signal_context.get("prealert_lifecycle_state"),
+                signal_metadata.get("prealert_lifecycle_state"),
+                event_metadata.get("prealert_lifecycle_state"),
+            ),
+            "prealert_to_confirm_sec": _int_value(
+                signal_context.get("prealert_to_confirm_sec"),
+                signal_metadata.get("prealert_to_confirm_sec"),
+                event_metadata.get("prealert_to_confirm_sec"),
+            ),
+            "telegram_should_send": _bool_value(
+                signal_context.get("telegram_should_send"),
+                signal_metadata.get("telegram_should_send"),
+                event_metadata.get("telegram_should_send"),
+            ),
+            "telegram_suppression_reason": _text(
+                signal_context.get("telegram_suppression_reason"),
+                signal_metadata.get("telegram_suppression_reason"),
+                event_metadata.get("telegram_suppression_reason"),
+            ),
+            "telegram_update_kind": _text(
+                signal_context.get("telegram_update_kind"),
+                signal_metadata.get("telegram_update_kind"),
+                event_metadata.get("telegram_update_kind"),
             ),
             "lp_confirm_scope": _text(
                 signal_context.get("lp_confirm_scope"),

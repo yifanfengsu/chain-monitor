@@ -616,12 +616,19 @@ def _ensure_lp_trade_action(signal: Signal, event: Event, context: dict) -> dict
 
 def _trade_action_label(context: dict, event: Event) -> str:
     del event
-    return str(context.get("trade_action_label") or context.get("lp_stage_badge") or "观察")
+    return str(
+        context.get("asset_market_state_label")
+        or context.get("trade_action_label")
+        or context.get("lp_stage_badge")
+        or "观察"
+    )
 
 
 def _trade_action_conclusion(context: dict, event: Event) -> str:
     return str(
         context.get("trade_action_conclusion")
+        or context.get("asset_market_state_reason")
+        or context.get("asset_market_state_label")
         or context.get("lp_state_label")
         or context.get("market_state_label")
         or _headline_label(context, event)
@@ -630,7 +637,9 @@ def _trade_action_conclusion(context: dict, event: Event) -> str:
 
 def _trade_action_reason(context: dict, event: Event) -> str:
     return str(
-        context.get("trade_action_reason")
+        context.get("asset_market_state_reason")
+        or context.get("telegram_state_change_reason")
+        or context.get("trade_action_reason")
         or context.get("lp_market_read")
         or context.get("lp_meaning_brief")
         or _explanation_brief(context, event)
@@ -639,7 +648,8 @@ def _trade_action_reason(context: dict, event: Event) -> str:
 
 def _trade_action_required_confirmation(context: dict) -> str:
     return str(
-        context.get("trade_action_required_confirmation")
+        context.get("asset_market_state_required_confirmation")
+        or context.get("trade_action_required_confirmation")
         or context.get("lp_followup_check")
         or context.get("action_hint")
         or "等待更清晰的单方向确认"
@@ -648,7 +658,8 @@ def _trade_action_required_confirmation(context: dict) -> str:
 
 def _trade_action_invalidated_by(context: dict) -> str:
     return str(
-        context.get("trade_action_invalidated_by")
+        context.get("asset_market_state_invalidated_by")
+        or context.get("trade_action_invalidated_by")
         or context.get("lp_invalidation")
         or context.get("failure_conditions")
         or "无"
@@ -656,7 +667,12 @@ def _trade_action_invalidated_by(context: dict) -> str:
 
 
 def _trade_action_evidence_line(signal: Signal, context: dict) -> str:
-    evidence = str(context.get("trade_action_evidence_pack") or _lp_evidence_line(signal, context) or "").strip()
+    evidence = str(
+        context.get("asset_market_state_evidence_pack")
+        or context.get("trade_action_evidence_pack")
+        or _lp_evidence_line(signal, context)
+        or ""
+    ).strip()
     segments = [segment.strip() for segment in evidence.split("｜") if segment.strip()]
     return "｜".join(segments[:4]) if segments else "结构证据有限"
 

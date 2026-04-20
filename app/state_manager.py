@@ -370,6 +370,76 @@ class StateManager:
             expired.append(address)
         return expired
 
+    def _coerce_outcome_price(self, value) -> float | None:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if numeric <= 0.0 or math.isnan(numeric) or math.isinf(numeric):
+            return None
+        return numeric
+
+    def _select_lp_outcome_price(self, event: Event, signal, *, price_proxy: float | None = None) -> tuple[float | None, str, str]:
+        signal_context = getattr(signal, "context", {}) or {}
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        event_metadata = event.metadata or {}
+        venue = str(
+            signal_context.get("market_context_venue")
+            or signal_metadata.get("market_context_venue")
+            or event_metadata.get("market_context_venue")
+            or ""
+        ).strip().lower()
+        mark_price = self._coerce_outcome_price(
+            signal_context.get("perp_mark_price")
+            or signal_metadata.get("perp_mark_price")
+            or event_metadata.get("perp_mark_price")
+        )
+        index_price = self._coerce_outcome_price(
+            signal_context.get("perp_index_price")
+            or signal_metadata.get("perp_index_price")
+            or event_metadata.get("perp_index_price")
+        )
+        last_price = self._coerce_outcome_price(
+            signal_context.get("perp_last_price")
+            or signal_metadata.get("perp_last_price")
+            or event_metadata.get("perp_last_price")
+        )
+        spot_reference_price = self._coerce_outcome_price(
+            signal_context.get("spot_reference_price")
+            or signal_metadata.get("spot_reference_price")
+            or event_metadata.get("spot_reference_price")
+        )
+        if mark_price is not None:
+            if venue == "okx_perp":
+                return mark_price, "okx_mark", ""
+            if venue == "kraken_futures":
+                return mark_price, "kraken_mark_or_last", ""
+            return mark_price, "market_context_mark", ""
+        if index_price is not None:
+            if venue == "okx_perp":
+                return index_price, "okx_index", ""
+            return index_price, "market_context_index", ""
+        if last_price is not None:
+            if venue == "okx_perp":
+                return last_price, "okx_last", ""
+            if venue == "kraken_futures":
+                return last_price, "kraken_mark_or_last", ""
+            return last_price, "market_context_last", ""
+        if spot_reference_price is not None:
+            return spot_reference_price, "spot_reference_price", ""
+        proxy_price = self._coerce_outcome_price(price_proxy)
+        if proxy_price is not None:
+            return proxy_price, "pool_quote_proxy", ""
+        market_source = str(
+            signal_context.get("market_context_source")
+            or signal_metadata.get("market_context_source")
+            or event_metadata.get("market_context_source")
+            or "unavailable"
+        )
+        if market_source == "live_public":
+            return None, "unavailable", "live_market_price_unavailable"
+        return None, "unavailable", "market_context_and_pool_price_unavailable"
+
     def record_lp_outcome_alert(self, event: Event, signal) -> dict:
         if not self._is_lp_signal_candidate(event):
             return {}
@@ -392,6 +462,11 @@ class StateManager:
         direction = self._lp_direction_bucket(event)
         created_at = int(event.ts or time.time())
         price_proxy = self._lp_price_proxy(event)
+        outcome_price, outcome_price_source, outcome_failure_reason = self._select_lp_outcome_price(
+            event,
+            signal,
+            price_proxy=price_proxy,
+        )
         move_before_30s = self._lp_price_move_from_history(pool_address, price_proxy, created_at, 30)
         move_before_60s = self._lp_price_move_from_history(pool_address, price_proxy, created_at, 60)
         record_id = str(
@@ -440,11 +515,16 @@ class StateManager:
             "adverse_by_direction_30s": None,
             "adverse_by_direction_60s": None,
             "adverse_by_direction_300s": None,
-            "outcome_price_source": "pool_quote_proxy" if price_proxy > 0 else "unavailable",
+            "outcome_price_source": str(outcome_price_source or "unavailable"),
+            "outcome_price_start": round(float(outcome_price), 8) if outcome_price is not None else None,
+            "outcome_price_end": None,
+            "outcome_window_status": "pending" if outcome_price is not None else "unavailable",
+            "outcome_failure_reason": "" if outcome_price is not None else str(outcome_failure_reason or "anchor_price_unavailable"),
             "outcome_windows": self._init_lp_outcome_windows(
-                anchor_price=price_proxy,
-                price_source="pool_quote_proxy",
+                anchor_price=float(outcome_price or 0.0),
+                price_source=outcome_price_source,
                 created_at=created_at,
+                failure_reason=outcome_failure_reason,
             ),
             "asset_case_id": str(
                 getattr(signal, "context", {}).get("asset_case_id")
@@ -635,6 +715,18 @@ class StateManager:
                 or getattr(signal, "metadata", {}).get("lp_promoted_fastlane")
                 or event.metadata.get("lp_promoted_fastlane")
             ),
+            "asset_market_state_key": str(
+                getattr(signal, "context", {}).get("asset_market_state_key")
+                or getattr(signal, "metadata", {}).get("asset_market_state_key")
+                or event.metadata.get("asset_market_state_key")
+                or ""
+            ),
+            "asset_market_state_label": str(
+                getattr(signal, "context", {}).get("asset_market_state_label")
+                or getattr(signal, "metadata", {}).get("asset_market_state_label")
+                or event.metadata.get("asset_market_state_label")
+                or ""
+            ),
             "outcome_tracking_key": str(
                 (getattr(signal, "context", {}).get("outcome_tracking") or {}).get("record_id")
                 or (getattr(signal, "metadata", {}).get("outcome_tracking") or {}).get("record_id")
@@ -651,6 +743,9 @@ class StateManager:
             created_at=created_at,
             alert_stage=alert_stage,
             price_proxy=price_proxy,
+            current_price=outcome_price,
+            current_price_source=outcome_price_source,
+            current_failure_reason=outcome_failure_reason,
         )
         self._lp_outcome_records[record_id] = record
         self._lp_outcome_history.append(record)
@@ -2041,6 +2136,9 @@ class StateManager:
         created_at: int,
         alert_stage: str,
         price_proxy: float,
+        current_price: float | None,
+        current_price_source: str,
+        current_failure_reason: str,
     ) -> None:
         for payload in self._lp_outcome_records.values():
             if str(payload.get("pair_label") or "") != str(pair_label or ""):
@@ -2053,10 +2151,18 @@ class StateManager:
                 self._expire_lp_outcome_windows(payload, created_at=created_at)
                 continue
 
-            anchor_price = float(payload.get("anchor_price_proxy") or 0.0)
-            if anchor_price > 0 and price_proxy > 0:
-                move_after = (float(price_proxy) / anchor_price) - 1.0
+            anchor_price = self._coerce_outcome_price(
+                payload.get("outcome_price_start")
+                or payload.get("anchor_price_proxy")
+            )
+            resolved_current_price = self._coerce_outcome_price(current_price)
+            if anchor_price is not None and resolved_current_price is not None:
+                move_after = (float(resolved_current_price) / float(anchor_price)) - 1.0
                 payload["move_after_alert"] = round(float(move_after), 6)
+                payload["outcome_price_end"] = round(float(resolved_current_price), 8)
+                payload["outcome_price_source"] = str(current_price_source or payload.get("outcome_price_source") or "unavailable")
+                payload["outcome_window_status"] = "completed"
+                payload["outcome_failure_reason"] = ""
                 for window_sec in (30, 60, 300):
                     if age_sec >= window_sec:
                         self._complete_lp_outcome_window(
@@ -2064,7 +2170,8 @@ class StateManager:
                             window_sec=window_sec,
                             move_after=move_after,
                             completed_at=created_at,
-                            price_source="pool_quote_proxy",
+                            price_source=current_price_source,
+                            price_end=resolved_current_price,
                         )
                 follow_move = self._window_value(payload, 30, "direction_adjusted_move_after")
                 if follow_move is None:
@@ -2074,15 +2181,15 @@ class StateManager:
                 if follow_move is not None and abs(float(follow_move)) >= 0.002:
                     payload["followthrough_positive"] = bool(float(follow_move) > 0)
                     payload["followthrough_negative"] = bool(float(follow_move) < 0)
-            elif price_proxy <= 0:
+            elif resolved_current_price is None:
                 for window_sec in (30, 60, 300):
                     if age_sec >= window_sec:
                         self._mark_lp_outcome_window_unavailable(
                             payload,
                             window_sec=window_sec,
                             completed_at=created_at,
-                            reason="price_proxy_unavailable",
-                            price_source="unavailable",
+                            reason=current_failure_reason or "price_unavailable",
+                            price_source=current_price_source or "unavailable",
                         )
 
             previous_stage = str(payload.get("lp_alert_stage") or "")
@@ -2100,7 +2207,14 @@ class StateManager:
             ):
                 payload["reversal_after_climax"] = True
 
-    def _init_lp_outcome_windows(self, *, anchor_price: float, price_source: str, created_at: int) -> dict:
+    def _init_lp_outcome_windows(
+        self,
+        *,
+        anchor_price: float,
+        price_source: str,
+        created_at: int,
+        failure_reason: str = "",
+    ) -> dict:
         windows: dict[str, dict] = {}
         for window_sec in (30, 60, 300):
             windows[f"{window_sec}s"] = {
@@ -2113,8 +2227,10 @@ class StateManager:
                 "reversal": None,
                 "adverse_by_direction": None,
                 "price_source": str(price_source or "pool_quote_proxy"),
+                "price_start": round(float(anchor_price), 8) if anchor_price > 0 else None,
+                "price_end": None,
                 "completed_at": None if anchor_price > 0 else int(created_at),
-                "failure_reason": "" if anchor_price > 0 else "anchor_price_unavailable",
+                "failure_reason": "" if anchor_price > 0 else str(failure_reason or "anchor_price_unavailable"),
             }
         return windows
 
@@ -2157,6 +2273,7 @@ class StateManager:
         move_after: float,
         completed_at: int,
         price_source: str,
+        price_end: float,
     ) -> None:
         windows = payload.setdefault(
             "outcome_windows",
@@ -2176,11 +2293,17 @@ class StateManager:
             "reversal": bool(adjusted_move is not None and adjusted_move < -0.002),
             "adverse_by_direction": adverse,
             "price_source": str(price_source or "pool_quote_proxy"),
+            "price_start": window.get("price_start"),
+            "price_end": round(float(price_end), 8),
             "completed_at": int(completed_at),
             "failure_reason": "",
         })
         windows[key] = window
         payload["outcome_windows"] = windows
+        payload["outcome_price_end"] = round(float(price_end), 8)
+        payload["outcome_price_source"] = str(price_source or payload.get("outcome_price_source") or "unavailable")
+        payload["outcome_window_status"] = "completed"
+        payload["outcome_failure_reason"] = ""
         payload[f"move_after_alert_{key}"] = raw_move
         payload[f"raw_move_after_{key}"] = raw_move
         payload[f"direction_adjusted_move_after_{key}"] = window.get("direction_adjusted_move_after")
@@ -2206,11 +2329,15 @@ class StateManager:
         window.update({
             "status": "unavailable",
             "price_source": str(price_source or "unavailable"),
+            "price_end": None,
             "completed_at": int(completed_at),
             "failure_reason": str(reason or "price_unavailable"),
         })
         windows[key] = window
         payload["outcome_windows"] = windows
+        payload["outcome_price_source"] = str(price_source or payload.get("outcome_price_source") or "unavailable")
+        payload["outcome_window_status"] = "unavailable"
+        payload["outcome_failure_reason"] = str(reason or "price_unavailable")
 
     def _expire_lp_outcome_windows(self, payload: dict, *, created_at: int) -> None:
         windows = payload.setdefault(
@@ -2225,6 +2352,7 @@ class StateManager:
             item.update({
                 "status": "expired",
                 "price_source": str(item.get("price_source") or "pool_quote_proxy"),
+                "price_end": item.get("price_end"),
                 "completed_at": int(created_at),
                 "failure_reason": "window_elapsed_without_price_update",
             })
@@ -2232,6 +2360,9 @@ class StateManager:
             mutated = True
         if mutated:
             payload["outcome_windows"] = windows
+            payload["outcome_price_source"] = str(payload.get("outcome_price_source") or "unavailable")
+            payload["outcome_window_status"] = "expired"
+            payload["outcome_failure_reason"] = "window_elapsed_without_price_update"
 
     def _lp_direction_bucket(self, event: Event) -> str:
         intent_type = str(event.intent_type or "")

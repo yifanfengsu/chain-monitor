@@ -332,6 +332,32 @@
     "prealert_linked_case_count": 0,
     "single_signal_case_count": 18
   },
+  "asset_market_state_summary": {
+    "current_final_state_per_asset": {},
+    "state_change_count": 0,
+    "state_distribution": {},
+    "state_transitions": {}
+  },
+  "candidate_tradeable_summary": {
+    "candidate_count": 0,
+    "candidate_distribution": {},
+    "candidate_outcome_60s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "resolved_count": 0
+    },
+    "tradeable_count": 0,
+    "tradeable_distribution": {},
+    "tradeable_outcome_60s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "resolved_count": 0
+    }
+  },
   "cli_output_capture": {
     "quality_reports_csv_row_count": 9,
     "quality_reports_major_pool_coverage": {
@@ -1639,6 +1665,46 @@
       "unavailable_rate": 0.0
     }
   },
+  "no_trade_lock_summary": {
+    "lock_duration_max_sec": null,
+    "lock_duration_median_sec": null,
+    "lock_entered_count": 0,
+    "release_count": 0,
+    "suppressed_count": 0
+  },
+  "noise_reduction_summary": {
+    "candidates_sent": 0,
+    "raw_lp_signals": 138,
+    "risk_blockers_sent": 0,
+    "sent_telegram_lp_messages": 58,
+    "state_changes_sent": 0,
+    "suppressed_ratio": 0.5797
+  },
+  "outcome_price_source_summary": {
+    "failure_reasons": {
+      "window_elapsed_without_price_update": 285
+    },
+    "source_distribution": {
+      "pool_quote_proxy": 552
+    },
+    "window_status": {
+      "300s": {
+        "completed": 1,
+        "expired": 134,
+        "pending": 3
+      },
+      "30s": {
+        "completed": 65,
+        "expired": 71,
+        "pending": 2
+      },
+      "60s": {
+        "completed": 56,
+        "expired": 80,
+        "pending": 2
+      }
+    }
+  },
   "prealert_funnel_summary": {
     "candidate_reason_distribution": {
       "lp_prealert_supported_intent": 138
@@ -1661,6 +1727,15 @@
       "stage_budget_observe_tier2_tier_cap": 80
     },
     "top_prealert_gate_fail_reasons": {}
+  },
+  "prealert_lifecycle_summary": {
+    "active_count": 0,
+    "delivered_count": 0,
+    "distribution": {},
+    "expired_count": 0,
+    "merged_count": 0,
+    "suppressed_by_lock_count": 0,
+    "upgraded_count": 0
   },
   "reversal_special_cases": {
     "buy_after_300s": {
@@ -1845,6 +1920,26 @@
       "env_value": "true",
       "runtime_value": true
     },
+    "CHASE_ENABLE_AFTER_MIN_SAMPLES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 20
+    },
+    "CHASE_MAX_ADVERSE_60S_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.35
+    },
+    "CHASE_MIN_FOLLOWTHROUGH_60S_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.58
+    },
+    "CHASE_REQUIRE_OUTCOME_COMPLETION_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.7
+    },
     "DEFAULT_USER_TIER": {
       "env_present": true,
       "env_value": "research",
@@ -1967,10 +2062,55 @@
       "env_value": "kraken_futures",
       "runtime_value": "kraken_futures"
     },
+    "NO_TRADE_LOCK_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "NO_TRADE_LOCK_MIN_CONFLICT_SCORE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.55
+    },
+    "NO_TRADE_LOCK_TTL_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 300
+    },
+    "NO_TRADE_LOCK_WINDOW_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 120
+    },
     "OKX_PUBLIC_BASE_URL": {
       "env_present": false,
       "env_value": null,
       "runtime_value": "https://www.okx.com"
+    },
+    "PREALERT_MIN_LIFETIME_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 60
+    },
+    "TELEGRAM_ALLOW_CANDIDATES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "TELEGRAM_ALLOW_RISK_BLOCKERS": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "TELEGRAM_SEND_ONLY_STATE_CHANGES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "TELEGRAM_SUPPRESS_REPEAT_STATE_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 300
     },
     "TRADE_ACTION_CONFLICT_WINDOW_SEC": {
       "env_present": false,
@@ -2197,6 +2337,15 @@
       "adverse_rate": 0.25,
       "resolved_count": 8
     }
+  },
+  "telegram_suppression_summary": {
+    "messages_before_after_suppression_estimate": {
+      "raw_lp_signals": 138,
+      "sent_telegram_messages": 58
+    },
+    "suppression_reasons": {},
+    "total_suppressed": 0,
+    "update_kind_distribution": {}
   },
   "top_findings": [
     "主窗口为 2026-04-19 15:38:27 UTC 到 2026-04-20 01:21:42 UTC，持续 9.72h，包含 443 条 signals / 138 条 LP rows / 58 条已送达 LP 消息。",

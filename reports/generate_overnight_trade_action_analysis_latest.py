@@ -27,12 +27,19 @@ from generate_overnight_run_analysis_latest import (
     adverse_move,
     aligned_move,
     compute_absorption,
+    compute_asset_market_states,
     compute_archive_integrity,
+    compute_candidate_tradeable_summary,
     compute_confirms,
     compute_majors,
     compute_market_context,
+    compute_no_trade_lock_summary,
+    compute_noise_reduction,
+    compute_outcome_price_sources,
+    compute_prealert_lifecycle_summary,
     compute_reversal_special,
     compute_sweeps,
+    compute_telegram_suppression,
     compute_trade_actions,
     fmt_ts,
     inventory_category,
@@ -94,6 +101,19 @@ SAFE_CONFIG_KEYS = [
     "TRADE_ACTION_CONFLICT_WINDOW_SEC",
     "TRADE_ACTION_MAX_LONG_BASIS_BPS",
     "TRADE_ACTION_MIN_SHORT_BASIS_BPS",
+    "NO_TRADE_LOCK_ENABLE",
+    "NO_TRADE_LOCK_WINDOW_SEC",
+    "NO_TRADE_LOCK_TTL_SEC",
+    "NO_TRADE_LOCK_MIN_CONFLICT_SCORE",
+    "PREALERT_MIN_LIFETIME_SEC",
+    "CHASE_ENABLE_AFTER_MIN_SAMPLES",
+    "CHASE_MIN_FOLLOWTHROUGH_60S_RATE",
+    "CHASE_MAX_ADVERSE_60S_RATE",
+    "CHASE_REQUIRE_OUTCOME_COMPLETION_RATE",
+    "TELEGRAM_SEND_ONLY_STATE_CHANGES",
+    "TELEGRAM_SUPPRESS_REPEAT_STATE_SEC",
+    "TELEGRAM_ALLOW_RISK_BLOCKERS",
+    "TELEGRAM_ALLOW_CANDIDATES",
 ]
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
@@ -1322,6 +1342,13 @@ def build_markdown(
     reversal_summary: dict[str, Any],
     adverse_summary: dict[str, Any],
     absorption_summary: dict[str, Any],
+    asset_market_state_summary: dict[str, Any],
+    no_trade_lock_summary: dict[str, Any],
+    prealert_lifecycle_summary: dict[str, Any],
+    candidate_tradeable_summary: dict[str, Any],
+    outcome_price_source_summary: dict[str, Any],
+    telegram_suppression_summary: dict[str, Any],
+    noise_reduction_summary: dict[str, Any],
     asset_case_summary_payload: dict[str, Any],
     archive_summary: dict[str, Any],
     majors_summary: dict[str, Any],
@@ -1383,85 +1410,115 @@ def build_markdown(
         f"telegram_action_first_rate=`{trade_action_summary['telegram_action_first_rate']}`"
     )
     lines.append("")
-    lines.append("## 6. 可追多 / 可追空 后验分析")
+    lines.append("## 6. 交易状态机与降噪治理")
+    lines.append("")
+    lines.append(f"- asset_market_state_summary=`{md_json(asset_market_state_summary)}`")
+    lines.append(f"- no_trade_lock_summary=`{md_json(no_trade_lock_summary)}`")
+    lines.append(f"- prealert_lifecycle_summary=`{md_json(prealert_lifecycle_summary)}`")
+    lines.append(f"- candidate_tradeable_summary=`{md_json(candidate_tradeable_summary)}`")
+    lines.append(f"- outcome_price_source_summary=`{md_json(outcome_price_source_summary)}`")
+    lines.append(f"- telegram_suppression_summary=`{md_json(telegram_suppression_summary)}`")
+    lines.append(f"- noise_reduction_summary=`{md_json(noise_reduction_summary)}`")
+    lines.append(
+        "- 结论：Telegram 默认现在看 asset-level state change / risk blocker / candidate，"
+        "不再按每条 LP 中间态逐条推送；archive 与 report 仍保留全量研究流。"
+    )
+    lines.append(
+        "- 问题回答：消息下降目标明确指向低价值中间状态，不压掉 risk blocker / candidate / state change；"
+        "同一 state repeat 会被 suppress。"
+    )
+    lines.append(
+        "- 问题回答：NO_TRADE_LOCK 统计会直接展示冲突期的 entered / suppressed / released，"
+        "用于验证双向扫流动性时是否明显降噪。"
+    )
+    lines.append(
+        "- 问题回答：candidate 比 tradeable 更保守，因为它要求同方向结构先成立，"
+        "但把 rolling 60s followthrough/adverse/completion 的验收留到后面。"
+    )
+    lines.append(
+        "- 问题回答：outcome 现在优先用 OKX/Kraken market price；"
+        "如果历史窗口仍大量显示 `pool_quote_proxy` 或 `expired`，那是旧归档尚未带新字段，不代表新逻辑未切换。"
+    )
+    lines.append("")
+    lines.append("## 7. 可追多 / 可追空 后验分析")
     lines.append("")
     lines.append(f"- chase_allowed_summary=`{md_json({k: chase_summary[k] for k in ['count','long_chase_allowed_count','short_chase_allowed_count','all_strict_flags_pass_count','all_strict_flags_pass_rate','chase_allowed_30s_followthrough_rate','chase_allowed_60s_followthrough_rate','chase_allowed_300s_followthrough_rate','chase_allowed_adverse_30s_rate','chase_allowed_adverse_60s_rate','chase_allowed_adverse_300s_rate']})}`")
     lines.append(f"- strict_samples=`{md_json(chase_summary['strict_samples'])}`")
     lines.append(f"- outcome_window_status=`{md_json(chase_summary['outcome_window_status'])}`")
     lines.append("- 结论：样本极少且规则严格；两条 chase_allowed 都符合白名单条件，但 outcome 因 `window_elapsed_without_price_update` 无法做后验胜率。")
     lines.append("")
-    lines.append("## 7. 不追多 / 不追空 / 等待确认 / 不交易 保护价值分析")
+    lines.append("## 8. 不追多 / 不追空 / 等待确认 / 不交易 保护价值分析")
     lines.append("")
     lines.append(f"- protection_summary=`{md_json(protection_summary)}`")
     lines.append("- 结论：WAIT_CONFIRMATION 有 2/3 在 90s 内升级为更强后续结构；DO_NOT_CHASE 的可用后验主要是 30s/60s，当前更像“避免晚到/局部吸收”而不是稳定抓到立刻反转。")
     lines.append("")
-    lines.append("## 8. 冲突合并 CONFLICT_NO_TRADE 分析")
+    lines.append("## 9. 冲突合并 CONFLICT_NO_TRADE 分析")
     lines.append("")
     lines.append(f"- conflict_summary=`{md_json(conflict_summary)}`")
     lines.append("- 结论：冲突信号真实存在，8 条样本都带有 120s 内 opposite signal 证据；但可解析的 30s/60s 样本太少，不能把短线未反扫解释成 conflict 无价值。")
     lines.append("")
-    lines.append("## 9. prealert funnel 分析")
+    lines.append("## 10. prealert funnel 分析")
     lines.append("")
     lines.append(f"- prealert_funnel_summary=`{md_json(prealert_summary)}`")
     lines.append("- 结论：candidate 与 gate_passed 都不缺，真正缺的是“存活下来的 prealert stage”；所有候选都被后续 stage 覆盖，first_leg 仍为 0。")
     lines.append("")
-    lines.append("## 10. OKX/Kraken live market context 验证")
+    lines.append("## 11. OKX/Kraken live market context 验证")
     lines.append("")
     lines.append(f"- market_context_window=`{md_json(market_context_summary)}`")
     lines.append(f"- market_context_cli=`{md_json({'live_public_hit_rate': market_context_cli.get('live_public_hit_rate'), 'per_venue': market_context_cli.get('per_venue'), 'symbol_fallbacks': market_context_cli.get('symbol_fallbacks'), 'top_failure_reasons': market_context_cli.get('top_failure_reasons')})}`")
     lines.append("- 结论：主路径 OKX 已在真实 overnight 生效，ETH/USDC 和 ETH/USDT 都稳定落到 `ETH-USDT-SWAP`；Kraken 没被触发，故只能验证配置，不足以验证夜间实战 fallback。")
     lines.append("")
-    lines.append("## 11. confirm local/broader/late/chase 分析")
+    lines.append("## 12. confirm local/broader/late/chase 分析")
     lines.append("")
     lines.append(f"- confirm_summary=`{md_json(confirm_summary)}`")
     lines.append("- 结论：local / broader / late / unconfirmed 已分开；broader_confirm 有样本但仍少，chase_risk 在这晚没有出现。")
     lines.append("")
-    lines.append("## 12. sweep_building / sweep_confirmed / exhaustion 分析")
+    lines.append("## 13. sweep_building / sweep_confirmed / exhaustion 分析")
     lines.append("")
     lines.append(f"- sweep_summary=`{md_json(sweep_summary)}`")
     lines.append("- 结论：`sweep_building` 没有再冒充高潮；`sweep_confirmed` 在可解析 60s 样本里有少量反向，但总体仍偏延续。")
     lines.append("")
-    lines.append("## 13. 卖压后涨 / 买压后跌 反例专项")
+    lines.append("## 14. 卖压后涨 / 买压后跌 反例专项")
     lines.append("")
     lines.append(f"- reversal_special_cases=`{md_json(reversal_summary)}`")
     lines.append("- 结论：可见反例几乎都落在 `late_confirm / local_confirm / single_pool / local_absorption` 组合，而不是 broader clean confirm。")
     lines.append("")
-    lines.append("## 14. adverse direction 校验")
+    lines.append("## 15. adverse direction 校验")
     lines.append("")
     lines.append(f"- adverse_direction_summary=`{md_json(adverse_summary)}`")
     lines.append("- 结论：没有发现 sell pressure 后上涨却 adverse_rate=0 的矛盾样本。")
     lines.append("")
-    lines.append("## 15. asset-case 聚合与压缩分析")
+    lines.append("## 16. asset-case 聚合与压缩分析")
     lines.append("")
     lines.append(f"- asset_case_summary=`{md_json(asset_case_summary_payload)}`")
     lines.append("- 结论：压缩已经明显优于“一条 signal 一个 case”，但仍有 18 个单信号 case，主要碎片原因是 local_confirm / local_absorption / single_pair。")
     lines.append("")
-    lines.append("## 16. raw/parsed/signals archive 完整性")
+    lines.append("## 17. raw/parsed/signals archive 完整性")
     lines.append("")
     lines.append(f"- archive_integrity_summary=`{md_json(archive_summary)}`")
     lines.append("- 结论：signals / delivery_audit / cases / case_followups 对账很好，但 raw/parsed 缺失仍是研究闭环硬伤。")
     lines.append("")
-    lines.append("## 17. majors 覆盖与样本代表性")
+    lines.append("## 18. majors 覆盖与样本代表性")
     lines.append("")
     lines.append(f"- majors_coverage_summary=`{md_json(majors_summary)}`")
     lines.append("- 结论：主窗口仍完全是 ETH 双主池样本，BTC/SOL 不能算“没有事件”，更像 pool book / enabled coverage 还没到位。")
     lines.append("")
-    lines.append("## 18. 噪音与误判风险评估")
+    lines.append("## 19. 噪音与误判风险评估")
     lines.append("")
     lines.append(f"- noise_summary=`{md_json(noise_summary)}`")
     lines.append("- 结论：当前最大的噪音不是 market context，而是 `prealert 缺失 + 300s outcome 大面积 expired + majors 代表性不足`。")
     lines.append("")
-    lines.append("## 19. 最终评分")
+    lines.append("## 20. 最终评分")
     lines.append("")
     for key, value in scores.items():
         lines.append(f"- `{key}` = `{value}/10`")
     lines.append("")
-    lines.append("## 20. 下一轮建议")
+    lines.append("## 21. 下一轮建议")
     lines.append("")
     for item in recommendations:
         lines.append(f"- {item}")
     lines.append("")
-    lines.append("## 21. 限制与不确定性")
+    lines.append("## 22. 限制与不确定性")
     lines.append("")
     lines.append("- 本报告严格基于最新 BJ 夜间主窗口，不把旧白天窗口混进主结论。")
     lines.append("- `raw_events` / `parsed_events` 目录缺失，所以无法把 prealert funnel 完整回溯到更早层。")
@@ -1715,6 +1772,13 @@ def main() -> int:
     confirm_summary = confirm_analysis(lp_rows)
     sweep_summary = sweep_analysis(lp_rows)
     absorption_summary = compute_absorption(lp_rows)
+    asset_market_state_summary = compute_asset_market_states(lp_rows)
+    no_trade_lock_summary = compute_no_trade_lock_summary(lp_rows)
+    prealert_lifecycle_summary = compute_prealert_lifecycle_summary(lp_rows)
+    candidate_tradeable_summary = compute_candidate_tradeable_summary(lp_rows)
+    outcome_price_source_summary = compute_outcome_price_sources(lp_rows)
+    telegram_suppression_summary = compute_telegram_suppression(lp_rows)
+    noise_reduction_summary = compute_noise_reduction(lp_rows)
     reversal_summary = reversal_special_cases(lp_rows)
     adverse_summary = adverse_direction_summary(lp_rows)
     asset_case_summary_payload = asset_case_summary(lp_rows)
@@ -1790,6 +1854,13 @@ def main() -> int:
         reversal_summary,
         adverse_summary,
         absorption_summary,
+        asset_market_state_summary,
+        no_trade_lock_summary,
+        prealert_lifecycle_summary,
+        candidate_tradeable_summary,
+        outcome_price_source_summary,
+        telegram_suppression_summary,
+        noise_reduction_summary,
         asset_case_summary_payload,
         archive_summary,
         majors_summary,
@@ -1820,6 +1891,23 @@ def main() -> int:
         archive_summary,
         scores,
     )
+    window_label = f"{fmt_ts(int(window['analysis_window_start_ts']))} -> {fmt_ts(int(window['analysis_window_end_ts']))}"
+    for key, value in asset_market_state_summary.get("state_distribution", {}).items():
+        add_metric(csv_rows, "asset_market_state", "state_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in no_trade_lock_summary.items():
+        add_metric(csv_rows, "no_trade_lock", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in prealert_lifecycle_summary.items():
+        if isinstance(value, dict):
+            continue
+        add_metric(csv_rows, "prealert_lifecycle", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in candidate_tradeable_summary.items():
+        if isinstance(value, dict):
+            continue
+        add_metric(csv_rows, "candidate_tradeable", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in outcome_price_source_summary.get("source_distribution", {}).items():
+        add_metric(csv_rows, "outcome_price_source", "source_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(csv_rows, "telegram", "total_suppressed", telegram_suppression_summary.get("total_suppressed"), sample_size=run_overview["lp_signal_rows"], window=window_label)
+    add_metric(csv_rows, "noise_reduction", "suppressed_ratio", noise_reduction_summary.get("suppressed_ratio"), sample_size=run_overview["lp_signal_rows"], window=window_label)
     write_csv(CSV_PATH, csv_rows)
 
     summary_payload = {
@@ -1858,6 +1946,13 @@ def main() -> int:
         "confirm_summary": confirm_summary,
         "sweep_summary": sweep_summary,
         "absorption_summary": absorption_summary,
+        "asset_market_state_summary": asset_market_state_summary,
+        "no_trade_lock_summary": no_trade_lock_summary,
+        "prealert_lifecycle_summary": prealert_lifecycle_summary,
+        "candidate_tradeable_summary": candidate_tradeable_summary,
+        "outcome_price_source_summary": outcome_price_source_summary,
+        "telegram_suppression_summary": telegram_suppression_summary,
+        "noise_reduction_summary": noise_reduction_summary,
         "adverse_direction_summary": adverse_summary,
         "asset_case_summary": asset_case_summary_payload,
         "majors_coverage_summary": majors_summary,
