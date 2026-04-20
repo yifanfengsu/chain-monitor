@@ -677,7 +677,175 @@ def _trade_action_evidence_line(signal: Signal, context: dict) -> str:
     return "｜".join(segments[:4]) if segments else "结构证据有限"
 
 
+def _trade_opportunity_status(context: dict) -> str:
+    return str(context.get("trade_opportunity_status") or "").strip().upper()
+
+
+def _has_trade_opportunity(context: dict) -> bool:
+    return _trade_opportunity_status(context) in {"CANDIDATE", "VERIFIED", "BLOCKED", "INVALIDATED", "EXPIRED"}
+
+
+def _trade_opportunity_asset_label(context: dict) -> str:
+    return str(
+        context.get("asset_symbol")
+        or context.get("asset_case_label")
+        or context.get("pair_label")
+        or "未知资产"
+    )
+
+
+def _trade_opportunity_evidence(context: dict) -> str:
+    raw = context.get("trade_opportunity_evidence") or []
+    if isinstance(raw, list):
+        parts = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        parts = [segment.strip() for segment in str(raw).split("｜") if segment.strip()]
+    return "｜".join(parts[:4]) if parts else "结构证据有限"
+
+
+def _trade_opportunity_risk_level(context: dict) -> str:
+    status = _trade_opportunity_status(context)
+    flags = list(context.get("trade_opportunity_risk_flags") or [])
+    blocker = str(context.get("trade_opportunity_primary_blocker") or "")
+    if status == "BLOCKED":
+        return "高" if blocker in {"no_trade_lock", "direction_conflict", "data_gap", "sweep_exhaustion_risk"} else "中"
+    if len(flags) <= 1:
+        return "低"
+    if len(flags) <= 3:
+        return "中"
+    return "高"
+
+
+def _trade_opportunity_debug_line(context: dict) -> str:
+    components = context.get("trade_opportunity_score_components") or {}
+    history = context.get("trade_opportunity_history_snapshot") or {}
+    if not isinstance(components, dict):
+        components = {}
+    compact = []
+    for key in ("direction_confirmation", "market_context", "lp_structure", "quality_outcome", "risk_cleanliness"):
+        item = dict(components.get(key) or {})
+        if not item:
+            continue
+        compact.append(f"{key.split('_')[0]}={item.get('score')}")
+    return "｜".join(
+        [
+            f"调试：score_components={','.join(compact) or '-'}",
+            f"history={int(history.get('sample_size') or 0)}:{history.get('history_source') or 'none'}",
+            f"outcome_source={context.get('opportunity_outcome_source') or context.get('outcome_price_source') or 'unavailable'}",
+        ]
+    )
+
+
+def _trade_opportunity_blocker_headline(context: dict) -> tuple[str, str]:
+    side = str(context.get("trade_opportunity_side") or "NONE")
+    blocker = str(context.get("trade_opportunity_primary_blocker") or "")
+    if blocker == "no_trade_lock":
+        return "不交易", "不交易锁定"
+    if blocker == "direction_conflict":
+        return "不交易", "方向冲突锁定"
+    if blocker == "data_gap":
+        return "不交易", "数据缺口"
+    if blocker == "sweep_exhaustion_risk":
+        return ("不追多", "买方清扫后回吐风险") if side == "LONG" else ("不追空", "卖方清扫后反抽风险")
+    if blocker == "late_or_chase":
+        return ("不追多", "确认偏晚，追单风险高") if side == "LONG" else ("不追空", "确认偏晚，追单风险高")
+    if blocker == "crowded_basis":
+        return ("不追多", "basis 拥挤") if side == "LONG" else ("不追空", "basis 拥挤")
+    if blocker == "local_absorption":
+        return ("不追多", "局部买压被吸收") if side == "LONG" else ("不追空", "局部卖压被承接")
+    if blocker == "low_quality":
+        return "不交易", "质量不足"
+    if blocker == "recent_opposite_strong_signal":
+        return "不交易", "近期反向强信号"
+    return "不交易", "机会被阻止"
+
+
+def _trade_opportunity_blocker_labels(context: dict) -> str:
+    mapping = {
+        "no_trade_lock": "不交易锁定",
+        "direction_conflict": "方向冲突",
+        "data_gap": "数据缺口",
+        "sweep_exhaustion_risk": "清扫后回吐/反抽风险",
+        "late_or_chase": "确认偏晚 / 追单风险",
+        "crowded_basis": "basis 拥挤",
+        "local_absorption": "局部压力被吸收/承接",
+        "recent_opposite_strong_signal": "近期反向强信号",
+        "low_quality": "质量不足",
+        "history_samples_insufficient": "历史样本不足",
+        "history_followthrough_not_ready": "历史 followthrough 未稳定",
+        "history_completion_too_low": "历史 completion 偏低",
+        "history_adverse_too_high": "历史 adverse 偏高",
+        "history_completion_not_ready": "历史 completion 未稳定",
+        "history_adverse_not_ready": "历史 adverse 未稳定",
+        "alignment_lost": "原机会条件消失",
+    }
+    raw = list(context.get("trade_opportunity_blockers") or [])
+    if not raw:
+        raw = [str(context.get("trade_opportunity_primary_blocker") or "条件未过线")]
+    labels = [mapping.get(str(item), str(item)) for item in raw if str(item).strip()]
+    return " / ".join(labels[:3]) if labels else "条件未过线"
+
+
+def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> str:
+    status = _trade_opportunity_status(context)
+    side = str(context.get("trade_opportunity_side") or "NONE")
+    asset = _trade_opportunity_asset_label(context)
+    score = float(context.get("trade_opportunity_score") or 0.0)
+    confidence = str(context.get("trade_opportunity_confidence") or "low")
+    horizon = str(context.get("trade_opportunity_time_horizon") or "60s")
+    evidence = _trade_opportunity_evidence(context)
+    reason = str(context.get("trade_opportunity_reason") or "当前不满足机会条件。")
+    required_confirmation = str(context.get("trade_opportunity_required_confirmation") or "等待更清晰的确认。")
+    invalidation = str(context.get("trade_opportunity_invalidated_by") or "无")
+    user_tier = str(context.get("user_tier") or "research")
+    template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
+    show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
+
+    if status == "VERIFIED":
+        title = "多头机会" if side == "LONG" else "空头机会"
+        conclusion = "更广买压确认" if side == "LONG" else "更广卖压确认"
+        lines = [
+            f"{title}｜{asset}｜{conclusion}",
+            f"机会分：{score:.2f}｜置信：{'高' if confidence == 'high' else '中'}｜周期：{horizon}",
+            f"证据：{evidence}",
+            f"为什么：{reason}",
+            "说明：不是自动下单",
+            f"风险：{_trade_opportunity_risk_level(context)}｜失效：{invalidation}",
+        ]
+    elif status == "CANDIDATE":
+        title = "多头候选" if side == "LONG" else "空头候选"
+        conclusion = "更广买压出现，等待后验证明" if side == "LONG" else "更广卖压出现，等待后验证明"
+        lines = [
+            f"{title}｜{asset}｜{conclusion}",
+            f"机会分：{score:.2f}｜置信：{'中' if confidence != 'low' else '低'}｜状态：候选，不可盲追",
+            f"证据：{evidence}",
+            f"为什么：{reason}",
+            f"触发：{required_confirmation}｜风险：{_trade_opportunity_risk_level(context)}",
+        ]
+    elif status == "BLOCKED":
+        blocker_title, blocker_conclusion = _trade_opportunity_blocker_headline(context)
+        lines = [
+            f"{blocker_title}｜{asset}｜{blocker_conclusion}",
+            f"阻止原因：{_trade_opportunity_blocker_labels(context)}",
+            f"为什么：{reason}",
+            f"解除：{required_confirmation}",
+        ]
+    else:
+        state_title = "机会失效" if status == "INVALIDATED" else "机会过期"
+        state_conclusion = "此前的 verified 条件已消失" if status == "INVALIDATED" else "机会窗口已结束"
+        lines = [
+            f"{state_title}｜{asset}｜{state_conclusion}",
+            f"为什么：{reason}",
+            f"下一步：{required_confirmation}",
+        ]
+    if show_debug:
+        lines.append(_trade_opportunity_debug_line(context))
+    return _join_lines(lines)
+
+
 def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
+    if _has_trade_opportunity(context):
+        return _trade_opportunity_message(signal, event, context)
     context = _ensure_lp_trade_action(signal, event, context)
     pair_or_pool = _lp_case_label(context)
     action_label = _trade_action_label(context, event)

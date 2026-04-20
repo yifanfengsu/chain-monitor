@@ -594,6 +594,37 @@ def load_asset_case_cache() -> tuple[dict[str, Any], FileInventory]:
     return payload, inventory
 
 
+def load_trade_opportunity_cache() -> tuple[dict[str, Any], FileInventory]:
+    path = DATA_DIR / "trade_opportunities.cache.json"
+    if not path.exists():
+        return {}, FileInventory(str(path.relative_to(ROOT)), False, 0, None, None, "trade opportunity cache")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    opportunities = list(payload.get("opportunities") or [])
+    times: list[int] = []
+    generated_at = to_int(payload.get("generated_at"))
+    if generated_at is not None:
+        times.append(generated_at)
+    for row in opportunities:
+        for key in (
+            "trade_opportunity_created_at",
+            "trade_opportunity_expires_at",
+            "trade_opportunity_notifier_sent_at",
+            "opportunity_invalidated_at",
+        ):
+            ts = to_int(row.get(key))
+            if ts is not None:
+                times.append(ts)
+    inventory = FileInventory(
+        str(path.relative_to(ROOT)),
+        True,
+        len(opportunities),
+        min(times) if times else None,
+        max(times) if times else None,
+        "trade opportunity cache",
+    )
+    return payload, inventory
+
+
 def join_lp_rows(
     signal_rows: list[dict[str, Any]],
     quality_by_signal: dict[str, dict[str, Any]],
@@ -1453,6 +1484,145 @@ def compute_telegram_suppression(lp_rows: list[dict[str, Any]]) -> dict[str, Any
             "sent_telegram_messages": len(sent_rows),
         },
         "update_kind_distribution": dict(sorted(update_kinds.items())),
+    }
+
+
+def compute_trade_opportunities(
+    opportunity_cache: dict[str, Any] | None,
+    lp_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    cache_payload = dict(opportunity_cache or {})
+    opportunities = list(cache_payload.get("opportunities") or [])
+    if not opportunities and lp_rows:
+        for row in lp_rows:
+            if not str(row.get("trade_opportunity_id") or "").strip():
+                continue
+            opportunities.append(
+                {
+                    "trade_opportunity_id": row.get("trade_opportunity_id"),
+                    "trade_opportunity_status": row.get("trade_opportunity_status"),
+                    "trade_opportunity_status_at_creation": row.get("trade_opportunity_status_at_creation"),
+                    "trade_opportunity_key": row.get("trade_opportunity_key"),
+                    "trade_opportunity_side": row.get("trade_opportunity_side"),
+                    "trade_opportunity_score": row.get("trade_opportunity_score"),
+                    "trade_opportunity_primary_blocker": row.get("trade_opportunity_primary_blocker"),
+                    "trade_opportunity_history_snapshot": row.get("trade_opportunity_history_snapshot") or {},
+                    "opportunity_outcome_60s": row.get("opportunity_outcome_60s"),
+                    "opportunity_followthrough_60s": row.get("opportunity_followthrough_60s"),
+                    "opportunity_adverse_60s": row.get("opportunity_adverse_60s"),
+                    "opportunity_result_label": row.get("opportunity_result_label"),
+                    "telegram_suppression_reason": row.get("telegram_suppression_reason"),
+                    "trade_opportunity_created_at": row.get("trade_opportunity_created_at") or row.get("created_at") or row.get("archive_ts"),
+                    "asset_symbol": row.get("asset_symbol"),
+                }
+            )
+
+    def _created_status(row: dict[str, Any]) -> str:
+        return str(row.get("trade_opportunity_status_at_creation") or row.get("trade_opportunity_status") or "NONE")
+
+    def _result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        completed = [row for row in rows if str(row.get("opportunity_outcome_60s") or "") == "completed"]
+        followthrough = sum(1 for row in completed if row.get("opportunity_followthrough_60s") is True)
+        adverse = sum(1 for row in completed if row.get("opportunity_adverse_60s") is True)
+        expired = sum(1 for row in rows if str(row.get("opportunity_outcome_60s") or "") == "expired")
+        unavailable = sum(1 for row in rows if str(row.get("opportunity_outcome_60s") or "") == "unavailable")
+        return {
+            "count": len(rows),
+            "resolved_count": len(completed),
+            "followthrough_count": followthrough,
+            "followthrough_rate": rate(followthrough, len(completed)),
+            "adverse_count": adverse,
+            "adverse_rate": rate(adverse, len(completed)),
+            "expired_count": expired,
+            "unavailable_count": unavailable,
+            "result_distribution": dict(sorted(Counter(str(row.get("opportunity_result_label") or "") for row in rows).items())),
+        }
+
+    candidate_rows = [row for row in opportunities if _created_status(row) == "CANDIDATE"]
+    verified_rows = [row for row in opportunities if _created_status(row) == "VERIFIED"]
+    blocked_rows = [row for row in opportunities if _created_status(row) == "BLOCKED"]
+    none_rows = [row for row in opportunities if _created_status(row) == "NONE"]
+    score_values = [float(row.get("trade_opportunity_score") or 0.0) for row in opportunities if row.get("trade_opportunity_score") not in {None, ""}]
+    blocker_counter = Counter(
+        str(row.get("trade_opportunity_primary_blocker") or "")
+        for row in blocked_rows
+        if str(row.get("trade_opportunity_primary_blocker") or "").strip()
+    )
+    blocker_effective_rows = [row for row in blocked_rows if row.get("opportunity_adverse_60s") is True]
+    history_sufficient_count = sum(
+        1
+        for row in opportunities
+        if int((row.get("trade_opportunity_history_snapshot") or {}).get("sample_size") or 0) >= 20
+    )
+    why_no_opportunities: list[str] = []
+    if not verified_rows:
+        if blocker_counter:
+            why_no_opportunities.append(f"top_blockers={dict(blocker_counter.most_common(3))}")
+        if candidate_rows and not verified_rows:
+            why_no_opportunities.append("candidates_exist_but_verified_gate_not_open")
+        if not candidate_rows:
+            why_no_opportunities.append("no_candidate_reached_opportunity_score_gate")
+        if history_sufficient_count == 0:
+            why_no_opportunities.append("history_samples_insufficient")
+    threshold_suggestions: list[str] = []
+    if candidate_rows and not verified_rows:
+        threshold_suggestions.append("继续收集 candidate 60s 后验样本，优先把样本量补到 verified 门槛。")
+    if blocker_counter.get("data_gap", 0) > 0:
+        threshold_suggestions.append("先提升 live market context 覆盖率，而不是放松机会阈值。")
+    if blocker_counter.get("crowded_basis", 0) > 0:
+        threshold_suggestions.append("保持 basis 拥挤过滤，不建议为追单放松。")
+    max_history_sample = max(
+        (int((row.get("trade_opportunity_history_snapshot") or {}).get("sample_size") or 0) for row in opportunities),
+        default=0,
+    )
+    return {
+        "opportunity_summary": {
+            "candidates": len(candidate_rows),
+            "verified": len(verified_rows),
+            "blocked": len(blocked_rows),
+            "none": len(none_rows),
+        },
+        "opportunity_candidate_count": len(candidate_rows),
+        "opportunity_verified_count": len(verified_rows),
+        "opportunity_blocked_count": len(blocked_rows),
+        "opportunity_none_count": len(none_rows),
+        "opportunity_candidate_to_verified_rate": rate(len(verified_rows), len(candidate_rows)),
+        "opportunity_score_distribution": {
+            "median": median(score_values),
+            "p90": sorted(score_values)[int((len(score_values) - 1) * 0.9)] if score_values else None,
+        },
+        "opportunity_score_median": median(score_values),
+        "opportunity_score_p90": sorted(score_values)[int((len(score_values) - 1) * 0.9)] if score_values else None,
+        "candidate_outcome_60s": _result_summary(candidate_rows),
+        "verified_outcome_60s": _result_summary(verified_rows),
+        "opportunity_candidate_followthrough_60s_rate": _result_summary(candidate_rows)["followthrough_rate"],
+        "opportunity_candidate_adverse_60s_rate": _result_summary(candidate_rows)["adverse_rate"],
+        "opportunity_verified_followthrough_60s_rate": _result_summary(verified_rows)["followthrough_rate"],
+        "opportunity_verified_adverse_60s_rate": _result_summary(verified_rows)["adverse_rate"],
+        "blocker_effectiveness": {
+            "count": len(blocked_rows),
+            "avoided_adverse_count": len(blocker_effective_rows),
+            "avoided_adverse_rate": rate(len(blocker_effective_rows), len(blocked_rows)),
+        },
+        "opportunity_blocker_avoided_adverse_rate": rate(len(blocker_effective_rows), len(blocked_rows)),
+        "opportunity_budget_suppressed_count": sum(
+            1 for row in opportunities if str(row.get("telegram_suppression_reason") or "") == "opportunity_budget_exhausted"
+        ),
+        "opportunity_cooldown_suppressed_count": sum(
+            1 for row in opportunities if str(row.get("telegram_suppression_reason") or "") == "opportunity_cooldown_active"
+        ),
+        "opportunity_hard_blocker_distribution": dict(sorted(blocker_counter.items())),
+        "opportunity_history_sample_sufficiency_rate": rate(history_sufficient_count, len(opportunities)),
+        "opportunity_false_positive_analysis": {
+            "verified_adverse_count": _result_summary(verified_rows)["adverse_count"],
+            "candidate_adverse_count": _result_summary(candidate_rows)["adverse_count"],
+            "verified_expired_count": _result_summary(verified_rows)["expired_count"],
+        },
+        "why_no_opportunities": why_no_opportunities or ["verified_opportunities_present"],
+        "top_blockers": dict(blocker_counter.most_common(5)),
+        "next_threshold_suggestions": threshold_suggestions,
+        "samples_until_verified_open": max(20 - max_history_sample, 0),
+        "rolling_stats": dict(cache_payload.get("rolling_stats") or {}),
     }
 
 

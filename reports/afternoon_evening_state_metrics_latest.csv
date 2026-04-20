@@ -74,6 +74,22 @@ candidate_tradeable,candidate_followthrough_60s_rate,,,,,,1.0,137,2026-04-20 05:
 candidate_tradeable,legacy_chase_action_rows,,,,,,4,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
 candidate_tradeable,legacy_chase_action_delivered_rows,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
 candidate_tradeable,candidate_distribution,,,,,LONG_CANDIDATE,4,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_candidate_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_verified_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_blocked_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_none_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_candidate_to_verified_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_score_median,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_score_p90,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_candidate_followthrough_60s_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_candidate_adverse_60s_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_verified_followthrough_60s_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_verified_adverse_60s_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_blocker_avoided_adverse_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_budget_suppressed_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_cooldown_suppressed_count,,,,,,0,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,opportunity_history_sample_sufficiency_rate,,,,,,,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
+trade_opportunity,samples_until_verified_open,,,,,,20,137,2026-04-20 05:10:04 UTC -> 2026-04-20 12:32:31 UTC,
 outcome,30s_status,,,,,,82,137,30s,completed
 outcome,30s_status,,,,,,50,137,30s,expired
 outcome,30s_status,,,,,,5,137,30s,pending

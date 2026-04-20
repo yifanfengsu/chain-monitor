@@ -37,6 +37,7 @@ from generate_overnight_run_analysis_latest import (
     compute_noise_reduction,
     compute_outcome_price_sources,
     compute_prealert_lifecycle_summary,
+    compute_trade_opportunities,
     compute_reversal_special,
     compute_sweeps,
     compute_telegram_suppression,
@@ -46,6 +47,7 @@ from generate_overnight_run_analysis_latest import (
     inventory_ndjson,
     join_lp_rows,
     load_asset_case_cache,
+    load_trade_opportunity_cache,
     load_quality_cache,
     load_signals,
     median,
@@ -114,6 +116,18 @@ SAFE_CONFIG_KEYS = [
     "TELEGRAM_SUPPRESS_REPEAT_STATE_SEC",
     "TELEGRAM_ALLOW_RISK_BLOCKERS",
     "TELEGRAM_ALLOW_CANDIDATES",
+    "OPPORTUNITY_ENABLE",
+    "OPPORTUNITY_REQUIRE_LIVE_CONTEXT",
+    "OPPORTUNITY_REQUIRE_BROADER_CONFIRM",
+    "OPPORTUNITY_REQUIRE_OUTCOME_HISTORY",
+    "OPPORTUNITY_MIN_CANDIDATE_SCORE",
+    "OPPORTUNITY_MIN_VERIFIED_SCORE",
+    "OPPORTUNITY_MIN_HISTORY_SAMPLES",
+    "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE",
+    "OPPORTUNITY_MAX_60S_ADVERSE_RATE",
+    "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
+    "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
+    "OPPORTUNITY_COOLDOWN_SEC",
 ]
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
@@ -1349,6 +1363,7 @@ def build_markdown(
     outcome_price_source_summary: dict[str, Any],
     telegram_suppression_summary: dict[str, Any],
     noise_reduction_summary: dict[str, Any],
+    opportunity_summary: dict[str, Any],
     asset_case_summary_payload: dict[str, Any],
     archive_summary: dict[str, Any],
     majors_summary: dict[str, Any],
@@ -1408,6 +1423,24 @@ def build_markdown(
     lines.append(
         f"- trade_action_present_rate=`{trade_action_summary['trade_action_present_rate']}` "
         f"telegram_action_first_rate=`{trade_action_summary['telegram_action_first_rate']}`"
+    )
+    lines.append("")
+    lines.append("## 5A. trade_opportunity 总览")
+    lines.append("")
+    lines.append(f"- opportunity_summary=`{md_json(opportunity_summary.get('opportunity_summary') or {})}`")
+    lines.append(f"- opportunity_score_distribution=`{md_json(opportunity_summary.get('opportunity_score_distribution') or {})}`")
+    lines.append(f"- candidate_outcome_60s=`{md_json(opportunity_summary.get('candidate_outcome_60s') or {})}`")
+    lines.append(f"- verified_outcome_60s=`{md_json(opportunity_summary.get('verified_outcome_60s') or {})}`")
+    lines.append(f"- blocker_effectiveness=`{md_json(opportunity_summary.get('blocker_effectiveness') or {})}`")
+    lines.append(f"- why_no_opportunities=`{md_json(opportunity_summary.get('why_no_opportunities') or [])}`")
+    lines.append(f"- top_blockers=`{md_json(opportunity_summary.get('top_blockers') or {})}`")
+    lines.append(
+        "- 问题回答：如果没有机会，优先看 `why_no_opportunities` / `top_blockers` / `samples_until_verified_open`，"
+        "它们会直接解释是历史样本不足、data gap、冲突还是质量阈值导致。"
+    )
+    lines.append(
+        "- 问题回答：如果 verified 机会存在，直接和 candidate/blocked 的 60s followthrough/adverse 对比，"
+        "用来验证机会是否真的优于普通信号。"
     )
     lines.append("")
     lines.append("## 6. 交易状态机与降噪治理")
@@ -1723,6 +1756,7 @@ def main() -> int:
     signal_rows, signal_inventory = load_signals()
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
     asset_case_cache, asset_case_inventory = load_asset_case_cache()
+    trade_opportunity_cache, trade_opportunity_inventory = load_trade_opportunity_cache()
     window = choose_latest_overnight_window(signal_rows, inventories)
 
     window_signal_rows, _, lp_rows = join_lp_rows(
@@ -1778,6 +1812,7 @@ def main() -> int:
     candidate_tradeable_summary = compute_candidate_tradeable_summary(lp_rows)
     outcome_price_source_summary = compute_outcome_price_sources(lp_rows)
     telegram_suppression_summary = compute_telegram_suppression(lp_rows)
+    opportunity_summary = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
     noise_reduction_summary = compute_noise_reduction(lp_rows)
     reversal_summary = reversal_special_cases(lp_rows)
     adverse_summary = adverse_direction_summary(lp_rows)
@@ -1835,6 +1870,7 @@ def main() -> int:
             data_sources.append(asdict(item))
     data_sources.append(asdict(asset_case_inventory))
     data_sources.append(asdict(quality_inventory))
+    data_sources.append(asdict(trade_opportunity_inventory))
 
     markdown = build_markdown(
         data_sources,
@@ -1861,6 +1897,7 @@ def main() -> int:
         outcome_price_source_summary,
         telegram_suppression_summary,
         noise_reduction_summary,
+        opportunity_summary,
         asset_case_summary_payload,
         archive_summary,
         majors_summary,
@@ -1904,6 +1941,10 @@ def main() -> int:
         if isinstance(value, dict):
             continue
         add_metric(csv_rows, "candidate_tradeable", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in opportunity_summary.items():
+        if isinstance(value, dict) or isinstance(value, list):
+            continue
+        add_metric(csv_rows, "trade_opportunity", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
     for key, value in outcome_price_source_summary.get("source_distribution", {}).items():
         add_metric(csv_rows, "outcome_price_source", "source_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
     add_metric(csv_rows, "telegram", "total_suppressed", telegram_suppression_summary.get("total_suppressed"), sample_size=run_overview["lp_signal_rows"], window=window_label)
@@ -1950,6 +1991,7 @@ def main() -> int:
         "no_trade_lock_summary": no_trade_lock_summary,
         "prealert_lifecycle_summary": prealert_lifecycle_summary,
         "candidate_tradeable_summary": candidate_tradeable_summary,
+        "trade_opportunity_summary": opportunity_summary,
         "outcome_price_source_summary": outcome_price_source_summary,
         "telegram_suppression_summary": telegram_suppression_summary,
         "noise_reduction_summary": noise_reduction_summary,
@@ -1974,6 +2016,7 @@ def main() -> int:
             "quality_reports_csv_row_count": max(0, len([line for line in cli_csv.splitlines() if line.strip()]) - 1),
         },
         "asset_case_cache_snapshot": asset_case_cache,
+        "trade_opportunity_cache_snapshot": trade_opportunity_cache,
     }
     JSON_PATH.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

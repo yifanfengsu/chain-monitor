@@ -274,6 +274,18 @@
       "window_record_count": "",
       "after_cutoff_count": "",
       "notes": "asset market state cache"
+    },
+    {
+      "path": "data/trade_opportunities.cache.json",
+      "exists": false,
+      "record_count": 0,
+      "start_utc": "n/a",
+      "end_utc": "n/a",
+      "start_beijing": "n/a",
+      "end_beijing": "n/a",
+      "window_record_count": "",
+      "after_cutoff_count": "",
+      "notes": "trade opportunity cache"
     }
   ],
   "runtime_config_summary": {
@@ -421,6 +433,66 @@
     },
     "CHASE_REQUIRE_OUTCOME_COMPLETION_RATE": {
       "runtime_value": 0.7,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_ENABLE": {
+      "runtime_value": true,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_REQUIRE_LIVE_CONTEXT": {
+      "runtime_value": true,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_REQUIRE_BROADER_CONFIRM": {
+      "runtime_value": true,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_REQUIRE_OUTCOME_HISTORY": {
+      "runtime_value": true,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MIN_CANDIDATE_SCORE": {
+      "runtime_value": 0.68,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MIN_VERIFIED_SCORE": {
+      "runtime_value": 0.78,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MIN_HISTORY_SAMPLES": {
+      "runtime_value": 20,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE": {
+      "runtime_value": 0.58,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MAX_60S_ADVERSE_RATE": {
+      "runtime_value": 0.35,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE": {
+      "runtime_value": 0.7,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR": {
+      "runtime_value": 2,
+      "env_present": false,
+      "env_value": null
+    },
+    "OPPORTUNITY_COOLDOWN_SEC": {
+      "runtime_value": 900,
       "env_present": false,
       "env_value": null
     }
@@ -1291,6 +1363,74 @@
     ],
     "legacy_chase_action_rows": 4,
     "legacy_chase_action_delivered_rows": 0
+  },
+  "trade_opportunity_summary": {
+    "opportunity_summary": {
+      "candidates": 0,
+      "verified": 0,
+      "blocked": 0,
+      "none": 0
+    },
+    "opportunity_candidate_count": 0,
+    "opportunity_verified_count": 0,
+    "opportunity_blocked_count": 0,
+    "opportunity_none_count": 0,
+    "opportunity_candidate_to_verified_rate": null,
+    "opportunity_score_distribution": {
+      "median": null,
+      "p90": null
+    },
+    "opportunity_score_median": null,
+    "opportunity_score_p90": null,
+    "candidate_outcome_60s": {
+      "count": 0,
+      "resolved_count": 0,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "expired_count": 0,
+      "unavailable_count": 0,
+      "result_distribution": {}
+    },
+    "verified_outcome_60s": {
+      "count": 0,
+      "resolved_count": 0,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "expired_count": 0,
+      "unavailable_count": 0,
+      "result_distribution": {}
+    },
+    "opportunity_candidate_followthrough_60s_rate": null,
+    "opportunity_candidate_adverse_60s_rate": null,
+    "opportunity_verified_followthrough_60s_rate": null,
+    "opportunity_verified_adverse_60s_rate": null,
+    "blocker_effectiveness": {
+      "count": 0,
+      "avoided_adverse_count": 0,
+      "avoided_adverse_rate": null
+    },
+    "opportunity_blocker_avoided_adverse_rate": null,
+    "opportunity_budget_suppressed_count": 0,
+    "opportunity_cooldown_suppressed_count": 0,
+    "opportunity_hard_blocker_distribution": {},
+    "opportunity_history_sample_sufficiency_rate": null,
+    "opportunity_false_positive_analysis": {
+      "verified_adverse_count": 0,
+      "candidate_adverse_count": 0,
+      "verified_expired_count": 0
+    },
+    "why_no_opportunities": [
+      "no_candidate_reached_opportunity_score_gate",
+      "history_samples_insufficient"
+    ],
+    "top_blockers": {},
+    "next_threshold_suggestions": [],
+    "samples_until_verified_open": 20,
+    "rolling_stats": {}
   },
   "outcome_source_summary": {
     "outcome_30s_completed_rate": 0.5985,
@@ -2390,6 +2530,7 @@
     "prioritize enabling and validating BTC/SOL major pools before expanding any long-tail coverage."
   ],
   "limitations": [
+    "missing data sources: ['data/trade_opportunities.cache.json']",
     "selected window contains too few prealert-stage rows to fully validate the new prealert lifecycle on its own.",
     "selected window contains no TRADEABLE_* states, so candidate-to-tradeable promotion is only validated negatively (blocked), not positively (triggered).",
     "30s outcome completion is still incomplete enough that very short-term reversal conclusions must stay conservative.",
@@ -2833,7 +2974,7 @@
       "limit": null,
       "top_n": 10
     },
-    "generated_at": 1776691106,
+    "generated_at": 1776695806,
     "overall": {
       "actionable": true,
       "climax_count": 192,

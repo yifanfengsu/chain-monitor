@@ -30,6 +30,7 @@
 - `data/lp_quality_stats.cache.json` | records=`655` | range_utc=`2026-04-17 06:16:14 UTC -> 2026-04-20 12:21:12 UTC` | range_bj=`2026-04-17 14:16:14 UTC+08:00 -> 2026-04-20 20:21:12 UTC+08:00` | window_records=`` | note=`quality stats cache`
 - `data/asset_cases.cache.json` | records=`1` | range_utc=`2026-04-20 12:17:51 UTC -> 2026-04-20 12:21:10 UTC` | range_bj=`2026-04-20 20:17:51 UTC+08:00 -> 2026-04-20 20:21:10 UTC+08:00` | window_records=`` | note=`asset case snapshot cache`
 - `data/asset_market_states.cache.json` | records=`1` | range_utc=`2026-04-20 05:10:15 UTC -> 2026-04-20 12:21:12 UTC` | range_bj=`2026-04-20 13:10:15 UTC+08:00 -> 2026-04-20 20:21:12 UTC+08:00` | window_records=`` | note=`asset market state cache`
+- `data/trade_opportunities.cache.json` | records=`0` | range_utc=`n/a -> n/a` | range_bj=`n/a -> n/a` | window_records=`` | note=`trade opportunity cache`
 
 ## 3. 北京时间下午到晚上分析窗口
 
@@ -71,6 +72,18 @@
 - `CHASE_MIN_FOLLOWTHROUGH_60S_RATE` = `0.58`
 - `CHASE_MAX_ADVERSE_60S_RATE` = `0.35`
 - `CHASE_REQUIRE_OUTCOME_COMPLETION_RATE` = `0.7`
+- `OPPORTUNITY_ENABLE` = `True`
+- `OPPORTUNITY_REQUIRE_LIVE_CONTEXT` = `True`
+- `OPPORTUNITY_REQUIRE_BROADER_CONFIRM` = `True`
+- `OPPORTUNITY_REQUIRE_OUTCOME_HISTORY` = `True`
+- `OPPORTUNITY_MIN_CANDIDATE_SCORE` = `0.68`
+- `OPPORTUNITY_MIN_VERIFIED_SCORE` = `0.78`
+- `OPPORTUNITY_MIN_HISTORY_SAMPLES` = `20`
+- `OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE` = `0.58`
+- `OPPORTUNITY_MAX_60S_ADVERSE_RATE` = `0.35`
+- `OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE` = `0.7`
+- `OPPORTUNITY_MAX_PER_ASSET_PER_HOUR` = `2`
+- `OPPORTUNITY_COOLDOWN_SEC` = `900`
 
 ## 5. asset-level market state 总览
 
@@ -125,6 +138,18 @@
 - `candidate_adverse_60s_rate=0.0`
 - `legacy_chase_action_rows=4`
 - `primary_tradeable_blockers=['candidate_sample_count_below_min_samples(4<20)']`
+
+## 9A. trade_opportunity 分析
+
+- `opportunity_summary={'candidates': 0, 'verified': 0, 'blocked': 0, 'none': 0}`
+- `opportunity_score_median=None` `opportunity_score_p90=None`
+- `candidate_outcome_60s={'count': 0, 'resolved_count': 0, 'followthrough_count': 0, 'followthrough_rate': None, 'adverse_count': 0, 'adverse_rate': None, 'expired_count': 0, 'unavailable_count': 0, 'result_distribution': {}}`
+- `verified_outcome_60s={'count': 0, 'resolved_count': 0, 'followthrough_count': 0, 'followthrough_rate': None, 'adverse_count': 0, 'adverse_rate': None, 'expired_count': 0, 'unavailable_count': 0, 'result_distribution': {}}`
+- `blocker_effectiveness={'count': 0, 'avoided_adverse_count': 0, 'avoided_adverse_rate': None}`
+- `opportunity_budget_suppressed_count=0` `opportunity_cooldown_suppressed_count=0`
+- `why_no_opportunities=['no_candidate_reached_opportunity_score_gate', 'history_samples_insufficient']`
+- `top_blockers={}`
+- `next_threshold_suggestions=[]`
 
 ## 10. outcome price source 与 30s/60s/300s 分析
 
@@ -214,6 +239,7 @@
 
 ## 19. 限制与不确定性
 
+- missing data sources: ['data/trade_opportunities.cache.json']
 - selected window contains too few prealert-stage rows to fully validate the new prealert lifecycle on its own.
 - selected window contains no TRADEABLE_* states, so candidate-to-tradeable promotion is only validated negatively (blocked), not positively (triggered).
 - 30s outcome completion is still incomplete enough that very short-term reversal conclusions must stay conservative.

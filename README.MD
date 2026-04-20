@@ -41,6 +41,7 @@ CLMM replay fixture 分两层：
 - outcome / quality：`app/quality_manager.py` 基于 `state_manager` 里的 `lp_alert_outcome_v1` 滚动记录计算 `pool_quality_score / pair_quality_score / asset_case_quality_score / prealert_precision_score / climax_reversal_score / fastlane_roi_score`，并把 rolling outcome / ops summary 持久化到 `data/lp_quality_stats.cache.json`
 - trade action layer：`app/trade_action.py` 把已有 LP stage / sweep / broader-confirm / live market context / quality / asset-case 聚合成 trader-facing `trade_action_*` 字段；Telegram 第一行优先显示 `可顺势追多 / 可顺势追空 / 等待确认 / 不追多 / 不追空 / 不交易 / 数据缺口，不交易`
 - asset market state layer：`app/asset_market_state.py` 在 `trade_action` 之上新增 asset-level 交易状态机；默认持久化当前资产状态、prealert lifecycle、`NO_TRADE_LOCK` 和 Telegram suppression，使 Telegram 只在状态变化 / 风险阻止 / 候选状态时发声，而 archive/report 继续保留全量研究流
+- trade opportunity layer：`app/trade_opportunity.py` 在 `trade_action + asset_market_state` 之上新增最终机会裁决层；它不重写原状态机，只负责把“研究信号”收敛成极少数 `CANDIDATE / VERIFIED / BLOCKED`
 
 quality/outcome 本地结构说明：
 - 原始 outcome 仍由 `StateManager.record_lp_outcome_alert()` 写入 `lp_alert_outcome_v1`
@@ -52,6 +53,21 @@ quality/outcome 本地结构说明：
 - `TRADEABLE_LONG / TRADEABLE_SHORT` 只有 rolling outcome 样本量、followthrough、adverse、completion rate 同时达标时才会出现
 - `NO_TRADE_LOCK` 用来处理短时双向扫流动性 / 买卖压冲突，目的是降低冲突期刷屏和误交易
 - `LONG_CHASE_ALLOWED / SHORT_CHASE_ALLOWED` 仍保留在 `trade_action` 层做底层语义兼容，但默认 user-facing 状态机会先把它们降级为 `LONG_CANDIDATE / SHORT_CANDIDATE`，直到后验证明达标
+- `trade_opportunity` 是交易辅助提示，不是投资建议；即使 `VERIFIED`，也不是自动下单，更不会给仓位大小或止损止盈价格
+- `trade_opportunity` 默认只允许三类 Telegram 主消息：
+  - 多头/空头候选
+  - 多头/空头机会
+  - blocker / no-trade / verified opportunity state change
+- 普通 `OBSERVE_LONG / OBSERVE_SHORT / WAIT_CONFIRMATION` 默认不推 Telegram；它们仍会完整写入 archive/report，供研究和阈值调参
+- 现在大量出现“不交易 / 不追 / blocker”是正常的，因为机会层是严格筛选器，不是放大发送器
+- 只有同时满足 `多源确认 + 方向一致 + live market context + 质量过线 + 后验样本达标 + 风险过滤通过 + 无冲突/无锁定 + 明确失效条件` 时，才可能出现 `VERIFIED`
+- 如果历史后验样本不足，最多只会出现 `CANDIDATE`，并明确标注“候选，不可盲追”
+- 新增持久化缓存：`data/trade_opportunities.cache.json`，重启后保留 rolling stats、budget、cooldown、candidate/verified/blocker 历史
+- 新增 reports 会回答：
+  - 为什么没有机会
+  - verified 是否真的优于普通信号
+  - blocker 是否减少了错误交易诱导
+  - 还差多少样本才可能开放 verified
 - 如果用户用 `trade_action` 做交易，仍应自行结合仓位、止损和整体风险管理
 
 live market context 最小 env：

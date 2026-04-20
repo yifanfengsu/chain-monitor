@@ -1,43 +1,43 @@
 {
   "absorption_summary": {
-    "broader_buy_pressure_confirmed_count": 8,
-    "broader_sell_pressure_confirmed_count": 24,
+    "broader_buy_pressure_confirmed_count": 44,
+    "broader_sell_pressure_confirmed_count": 41,
     "distribution": {
-      "broader_buy_pressure_confirmed": 8,
-      "broader_sell_pressure_confirmed": 24,
-      "local_buy_pressure_absorption": 21,
-      "local_sell_pressure_absorption": 23,
-      "pool_only_unconfirmed_pressure": 62
+      "broader_buy_pressure_confirmed": 44,
+      "broader_sell_pressure_confirmed": 41,
+      "local_buy_pressure_absorption": 35,
+      "local_sell_pressure_absorption": 37,
+      "pool_only_unconfirmed_pressure": 128
     },
-    "local_buy_pressure_absorption_count": 21,
-    "local_sell_pressure_absorption_count": 23,
-    "pool_only_unconfirmed_pressure_count": 62
+    "local_buy_pressure_absorption_count": 35,
+    "local_sell_pressure_absorption_count": 37,
+    "pool_only_unconfirmed_pressure_count": 128
   },
   "adverse_direction_summary": {
     "adverse_direction_consistency_errors": 0,
-    "buy_pressure_adverse_300s_rate": null,
-    "buy_pressure_adverse_30s_rate": 0.1786,
-    "buy_pressure_adverse_60s_rate": 0.1852,
+    "buy_pressure_adverse_300s_rate": 0.0,
+    "buy_pressure_adverse_30s_rate": 0.2162,
+    "buy_pressure_adverse_60s_rate": 0.2192,
     "consistency_error_examples": [],
     "raw_move_resolved_counts": {
-      "buy_300s": 0,
-      "buy_30s": 28,
-      "buy_60s": 27,
-      "sell_300s": 1,
-      "sell_30s": 37,
-      "sell_60s": 29
+      "buy_300s": 1,
+      "buy_30s": 74,
+      "buy_60s": 73,
+      "sell_300s": 3,
+      "sell_30s": 77,
+      "sell_60s": 66
     },
     "sell_pressure_adverse_300s_rate": 0.0,
-    "sell_pressure_adverse_30s_rate": 0.0811,
-    "sell_pressure_adverse_60s_rate": 0.1034
+    "sell_pressure_adverse_30s_rate": 0.1169,
+    "sell_pressure_adverse_60s_rate": 0.1364
   },
   "analysis_window": {
-    "duration_hours": 9.72,
-    "end_bj": "2026-04-20 09:21:42 UTC+08:00",
-    "end_server_local": "2026-04-20 01:21:42 UTC",
-    "end_tokyo": "2026-04-20 10:21:42 UTC+09:00",
-    "end_ts": 1776648102,
-    "end_utc": "2026-04-20 01:21:42 UTC",
+    "duration_hours": 20.9,
+    "end_bj": "2026-04-20 20:32:31 UTC+08:00",
+    "end_server_local": "2026-04-20 12:32:31 UTC",
+    "end_tokyo": "2026-04-20 21:32:31 UTC+09:00",
+    "end_ts": 1776688351,
+    "end_utc": "2026-04-20 12:32:31 UTC",
     "segments": [
       {
         "duration_hours": 10.51,
@@ -58,6 +58,16 @@
         "start_bj": "2026-04-19T23:39:05+08:00",
         "start_ts": 1776613145,
         "total_signal_rows": 443
+      },
+      {
+        "duration_hours": 9.16,
+        "end_bj": "2026-04-20T20:32:16+08:00",
+        "end_ts": 1776688336,
+        "looks_like_bj_overnight": false,
+        "lp_signal_rows": 147,
+        "start_bj": "2026-04-20T11:22:57+08:00",
+        "start_ts": 1776655377,
+        "total_signal_rows": 597
       }
     ],
     "selection_reason": "selected the latest contiguous signal segment that also looks like a Beijing-night run; it starts late evening BJ, crosses midnight, and has matching signals/cases/delivery_audit/case_followups coverage.",
@@ -69,66 +79,70 @@
   },
   "archive_integrity_summary": {
     "asset_case_id_complete_rate": 1.0,
-    "delivered_signal_ids": 58,
+    "delivered_signal_ids": 95,
     "delivered_signal_notifier_sent_at_rate": 1.0,
     "flat_nested_stage_mismatch_rows": 0,
-    "mixed_flat_nested_rows": 138,
+    "mixed_flat_nested_rows": 285,
     "outcome_tracking_key_complete_rate": 1.0,
-    "parsed_archive_exists": false,
-    "raw_archive_exists": false,
+    "parsed_archive_exists": true,
+    "raw_archive_exists": true,
     "signal_case_attached_match_rate": 1.0,
     "signal_case_followup_match_rate": 1.0,
     "signal_delivery_audit_match_rate": 1.0,
     "signal_id_complete_rate": 1.0,
-    "signal_ids": 138,
+    "signal_ids": 285,
     "signals_archive_exists": true,
-    "total_parsed_events": 0,
-    "total_raw_events": 0,
-    "total_signal_rows": 443,
-    "window_case_archive_rows": 25018,
-    "window_case_followup_rows": 66,
-    "window_delivery_audit_rows": 37522
+    "total_parsed_events": 25539,
+    "total_raw_events": 41609,
+    "total_signal_rows": 1040,
+    "window_case_archive_rows": 62131,
+    "window_case_followup_rows": 121,
+    "window_delivery_audit_rows": 87151
   },
   "asset_case_cache_snapshot": {
     "cases": [
       {
         "aggregate_metrics": {
           "lp_multi_pool_resonance": 2,
-          "lp_pool_volume_surge_ratio": 12.0,
-          "lp_same_pool_continuity": 1
+          "lp_pool_volume_surge_ratio": 5.738,
+          "lp_same_pool_continuity": 2
         },
-        "asset_case_id": "asset_case:ETH:b1823398ec",
+        "asset_case_id": "asset_case:ETH:10f68bcc67",
         "asset_case_key": "ethereum|ETH|buy_pressure|uniswap v2",
         "asset_symbol": "ETH",
         "chain": "ethereum",
         "confidence": 1.0,
         "direction_bucket": "buy_pressure",
         "event_ids": [
-          "evt_3c7f8a248d3c5d9b",
-          "evt_db800253a90970bf",
-          "evt_60d310af822b8861"
+          "evt_11a75cec9858a1e2",
+          "evt_ce97c21dfaa3d049",
+          "evt_1df60a181aae8bfa",
+          "evt_6f0af24644e25594",
+          "evt_d9325953e0b68bb8",
+          "evt_b75b62afd23a7752",
+          "evt_e0df169be4ad2a39"
         ],
-        "evidence_summary": "首发2池｜ETH/USDC, ETH/USDT｜跨池2｜放量12.0x",
+        "evidence_summary": "首发2池｜ETH/USDC, ETH/USDT｜跨池2｜放量5.7x",
         "first_prealert_at": 0,
         "had_prealert": false,
         "last_prealert_delivery_allowed": null,
         "last_prealert_delivery_block_reason": "",
         "last_prealert_signal_id": "",
-        "last_signal_at": 1776647462,
-        "last_stage_transition_at": 1776647307,
+        "last_signal_at": 1776687665,
+        "last_stage_transition_at": 1776687582,
         "market_context_snapshot": {
           "alert_relative_timing": "leading",
-          "basis_bps": -5.559,
+          "basis_bps": -3.317,
           "market_context_attempted": true,
           "market_context_failure_reason": "",
           "market_context_failure_stage": "",
-          "market_context_requested_symbol": "ETHUSDT",
+          "market_context_requested_symbol": "ETHUSDC",
           "market_context_resolved_symbol": "ETH-USDT-SWAP",
           "market_context_source": "live_public",
           "market_context_venue": "okx_perp",
-          "perp_index_price": 2284.39,
-          "perp_mark_price": 2283.23,
-          "spot_reference_price": 2284.5
+          "perp_index_price": 2321.64,
+          "perp_mark_price": 2320.59,
+          "spot_reference_price": 2321.36
         },
         "pool_addresses": [
           "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
@@ -138,13 +152,13 @@
         "prealert_upgraded_to_confirm_at": 0,
         "primary_pair": "ETH/USDC",
         "quality_snapshot": {
-          "asset_case_quality_score": 0.691,
-          "climax_reversal_score": 0.191,
+          "asset_case_quality_score": 0.668,
+          "climax_reversal_score": 0.232,
           "fastlane_roi_score": 0.55,
-          "lp_absorption_context": "pool_only_unconfirmed_pressure",
+          "lp_absorption_context": "broader_buy_pressure_confirmed",
           "lp_confirm_quality": "",
-          "pair_quality_score": 0.686,
-          "pool_quality_score": 0.686,
+          "pair_quality_score": 0.663,
+          "pool_quality_score": 0.663,
           "prealert_precision_score": 0.58,
           "quality_score_brief": "历史一般",
           "trade_action_key": "LONG_BIAS_OBSERVE",
@@ -152,26 +166,28 @@
         },
         "stage": "exhaustion_risk",
         "stage_history": [
-          "exhaustion_risk",
           "confirm",
-          "exhaustion_risk"
+          "exhaustion_risk",
+          "climax",
+          "confirm",
+          "climax"
         ],
-        "started_at": 1776647307,
+        "started_at": 1776687471,
         "supporting_pairs": [
           "ETH/USDC",
           "ETH/USDT"
         ],
-        "updated_at": 1776647462,
+        "updated_at": 1776687665,
         "venue_family": "uniswap v2"
       }
     ],
-    "generated_at": 1776647465,
+    "generated_at": 1776687670,
     "schema_version": "asset_case_cache_v1",
     "window_sec": 90
   },
   "asset_case_summary": {
-    "asset_cases": 42,
-    "avg_signals_per_case": 3.2857,
+    "asset_cases": 76,
+    "avg_signals_per_case": 3.75,
     "case_examples": [
       {
         "asset_case_id": "asset_case:ETH:4086f67072",
@@ -302,51 +318,98 @@
       }
     ],
     "case_upgrade_paths": {
-      "climax:sweep_confirmed": 2,
-      "climax:sweep_confirmed -> confirm": 1,
-      "confirm": 20,
-      "confirm -> climax:sweep_confirmed": 3,
+      "climax:sweep_confirmed": 3,
+      "confirm": 28,
+      "confirm -> climax:sweep_confirmed": 4,
       "confirm -> climax:sweep_confirmed -> confirm -> climax:sweep_confirmed": 1,
       "confirm -> climax:sweep_confirmed -> confirm:sweep_building": 1,
       "confirm -> confirm:sweep_building": 2,
       "confirm -> confirm:sweep_building -> confirm -> confirm:sweep_building -> climax:sweep_confirmed -> confirm": 1,
       "confirm -> exhaustion_risk:sweep_exhaustion_risk -> confirm": 1,
-      "confirm:sweep_building -> confirm": 1,
+      "confirm:sweep_building -> climax:sweep_confirmed": 2,
+      "confirm:sweep_building -> confirm": 2,
       "confirm:sweep_building -> confirm -> climax:sweep_confirmed -> confirm:sweep_building -> climax:sweep_confirmed": 1,
-      "exhaustion_risk:sweep_exhaustion_risk": 3,
-      "exhaustion_risk:sweep_exhaustion_risk -> climax:sweep_confirmed -> confirm:sweep_building -> climax:sweep_confirmed": 1,
+      "exhaustion_risk:sweep_exhaustion_risk": 9,
+      "exhaustion_risk:sweep_exhaustion_risk -> climax:sweep_confirmed": 3,
       "exhaustion_risk:sweep_exhaustion_risk -> climax:sweep_confirmed -> confirm:sweep_building -> climax:sweep_confirmed -> confirm -> climax:sweep_confirmed": 1,
       "exhaustion_risk:sweep_exhaustion_risk -> confirm:sweep_building -> exhaustion_risk:sweep_exhaustion_risk -> climax:sweep_confirmed": 1
     },
-    "compression_ratio": 3.2857,
+    "compression_ratio": 3.75,
     "fragmentation_reasons": {
-      "local_absorption_fragment": 13,
-      "single_pair_case": 18,
-      "single_signal_case": 18,
-      "single_signal_local_confirm": 13,
-      "weak_or_missing_broader_alignment": 17
+      "local_absorption_fragment": 20,
+      "single_pair_case": 30,
+      "single_signal_case": 30,
+      "single_signal_local_confirm": 19,
+      "weak_or_missing_broader_alignment": 28
     },
-    "lp_rows": 138,
-    "multi_pair_case_count": 20,
-    "one_signal_one_case_rate": 0.4286,
-    "prealert_linked_case_count": 0,
-    "single_signal_case_count": 18
+    "lp_rows": 285,
+    "multi_pair_case_count": 38,
+    "one_signal_one_case_rate": 0.3947,
+    "prealert_linked_case_count": 1,
+    "single_signal_case_count": 30
   },
   "asset_market_state_summary": {
-    "current_final_state_per_asset": {},
-    "state_change_count": 0,
-    "state_distribution": {},
-    "state_transitions": {}
+    "current_final_state_per_asset": {
+      "ETH": {
+        "state_key": "OBSERVE_LONG",
+        "state_label": "偏多观察",
+        "telegram_should_send": false,
+        "telegram_update_kind": "suppressed",
+        "updated_at": 1776687670
+      }
+    },
+    "state_change_count": 62,
+    "state_distribution": {
+      "DO_NOT_CHASE_LONG": 34,
+      "DO_NOT_CHASE_SHORT": 22,
+      "LONG_CANDIDATE": 4,
+      "NO_TRADE_CHOP": 3,
+      "NO_TRADE_LOCK": 24,
+      "OBSERVE_LONG": 36,
+      "OBSERVE_SHORT": 22,
+      "WAIT_CONFIRMATION": 2
+    },
+    "state_transitions": {
+      "DO_NOT_CHASE_LONG->DO_NOT_CHASE_SHORT": 3,
+      "DO_NOT_CHASE_LONG->NO_TRADE_CHOP": 1,
+      "DO_NOT_CHASE_LONG->NO_TRADE_LOCK": 1,
+      "DO_NOT_CHASE_LONG->OBSERVE_LONG": 9,
+      "DO_NOT_CHASE_LONG->OBSERVE_SHORT": 1,
+      "DO_NOT_CHASE_LONG->WAIT_CONFIRMATION": 1,
+      "DO_NOT_CHASE_SHORT->DO_NOT_CHASE_LONG": 3,
+      "DO_NOT_CHASE_SHORT->NO_TRADE_LOCK": 1,
+      "DO_NOT_CHASE_SHORT->OBSERVE_SHORT": 8,
+      "LONG_CANDIDATE->OBSERVE_LONG": 2,
+      "LONG_CANDIDATE->WAIT_CONFIRMATION": 1,
+      "NO_TRADE_CHOP->DO_NOT_CHASE_LONG": 1,
+      "NO_TRADE_CHOP->NO_TRADE_LOCK": 1,
+      "NO_TRADE_CHOP->OBSERVE_LONG": 1,
+      "NO_TRADE_LOCK->DO_NOT_CHASE_LONG": 3,
+      "NO_TRADE_LOCK->DO_NOT_CHASE_SHORT": 1,
+      "NO_TRADE_LOCK->NO_TRADE_CHOP": 1,
+      "OBSERVE_LONG->DO_NOT_CHASE_LONG": 6,
+      "OBSERVE_LONG->DO_NOT_CHASE_SHORT": 1,
+      "OBSERVE_LONG->LONG_CANDIDATE": 2,
+      "OBSERVE_LONG->NO_TRADE_CHOP": 1,
+      "OBSERVE_LONG->NO_TRADE_LOCK": 2,
+      "OBSERVE_SHORT->DO_NOT_CHASE_LONG": 2,
+      "OBSERVE_SHORT->DO_NOT_CHASE_SHORT": 6,
+      "WAIT_CONFIRMATION->DO_NOT_CHASE_LONG": 1,
+      "WAIT_CONFIRMATION->LONG_CANDIDATE": 1,
+      "WAIT_CONFIRMATION->OBSERVE_LONG": 1
+    }
   },
   "candidate_tradeable_summary": {
-    "candidate_count": 0,
-    "candidate_distribution": {},
+    "candidate_count": 4,
+    "candidate_distribution": {
+      "LONG_CANDIDATE": 4
+    },
     "candidate_outcome_60s": {
       "adverse_count": 0,
-      "adverse_rate": null,
-      "followthrough_count": 0,
-      "followthrough_rate": null,
-      "resolved_count": 0
+      "adverse_rate": 0.0,
+      "followthrough_count": 4,
+      "followthrough_rate": 1.0,
+      "resolved_count": 4
     },
     "tradeable_count": 0,
     "tradeable_distribution": {},
@@ -370,7 +433,7 @@
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
           "priority": 1,
-          "sample_size": 249,
+          "sample_size": 333,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
@@ -381,7 +444,7 @@
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
           "priority": 1,
-          "sample_size": 259,
+          "sample_size": 322,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
@@ -425,7 +488,7 @@
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
           "priority": 1,
-          "sample_size": 249,
+          "sample_size": 333,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
@@ -436,7 +499,7 @@
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
           "priority": 1,
-          "sample_size": 259,
+          "sample_size": 322,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
@@ -451,21 +514,21 @@
       "major_pair_quality": [
         {
           "actionable": true,
-          "climax_reversal_score": 0.1908,
+          "climax_reversal_score": 0.2558,
           "covered": true,
-          "market_context_alignment_score": 0.969,
+          "market_context_alignment_score": 0.9641,
           "pair_label": "ETH/USDT",
-          "quality_score": 0.6835,
-          "sample_size": 259
+          "quality_score": 0.6728,
+          "sample_size": 322
         },
         {
           "actionable": true,
-          "climax_reversal_score": 0.1036,
+          "climax_reversal_score": 0.2189,
           "covered": true,
-          "market_context_alignment_score": 0.956,
+          "market_context_alignment_score": 0.9562,
           "pair_label": "ETH/USDC",
-          "quality_score": 0.6922,
-          "sample_size": 249
+          "quality_score": 0.6629,
+          "sample_size": 333
         },
         {
           "actionable": false,
@@ -526,21 +589,21 @@
       "quality_converging_major_pairs": [
         {
           "actionable": true,
-          "climax_reversal_score": 0.1908,
+          "climax_reversal_score": 0.2558,
           "covered": true,
-          "market_context_alignment_score": 0.969,
+          "market_context_alignment_score": 0.9641,
           "pair_label": "ETH/USDT",
-          "quality_score": 0.6835,
-          "sample_size": 259
+          "quality_score": 0.6728,
+          "sample_size": 322
         },
         {
           "actionable": true,
-          "climax_reversal_score": 0.1036,
+          "climax_reversal_score": 0.2189,
           "covered": true,
-          "market_context_alignment_score": 0.956,
+          "market_context_alignment_score": 0.9562,
           "pair_label": "ETH/USDC",
-          "quality_score": 0.6922,
-          "sample_size": 249
+          "quality_score": 0.6629,
+          "sample_size": 333
         }
       ],
       "recommended_local_config_actions": [
@@ -596,8 +659,8 @@
     },
     "quality_reports_market_context_health": {
       "archive_base_dir": "/run-project/chain-monitor/app/data/archive",
-      "cache_hit_rate": 0.0542,
-      "context_request_hit_rate": 0.2445,
+      "cache_hit_rate": 0.0608,
+      "context_request_hit_rate": 0.2452,
       "endpoint_hit_rate": [
         {
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
@@ -632,25 +695,25 @@
       "fallback_chains": [
         {
           "chain": "okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success",
-          "count": 165
+          "count": 270
         },
         {
           "chain": "okx_perp:ETH-USDT-SWAP:cache_hit",
-          "count": 47
+          "count": 89
         }
       ],
-      "live_public_count": 212,
-      "live_public_hit_rate": 0.2445,
+      "live_public_count": 359,
+      "live_public_hit_rate": 0.2452,
       "per_attempt_symbol": [
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_cache_hit": 47,
-          "attempt_status_success": 990,
-          "attempt_success": 990,
-          "attempt_total": 990,
+          "attempt_status_cache_hit": 89,
+          "attempt_status_success": 1620,
+          "attempt_success": 1620,
+          "attempt_total": 1620,
           "cache_hit_rate": 0.0,
-          "cache_hit_total": 47,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 0.0,
           "signal_hit_rate": 0.0,
           "symbol": "ETH-USDT-SWAP",
@@ -661,9 +724,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
@@ -673,9 +736,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
@@ -685,9 +748,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
@@ -697,9 +760,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
@@ -709,9 +772,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
@@ -721,9 +784,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
@@ -733,9 +796,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
-          "attempt_status_cache_hit": 47,
+          "attempt_status_cache_hit": 89,
           "cache_hit_rate": 0.0,
-          "cache_hit_total": 47,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 0.0,
           "endpoint": "cache",
           "endpoint_attempt_success_rate": 0.0,
@@ -749,8 +812,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 109,
-          "signal_total": 109,
+          "signal_success": 193,
+          "signal_total": 193,
           "symbol": "ETHUSDC",
           "symbol_attempt_success_rate": 0.0
         },
@@ -760,8 +823,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 103,
-          "signal_total": 103,
+          "signal_success": 166,
+          "signal_total": 166,
           "symbol": "ETHUSDT",
           "symbol_attempt_success_rate": 0.0
         }
@@ -773,8 +836,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "symbol": "ETH-USDT-SWAP",
           "symbol_attempt_success_rate": 0.0
         }
@@ -786,8 +849,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "symbol": "ETH-USDT-SWAP",
           "symbol_attempt_success_rate": 0.0
         }
@@ -796,33 +859,33 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_cache_hit": 47,
-          "attempt_status_success": 990,
-          "attempt_success": 990,
-          "attempt_total": 990,
-          "cache_hit_rate": 0.2217,
-          "cache_hit_total": 47,
+          "attempt_status_cache_hit": 89,
+          "attempt_status_success": 1620,
+          "attempt_success": 1620,
+          "attempt_total": 1620,
+          "cache_hit_rate": 0.2479,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "venue": "okx_perp",
           "venue_attempt_success_rate": 1.0
         }
       ],
-      "signal_rows": 867,
+      "signal_rows": 1464,
       "symbol_fallbacks": [
         {
-          "fallback_total": 109,
+          "fallback_total": 193,
           "requested_to_resolved": "ETHUSDC->ETH-USDT-SWAP",
-          "signal_success": 109,
-          "signal_total": 109
+          "signal_success": 193,
+          "signal_total": 193
         },
         {
-          "fallback_total": 103,
+          "fallback_total": 166,
           "requested_to_resolved": "ETHUSDT->ETH-USDT-SWAP",
-          "signal_success": 103,
-          "signal_total": 103
+          "signal_success": 166,
+          "signal_total": 166
         }
       ],
       "symbol_hit_rate": [
@@ -832,10 +895,10 @@
         }
       ],
       "top_failure_reasons": [],
-      "total_attempts": 990,
-      "total_context_requests": 867,
-      "unavailable_count": 655,
-      "unavailable_rate": 0.7555,
+      "total_attempts": 1620,
+      "total_context_requests": 1464,
+      "unavailable_count": 1105,
+      "unavailable_rate": 0.7548,
       "unavailable_reason_breakdown": {},
       "venue_hit_rate": [
         {
@@ -847,53 +910,53 @@
     },
     "quality_reports_summary_overall": {
       "actionable": true,
-      "climax_count": 144,
-      "climax_reversal_count": 11,
-      "climax_reversal_score": 0.1403,
-      "confirm_conversion_score": 0.5759,
-      "confirm_count": 288,
+      "climax_count": 192,
+      "climax_reversal_count": 26,
+      "climax_reversal_score": 0.2318,
+      "confirm_conversion_score": 0.5338,
+      "confirm_count": 369,
       "dimension": "overall",
       "fastlane_positive_followthrough": 0,
       "fastlane_promotions": 1,
       "fastlane_roi_score": 0.55,
       "key": "all",
       "label": "all",
-      "last_updated_at": 1776647462,
-      "market_context_alignment_positive_count": 315,
-      "market_context_alignment_score": 0.9671,
-      "market_context_available_count": 315,
+      "last_updated_at": 1776687665,
+      "market_context_alignment_positive_count": 462,
+      "market_context_alignment_score": 0.9631,
+      "market_context_available_count": 462,
       "prealert_confirmed_count": 0,
-      "prealert_count": 1,
+      "prealert_count": 2,
       "prealert_false_count": 0,
       "prealert_precision_score": 0.58,
       "quality_hint": "历史一般",
-      "quality_score": 0.6894,
-      "resolved_climaxes": 85,
-      "resolved_confirms": 118,
+      "quality_score": 0.668,
+      "resolved_climaxes": 115,
+      "resolved_confirms": 165,
       "resolved_fastlanes": 0,
       "resolved_prealerts": 0,
-      "sample_size": 508,
+      "sample_size": 655,
       "tuning_hint": "retail 建议关闭该维度 prealert"
     }
   },
   "confirm_summary": {
-    "blank_confirm_quality_count": 18,
-    "broader_alignment_confirmed_count": 26,
-    "broader_confirm_count": 12,
+    "blank_confirm_quality_count": 33,
+    "broader_alignment_confirmed_count": 52,
+    "broader_confirm_count": 35,
     "chase_risk_count": 0,
-    "clean_confirm_count": 4,
-    "confirm_count": 92,
-    "confirm_move_after_300s_median": -0.00313,
-    "confirm_move_after_60s_median": -0.002024,
-    "confirm_move_before_30s_median": -0.000184,
-    "late_confirm_count": 34,
-    "local_confirm_count": 62,
-    "predict_warning_text_count": 40,
+    "clean_confirm_count": 8,
+    "confirm_count": 173,
+    "confirm_move_after_300s_median": -0.001471,
+    "confirm_move_after_60s_median": -0.000232,
+    "confirm_move_before_30s_median": -0.000177,
+    "late_confirm_count": 78,
+    "local_confirm_count": 105,
+    "predict_warning_text_count": 62,
     "quality_distribution": {
-      "(blank)": 18,
-      "clean_confirm": 4,
-      "late_confirm": 34,
-      "unconfirmed_confirm": 36
+      "(blank)": 33,
+      "clean_confirm": 8,
+      "late_confirm": 78,
+      "unconfirmed_confirm": 54
     },
     "quality_performance": {
       "chase_risk": {
@@ -909,73 +972,73 @@
         "adverse_300s_rate": null,
         "adverse_30s_rate": 0.0,
         "adverse_60s_rate": 0.0,
-        "count": 4,
+        "count": 8,
         "move_after_300s_median": null,
-        "move_after_30s_median": 0.0022,
-        "move_after_60s_median": 0.0022
+        "move_after_30s_median": 0.012179,
+        "move_after_60s_median": 0.012179
       },
       "late_confirm": {
         "adverse_300s_rate": 0.0,
-        "adverse_30s_rate": 0.0435,
-        "adverse_60s_rate": 0.0455,
-        "count": 34,
-        "move_after_300s_median": 0.00313,
-        "move_after_30s_median": 0.001658,
-        "move_after_60s_median": 0.001737
+        "adverse_30s_rate": 0.1064,
+        "adverse_60s_rate": 0.1136,
+        "count": 78,
+        "move_after_300s_median": 0.002301,
+        "move_after_30s_median": 0.001628,
+        "move_after_60s_median": 0.00155
       },
       "unconfirmed_confirm": {
-        "adverse_300s_rate": null,
-        "adverse_30s_rate": 0.1818,
-        "adverse_60s_rate": 0.25,
-        "count": 36,
-        "move_after_300s_median": null,
-        "move_after_30s_median": 0.003569,
-        "move_after_60s_median": 0.000741
+        "adverse_300s_rate": 0.0,
+        "adverse_30s_rate": 0.16,
+        "adverse_60s_rate": 0.1905,
+        "count": 54,
+        "move_after_300s_median": 0.002648,
+        "move_after_30s_median": 0.001835,
+        "move_after_60s_median": 0.00161
       }
     },
     "scope_distribution": {
-      "(blank)": 18,
-      "broader_confirm": 12,
-      "local_confirm": 62
+      "(blank)": 33,
+      "broader_confirm": 35,
+      "local_confirm": 105
     },
     "scope_performance": {
       "broader_confirm": {
         "adverse_300s_rate": null,
         "adverse_30s_rate": 0.0,
         "adverse_60s_rate": 0.0,
-        "count": 12,
+        "count": 35,
         "move_after_300s_median": null,
-        "move_after_30s_median": 0.002194,
-        "move_after_60s_median": 0.002194
+        "move_after_30s_median": 0.003448,
+        "move_after_60s_median": 0.003448
       },
       "local_confirm": {
         "adverse_300s_rate": 0.0,
-        "adverse_30s_rate": 0.0968,
-        "adverse_60s_rate": 0.1111,
-        "count": 62,
-        "move_after_300s_median": 0.00313,
-        "move_after_30s_median": 0.001658,
-        "move_after_60s_median": 0.001322
+        "adverse_30s_rate": 0.1525,
+        "adverse_60s_rate": 0.1731,
+        "count": 105,
+        "move_after_300s_median": 0.002648,
+        "move_after_30s_median": 0.001381,
+        "move_after_60s_median": 0.001352
       }
     },
-    "unconfirmed_confirm_count": 36
+    "unconfirmed_confirm_count": 54
   },
   "data_sources": [
     {
-      "end_ts": null,
-      "exists": false,
+      "end_ts": 1776688351,
+      "exists": true,
       "notes": "raw events archive",
-      "path": "app/data/archive/raw_events/*.ndjson",
-      "record_count": 0,
-      "start_ts": null
+      "path": "app/data/archive/raw_events/2026-04-20.ndjson",
+      "record_count": 41609,
+      "start_ts": 1776661804
     },
     {
-      "end_ts": null,
-      "exists": false,
+      "end_ts": 1776688351,
+      "exists": true,
       "notes": "parsed events archive",
-      "path": "app/data/archive/parsed_events/*.ndjson",
-      "record_count": 0,
-      "start_ts": null
+      "path": "app/data/archive/parsed_events/2026-04-20.ndjson",
+      "record_count": 25539,
+      "start_ts": 1776661804
     },
     {
       "end_ts": 1776527852,
@@ -994,11 +1057,11 @@
       "start_ts": 1776613145
     },
     {
-      "end_ts": 1776648039,
+      "end_ts": 1776688336,
       "exists": true,
       "notes": "signals archive",
       "path": "app/data/archive/signals/2026-04-20.ndjson",
-      "record_count": 421,
+      "record_count": 1018,
       "start_ts": 1776614426
     },
     {
@@ -1018,11 +1081,11 @@
       "start_ts": 1776613107
     },
     {
-      "end_ts": 1776648102,
+      "end_ts": 1776688351,
       "exists": true,
       "notes": "case archive",
       "path": "app/data/archive/cases/2026-04-20.ndjson",
-      "record_count": 23709,
+      "record_count": 60822,
       "start_ts": 1776614415
     },
     {
@@ -1042,11 +1105,11 @@
       "start_ts": 1776613275
     },
     {
-      "end_ts": 1776647655,
+      "end_ts": 1776687662,
       "exists": true,
       "notes": "case followups archive",
       "path": "app/data/archive/case_followups/2026-04-20.ndjson",
-      "record_count": 64,
+      "record_count": 119,
       "start_ts": 1776616641
     },
     {
@@ -1066,28 +1129,36 @@
       "start_ts": 1776613107
     },
     {
-      "end_ts": 1776648102,
+      "end_ts": 1776688351,
       "exists": true,
       "notes": "delivery audit archive",
       "path": "app/data/archive/delivery_audit/2026-04-20.ndjson",
-      "record_count": 35466,
+      "record_count": 85095,
       "start_ts": 1776614405
     },
     {
-      "end_ts": 1776647465,
+      "end_ts": 1776687670,
       "exists": true,
       "notes": "asset case snapshot cache",
       "path": "data/asset_cases.cache.json",
       "record_count": 1,
-      "start_ts": 1776647307
+      "start_ts": 1776687471
     },
     {
-      "end_ts": 1776647466,
+      "end_ts": 1776687672,
       "exists": true,
       "notes": "quality stats cache",
       "path": "data/lp_quality_stats.cache.json",
-      "record_count": 508,
+      "record_count": 655,
       "start_ts": 1776406574
+    },
+    {
+      "end_ts": null,
+      "exists": false,
+      "notes": "trade opportunity cache",
+      "path": "data/trade_opportunities.cache.json",
+      "record_count": 0,
+      "start_ts": null
     }
   ],
   "limitations": [
@@ -1097,30 +1168,30 @@
     "prealert diagnostics show overwritten=true everywhere, so the exact overwrite point cannot be reconstructed from raw/parsed layers."
   ],
   "lp_stage_summary": {
-    "analysis_window_end": "2026-04-20 01:21:42 UTC",
+    "analysis_window_end": "2026-04-20 12:32:31 UTC",
     "analysis_window_start": "2026-04-19 15:38:27 UTC",
-    "asset_case_count": 42,
-    "case_followup_count": 66,
-    "climax_count": 33,
-    "confirm_count": 92,
-    "delivered_lp_signals": 58,
-    "duration_hours": 9.72,
-    "exhaustion_risk_count": 13,
-    "lp_signal_rows": 138,
-    "prealert_count": 0,
+    "asset_case_count": 76,
+    "case_followup_count": 121,
+    "climax_count": 81,
+    "confirm_count": 173,
+    "delivered_lp_signals": 95,
+    "duration_hours": 20.9,
+    "exhaustion_risk_count": 30,
+    "lp_signal_rows": 285,
+    "prealert_count": 1,
     "stage_distribution_pct": {
-      "climax": 23.91,
-      "confirm": 66.67,
-      "exhaustion_risk": 9.42,
-      "prealert": 0.0
+      "climax": 28.42,
+      "confirm": 60.7,
+      "exhaustion_risk": 10.53,
+      "prealert": 0.35
     },
-    "total_parsed_events": 0,
-    "total_raw_events": 0,
-    "total_signal_rows": 443
+    "total_parsed_events": 25539,
+    "total_raw_events": 41609,
+    "total_signal_rows": 1040
   },
   "majors_coverage_summary": {
     "asset_distribution": {
-      "ETH": 138
+      "ETH": 285
     },
     "btc_signal_count": 0,
     "btc_sol_missing_reason": "configured_but_disabled_pool",
@@ -1143,7 +1214,7 @@
       "ETH/USDC"
     ],
     "current_sample_still_eth_only": true,
-    "eth_signal_count": 138,
+    "eth_signal_count": 285,
     "major_cli_summary": {
       "active_major_pools": [
         {
@@ -1154,7 +1225,7 @@
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
           "priority": 1,
-          "sample_size": 249,
+          "sample_size": 333,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
@@ -1165,7 +1236,7 @@
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
           "priority": 1,
-          "sample_size": 259,
+          "sample_size": 322,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
@@ -1209,7 +1280,7 @@
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
           "priority": 1,
-          "sample_size": 249,
+          "sample_size": 333,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
@@ -1220,7 +1291,7 @@
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
           "priority": 1,
-          "sample_size": 259,
+          "sample_size": 322,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
@@ -1235,21 +1306,21 @@
       "major_pair_quality": [
         {
           "actionable": true,
-          "climax_reversal_score": 0.1908,
+          "climax_reversal_score": 0.2558,
           "covered": true,
-          "market_context_alignment_score": 0.969,
+          "market_context_alignment_score": 0.9641,
           "pair_label": "ETH/USDT",
-          "quality_score": 0.6835,
-          "sample_size": 259
+          "quality_score": 0.6728,
+          "sample_size": 322
         },
         {
           "actionable": true,
-          "climax_reversal_score": 0.1036,
+          "climax_reversal_score": 0.2189,
           "covered": true,
-          "market_context_alignment_score": 0.956,
+          "market_context_alignment_score": 0.9562,
           "pair_label": "ETH/USDC",
-          "quality_score": 0.6922,
-          "sample_size": 249
+          "quality_score": 0.6629,
+          "sample_size": 333
         },
         {
           "actionable": false,
@@ -1310,21 +1381,21 @@
       "quality_converging_major_pairs": [
         {
           "actionable": true,
-          "climax_reversal_score": 0.1908,
+          "climax_reversal_score": 0.2558,
           "covered": true,
-          "market_context_alignment_score": 0.969,
+          "market_context_alignment_score": 0.9641,
           "pair_label": "ETH/USDT",
-          "quality_score": 0.6835,
-          "sample_size": 259
+          "quality_score": 0.6728,
+          "sample_size": 322
         },
         {
           "actionable": true,
-          "climax_reversal_score": 0.1036,
+          "climax_reversal_score": 0.2189,
           "covered": true,
-          "market_context_alignment_score": 0.956,
+          "market_context_alignment_score": 0.9562,
           "pair_label": "ETH/USDC",
-          "quality_score": 0.6922,
-          "sample_size": 249
+          "quality_score": 0.6629,
+          "sample_size": 333
         }
       ],
       "recommended_local_config_actions": [
@@ -1385,16 +1456,16 @@
       "SOL/USDC"
     ],
     "pair_distribution": {
-      "ETH/USDC": 76,
-      "ETH/USDT": 62
+      "ETH/USDC": 160,
+      "ETH/USDT": 125
     },
     "sol_signal_count": 0
   },
   "market_context_health": {
     "quality_reports_cli": {
       "archive_base_dir": "/run-project/chain-monitor/app/data/archive",
-      "cache_hit_rate": 0.0542,
-      "context_request_hit_rate": 0.2445,
+      "cache_hit_rate": 0.0608,
+      "context_request_hit_rate": 0.2452,
       "endpoint_hit_rate": [
         {
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
@@ -1429,25 +1500,25 @@
       "fallback_chains": [
         {
           "chain": "okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success",
-          "count": 165
+          "count": 270
         },
         {
           "chain": "okx_perp:ETH-USDT-SWAP:cache_hit",
-          "count": 47
+          "count": 89
         }
       ],
-      "live_public_count": 212,
-      "live_public_hit_rate": 0.2445,
+      "live_public_count": 359,
+      "live_public_hit_rate": 0.2452,
       "per_attempt_symbol": [
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_cache_hit": 47,
-          "attempt_status_success": 990,
-          "attempt_success": 990,
-          "attempt_total": 990,
+          "attempt_status_cache_hit": 89,
+          "attempt_status_success": 1620,
+          "attempt_success": 1620,
+          "attempt_total": 1620,
           "cache_hit_rate": 0.0,
-          "cache_hit_total": 47,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 0.0,
           "signal_hit_rate": 0.0,
           "symbol": "ETH-USDT-SWAP",
@@ -1458,9 +1529,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
@@ -1470,9 +1541,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
@@ -1482,9 +1553,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
@@ -1494,9 +1565,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
@@ -1506,9 +1577,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
@@ -1518,9 +1589,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_success": 165,
-          "attempt_success": 165,
-          "attempt_total": 165,
+          "attempt_status_success": 270,
+          "attempt_success": 270,
+          "attempt_total": 270,
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 0.0,
           "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
@@ -1530,9 +1601,9 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 0.0,
-          "attempt_status_cache_hit": 47,
+          "attempt_status_cache_hit": 89,
           "cache_hit_rate": 0.0,
-          "cache_hit_total": 47,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 0.0,
           "endpoint": "cache",
           "endpoint_attempt_success_rate": 0.0,
@@ -1546,8 +1617,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 109,
-          "signal_total": 109,
+          "signal_success": 193,
+          "signal_total": 193,
           "symbol": "ETHUSDC",
           "symbol_attempt_success_rate": 0.0
         },
@@ -1557,8 +1628,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 103,
-          "signal_total": 103,
+          "signal_success": 166,
+          "signal_total": 166,
           "symbol": "ETHUSDT",
           "symbol_attempt_success_rate": 0.0
         }
@@ -1570,8 +1641,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "symbol": "ETH-USDT-SWAP",
           "symbol_attempt_success_rate": 0.0
         }
@@ -1583,8 +1654,8 @@
           "cache_hit_rate": 0.0,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "symbol": "ETH-USDT-SWAP",
           "symbol_attempt_success_rate": 0.0
         }
@@ -1593,33 +1664,33 @@
         {
           "attempt_failure_rate": 0.0,
           "attempt_hit_rate": 1.0,
-          "attempt_status_cache_hit": 47,
-          "attempt_status_success": 990,
-          "attempt_success": 990,
-          "attempt_total": 990,
-          "cache_hit_rate": 0.2217,
-          "cache_hit_total": 47,
+          "attempt_status_cache_hit": 89,
+          "attempt_status_success": 1620,
+          "attempt_success": 1620,
+          "attempt_total": 1620,
+          "cache_hit_rate": 0.2479,
+          "cache_hit_total": 89,
           "context_request_hit_rate": 1.0,
           "signal_hit_rate": 1.0,
-          "signal_success": 212,
-          "signal_total": 212,
+          "signal_success": 359,
+          "signal_total": 359,
           "venue": "okx_perp",
           "venue_attempt_success_rate": 1.0
         }
       ],
-      "signal_rows": 867,
+      "signal_rows": 1464,
       "symbol_fallbacks": [
         {
-          "fallback_total": 109,
+          "fallback_total": 193,
           "requested_to_resolved": "ETHUSDC->ETH-USDT-SWAP",
-          "signal_success": 109,
-          "signal_total": 109
+          "signal_success": 193,
+          "signal_total": 193
         },
         {
-          "fallback_total": 103,
+          "fallback_total": 166,
           "requested_to_resolved": "ETHUSDT->ETH-USDT-SWAP",
-          "signal_success": 103,
-          "signal_total": 103
+          "signal_success": 166,
+          "signal_total": 166
         }
       ],
       "symbol_hit_rate": [
@@ -1629,10 +1700,10 @@
         }
       ],
       "top_failure_reasons": [],
-      "total_attempts": 990,
-      "total_context_requests": 867,
-      "unavailable_count": 655,
-      "unavailable_rate": 0.7555,
+      "total_attempts": 1620,
+      "total_context_requests": 1464,
+      "unavailable_count": 1105,
+      "unavailable_rate": 0.7548,
       "unavailable_reason_breakdown": {},
       "venue_hit_rate": [
         {
@@ -1648,17 +1719,17 @@
       "kraken_attempts": 0,
       "kraken_failure": 0,
       "kraken_success": 0,
-      "live_public_count": 138,
+      "live_public_count": 285,
       "live_public_rate": 1.0,
-      "okx_attempts": 683,
+      "okx_attempts": 1355,
       "okx_failure": 0,
-      "okx_success": 683,
+      "okx_success": 1355,
       "requested_to_resolved_distribution": {
-        "ETHUSDC->ETH-USDT-SWAP": 76,
-        "ETHUSDT->ETH-USDT-SWAP": 62
+        "ETHUSDC->ETH-USDT-SWAP": 160,
+        "ETHUSDT->ETH-USDT-SWAP": 125
       },
       "resolved_symbol_distribution": {
-        "ETH-USDT-SWAP": 138
+        "ETH-USDT-SWAP": 285
       },
       "top_failure_reasons": [],
       "unavailable_count": 0,
@@ -1666,97 +1737,105 @@
     }
   },
   "no_trade_lock_summary": {
-    "lock_duration_max_sec": null,
-    "lock_duration_median_sec": null,
-    "lock_entered_count": 0,
-    "release_count": 0,
-    "suppressed_count": 0
+    "lock_duration_max_sec": 300,
+    "lock_duration_median_sec": 300.0,
+    "lock_entered_count": 5,
+    "release_count": 119,
+    "suppressed_count": 19
   },
   "noise_reduction_summary": {
     "candidates_sent": 0,
-    "raw_lp_signals": 138,
-    "risk_blockers_sent": 0,
-    "sent_telegram_lp_messages": 58,
-    "state_changes_sent": 0,
-    "suppressed_ratio": 0.5797
+    "raw_lp_signals": 285,
+    "risk_blockers_sent": 23,
+    "sent_telegram_lp_messages": 95,
+    "state_changes_sent": 14,
+    "suppressed_ratio": 0.6667
   },
   "outcome_price_source_summary": {
     "failure_reasons": {
-      "window_elapsed_without_price_update": 285
+      "window_elapsed_without_price_update": 544
     },
     "source_distribution": {
+      "okx_mark": 588,
       "pool_quote_proxy": 552
     },
     "window_status": {
       "300s": {
-        "completed": 1,
-        "expired": 134,
-        "pending": 3
+        "completed": 4,
+        "expired": 274,
+        "pending": 7
       },
       "30s": {
-        "completed": 65,
-        "expired": 71,
-        "pending": 2
+        "completed": 151,
+        "expired": 129,
+        "pending": 5
       },
       "60s": {
-        "completed": 56,
-        "expired": 80,
-        "pending": 2
+        "completed": 139,
+        "expired": 141,
+        "pending": 5
       }
     }
   },
   "prealert_funnel_summary": {
     "candidate_reason_distribution": {
-      "lp_prealert_supported_intent": 138
+      "lp_prealert_supported_intent": 285
     },
     "diagnosis": "candidate and gate_passed are non-zero, but no surviving prealert stage rows were archived in the selected window; all candidates were immediately overwritten into later stages, first_leg stayed at zero, and asset_case did not preserve a prealert anchor.",
     "major_first_leg_prealert_count": 0,
-    "major_override_used_count": 138,
-    "major_prealert_count": 0,
+    "major_override_used_count": 285,
+    "major_prealert_count": 1,
     "non_major_prealert_count": 0,
-    "prealert_asset_case_preserved_count": 0,
-    "prealert_candidate_count": 138,
-    "prealert_count": 0,
-    "prealert_delivered_count": 0,
-    "prealert_gate_passed_count": 138,
-    "prealert_stage_overwritten_count": 138,
-    "prealert_to_confirm_30s": null,
-    "prealert_to_confirm_60s": null,
-    "prealert_to_confirm_90s": null,
+    "prealert_asset_case_preserved_count": 2,
+    "prealert_candidate_count": 285,
+    "prealert_count": 1,
+    "prealert_delivered_count": 1,
+    "prealert_gate_passed_count": 285,
+    "prealert_stage_overwritten_count": 284,
+    "prealert_to_confirm_30s": 0.0,
+    "prealert_to_confirm_60s": 0.0,
+    "prealert_to_confirm_90s": 0.0,
     "top_prealert_delivery_block_reasons": {
-      "stage_budget_observe_tier2_tier_cap": 80
+      "no_trade_lock_local_signal_suppressed": 14,
+      "notifier_send_failed": 1,
+      "same_asset_state_repeat": 34,
+      "stage_budget_observe_tier2_tier_cap": 142
     },
     "top_prealert_gate_fail_reasons": {}
   },
   "prealert_lifecycle_summary": {
-    "active_count": 0,
+    "active_count": 1,
     "delivered_count": 0,
-    "distribution": {},
+    "distribution": {
+      "active": 1,
+      "merged": 59,
+      "upgraded_to_confirm": 77
+    },
     "expired_count": 0,
-    "merged_count": 0,
+    "merged_count": 59,
     "suppressed_by_lock_count": 0,
-    "upgraded_count": 0
+    "upgraded_count": 77
   },
   "reversal_special_cases": {
     "buy_after_300s": {
       "against_count": 0,
-      "against_rate": null,
-      "resolved_count": 0
+      "against_rate": 0.0,
+      "resolved_count": 1
     },
-    "buy_after_300s_fall_ratio": null,
+    "buy_after_300s_fall_ratio": 0.0,
     "buy_after_30s": {
-      "against_count": 5,
-      "against_rate": 0.2174,
-      "resolved_count": 23
+      "against_count": 9,
+      "against_rate": 0.2045,
+      "resolved_count": 44
     },
-    "buy_after_30s_fall_ratio": 0.2174,
+    "buy_after_30s_fall_ratio": 0.2045,
     "buy_after_60s": {
-      "against_count": 5,
-      "against_rate": 0.2273,
-      "resolved_count": 22
+      "against_count": 9,
+      "against_rate": 0.2093,
+      "resolved_count": 43
     },
-    "buy_after_60s_fall_ratio": 0.2273,
-    "buy_confirm_count": 44,
+    "buy_after_60s_fall_ratio": 0.2093,
+    "buy_confirm_count": 83,
     "examples": [
       {
         "asset_case_id": "asset_case:ETH:a4d244d8c6",
@@ -1863,31 +1942,31 @@
       }
     ],
     "reason_distribution": {
-      "late_confirm / chase_risk": 1,
-      "local_buy_pressure_absorption": 5,
-      "local_confirm rather than broader_confirm": 3,
-      "local_sell_pressure_absorption": 1,
-      "single_pool / low resonance": 6
+      "late_confirm / chase_risk": 5,
+      "local_buy_pressure_absorption": 9,
+      "local_confirm rather than broader_confirm": 9,
+      "local_sell_pressure_absorption": 5,
+      "single_pool / low resonance": 14
     },
     "sell_after_300s": {
       "against_count": 0,
       "against_rate": 0.0,
-      "resolved_count": 1
+      "resolved_count": 2
     },
     "sell_after_300s_rise_ratio": 0.0,
     "sell_after_30s": {
-      "against_count": 1,
-      "against_rate": 0.0417,
-      "resolved_count": 24
+      "against_count": 5,
+      "against_rate": 0.098,
+      "resolved_count": 51
     },
-    "sell_after_30s_rise_ratio": 0.0417,
+    "sell_after_30s_rise_ratio": 0.098,
     "sell_after_60s": {
-      "against_count": 1,
-      "against_rate": 0.05,
-      "resolved_count": 20
+      "against_count": 5,
+      "against_rate": 0.1136,
+      "resolved_count": 44
     },
-    "sell_after_60s_rise_ratio": 0.05,
-    "sell_confirm_count": 48
+    "sell_after_60s_rise_ratio": 0.1136,
+    "sell_confirm_count": 89
   },
   "runtime_config_summary": {
     "ARCHIVE_ENABLE_CASES": {
@@ -1907,13 +1986,13 @@
     },
     "ARCHIVE_ENABLE_PARSED_EVENTS": {
       "env_present": true,
-      "env_value": "false",
-      "runtime_value": false
+      "env_value": "true",
+      "runtime_value": true
     },
     "ARCHIVE_ENABLE_RAW_EVENTS": {
       "env_present": true,
-      "env_value": "false",
-      "runtime_value": false
+      "env_value": "true",
+      "runtime_value": true
     },
     "ARCHIVE_ENABLE_SIGNALS": {
       "env_present": true,
@@ -2087,6 +2166,66 @@
       "env_value": null,
       "runtime_value": "https://www.okx.com"
     },
+    "OPPORTUNITY_COOLDOWN_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 900
+    },
+    "OPPORTUNITY_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_MAX_60S_ADVERSE_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.35
+    },
+    "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 2
+    },
+    "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.58
+    },
+    "OPPORTUNITY_MIN_CANDIDATE_SCORE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.68
+    },
+    "OPPORTUNITY_MIN_HISTORY_SAMPLES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 20
+    },
+    "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.7
+    },
+    "OPPORTUNITY_MIN_VERIFIED_SCORE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.78
+    },
+    "OPPORTUNITY_REQUIRE_BROADER_CONFIRM": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_REQUIRE_LIVE_CONTEXT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_REQUIRE_OUTCOME_HISTORY": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
     "PREALERT_MIN_LIFETIME_SEC": {
       "env_present": false,
       "env_value": null,
@@ -2156,14 +2295,14 @@
   "scorecard": {
     "adverse_direction_correctness": 9.3,
     "asset_case_compression": 7.4,
-    "chase_allowed_credibility": 4.8,
+    "chase_allowed_credibility": 6.6,
     "confirm_honesty_non_misleading_quality": 7.9,
     "live_market_context_readiness": 8.9,
     "no_trade_do_not_chase_protection_value": 6.2,
     "noise_control": 6.0,
-    "overall_self_use_score": 6.5,
-    "prealert_effectiveness": 1.7,
-    "research_sampling_readiness": 1.8,
+    "overall_self_use_score": 7.4,
+    "prealert_effectiveness": 6.5,
+    "research_sampling_readiness": 4.8,
     "sweep_quality": 8.3,
     "trade_action_usable": 9.1
   },
@@ -2171,20 +2310,20 @@
     "direction_performance": {
       "buy_pressure": {
         "adverse_300s_rate": null,
-        "adverse_60s_rate": 0.2,
-        "count": 28,
+        "adverse_60s_rate": 0.2432,
+        "count": 80,
         "move_after_300s_median": null,
-        "move_after_60s_median": 0.000854
+        "move_after_60s_median": 0.001012
       },
       "sell_pressure": {
-        "adverse_300s_rate": null,
-        "adverse_60s_rate": 0.2,
-        "count": 36,
-        "move_after_300s_median": null,
-        "move_after_60s_median": 0.002401
+        "adverse_300s_rate": 0.0,
+        "adverse_60s_rate": 0.2188,
+        "count": 64,
+        "move_after_300s_median": 0.001471,
+        "move_after_60s_median": 0.00111
       }
     },
-    "sweep_building_count": 18,
+    "sweep_building_count": 33,
     "sweep_building_display_climax_residual_count": 0,
     "sweep_building_examples": [
       {
@@ -2229,9 +2368,9 @@
       }
     ],
     "sweep_building_residuals": [],
-    "sweep_building_to_continue_rate": 0.7778,
-    "sweep_building_to_sweep_confirmed_rate": 0.4444,
-    "sweep_confirmed_count": 33,
+    "sweep_building_to_continue_rate": 0.7273,
+    "sweep_building_to_sweep_confirmed_rate": 0.4242,
+    "sweep_confirmed_count": 81,
     "sweep_confirmed_examples": [
       {
         "asset_case_id": "asset_case:ETH:f5963199ec",
@@ -2326,80 +2465,87 @@
       "adverse_rate": null,
       "resolved_count": 0
     },
-    "sweep_exhaustion_risk_count": 13,
+    "sweep_exhaustion_risk_count": 30,
     "sweep_reversal_300s": {
       "adverse_count": 0,
-      "adverse_rate": null,
-      "resolved_count": 0
+      "adverse_rate": 0.0,
+      "resolved_count": 1
     },
     "sweep_reversal_60s": {
-      "adverse_count": 2,
-      "adverse_rate": 0.25,
-      "resolved_count": 8
+      "adverse_count": 9,
+      "adverse_rate": 0.2368,
+      "resolved_count": 38
     }
   },
   "telegram_suppression_summary": {
     "messages_before_after_suppression_estimate": {
-      "raw_lp_signals": 138,
-      "sent_telegram_messages": 58
+      "raw_lp_signals": 285,
+      "sent_telegram_messages": 95
     },
-    "suppression_reasons": {},
-    "total_suppressed": 0,
-    "update_kind_distribution": {}
+    "suppression_reasons": {
+      "no_trade_lock_local_signal_suppressed": 19,
+      "same_asset_state_repeat": 66
+    },
+    "total_suppressed": 85,
+    "update_kind_distribution": {
+      "candidate": 3,
+      "risk_blocker": 32,
+      "state_change": 27,
+      "suppressed": 85
+    }
   },
   "top_findings": [
-    "主窗口为 2026-04-19 15:38:27 UTC 到 2026-04-20 01:21:42 UTC，持续 9.72h，包含 443 条 signals / 138 条 LP rows / 58 条已送达 LP 消息。",
+    "主窗口为 2026-04-19 15:38:27 UTC 到 2026-04-20 12:32:31 UTC，持续 20.9h，包含 1040 条 signals / 285 条 LP rows / 95 条已送达 LP 消息。",
     "trade_action 已真实进入 overnight 样本且覆盖全部 LP rows；Telegram 首行 action-first 比例为 1.0。",
-    "可追多/可追空样本极少，仅 2 条，且 2/2 满足 broader_confirm + live_public + clean/strong-sweep + quality pass + no conflict + no local absorption + no exhaustion + no data gap。",
+    "可追多/可追空样本极少，仅 6 条，且 6/6 满足 broader_confirm + live_public + clean/strong-sweep + quality pass + no conflict + no local absorption + no exhaustion + no data gap。",
     "两条 chase_allowed 的 30s/60s/300s outcome 全部没有价格回写，原因不是规则不严，而是 outcome ledger 过期时没有拿到新的 pool quote。",
-    "保护类动作占主导：DO_NOT_CHASE_LONG=39 DO_NOT_CHASE_SHORT=42 CONFLICT_NO_TRADE=8 WAIT_CONFIRMATION=3。",
-    "WAIT_CONFIRMATION 在 90s 内有 0.6667 的样本升级为更强后续结构，但没有直接升级成 chase_allowed。",
-    "prealert 仍未真正落地：candidate=138 gate_passed=138 delivered_prealert=0 stage_overwritten=138。",
-    "OKX live context 在 LP 主窗口命中率为 1.0，okx attempts=683 success=683；Kraken attempts=0，因此 fallback 仍未被真实夜间样本验证。",
+    "保护类动作占主导：DO_NOT_CHASE_LONG=77 DO_NOT_CHASE_SHORT=71 CONFLICT_NO_TRADE=21 WAIT_CONFIRMATION=5。",
+    "WAIT_CONFIRMATION 在 90s 内有 0.8 的样本升级为更强后续结构，但没有直接升级成 chase_allowed。",
+    "prealert 仍未真正落地：candidate=285 gate_passed=285 delivered_prealert=1 stage_overwritten=284。",
+    "OKX live context 在 LP 主窗口命中率为 1.0，okx attempts=1355 success=1355；Kraken attempts=0，因此 fallback 仍未被真实夜间样本验证。",
     "ETH/USDC -> ETH-USDT-SWAP fallback 在真实样本里大量命中，Binance/Bybit 在主窗口没有被用到。",
-    "confirm 分类更诚实：local_confirm=62 broader_confirm=12 late_confirm=34 chase_risk=0 unconfirmed_confirm=36。",
-    "sweep_building 不再显示成 climax，残留计数为 0；sweep_building -> 后续延续率为 0.7778。",
+    "confirm 分类更诚实：local_confirm=105 broader_confirm=35 late_confirm=78 chase_risk=0 unconfirmed_confirm=54。",
+    "sweep_building 不再显示成 climax，残留计数为 0；sweep_building -> 后续延续率为 0.7273。",
     "adverse direction 校验没有发现矛盾，consistency_errors=0。",
-    "asset-case 聚合已有作用：138 条 LP rows 聚合成 42 个 case，compression_ratio=3.2857，其中 multi-pair cases=20。",
+    "asset-case 聚合已有作用：285 条 LP rows 聚合成 76 个 case，compression_ratio=3.75，其中 multi-pair cases=38。",
     "majors 覆盖仍然只有 ETH/USDT 与 ETH/USDC，BTC/SOL 样本为 0；CLI 同时显示 BTC pools 是 configured but disabled，SOL 则仍缺 major 覆盖。",
     "raw_events / parsed_events archive 仍然缺失，且 300s outcome 大面积 expired，这两点是本轮对 prealert funnel 和长窗口后验判断的最大限制。"
   ],
   "top_recommendations": [
-    "优先补齐并启用 BTC/SOL majors pools，下一轮继续先补 majors，不要扩 long-tail。",
     "先解决 prealert 被统一 overwritten 的路径，至少让 major first-leg prealert 能在 archive 中落一层真实 stage。",
     "保留 OKX 为主路径，同时加一个可重复触发的 Kraken fallback 自检，因为真实夜间还没用到它。",
-    "补回 raw_events / parsed_events archive；没有 raw/parsed 就无法完整回溯 prealert funnel 与 fastlane 首发漏点。",
     "提升 pool quote outcome 回写，尤其是 30s/60s/300s 过期时的补偿逻辑，否则 chase/no-trade 的后验无法做强结论。"
   ],
   "trade_action_outcome_summary": {
-    "all_strict_flags_pass_count": 2,
+    "all_strict_flags_pass_count": 6,
     "all_strict_flags_pass_rate": 1.0,
     "chase_allowed_300s_followthrough_rate": null,
-    "chase_allowed_30s_followthrough_rate": null,
-    "chase_allowed_60s_followthrough_rate": null,
+    "chase_allowed_30s_followthrough_rate": 1.0,
+    "chase_allowed_60s_followthrough_rate": 1.0,
     "chase_allowed_adverse_300s_rate": null,
-    "chase_allowed_adverse_30s_rate": null,
-    "chase_allowed_adverse_60s_rate": null,
-    "count": 2,
-    "do_not_chase_would_have_lost_rate": 0.1538,
-    "long_chase_allowed_count": 1,
-    "no_trade_conflict_adverse_rate": 0.0,
+    "chase_allowed_adverse_30s_rate": 0.0,
+    "chase_allowed_adverse_60s_rate": 0.0,
+    "count": 6,
+    "do_not_chase_would_have_lost_rate": 0.1571,
+    "long_chase_allowed_count": 5,
+    "no_trade_conflict_adverse_rate": 0.4615,
     "note": "if chase_allowed count is non-zero but all 30s/60s/300s are unresolved, it usually means the outcome ledger expired without a fresh pool quote update rather than that the chase rule itself was violated.",
     "outcome_window_status": {
       "300s": {
         "resolved_count": 0,
         "resolved_rate": 0.0,
         "status_distribution": {
-          "expired": 2
+          "expired": 6
         },
         "top_failure_reasons": {
-          "window_elapsed_without_price_update": 2
+          "window_elapsed_without_price_update": 6
         }
       },
       "30s": {
-        "resolved_count": 0,
-        "resolved_rate": 0.0,
+        "resolved_count": 4,
+        "resolved_rate": 0.6667,
         "status_distribution": {
+          "completed": 4,
           "expired": 2
         },
         "top_failure_reasons": {
@@ -2407,9 +2553,10 @@
         }
       },
       "60s": {
-        "resolved_count": 0,
-        "resolved_rate": 0.0,
+        "resolved_count": 4,
+        "resolved_rate": 0.6667,
         "status_distribution": {
+          "completed": 4,
           "expired": 2
         },
         "top_failure_reasons": {
@@ -2562,38 +2709,351 @@
         "trade_action_key": "LONG_CHASE_ALLOWED",
         "trade_action_reason": "链上买压扩散且合约未偏晚，broader confirmation 与质量门槛都已通过。",
         "trade_action_required_confirmation": "已触发；只在回撤不破确认区时考虑顺势"
+      },
+      {
+        "all_strict_flags_pass": true,
+        "asset_case_id": "asset_case:ETH:59231ce962",
+        "asset_case_quality_score": 0.676,
+        "lp_absorption_context": "broader_buy_pressure_confirmed",
+        "lp_alert_stage": "confirm",
+        "lp_confirm_quality": "clean_confirm",
+        "lp_confirm_scope": "broader_confirm",
+        "market_context_source": "live_public",
+        "market_context_venue": "okx_perp",
+        "outcome_windows": {
+          "300s": {
+            "adverse_by_direction": null,
+            "completed_at": 1776669987,
+            "direction_adjusted_move_after": null,
+            "failure_reason": "window_elapsed_without_price_update",
+            "followthrough_negative": null,
+            "followthrough_positive": null,
+            "price_end": null,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": null,
+            "reversal": null,
+            "status": "expired",
+            "window_sec": 300
+          },
+          "30s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012894,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": 0.012894,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 30
+          },
+          "60s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012894,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": 0.012894,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 60
+          }
+        },
+        "pair_label": "ETH/USDT",
+        "pair_quality_score": 0.682,
+        "requested_symbol": "ETHUSDT",
+        "resolved_symbol": "ETH-USDT-SWAP",
+        "signal_id": "sig_15c72ea348bce174",
+        "strict_flags": {
+          "broader_confirm": true,
+          "clean_confirm_or_strong_sweep": true,
+          "live_public": true,
+          "no_conflict": true,
+          "no_data_gap": true,
+          "no_exhaustion": true,
+          "no_local_absorption": true,
+          "quality_pass": true
+        },
+        "trade_action_blockers": [],
+        "trade_action_invalidated_by": "broader alignment 消失 / Mark 跌回 Index 下方 / 反向清扫出现",
+        "trade_action_key": "LONG_CHASE_ALLOWED",
+        "trade_action_reason": "链上买压扩散且合约未偏晚，broader confirmation 与质量门槛都已通过。",
+        "trade_action_required_confirmation": "已触发；只在回撤不破确认区时考虑顺势"
+      },
+      {
+        "all_strict_flags_pass": true,
+        "asset_case_id": "asset_case:ETH:59231ce962",
+        "asset_case_quality_score": 0.675,
+        "lp_absorption_context": "broader_buy_pressure_confirmed",
+        "lp_alert_stage": "confirm",
+        "lp_confirm_quality": "clean_confirm",
+        "lp_confirm_scope": "broader_confirm",
+        "market_context_source": "live_public",
+        "market_context_venue": "okx_perp",
+        "outcome_windows": {
+          "300s": {
+            "adverse_by_direction": null,
+            "completed_at": 1776669987,
+            "direction_adjusted_move_after": null,
+            "failure_reason": "window_elapsed_without_price_update",
+            "followthrough_negative": null,
+            "followthrough_positive": null,
+            "price_end": null,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": null,
+            "reversal": null,
+            "status": "expired",
+            "window_sec": 300
+          },
+          "30s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012894,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": 0.012894,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 30
+          },
+          "60s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012894,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2292.47,
+            "raw_move_after": 0.012894,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 60
+          }
+        },
+        "pair_label": "ETH/USDC",
+        "pair_quality_score": 0.669,
+        "requested_symbol": "ETHUSDC",
+        "resolved_symbol": "ETH-USDT-SWAP",
+        "signal_id": "sig_552e5e8a789eb9f9",
+        "strict_flags": {
+          "broader_confirm": true,
+          "clean_confirm_or_strong_sweep": true,
+          "live_public": true,
+          "no_conflict": true,
+          "no_data_gap": true,
+          "no_exhaustion": true,
+          "no_local_absorption": true,
+          "quality_pass": true
+        },
+        "trade_action_blockers": [],
+        "trade_action_invalidated_by": "broader alignment 消失 / Mark 跌回 Index 下方 / 反向清扫出现",
+        "trade_action_key": "LONG_CHASE_ALLOWED",
+        "trade_action_reason": "链上买压扩散且合约未偏晚，broader confirmation 与质量门槛都已通过。",
+        "trade_action_required_confirmation": "已触发；只在回撤不破确认区时考虑顺势"
+      },
+      {
+        "all_strict_flags_pass": true,
+        "asset_case_id": "asset_case:ETH:59231ce962",
+        "asset_case_quality_score": 0.675,
+        "lp_absorption_context": "broader_buy_pressure_confirmed",
+        "lp_alert_stage": "confirm",
+        "lp_confirm_quality": "clean_confirm",
+        "lp_confirm_scope": "broader_confirm",
+        "market_context_source": "live_public",
+        "market_context_venue": "okx_perp",
+        "outcome_windows": {
+          "300s": {
+            "adverse_by_direction": null,
+            "completed_at": 1776669987,
+            "direction_adjusted_move_after": null,
+            "failure_reason": "window_elapsed_without_price_update",
+            "followthrough_negative": null,
+            "followthrough_positive": null,
+            "price_end": null,
+            "price_source": "okx_mark",
+            "price_start": 2294.09,
+            "raw_move_after": null,
+            "reversal": null,
+            "status": "expired",
+            "window_sec": 300
+          },
+          "30s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012179,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2294.09,
+            "raw_move_after": 0.012179,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 30
+          },
+          "60s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.012179,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2294.09,
+            "raw_move_after": 0.012179,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 60
+          }
+        },
+        "pair_label": "ETH/USDC",
+        "pair_quality_score": 0.669,
+        "requested_symbol": "ETHUSDC",
+        "resolved_symbol": "ETH-USDT-SWAP",
+        "signal_id": "sig_77a5baa30c981322",
+        "strict_flags": {
+          "broader_confirm": true,
+          "clean_confirm_or_strong_sweep": true,
+          "live_public": true,
+          "no_conflict": true,
+          "no_data_gap": true,
+          "no_exhaustion": true,
+          "no_local_absorption": true,
+          "quality_pass": true
+        },
+        "trade_action_blockers": [],
+        "trade_action_invalidated_by": "broader alignment 消失 / Mark 跌回 Index 下方 / 反向清扫出现",
+        "trade_action_key": "LONG_CHASE_ALLOWED",
+        "trade_action_reason": "链上买压扩散且合约未偏晚，broader confirmation 与质量门槛都已通过。",
+        "trade_action_required_confirmation": "已触发；只在回撤不破确认区时考虑顺势"
+      },
+      {
+        "all_strict_flags_pass": true,
+        "asset_case_id": "asset_case:ETH:59231ce962",
+        "asset_case_quality_score": 0.675,
+        "lp_absorption_context": "broader_buy_pressure_confirmed",
+        "lp_alert_stage": "confirm",
+        "lp_confirm_quality": "clean_confirm",
+        "lp_confirm_scope": "broader_confirm",
+        "market_context_source": "live_public",
+        "market_context_venue": "okx_perp",
+        "outcome_windows": {
+          "300s": {
+            "adverse_by_direction": null,
+            "completed_at": 1776669987,
+            "direction_adjusted_move_after": null,
+            "failure_reason": "window_elapsed_without_price_update",
+            "followthrough_negative": null,
+            "followthrough_positive": null,
+            "price_end": null,
+            "price_source": "okx_mark",
+            "price_start": 2296.6,
+            "raw_move_after": null,
+            "reversal": null,
+            "status": "expired",
+            "window_sec": 300
+          },
+          "30s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.011073,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2296.6,
+            "raw_move_after": 0.011073,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 30
+          },
+          "60s": {
+            "adverse_by_direction": false,
+            "completed_at": 1776669880,
+            "direction_adjusted_move_after": 0.011073,
+            "failure_reason": "",
+            "followthrough_negative": false,
+            "followthrough_positive": true,
+            "price_end": 2322.03,
+            "price_source": "okx_mark",
+            "price_start": 2296.6,
+            "raw_move_after": 0.011073,
+            "reversal": false,
+            "status": "completed",
+            "window_sec": 60
+          }
+        },
+        "pair_label": "ETH/USDT",
+        "pair_quality_score": 0.681,
+        "requested_symbol": "ETHUSDT",
+        "resolved_symbol": "ETH-USDT-SWAP",
+        "signal_id": "sig_dd0245a6e06994c8",
+        "strict_flags": {
+          "broader_confirm": true,
+          "clean_confirm_or_strong_sweep": true,
+          "live_public": true,
+          "no_conflict": true,
+          "no_data_gap": true,
+          "no_exhaustion": true,
+          "no_local_absorption": true,
+          "quality_pass": true
+        },
+        "trade_action_blockers": [],
+        "trade_action_invalidated_by": "broader alignment 消失 / Mark 跌回 Index 下方 / 反向清扫出现",
+        "trade_action_key": "LONG_CHASE_ALLOWED",
+        "trade_action_reason": "链上买压扩散且合约未偏晚，broader confirmation 与质量门槛都已通过。",
+        "trade_action_required_confirmation": "已触发；只在回撤不破确认区时考虑顺势"
       }
     ],
-    "wait_confirmation_upgrade_rate": 0.6667
+    "wait_confirmation_upgrade_rate": 0.8
   },
   "trade_action_summary": {
     "chase_allowed_adverse_rate": null,
     "chase_allowed_rows_resolved_300s": 0,
     "chase_allowed_success_rate": null,
     "conflict_after_message_reversal_rate": 0.0,
-    "conflict_no_trade_count": 8,
+    "conflict_no_trade_count": 21,
     "data_gap_no_trade_count": 0,
     "delivered_distribution": {
-      "CONFLICT_NO_TRADE": 2,
-      "DO_NOT_CHASE_LONG": 21,
-      "DO_NOT_CHASE_SHORT": 19,
-      "LONG_BIAS_OBSERVE": 6,
-      "SHORT_BIAS_OBSERVE": 9,
+      "CONFLICT_NO_TRADE": 6,
+      "DO_NOT_CHASE_LONG": 33,
+      "DO_NOT_CHASE_SHORT": 27,
+      "LONG_BIAS_OBSERVE": 12,
+      "NO_TRADE": 1,
+      "SHORT_BIAS_OBSERVE": 15,
       "SHORT_CHASE_ALLOWED": 1
     },
-    "do_not_chase_long_count": 39,
-    "do_not_chase_short_count": 42,
+    "do_not_chase_long_count": 77,
+    "do_not_chase_short_count": 71,
     "generic_confirm_adverse_rate_300s": 0.0,
     "generic_confirm_success_rate_300s": 1.0,
-    "long_bias_observe_count": 15,
-    "long_chase_allowed_count": 1,
-    "no_trade_count": 0,
+    "long_bias_observe_count": 51,
+    "long_chase_allowed_count": 5,
+    "no_trade_count": 1,
     "no_trade_would_have_saved_rate": null,
     "reversal_watch_long_count": 0,
     "reversal_watch_short_count": 0,
-    "short_bias_observe_count": 29,
+    "short_bias_observe_count": 53,
     "short_chase_allowed_count": 1,
-    "telegram_action_first_count": 58,
+    "telegram_action_first_count": 95,
     "telegram_action_first_rate": 1.0,
     "trade_action_adverse_300s": {
       "CONFLICT_NO_TRADE": {
@@ -2605,17 +3065,17 @@
       },
       "DO_NOT_CHASE_LONG": {
         "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "DO_NOT_CHASE_SHORT": {
-        "adverse_count": 0,
         "adverse_rate": 0.0,
         "followthrough_count": 1,
         "followthrough_rate": 1.0,
         "resolved_count": 1
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
       },
       "LONG_BIAS_OBSERVE": {
         "adverse_count": 0,
@@ -2631,12 +3091,19 @@
         "followthrough_rate": null,
         "resolved_count": 0
       },
-      "SHORT_BIAS_OBSERVE": {
+      "NO_TRADE": {
         "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
         "followthrough_rate": null,
         "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 1,
+        "followthrough_rate": 1.0,
+        "resolved_count": 1
       },
       "SHORT_CHASE_ALLOWED": {
         "adverse_count": 0,
@@ -2655,92 +3122,41 @@
     },
     "trade_action_adverse_30s": {
       "CONFLICT_NO_TRADE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 3,
-        "followthrough_rate": 1.0,
-        "resolved_count": 3
+        "adverse_count": 6,
+        "adverse_rate": 0.4286,
+        "followthrough_count": 8,
+        "followthrough_rate": 0.5714,
+        "resolved_count": 14
       },
       "DO_NOT_CHASE_LONG": {
-        "adverse_count": 5,
-        "adverse_rate": 0.2381,
-        "followthrough_count": 16,
-        "followthrough_rate": 0.7619,
-        "resolved_count": 21
+        "adverse_count": 10,
+        "adverse_rate": 0.2564,
+        "followthrough_count": 29,
+        "followthrough_rate": 0.7436,
+        "resolved_count": 39
       },
       "DO_NOT_CHASE_SHORT": {
         "adverse_count": 1,
-        "adverse_rate": 0.05,
-        "followthrough_count": 19,
-        "followthrough_rate": 0.95,
-        "resolved_count": 20
+        "adverse_rate": 0.0286,
+        "followthrough_count": 34,
+        "followthrough_rate": 0.9714,
+        "resolved_count": 35
       },
       "LONG_BIAS_OBSERVE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 5,
-        "followthrough_rate": 1.0,
-        "resolved_count": 5
+        "adverse_count": 6,
+        "adverse_rate": 0.2222,
+        "followthrough_count": 21,
+        "followthrough_rate": 0.7778,
+        "resolved_count": 27
       },
       "LONG_CHASE_ALLOWED": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "SHORT_BIAS_OBSERVE": {
-        "adverse_count": 2,
-        "adverse_rate": 0.125,
-        "followthrough_count": 14,
-        "followthrough_rate": 0.875,
-        "resolved_count": 16
-      },
-      "SHORT_CHASE_ALLOWED": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "WAIT_CONFIRMATION": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      }
-    },
-    "trade_action_adverse_60s": {
-      "CONFLICT_NO_TRADE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 3,
-        "followthrough_rate": 1.0,
-        "resolved_count": 3
-      },
-      "DO_NOT_CHASE_LONG": {
-        "adverse_count": 5,
-        "adverse_rate": 0.2381,
-        "followthrough_count": 16,
-        "followthrough_rate": 0.7619,
-        "resolved_count": 21
-      },
-      "DO_NOT_CHASE_SHORT": {
-        "adverse_count": 1,
-        "adverse_rate": 0.0556,
-        "followthrough_count": 17,
-        "followthrough_rate": 0.9444,
-        "resolved_count": 18
-      },
-      "LONG_BIAS_OBSERVE": {
         "adverse_count": 0,
         "adverse_rate": 0.0,
         "followthrough_count": 4,
         "followthrough_rate": 1.0,
         "resolved_count": 4
       },
-      "LONG_CHASE_ALLOWED": {
+      "NO_TRADE": {
         "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
@@ -2749,10 +3165,10 @@
       },
       "SHORT_BIAS_OBSERVE": {
         "adverse_count": 2,
-        "adverse_rate": 0.2,
-        "followthrough_count": 8,
-        "followthrough_rate": 0.8,
-        "resolved_count": 10
+        "adverse_rate": 0.0667,
+        "followthrough_count": 28,
+        "followthrough_rate": 0.9333,
+        "resolved_count": 30
       },
       "SHORT_CHASE_ALLOWED": {
         "adverse_count": 0,
@@ -2763,21 +3179,87 @@
       },
       "WAIT_CONFIRMATION": {
         "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
+      }
+    },
+    "trade_action_adverse_60s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.4615,
+        "followthrough_count": 7,
+        "followthrough_rate": 0.5385,
+        "resolved_count": 13
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 10,
+        "adverse_rate": 0.2564,
+        "followthrough_count": 29,
+        "followthrough_rate": 0.7436,
+        "resolved_count": 39
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 1,
+        "adverse_rate": 0.0323,
+        "followthrough_count": 30,
+        "followthrough_rate": 0.9677,
+        "resolved_count": 31
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.2308,
+        "followthrough_count": 20,
+        "followthrough_rate": 0.7692,
+        "resolved_count": 26
+      },
+      "LONG_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 4,
+        "followthrough_rate": 1.0,
+        "resolved_count": 4
+      },
+      "NO_TRADE": {
+        "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
         "followthrough_rate": null,
         "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.0833,
+        "followthrough_count": 22,
+        "followthrough_rate": 0.9167,
+        "resolved_count": 24
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
       }
     },
     "trade_action_distribution": {
-      "CONFLICT_NO_TRADE": 8,
-      "DO_NOT_CHASE_LONG": 39,
-      "DO_NOT_CHASE_SHORT": 42,
-      "LONG_BIAS_OBSERVE": 15,
-      "LONG_CHASE_ALLOWED": 1,
-      "SHORT_BIAS_OBSERVE": 29,
+      "CONFLICT_NO_TRADE": 21,
+      "DO_NOT_CHASE_LONG": 77,
+      "DO_NOT_CHASE_SHORT": 71,
+      "LONG_BIAS_OBSERVE": 51,
+      "LONG_CHASE_ALLOWED": 5,
+      "NO_TRADE": 1,
+      "SHORT_BIAS_OBSERVE": 53,
       "SHORT_CHASE_ALLOWED": 1,
-      "WAIT_CONFIRMATION": 3
+      "WAIT_CONFIRMATION": 5
     },
     "trade_action_followthrough_300s": {
       "CONFLICT_NO_TRADE": {
@@ -2789,17 +3271,17 @@
       },
       "DO_NOT_CHASE_LONG": {
         "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "DO_NOT_CHASE_SHORT": {
-        "adverse_count": 0,
         "adverse_rate": 0.0,
         "followthrough_count": 1,
         "followthrough_rate": 1.0,
         "resolved_count": 1
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
       },
       "LONG_BIAS_OBSERVE": {
         "adverse_count": 0,
@@ -2815,12 +3297,19 @@
         "followthrough_rate": null,
         "resolved_count": 0
       },
-      "SHORT_BIAS_OBSERVE": {
+      "NO_TRADE": {
         "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
         "followthrough_rate": null,
         "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 1,
+        "followthrough_rate": 1.0,
+        "resolved_count": 1
       },
       "SHORT_CHASE_ALLOWED": {
         "adverse_count": 0,
@@ -2839,92 +3328,41 @@
     },
     "trade_action_followthrough_30s": {
       "CONFLICT_NO_TRADE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 3,
-        "followthrough_rate": 1.0,
-        "resolved_count": 3
+        "adverse_count": 6,
+        "adverse_rate": 0.4286,
+        "followthrough_count": 8,
+        "followthrough_rate": 0.5714,
+        "resolved_count": 14
       },
       "DO_NOT_CHASE_LONG": {
-        "adverse_count": 5,
-        "adverse_rate": 0.2381,
-        "followthrough_count": 16,
-        "followthrough_rate": 0.7619,
-        "resolved_count": 21
+        "adverse_count": 10,
+        "adverse_rate": 0.2564,
+        "followthrough_count": 29,
+        "followthrough_rate": 0.7436,
+        "resolved_count": 39
       },
       "DO_NOT_CHASE_SHORT": {
         "adverse_count": 1,
-        "adverse_rate": 0.05,
-        "followthrough_count": 19,
-        "followthrough_rate": 0.95,
-        "resolved_count": 20
+        "adverse_rate": 0.0286,
+        "followthrough_count": 34,
+        "followthrough_rate": 0.9714,
+        "resolved_count": 35
       },
       "LONG_BIAS_OBSERVE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 5,
-        "followthrough_rate": 1.0,
-        "resolved_count": 5
+        "adverse_count": 6,
+        "adverse_rate": 0.2222,
+        "followthrough_count": 21,
+        "followthrough_rate": 0.7778,
+        "resolved_count": 27
       },
       "LONG_CHASE_ALLOWED": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "SHORT_BIAS_OBSERVE": {
-        "adverse_count": 2,
-        "adverse_rate": 0.125,
-        "followthrough_count": 14,
-        "followthrough_rate": 0.875,
-        "resolved_count": 16
-      },
-      "SHORT_CHASE_ALLOWED": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      },
-      "WAIT_CONFIRMATION": {
-        "adverse_count": 0,
-        "adverse_rate": null,
-        "followthrough_count": 0,
-        "followthrough_rate": null,
-        "resolved_count": 0
-      }
-    },
-    "trade_action_followthrough_60s": {
-      "CONFLICT_NO_TRADE": {
-        "adverse_count": 0,
-        "adverse_rate": 0.0,
-        "followthrough_count": 3,
-        "followthrough_rate": 1.0,
-        "resolved_count": 3
-      },
-      "DO_NOT_CHASE_LONG": {
-        "adverse_count": 5,
-        "adverse_rate": 0.2381,
-        "followthrough_count": 16,
-        "followthrough_rate": 0.7619,
-        "resolved_count": 21
-      },
-      "DO_NOT_CHASE_SHORT": {
-        "adverse_count": 1,
-        "adverse_rate": 0.0556,
-        "followthrough_count": 17,
-        "followthrough_rate": 0.9444,
-        "resolved_count": 18
-      },
-      "LONG_BIAS_OBSERVE": {
         "adverse_count": 0,
         "adverse_rate": 0.0,
         "followthrough_count": 4,
         "followthrough_rate": 1.0,
         "resolved_count": 4
       },
-      "LONG_CHASE_ALLOWED": {
+      "NO_TRADE": {
         "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
@@ -2933,10 +3371,10 @@
       },
       "SHORT_BIAS_OBSERVE": {
         "adverse_count": 2,
-        "adverse_rate": 0.2,
-        "followthrough_count": 8,
-        "followthrough_rate": 0.8,
-        "resolved_count": 10
+        "adverse_rate": 0.0667,
+        "followthrough_count": 28,
+        "followthrough_rate": 0.9333,
+        "resolved_count": 30
       },
       "SHORT_CHASE_ALLOWED": {
         "adverse_count": 0,
@@ -2947,33 +3385,167 @@
       },
       "WAIT_CONFIRMATION": {
         "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
+      }
+    },
+    "trade_action_followthrough_60s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.4615,
+        "followthrough_count": 7,
+        "followthrough_rate": 0.5385,
+        "resolved_count": 13
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 10,
+        "adverse_rate": 0.2564,
+        "followthrough_count": 29,
+        "followthrough_rate": 0.7436,
+        "resolved_count": 39
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 1,
+        "adverse_rate": 0.0323,
+        "followthrough_count": 30,
+        "followthrough_rate": 0.9677,
+        "resolved_count": 31
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.2308,
+        "followthrough_count": 20,
+        "followthrough_rate": 0.7692,
+        "resolved_count": 26
+      },
+      "LONG_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 4,
+        "followthrough_rate": 1.0,
+        "resolved_count": 4
+      },
+      "NO_TRADE": {
+        "adverse_count": 0,
         "adverse_rate": null,
         "followthrough_count": 0,
         "followthrough_rate": null,
         "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.0833,
+        "followthrough_count": 22,
+        "followthrough_rate": 0.9167,
+        "resolved_count": 24
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": 0.0,
+        "followthrough_count": 2,
+        "followthrough_rate": 1.0,
+        "resolved_count": 2
       }
     },
     "trade_action_label_distribution": {
-      "不交易": 8,
-      "不追多": 39,
-      "不追空": 42,
-      "偏多观察": 15,
-      "偏空观察": 29,
-      "可顺势追多": 1,
+      "不交易": 22,
+      "不追多": 77,
+      "不追空": 71,
+      "偏多观察": 51,
+      "偏空观察": 53,
+      "可顺势追多": 5,
       "可顺势追空": 1,
-      "等待确认": 3
+      "等待确认": 5
     },
-    "trade_action_present_count": 138,
+    "trade_action_present_count": 285,
     "trade_action_present_rate": 1.0,
     "undelivered_distribution": {
-      "CONFLICT_NO_TRADE": 6,
-      "DO_NOT_CHASE_LONG": 18,
-      "DO_NOT_CHASE_SHORT": 23,
-      "LONG_BIAS_OBSERVE": 9,
-      "LONG_CHASE_ALLOWED": 1,
-      "SHORT_BIAS_OBSERVE": 20,
-      "WAIT_CONFIRMATION": 3
+      "CONFLICT_NO_TRADE": 15,
+      "DO_NOT_CHASE_LONG": 44,
+      "DO_NOT_CHASE_SHORT": 44,
+      "LONG_BIAS_OBSERVE": 39,
+      "LONG_CHASE_ALLOWED": 5,
+      "SHORT_BIAS_OBSERVE": 38,
+      "WAIT_CONFIRMATION": 5
     },
-    "wait_confirmation_count": 3
+    "wait_confirmation_count": 5
+  },
+  "trade_opportunity_cache_snapshot": {},
+  "trade_opportunity_summary": {
+    "blocker_effectiveness": {
+      "avoided_adverse_count": 0,
+      "avoided_adverse_rate": null,
+      "count": 0
+    },
+    "candidate_outcome_60s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "count": 0,
+      "expired_count": 0,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "resolved_count": 0,
+      "result_distribution": {},
+      "unavailable_count": 0
+    },
+    "next_threshold_suggestions": [],
+    "opportunity_blocked_count": 0,
+    "opportunity_blocker_avoided_adverse_rate": null,
+    "opportunity_budget_suppressed_count": 0,
+    "opportunity_candidate_adverse_60s_rate": null,
+    "opportunity_candidate_count": 0,
+    "opportunity_candidate_followthrough_60s_rate": null,
+    "opportunity_candidate_to_verified_rate": null,
+    "opportunity_cooldown_suppressed_count": 0,
+    "opportunity_false_positive_analysis": {
+      "candidate_adverse_count": 0,
+      "verified_adverse_count": 0,
+      "verified_expired_count": 0
+    },
+    "opportunity_hard_blocker_distribution": {},
+    "opportunity_history_sample_sufficiency_rate": null,
+    "opportunity_none_count": 0,
+    "opportunity_score_distribution": {
+      "median": null,
+      "p90": null
+    },
+    "opportunity_score_median": null,
+    "opportunity_score_p90": null,
+    "opportunity_summary": {
+      "blocked": 0,
+      "candidates": 0,
+      "none": 0,
+      "verified": 0
+    },
+    "opportunity_verified_adverse_60s_rate": null,
+    "opportunity_verified_count": 0,
+    "opportunity_verified_followthrough_60s_rate": null,
+    "rolling_stats": {},
+    "samples_until_verified_open": 20,
+    "top_blockers": {},
+    "verified_outcome_60s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "count": 0,
+      "expired_count": 0,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "resolved_count": 0,
+      "result_distribution": {},
+      "unavailable_count": 0
+    },
+    "why_no_opportunities": [
+      "no_candidate_reached_opportunity_score_gate",
+      "history_samples_insufficient"
+    ]
   }
 }

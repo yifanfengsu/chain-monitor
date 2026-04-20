@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from analyzer import BehaviorAnalyzer
 from asset_market_state import AssetMarketStateManager
 from asset_case_manager import AssetCaseManager
+from trade_opportunity import TradeOpportunityManager
 from config import (
     ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
     ADJACENT_WATCH_NOTIFY_MIN_ABNORMAL_RATIO,
@@ -95,6 +96,7 @@ class SignalPipeline:
         followup_tracker=None,
         asset_case_manager: AssetCaseManager | None = None,
         asset_market_state_manager: AssetMarketStateManager | None = None,
+        trade_opportunity_manager: TradeOpportunityManager | None = None,
         market_context_adapter=None,
         quality_manager: QualityManager | None = None,
     ) -> None:
@@ -110,6 +112,9 @@ class SignalPipeline:
         self.liquidation_detector = liquidation_detector or LiquidationDetector()
         self.asset_case_manager = asset_case_manager or AssetCaseManager()
         self.asset_market_state_manager = asset_market_state_manager or AssetMarketStateManager(
+            state_manager=state_manager,
+        )
+        self.trade_opportunity_manager = trade_opportunity_manager or TradeOpportunityManager(
             state_manager=state_manager,
         )
         self.market_context_adapter = market_context_adapter or build_market_context_adapter()
@@ -994,6 +999,7 @@ class SignalPipeline:
         )
         tier_payload = apply_user_tier_context(event=event, signal=signal, watch_meta=watch_meta)
         asset_market_state_payload = self.asset_market_state_manager.apply_lp_signal(event, signal)
+        trade_opportunity_payload = self.trade_opportunity_manager.apply_lp_signal(event, signal)
         self.asset_case_manager.attach_runtime_context(
             event,
             signal,
@@ -1008,6 +1014,7 @@ class SignalPipeline:
             "prealert_diagnostics": prealert_payload,
             "trade_action": trade_action_payload,
             "asset_market_state": asset_market_state_payload,
+            "trade_opportunity": trade_opportunity_payload,
             "user_tier": tier_payload,
         }
 
@@ -3372,6 +3379,245 @@ class SignalPipeline:
                 or signal_metadata.get("asset_market_state_invalidated_by")
                 or event_metadata.get("asset_market_state_invalidated_by")
                 or ""
+            ),
+            "trade_opportunity_id": str(
+                signal_context.get("trade_opportunity_id")
+                or signal_metadata.get("trade_opportunity_id")
+                or event_metadata.get("trade_opportunity_id")
+                or ""
+            ),
+            "trade_opportunity_key": str(
+                signal_context.get("trade_opportunity_key")
+                or signal_metadata.get("trade_opportunity_key")
+                or event_metadata.get("trade_opportunity_key")
+                or ""
+            ),
+            "trade_opportunity_side": str(
+                signal_context.get("trade_opportunity_side")
+                or signal_metadata.get("trade_opportunity_side")
+                or event_metadata.get("trade_opportunity_side")
+                or ""
+            ),
+            "trade_opportunity_status": str(
+                signal_context.get("trade_opportunity_status")
+                or signal_metadata.get("trade_opportunity_status")
+                or event_metadata.get("trade_opportunity_status")
+                or ""
+            ),
+            "trade_opportunity_label": str(
+                signal_context.get("trade_opportunity_label")
+                or signal_metadata.get("trade_opportunity_label")
+                or event_metadata.get("trade_opportunity_label")
+                or ""
+            ),
+            "trade_opportunity_score": float(
+                signal_context.get("trade_opportunity_score")
+                or signal_metadata.get("trade_opportunity_score")
+                or event_metadata.get("trade_opportunity_score")
+                or 0.0
+            ),
+            "trade_opportunity_confidence": str(
+                signal_context.get("trade_opportunity_confidence")
+                or signal_metadata.get("trade_opportunity_confidence")
+                or event_metadata.get("trade_opportunity_confidence")
+                or ""
+            ),
+            "trade_opportunity_time_horizon": str(
+                signal_context.get("trade_opportunity_time_horizon")
+                or signal_metadata.get("trade_opportunity_time_horizon")
+                or event_metadata.get("trade_opportunity_time_horizon")
+                or ""
+            ),
+            "trade_opportunity_reason": str(
+                signal_context.get("trade_opportunity_reason")
+                or signal_metadata.get("trade_opportunity_reason")
+                or event_metadata.get("trade_opportunity_reason")
+                or ""
+            ),
+            "trade_opportunity_evidence": list(
+                signal_context.get("trade_opportunity_evidence")
+                or signal_metadata.get("trade_opportunity_evidence")
+                or event_metadata.get("trade_opportunity_evidence")
+                or []
+            ),
+            "trade_opportunity_blockers": list(
+                signal_context.get("trade_opportunity_blockers")
+                or signal_metadata.get("trade_opportunity_blockers")
+                or event_metadata.get("trade_opportunity_blockers")
+                or []
+            ),
+            "trade_opportunity_required_confirmation": str(
+                signal_context.get("trade_opportunity_required_confirmation")
+                or signal_metadata.get("trade_opportunity_required_confirmation")
+                or event_metadata.get("trade_opportunity_required_confirmation")
+                or ""
+            ),
+            "trade_opportunity_invalidated_by": str(
+                signal_context.get("trade_opportunity_invalidated_by")
+                or signal_metadata.get("trade_opportunity_invalidated_by")
+                or event_metadata.get("trade_opportunity_invalidated_by")
+                or ""
+            ),
+            "trade_opportunity_risk_flags": list(
+                signal_context.get("trade_opportunity_risk_flags")
+                or signal_metadata.get("trade_opportunity_risk_flags")
+                or event_metadata.get("trade_opportunity_risk_flags")
+                or []
+            ),
+            "trade_opportunity_quality_snapshot": dict(
+                signal_context.get("trade_opportunity_quality_snapshot")
+                or signal_metadata.get("trade_opportunity_quality_snapshot")
+                or event_metadata.get("trade_opportunity_quality_snapshot")
+                or {}
+            ),
+            "trade_opportunity_outcome_policy": dict(
+                signal_context.get("trade_opportunity_outcome_policy")
+                or signal_metadata.get("trade_opportunity_outcome_policy")
+                or event_metadata.get("trade_opportunity_outcome_policy")
+                or {}
+            ),
+            "trade_opportunity_created_at": (
+                signal_context.get("trade_opportunity_created_at")
+                if signal_context.get("trade_opportunity_created_at") not in {None, ""}
+                else signal_metadata.get("trade_opportunity_created_at")
+                if signal_metadata.get("trade_opportunity_created_at") not in {None, ""}
+                else event_metadata.get("trade_opportunity_created_at")
+            ),
+            "trade_opportunity_expires_at": (
+                signal_context.get("trade_opportunity_expires_at")
+                if signal_context.get("trade_opportunity_expires_at") not in {None, ""}
+                else signal_metadata.get("trade_opportunity_expires_at")
+                if signal_metadata.get("trade_opportunity_expires_at") not in {None, ""}
+                else event_metadata.get("trade_opportunity_expires_at")
+            ),
+            "trade_opportunity_source": str(
+                signal_context.get("trade_opportunity_source")
+                or signal_metadata.get("trade_opportunity_source")
+                or event_metadata.get("trade_opportunity_source")
+                or ""
+            ),
+            "trade_opportunity_primary_blocker": str(
+                signal_context.get("trade_opportunity_primary_blocker")
+                or signal_metadata.get("trade_opportunity_primary_blocker")
+                or event_metadata.get("trade_opportunity_primary_blocker")
+                or ""
+            ),
+            "trade_opportunity_score_components": dict(
+                signal_context.get("trade_opportunity_score_components")
+                or signal_metadata.get("trade_opportunity_score_components")
+                or event_metadata.get("trade_opportunity_score_components")
+                or {}
+            ),
+            "trade_opportunity_history_snapshot": dict(
+                signal_context.get("trade_opportunity_history_snapshot")
+                or signal_metadata.get("trade_opportunity_history_snapshot")
+                or event_metadata.get("trade_opportunity_history_snapshot")
+                or {}
+            ),
+            "trade_opportunity_status_at_creation": str(
+                signal_context.get("trade_opportunity_status_at_creation")
+                or signal_metadata.get("trade_opportunity_status_at_creation")
+                or event_metadata.get("trade_opportunity_status_at_creation")
+                or ""
+            ),
+            "opportunity_outcome_source": str(
+                signal_context.get("opportunity_outcome_source")
+                or signal_metadata.get("opportunity_outcome_source")
+                or event_metadata.get("opportunity_outcome_source")
+                or ""
+            ),
+            "opportunity_outcome_30s": str(
+                signal_context.get("opportunity_outcome_30s")
+                or signal_metadata.get("opportunity_outcome_30s")
+                or event_metadata.get("opportunity_outcome_30s")
+                or ""
+            ),
+            "opportunity_outcome_60s": str(
+                signal_context.get("opportunity_outcome_60s")
+                or signal_metadata.get("opportunity_outcome_60s")
+                or event_metadata.get("opportunity_outcome_60s")
+                or ""
+            ),
+            "opportunity_outcome_300s": str(
+                signal_context.get("opportunity_outcome_300s")
+                or signal_metadata.get("opportunity_outcome_300s")
+                or event_metadata.get("opportunity_outcome_300s")
+                or ""
+            ),
+            "opportunity_followthrough_30s": (
+                signal_context.get("opportunity_followthrough_30s")
+                if signal_context.get("opportunity_followthrough_30s") is not None
+                else signal_metadata.get("opportunity_followthrough_30s")
+                if signal_metadata.get("opportunity_followthrough_30s") is not None
+                else event_metadata.get("opportunity_followthrough_30s")
+            ),
+            "opportunity_followthrough_60s": (
+                signal_context.get("opportunity_followthrough_60s")
+                if signal_context.get("opportunity_followthrough_60s") is not None
+                else signal_metadata.get("opportunity_followthrough_60s")
+                if signal_metadata.get("opportunity_followthrough_60s") is not None
+                else event_metadata.get("opportunity_followthrough_60s")
+            ),
+            "opportunity_followthrough_300s": (
+                signal_context.get("opportunity_followthrough_300s")
+                if signal_context.get("opportunity_followthrough_300s") is not None
+                else signal_metadata.get("opportunity_followthrough_300s")
+                if signal_metadata.get("opportunity_followthrough_300s") is not None
+                else event_metadata.get("opportunity_followthrough_300s")
+            ),
+            "opportunity_adverse_30s": (
+                signal_context.get("opportunity_adverse_30s")
+                if signal_context.get("opportunity_adverse_30s") is not None
+                else signal_metadata.get("opportunity_adverse_30s")
+                if signal_metadata.get("opportunity_adverse_30s") is not None
+                else event_metadata.get("opportunity_adverse_30s")
+            ),
+            "opportunity_adverse_60s": (
+                signal_context.get("opportunity_adverse_60s")
+                if signal_context.get("opportunity_adverse_60s") is not None
+                else signal_metadata.get("opportunity_adverse_60s")
+                if signal_metadata.get("opportunity_adverse_60s") is not None
+                else event_metadata.get("opportunity_adverse_60s")
+            ),
+            "opportunity_adverse_300s": (
+                signal_context.get("opportunity_adverse_300s")
+                if signal_context.get("opportunity_adverse_300s") is not None
+                else signal_metadata.get("opportunity_adverse_300s")
+                if signal_metadata.get("opportunity_adverse_300s") is not None
+                else event_metadata.get("opportunity_adverse_300s")
+            ),
+            "opportunity_invalidated_at": (
+                signal_context.get("opportunity_invalidated_at")
+                if signal_context.get("opportunity_invalidated_at") not in {None, ""}
+                else signal_metadata.get("opportunity_invalidated_at")
+                if signal_metadata.get("opportunity_invalidated_at") not in {None, ""}
+                else event_metadata.get("opportunity_invalidated_at")
+            ),
+            "opportunity_invalidated_reason": str(
+                signal_context.get("opportunity_invalidated_reason")
+                or signal_metadata.get("opportunity_invalidated_reason")
+                or event_metadata.get("opportunity_invalidated_reason")
+                or ""
+            ),
+            "opportunity_result_label": str(
+                signal_context.get("opportunity_result_label")
+                or signal_metadata.get("opportunity_result_label")
+                or event_metadata.get("opportunity_result_label")
+                or ""
+            ),
+            "trade_opportunity_notifier_sent_at": (
+                signal_context.get("trade_opportunity_notifier_sent_at")
+                if signal_context.get("trade_opportunity_notifier_sent_at") not in {None, ""}
+                else signal_metadata.get("trade_opportunity_notifier_sent_at")
+                if signal_metadata.get("trade_opportunity_notifier_sent_at") not in {None, ""}
+                else event_metadata.get("trade_opportunity_notifier_sent_at")
+            ),
+            "trade_opportunity_delivered_notification": bool(
+                signal_context.get("trade_opportunity_delivered_notification")
+                if signal_context.get("trade_opportunity_delivered_notification") is not None
+                else signal_metadata.get("trade_opportunity_delivered_notification")
+                if signal_metadata.get("trade_opportunity_delivered_notification") is not None
+                else event_metadata.get("trade_opportunity_delivered_notification")
             ),
             "first_seen_stage": str(
                 signal_context.get("first_seen_stage")
@@ -7765,6 +8011,22 @@ class SignalPipeline:
                     signal.metadata["lp_outcome_record"] = updated_record
                     signal.context["lp_outcome_record"] = updated_record
                     self.quality_manager.sync_from_state_manager(force=True)
+            opportunity_id = str(
+                signal.context.get("trade_opportunity_id")
+                or signal.metadata.get("trade_opportunity_id")
+                or event.metadata.get("trade_opportunity_id")
+                or ""
+            )
+            if opportunity_id:
+                updated_opportunity = self.trade_opportunity_manager.mark_notification(
+                    opportunity_id,
+                    notifier_sent_at=notifier_sent_at,
+                    delivered=bool(delivered),
+                )
+                if updated_opportunity:
+                    event.metadata.update(updated_opportunity)
+                    signal.metadata.update(updated_opportunity)
+                    signal.context.update(updated_opportunity)
             self._apply_lp_prealert_diagnostics(
                 event,
                 signal,

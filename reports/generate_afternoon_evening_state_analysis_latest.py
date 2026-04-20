@@ -29,12 +29,14 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     compute_archive_integrity,
     compute_market_context,
     compute_majors,
+    compute_trade_opportunities,
     compute_trade_actions,
     first_value,
     fmt_ts,
     inventory_ndjson,
     join_lp_rows,
     load_asset_case_cache,
+    load_trade_opportunity_cache,
     load_quality_cache,
     load_signals,
     median,
@@ -84,6 +86,18 @@ SAFE_CONFIG_KEYS = [
     "CHASE_MIN_FOLLOWTHROUGH_60S_RATE",
     "CHASE_MAX_ADVERSE_60S_RATE",
     "CHASE_REQUIRE_OUTCOME_COMPLETION_RATE",
+    "OPPORTUNITY_ENABLE",
+    "OPPORTUNITY_REQUIRE_LIVE_CONTEXT",
+    "OPPORTUNITY_REQUIRE_BROADER_CONFIRM",
+    "OPPORTUNITY_REQUIRE_OUTCOME_HISTORY",
+    "OPPORTUNITY_MIN_CANDIDATE_SCORE",
+    "OPPORTUNITY_MIN_VERIFIED_SCORE",
+    "OPPORTUNITY_MIN_HISTORY_SAMPLES",
+    "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE",
+    "OPPORTUNITY_MAX_60S_ADVERSE_RATE",
+    "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
+    "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
+    "OPPORTUNITY_COOLDOWN_SEC",
 ]
 
 LONG_ACTION_KEYS = {
@@ -492,7 +506,8 @@ def build_data_source_inventory(latest_date: str, window: dict[str, Any]) -> tup
     _, _, quality_inventory = load_quality_cache()
     asset_case_payload, asset_case_inventory = load_asset_case_cache()
     asset_state_records, asset_state_inventory = load_asset_market_state_cache()
-    cache_inventories = [quality_inventory, asset_case_inventory, asset_state_inventory]
+    trade_opportunity_payload, trade_opportunity_inventory = load_trade_opportunity_cache()
+    cache_inventories = [quality_inventory, asset_case_inventory, asset_state_inventory, trade_opportunity_inventory]
 
     for info in cache_inventories:
         if not info.exists:
@@ -516,6 +531,8 @@ def build_data_source_inventory(latest_date: str, window: dict[str, Any]) -> tup
         missing.append(str((DATA_DIR / "asset_cases.cache.json").relative_to(ROOT)))
     if not asset_state_records:
         missing.append(str((DATA_DIR / "asset_market_states.cache.json").relative_to(ROOT)))
+    if trade_opportunity_payload == {}:
+        missing.append(str((DATA_DIR / "trade_opportunities.cache.json").relative_to(ROOT)))
     return inventories, sorted(set(missing))
 
 
@@ -567,7 +584,7 @@ def source_window_counts(window: dict[str, Any], latest_date: str) -> dict[str, 
 def high_value_row(row: dict[str, Any]) -> bool:
     if bool(row.get("asset_market_state_changed")):
         return True
-    return str(row.get("telegram_update_kind") or "") in {"state_change", "risk_blocker", "candidate"}
+    return str(row.get("telegram_update_kind") or "") in {"state_change", "risk_blocker", "candidate", "opportunity"}
 
 
 def row_direction(row: dict[str, Any]) -> str:
@@ -1619,6 +1636,7 @@ def build_csv_rows(
     telegram: dict[str, Any],
     prealerts: dict[str, Any],
     candidate_tradeable: dict[str, Any],
+    opportunities: dict[str, Any],
     outcomes: dict[str, Any],
     market_context: dict[str, Any],
     trade_actions: dict[str, Any],
@@ -1668,6 +1686,11 @@ def build_csv_rows(
         append_metric(rows, "candidate_tradeable", "candidate_distribution", value, asset_market_state=state_key, sample_size=run_overview["lp_signal_rows"], window=window_label)
     for state_key, value in candidate_tradeable["tradeable_distribution"].items():
         append_metric(rows, "candidate_tradeable", "tradeable_distribution", value, asset_market_state=state_key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+
+    for key, value in opportunities.items():
+        if isinstance(value, dict) or isinstance(value, list):
+            continue
+        append_metric(rows, "trade_opportunity", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
 
     for window_name, distribution in outcomes["window_status_distribution"].items():
         for status_name, value in distribution.items():
@@ -1813,6 +1836,7 @@ def build_markdown(
     no_trade_lock: dict[str, Any],
     prealerts: dict[str, Any],
     candidate_tradeable: dict[str, Any],
+    opportunities: dict[str, Any],
     outcomes: dict[str, Any],
     market_context: dict[str, Any],
     trade_actions: dict[str, Any],
@@ -1920,6 +1944,18 @@ def build_markdown(
         lines.append(f"- `{key}={candidate_tradeable[key]}`")
     lines.append(f"- `primary_tradeable_blockers={candidate_tradeable['primary_tradeable_blockers']}`")
     lines.append("")
+    lines.append("## 9A. trade_opportunity 分析")
+    lines.append("")
+    lines.append(f"- `opportunity_summary={opportunities['opportunity_summary']}`")
+    lines.append(f"- `opportunity_score_median={opportunities['opportunity_score_median']}` `opportunity_score_p90={opportunities['opportunity_score_p90']}`")
+    lines.append(f"- `candidate_outcome_60s={opportunities['candidate_outcome_60s']}`")
+    lines.append(f"- `verified_outcome_60s={opportunities['verified_outcome_60s']}`")
+    lines.append(f"- `blocker_effectiveness={opportunities['blocker_effectiveness']}`")
+    lines.append(f"- `opportunity_budget_suppressed_count={opportunities['opportunity_budget_suppressed_count']}` `opportunity_cooldown_suppressed_count={opportunities['opportunity_cooldown_suppressed_count']}`")
+    lines.append(f"- `why_no_opportunities={opportunities['why_no_opportunities']}`")
+    lines.append(f"- `top_blockers={opportunities['top_blockers']}`")
+    lines.append(f"- `next_threshold_suggestions={opportunities['next_threshold_suggestions']}`")
+    lines.append("")
     lines.append("## 10. outcome price source 与 30s/60s/300s 分析")
     lines.append("")
     lines.append(f"- `window_status_distribution={outcomes['window_status_distribution']}`")
@@ -2018,6 +2054,7 @@ def main() -> int:
     quality_rows, quality_by_signal, _ = load_quality_cache()
     asset_case_payload, _ = load_asset_case_cache()
     asset_state_records, _ = load_asset_market_state_cache()
+    trade_opportunity_cache, _ = load_trade_opportunity_cache()
 
     window_signal_rows, _, lp_rows = join_lp_rows(
         signal_rows,
@@ -2081,6 +2118,7 @@ def main() -> int:
     telegram = compute_telegram_detail(lp_rows, previous_report)
     prealerts = compute_prealert_lifecycle_detail(lp_rows, asset_case_payload)
     candidate_tradeable = compute_candidate_tradeable_detail(lp_rows, runtime_config)
+    opportunities = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
     outcome_detail = compute_outcome_detail(lp_rows, previous_report)
     market_context = compute_market_context(lp_rows)
     trade_actions = compute_trade_action_detail(lp_rows, candidate_tradeable)
@@ -2148,6 +2186,7 @@ def main() -> int:
         "telegram_suppression_summary": telegram,
         "prealert_lifecycle_summary": prealerts,
         "candidate_tradeable_summary": candidate_tradeable,
+        "trade_opportunity_summary": opportunities,
         "outcome_source_summary": outcome_detail,
         "market_context_health": {
             "window": market_context,
@@ -2175,6 +2214,7 @@ def main() -> int:
         telegram,
         prealerts,
         candidate_tradeable,
+        opportunities,
         outcome_detail,
         market_context,
         trade_actions,
@@ -2194,6 +2234,7 @@ def main() -> int:
         no_trade_lock,
         prealerts,
         candidate_tradeable,
+        opportunities,
         outcome_detail,
         market_context,
         trade_actions,
