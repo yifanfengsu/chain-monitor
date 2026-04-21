@@ -150,3 +150,22 @@ majors-first pool book 指引：
 - 默认只跑 `research` 视图，研究期消息保留最完整字段
 - 如果后续需要 `retail / trader / research` 多频道，可由用户自行多进程启动并传不同 env / `CHAT_ID`
 - 多频道编排、私有账户 API key、下单/账户读取都不在本次 patch 范围
+
+## 常用 Make 命令
+
+- `make preflight`：启动前全套检查，包含安全配置、编译、SQLite、market context、coverage、archive 和 git 状态。
+- `make run`：启动主程序。
+- `make run-research`：强制 `research` + OKX/Kraken live context 启动。
+- `make health`：查看 market context 健康度。
+- `make coverage`：查看 major pool 覆盖。
+- `make db-init / db-summary / db-integrity / db-report`：初始化、摘要、完整性和 SQLite report 检查。
+- `make db-migrate-all / db-migrate-date DATE=YYYY-MM-DD`：把 NDJSON archive mirror 到 SQLite。
+- `make report-overnight / report-state / report-all`：生成 overnight trade action、afternoon/evening state 或全量常用报告。
+- `make test-all`：运行分组后的 SQLite、opportunity、state、action、LP 和 core 测试。
+- `make archive-check`：列出 archive 最新目录，确认 raw/parsed/signals/audit/case 是否落盘。
+
+提醒：
+- 不要在启动前删除 archive/cache/db。
+- SQLite 是 mirror/query layer，不替代 archive。
+- `make db-prune-execute` 必须显式加 `CONFIRM=YES`。
+- 真实 DB 文件和运行数据不应提交 git。

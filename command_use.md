@@ -1,0 +1,34 @@
+# Makefile 命令说明
+
+- `make help`：打印所有常用 target 和说明。
+- `make env-check`：安全打印非敏感运行配置，不输出 Telegram token、chat id、RPC URL 或 API key。
+- `make compile`：使用 `./venv/bin/python` 编译 `app/` 和 `reports/`。
+- `make run`：启动 `app/main.py` 主监听程序。
+- `make run-research`：以 `DEFAULT_USER_TIER=research`、OKX/Kraken live market context 启动主监听。
+- `make health`：输出 live market context 健康度。
+- `make coverage`：输出 major pool 覆盖报告。
+- `make quality-summary`：输出 LP quality/outcome JSON summary。
+- `make quality-csv`：导出 quality 明细到 `reports/quality_rows.csv`。
+- `make db-init`：初始化 SQLite schema。
+- `make db-summary`：输出 SQLite 表计数和健康摘要。
+- `make db-integrity`：运行 SQLite schema/count/integrity 检查。
+- `make db-report`：依次运行 quality report 的 DB summary、DB integrity 和 opportunity DB summary。
+- `make db-migrate-all`：把全部 NDJSON archive mirror 到 SQLite。
+- `make db-migrate-date DATE=YYYY-MM-DD`：只迁移指定日期的 NDJSON archive。
+- `make db-prune-dry-run`：预览 SQLite retention prune，不执行删除。
+- `make db-prune-execute CONFIRM=YES`：执行 SQLite retention prune；没有 `CONFIRM=YES` 会拒绝运行。
+- `make report-overnight`：生成 overnight trade action 分析。
+- `make report-state`：生成 afternoon/evening asset state 分析。
+- `make report-run`：生成 overnight run 分析。
+- `make report-all`：依次生成 `report-overnight`、`report-state`、`report-run`。
+- `make smoke`：启动前快速检查，包含 compile、DB integrity、market context health、coverage 和 DB report。
+- `make test-sqlite`：运行 SQLite schema/writer/mirror/report/migration 测试。
+- `make test-opportunity`：运行 trade opportunity scoring/funnel/notifier/budget/report/persistence 测试。
+- `make test-state`：运行 asset market state、no-trade lock、prealert lifecycle、chase validation、outcome source、Telegram suppression 和 state report 测试。
+- `make test-action`：运行 trade action inference/conflict/notifier/report 测试。
+- `make test-lp`：运行 LP major prealert、major pool coverage、latency outcomes、quality report rates、raw/parsed archive 测试。
+- `make test-core`：运行 operational intent notifier 和 CLMM operational intent 测试。
+- `make test-all`：依次运行全部分组测试。
+- `make archive-check`：列出 raw_events、parsed_events、signals、delivery_audit、cases、case_followups archive 目录。
+- `make git-info`：显示 `git status --short` 和最新 commit。
+- `make preflight`：依次运行 `env-check`、`smoke`、`archive-check`、`git-info`。
