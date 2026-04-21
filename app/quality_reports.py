@@ -27,6 +27,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-summary", action="store_true", help="输出 SQLite mirror 表计数和健康摘要")
     parser.add_argument("--db-integrity", action="store_true", help="输出 SQLite mirror 完整性检查")
     parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/outcome 摘要")
+    parser.add_argument("--report-source-summary", action="store_true", help="输出 report DB/archive/cache source 摘要")
+    parser.add_argument("--fail-on-mismatch", action="store_true", help="DB/archive mirror mismatch 时返回非零")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
     parser.add_argument("--top-n", type=int, default=None, help="top/bottom 行数")
@@ -61,29 +63,12 @@ def _render_csv(rows: list[dict]) -> str:
 
 
 def _iter_archive_rows(category: str, *, base_dir: str | Path = ARCHIVE_BASE_DIR) -> list[dict]:
-    root = Path(base_dir) / category
-    rows: list[dict] = []
-    if not root.exists():
-        return rows
-    for path in sorted(root.glob("*.ndjson")):
-        try:
-            with path.open(encoding="utf-8") as fp:
-                for line in fp:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(payload, dict):
-                        continue
-                    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-                    if data:
-                        rows.append(data)
-        except OSError:
-            continue
-    return rows
+    try:
+        import report_data_loader
+
+        return report_data_loader.iter_archive_payloads(category, base_dir=base_dir)
+    except Exception:
+        return []
 
 
 def _signal_row_value(row: dict, key: str):
@@ -546,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = sqlite_store.integrity_check()
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
+        if args.fail_on_mismatch and payload.get("db_archive_mismatch"):
+            return 1
         return 0 if payload.get("ok") else 1
 
     if args.opportunity_db_summary:
@@ -553,6 +540,14 @@ def main(argv: list[str] | None = None) -> int:
 
         sqlite_store.init_sqlite_store()
         payload = sqlite_store.opportunity_db_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.report_source_summary:
+        import report_data_loader
+
+        payload = report_data_loader.report_source_summary()
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

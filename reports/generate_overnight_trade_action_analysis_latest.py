@@ -83,6 +83,16 @@ SAFE_CONFIG_KEYS = [
     "LP_QUALITY_STATS_ENABLE",
     "LP_MAJOR_ASSETS",
     "LP_MAJOR_QUOTES",
+    "OUTCOME_SCHEDULER_ENABLE",
+    "OUTCOME_TICK_INTERVAL_SEC",
+    "OUTCOME_WINDOW_GRACE_SEC",
+    "OUTCOME_CATCHUP_MAX_SEC",
+    "OUTCOME_SETTLE_BATCH_SIZE",
+    "OUTCOME_USE_MARKET_CONTEXT_PRICE",
+    "OUTCOME_MARKET_CONTEXT_REFRESH_ON_DUE",
+    "OUTCOME_PREFER_OKX_MARK",
+    "OUTCOME_ALLOW_CATCHUP_WITH_LATEST_MARK",
+    "OUTCOME_EXPIRE_AFTER_SEC",
     "LP_PREALERT_MIN_PRICING_CONFIDENCE",
     "LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY",
     "LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO",
@@ -133,6 +143,9 @@ SAFE_CONFIG_KEYS = [
     "SQLITE_DB_PATH",
     "SQLITE_REPORT_READ_PREFER_DB",
     "SQLITE_REPORT_FALLBACK_TO_ARCHIVE",
+    "REPORT_ARCHIVE_READ_GZIP",
+    "REPORT_DB_ARCHIVE_COMPARE",
+    "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH",
 ]
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
@@ -191,16 +204,10 @@ def file_inventory_by_category() -> dict[str, list[FileInventory]]:
     return {
         "raw_events": inventory_category("raw_events", "raw events archive"),
         "parsed_events": inventory_category("parsed_events", "parsed events archive"),
-        "signals": [inventory_ndjson(path, "signals archive") for path in sorted((ARCHIVE_DIR / "signals").glob("*.ndjson"))],
-        "cases": [inventory_ndjson(path, "case archive") for path in sorted((ARCHIVE_DIR / "cases").glob("*.ndjson"))],
-        "case_followups": [
-            inventory_ndjson(path, "case followups archive")
-            for path in sorted((ARCHIVE_DIR / "case_followups").glob("*.ndjson"))
-        ],
-        "delivery_audit": [
-            inventory_ndjson(path, "delivery audit archive")
-            for path in sorted((ARCHIVE_DIR / "delivery_audit").glob("*.ndjson"))
-        ],
+        "signals": inventory_category("signals", "signals archive"),
+        "cases": inventory_category("cases", "case archive"),
+        "case_followups": inventory_category("case_followups", "case followups archive"),
+        "delivery_audit": inventory_category("delivery_audit", "delivery audit archive"),
     }
 
 
@@ -1884,7 +1891,14 @@ def main() -> int:
             "record_count": sum(int(v) for v in (sqlite_source.get("sqlite_rows_by_table") or {}).values() if isinstance(v, int) and v > 0),
             "start_ts": None,
             "end_ts": None,
-            "notes": f"sqlite mirror/query layer data_source={sqlite_source.get('data_source')}",
+            "notes": (
+                f"sqlite mirror/query layer report_data_source={sqlite_source.get('report_data_source') or sqlite_source.get('data_source')} "
+                f"sqlite_rows_by_table={sqlite_source.get('sqlite_rows_by_table', {})} "
+                f"archive_rows_by_category={sqlite_source.get('archive_rows_by_category', {})} "
+                f"db_archive_mirror_match_rate={sqlite_source.get('db_archive_mirror_match_rate')} "
+                f"archive_fallback_used={bool(sqlite_source.get('archive_fallback_used'))} "
+                f"mismatch_warnings={sqlite_source.get('mismatch_warnings', [])}"
+            ),
         }
     )
 
@@ -1963,6 +1977,20 @@ def main() -> int:
         add_metric(csv_rows, "trade_opportunity", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
     for key, value in outcome_price_source_summary.get("source_distribution", {}).items():
         add_metric(csv_rows, "outcome_price_source", "source_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for reason, value in outcome_price_source_summary.get("outcome_failure_reason_distribution", {}).items():
+        add_metric(csv_rows, "outcome", "outcome_failure_reason_distribution", value, stage=reason, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key in (
+        "outcome_30s_pending_count",
+        "outcome_30s_completed_count",
+        "outcome_30s_unavailable_count",
+        "outcome_30s_expired_count",
+        "outcome_30s_completed_rate",
+        "outcome_60s_completed_rate",
+        "outcome_300s_completed_rate",
+        "catchup_completed_count",
+        "catchup_expired_count",
+    ):
+        add_metric(csv_rows, "outcome", key, outcome_price_source_summary.get(key), sample_size=run_overview["lp_signal_rows"], window=window_label)
     add_metric(csv_rows, "telegram", "total_suppressed", telegram_suppression_summary.get("total_suppressed"), sample_size=run_overview["lp_signal_rows"], window=window_label)
     add_metric(csv_rows, "noise_reduction", "suppressed_ratio", noise_reduction_summary.get("suppressed_ratio"), sample_size=run_overview["lp_signal_rows"], window=window_label)
     write_csv(CSV_PATH, csv_rows)
@@ -1984,16 +2012,22 @@ def main() -> int:
             "segments": window["all_segments"],
         },
         "data_sources": data_sources,
+        "report_data_source": sqlite_source.get("report_data_source", sqlite_source.get("data_source", "archive")),
         "data_source": sqlite_source.get("data_source", "archive"),
+        "data_source_summary": sqlite_source.get("data_source_summary", sqlite_source),
+        "sqlite_health": sqlite_source.get("sqlite_health", {}),
         "sqlite_rows_by_table": sqlite_source.get("sqlite_rows_by_table", {}),
         "archive_rows_by_category": sqlite_source.get("archive_rows_by_category", {}),
+        "compressed_archive_rows": sqlite_source.get("compressed_archive_rows", {}),
+        "archive_fallback_used": bool(sqlite_source.get("archive_fallback_used")),
         "db_archive_mirror_match_rate": sqlite_source.get("db_archive_mirror_match_rate"),
         "db_archive_mirror_detail": sqlite_source.get("db_archive_mirror_detail", {}),
         "db_archive_mismatch_warnings": [
             category
             for category, item in (sqlite_source.get("db_archive_mirror_detail") or {}).items()
             if item.get("mismatch")
-        ],
+        ] + list(sqlite_source.get("mismatch_warnings") or []),
+        "mismatch_warnings": sqlite_source.get("mismatch_warnings", []),
         "runtime_config_summary": runtime_config,
         "lp_stage_summary": {**run_overview, **stage_summary},
         "trade_action_summary": trade_action_summary,

@@ -107,11 +107,19 @@ quality report / 导出入口：
 - `python -m app.quality_reports --db-summary`
 - `python -m app.quality_reports --db-integrity`
 - `python -m app.quality_reports --opportunity-db-summary`
+- `python -m app.quality_reports --report-source-summary`
 - `python -m app.quality_reports --format csv`
 
 SQLite mirror / query layer：
 - SQLite 是第一阶段 mirror / query layer，不替代现有 JSON / NDJSON archive / cache；主监听、report fallback 和历史研究仍保留旧 archive 路径
 - 默认 DB 路径：`data/chain_monitor.sqlite`
+- reports 默认 `SQLITE_REPORT_READ_PREFER_DB=1`，会优先从 SQLite 读取；如果 DB 文件不存在、缺表、空表或读取失败，会在 `SQLITE_REPORT_FALLBACK_TO_ARCHIVE=1` 时回退到 archive/cache
+- report fallback 同时支持 `*.ndjson` 和 `*.ndjson.gz`；同一天两种文件都存在时优先未压缩 `*.ndjson`，避免重复计数
+- 查看当前 report source、DB/archive 行数、压缩 archive 检测和 mismatch warning：
+  - `./venv/bin/python -m app.quality_reports --report-source-summary`
+- 如果需要临时强制 archive-first，可设置：
+  - `SQLITE_REPORT_READ_PREFER_DB=0`
+  - `SQLITE_REPORT_FALLBACK_TO_ARCHIVE=1`
 - 运行数据库属于本地私有数据，不要提交到 git；仓库已忽略 `data/*.sqlite`、`data/*.sqlite-wal`、`data/*.sqlite-shm`、`data/*.db`
 - 初始化：
   - `./venv/bin/python -m app.sqlite_store --init`
@@ -126,6 +134,13 @@ SQLite mirror / query layer：
 - 迁移是可重复执行的；去重基于 `event_id / signal_id / signal_archive_key / trade_opportunity_id` 等主键，不会要求一次性迁完全部历史
 - 即使启用 SQLite，raw_events / parsed_events / signals / delivery_audit / case_followups 仍继续写 NDJSON archive；asset cases / asset market states / quality stats / trade opportunities 仍保留 JSON cache
 - 不建议删除旧 archive/cache：它们仍是兼容层、恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
+- 日终收尾：
+  - `make daily-close DATE=YYYY-MM-DD`：迁移指定日期 archive 到 SQLite、检查 DB、生成报告、压缩 dry-run、执行 WAL checkpoint
+  - `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`：完整日终流程，并在 dry-run 后 gzip 指定日期 archive
+  - `make archive-compress-dry-run DATE=YYYY-MM-DD`：预览指定日期会压缩哪些 archive
+  - `make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES`：明确确认后压缩指定日期 archive
+  - `make sqlite-checkpoint`：执行 `PRAGMA wal_checkpoint(TRUNCATE)`
+- 不要压缩当天 UTC 正在写入的日期；压缩前应先 migrate archive 到 SQLite。压缩保留数据为 `.ndjson.gz`，prune 才是删除数据，两者不是一回事；当前阶段建议只压缩，不删除
 - SQLite 当前适合单人自用、本地查询和轻量 report；多进程/多用户/长期高并发以后再评估 Postgres
 - retention/prune 是可选能力，默认不自动删除：
   - `./venv/bin/python -m app.sqlite_store --prune --dry-run`
@@ -160,12 +175,19 @@ majors-first pool book 指引：
 - `make coverage`：查看 major pool 覆盖。
 - `make db-init / db-summary / db-integrity / db-report`：初始化、摘要、完整性和 SQLite report 检查。
 - `make db-migrate-all / db-migrate-date DATE=YYYY-MM-DD`：把 NDJSON archive mirror 到 SQLite。
+- `make daily-close DATE=YYYY-MM-DD`：执行日终迁移、DB 检查、报告生成、压缩 dry-run 和 checkpoint。
+- `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`：日终流程并压缩指定日期 archive。
+- `make archive-compress-dry-run DATE=YYYY-MM-DD`：预览压缩。
+- `make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES`：明确确认后压缩指定日期 archive。
+- `make sqlite-checkpoint`：执行 SQLite WAL checkpoint。
 - `make report-overnight / report-state / report-all`：生成 overnight trade action、afternoon/evening state 或全量常用报告。
 - `make test-all`：运行分组后的 SQLite、opportunity、state、action、LP 和 core 测试。
 - `make archive-check`：列出 archive 最新目录，确认 raw/parsed/signals/audit/case 是否落盘。
 
 提醒：
 - 不要在启动前删除 archive/cache/db。
+- 不要压缩当天正在写的 UTC 日期；如确实需要，必须显式 `ALLOW_TODAY=YES`。
 - SQLite 是 mirror/query layer，不替代 archive。
+- compression 只把 `.ndjson` 替换为 `.ndjson.gz`，不等同于 prune；`make db-prune-execute` 才会删除过期 DB 数据。
 - `make db-prune-execute` 必须显式加 `CONFIRM=YES`。
 - 真实 DB 文件和运行数据不应提交 git。

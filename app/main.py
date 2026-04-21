@@ -8,6 +8,9 @@ from address_intelligence import AddressIntelligenceManager
 from analyzer import BehaviorAnalyzer
 from archive_store import ArchiveStore
 from config import (
+    OUTCOME_SCHEDULER_ENABLE,
+    OUTCOME_SETTLE_BATCH_SIZE,
+    OUTCOME_TICK_INTERVAL_SEC,
     PRICE_FAIL_TTL_SEC,
     PRICE_MAX_CONCURRENCY,
     PRICE_REQUEST_TIMEOUT_SEC,
@@ -335,12 +338,35 @@ async def handle_tx(raw_item):
         traceback.print_exc()
 
 
+async def outcome_scheduler_worker():
+    while True:
+        await asyncio.sleep(max(int(OUTCOME_TICK_INTERVAL_SEC or 1), 1))
+        try:
+            if pipeline is None or not bool(OUTCOME_SCHEDULER_ENABLE):
+                continue
+            pipeline.outcome_scheduler.settle_due_outcomes(
+                now=int(time.time()),
+                limit=int(OUTCOME_SETTLE_BATCH_SIZE or 200),
+            )
+        except Exception as exc:
+            print(f"outcome scheduler tick failed: {exc}")
+
+
 async def main():
     global pipeline
     print("🚀 系统启动...")
     _run_market_context_startup_check()
     if pipeline is None:
         pipeline = _build_pipeline()
+    if bool(OUTCOME_SCHEDULER_ENABLE):
+        restore_result = pipeline.outcome_scheduler.restore_pending_outcomes_from_sqlite(now=int(time.time()), catchup=True)
+        if restore_result.get("restored_pending_count") or (restore_result.get("catchup") or {}).get("processed_count"):
+            print(
+                "⏱️ outcome scheduler restored:",
+                f"pending={restore_result.get('restored_pending_count')},",
+                f"state_records={restore_result.get('restored_state_record_count')},",
+                f"catchup={restore_result.get('catchup')}",
+            )
     restore_stats = restore_persisted_exchange_adjacent()
     if restore_stats["loaded_intel_count"] or restore_stats["restored_runtime_count"]:
         print(
@@ -360,6 +386,8 @@ async def main():
         )
     asyncio.create_task(producer())
     asyncio.create_task(replay_spill_worker())
+    if bool(OUTCOME_SCHEDULER_ENABLE):
+        asyncio.create_task(outcome_scheduler_worker())
     workers = [
         asyncio.create_task(worker(handle_tx))
         for _ in range(5)

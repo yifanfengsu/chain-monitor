@@ -19,6 +19,16 @@ DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 ENV_PATH = ROOT / ".env"
 
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from report_data_loader import (  # noqa: E402
+    archive_paths as report_archive_paths,
+    load_signals as loader_load_signals,
+    open_archive_text as report_open_archive_text,
+    report_source_summary as loader_report_source_summary,
+)
+
 MARKDOWN_PATH = REPORTS_DIR / "overnight_run_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "overnight_run_metrics_latest.csv"
 JSON_PATH = REPORTS_DIR / "overnight_run_summary_latest.json"
@@ -70,6 +80,13 @@ WHITELISTED_CONFIG_KEYS = [
     "LP_PREALERT_MIN_USD",
     "LP_PREALERT_MULTI_POOL_WINDOW_SEC",
     "LP_PREALERT_FOLLOWUP_WINDOW_SEC",
+    "SQLITE_ENABLE",
+    "SQLITE_DB_PATH",
+    "SQLITE_REPORT_READ_PREFER_DB",
+    "SQLITE_REPORT_FALLBACK_TO_ARCHIVE",
+    "REPORT_ARCHIVE_READ_GZIP",
+    "REPORT_DB_ARCHIVE_COMPARE",
+    "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH",
 ]
 
 
@@ -111,6 +128,29 @@ def rate(numerator: int, denominator: int) -> float | None:
     if not denominator:
         return None
     return round(numerator / denominator, 4)
+
+
+def normalize_outcome_failure_reason(reason: str | None) -> str:
+    normalized = str(reason or "").strip()
+    if normalized in {
+        "market_price_unavailable",
+        "pending_not_processed",
+        "catchup_window_exceeded",
+        "symbol_unavailable",
+        "market_context_error",
+        "sqlite_write_failed",
+        "window_elapsed_without_price_update",
+    }:
+        return normalized
+    if not normalized:
+        return "unknown"
+    if normalized in {"price_unavailable", "live_market_price_unavailable", "market_context_and_pool_price_unavailable"}:
+        return "market_price_unavailable"
+    if normalized in {"no_symbol", "market_symbol_unavailable", "symbol_mismatch"}:
+        return "symbol_unavailable"
+    if normalized.startswith("market_context"):
+        return "market_context_error"
+    return normalized
 
 
 def median(values: list[Any], digits: int = 6) -> float | None:
@@ -220,25 +260,32 @@ def _sqlite_report_enabled() -> bool:
 def sqlite_report_source_summary() -> dict[str, Any]:
     if not _sqlite_report_enabled():
         return {
+            "report_data_source": "archive",
             "data_source": "archive",
+            "data_source_summary": {},
+            "sqlite_health": {},
             "sqlite_rows_by_table": {},
             "archive_rows_by_category": {},
             "db_archive_mirror_match_rate": None,
+            "archive_fallback_used": True,
+            "mismatch_warnings": [],
             "warnings": ["sqlite disabled or unavailable"],
         }
     try:
-        if str(APP_DIR) not in sys.path:
-            sys.path.insert(0, str(APP_DIR))
-        import sqlite_store  # type: ignore
-
-        sqlite_store.init_sqlite_store()
-        return sqlite_store.report_source_summary()
+        payload = loader_report_source_summary()
+        payload["data_source_summary"] = dict(payload)
+        return payload
     except Exception as exc:
         return {
+            "report_data_source": "archive",
             "data_source": "archive",
+            "data_source_summary": {},
+            "sqlite_health": {},
             "sqlite_rows_by_table": {},
             "archive_rows_by_category": {},
             "db_archive_mirror_match_rate": None,
+            "archive_fallback_used": True,
+            "mismatch_warnings": [f"sqlite report summary unavailable: {exc}"],
             "warnings": [f"sqlite report summary unavailable: {exc}"],
         }
 
@@ -261,23 +308,23 @@ def _sqlite_report_prefer_db() -> bool:
 
 def _load_signal_payloads_from_db() -> tuple[list[dict[str, Any]], list[FileInventory]]:
     try:
-        if str(APP_DIR) not in sys.path:
-            sys.path.insert(0, str(APP_DIR))
-        import sqlite_store  # type: ignore
-
-        rows = sqlite_store.load_signal_rows_from_db()
+        result = loader_load_signals()
+        if result.source != "sqlite":
+            return [], []
+        rows = result.rows
         if not rows:
             return [], []
         times = [to_int(row.get("archive_written_at") or row.get("archive_ts")) for row in rows]
         times = [ts for ts in times if ts is not None]
+        db_path = result.mismatch_info.get("db_path") or "data/chain_monitor.sqlite"
         inventory = [
             FileInventory(
-                str(Path(getattr(sqlite_store, "_DB_PATH", None) or (DATA_DIR / "chain_monitor.sqlite")).relative_to(ROOT)),
+                str(db_path),
                 True,
                 len(rows),
                 min(times) if times else None,
                 max(times) if times else None,
-                "sqlite signals mirror",
+                "sqlite signals mirror via report_data_loader",
             )
         ]
         return rows, inventory
@@ -391,6 +438,95 @@ def _db_signal_row(data: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _bool_from_db(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "yes", "on"}:
+            return True
+        if normalized in {"false", "no", "off"}:
+            return False
+    return None
+
+
+def _sqlite_outcome_rows(signal_ids: set[str]) -> list[dict[str, Any]]:
+    if not signal_ids:
+        return []
+    try:
+        if str(APP_DIR) not in sys.path:
+            sys.path.insert(0, str(APP_DIR))
+        import sqlite_store  # type: ignore
+
+        return sqlite_store.load_outcome_rows_from_db(signal_ids=signal_ids)
+    except Exception:
+        return []
+
+
+def merge_sqlite_outcomes_into_rows(lp_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    signal_ids = {str(row.get("signal_id") or "") for row in lp_rows if str(row.get("signal_id") or "").strip()}
+    outcome_rows = _sqlite_outcome_rows(signal_ids)
+    if not outcome_rows:
+        return lp_rows
+    grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for outcome in outcome_rows:
+        signal_id = str(outcome.get("signal_id") or "")
+        window_sec = to_int(outcome.get("window_sec"))
+        if not signal_id or window_sec is None:
+            continue
+        window_name = f"{int(window_sec)}s"
+        grouped[signal_id][window_name] = {
+            "outcome_id": str(outcome.get("outcome_id") or ""),
+            "window_sec": int(window_sec),
+            "due_at": to_int(outcome.get("due_at")),
+            "status": str(outcome.get("status") or ""),
+            "price_source": str(outcome.get("outcome_price_source") or outcome.get("price_source") or ""),
+            "start_price_source": str(outcome.get("start_price_source") or ""),
+            "end_price_source": str(outcome.get("end_price_source") or outcome.get("outcome_price_source") or outcome.get("price_source") or ""),
+            "price_start": to_float(outcome.get("start_price")),
+            "price_end": to_float(outcome.get("end_price")),
+            "raw_move_after": to_float(outcome.get("raw_move")),
+            "direction_adjusted_move_after": to_float(outcome.get("direction_adjusted_move")),
+            "followthrough_positive": _bool_from_db(outcome.get("followthrough")),
+            "adverse_by_direction": _bool_from_db(outcome.get("adverse")),
+            "reversal": _bool_from_db(outcome.get("reversal")),
+            "completed_at": to_int(outcome.get("completed_at")),
+            "failure_reason": str(outcome.get("failure_reason") or ""),
+            "settled_by": str(outcome.get("settled_by") or ""),
+            "catchup": bool(_bool_from_db(outcome.get("catchup"))),
+        }
+
+    merged_rows: list[dict[str, Any]] = []
+    for original in lp_rows:
+        row = dict(original)
+        db_windows = grouped.get(str(row.get("signal_id") or "")) or {}
+        if not db_windows:
+            merged_rows.append(row)
+            continue
+        windows = dict(row.get("outcome_windows") or {})
+        for window_name, outcome_window in db_windows.items():
+            current = dict(windows.get(window_name) or {})
+            current.update({key: value for key, value in outcome_window.items() if value not in {None, ""}})
+            windows[window_name] = current
+            row[f"move_after_alert_{window_name}"] = outcome_window.get("raw_move_after")
+            row[f"raw_move_after_{window_name}"] = outcome_window.get("raw_move_after")
+            row[f"direction_adjusted_move_after_{window_name}"] = outcome_window.get("direction_adjusted_move_after")
+            row[f"adverse_by_direction_{window_name}"] = outcome_window.get("adverse_by_direction")
+        latest_window = sorted(db_windows.values(), key=lambda item: int(item.get("window_sec") or 0))[-1]
+        row["outcome_windows"] = windows
+        row["outcome_price_source"] = str(latest_window.get("price_source") or row.get("outcome_price_source") or "")
+        row["outcome_price_start"] = latest_window.get("price_start") if latest_window.get("price_start") is not None else row.get("outcome_price_start")
+        row["outcome_price_end"] = latest_window.get("price_end") if latest_window.get("price_end") is not None else row.get("outcome_price_end")
+        row["outcome_window_status"] = str(latest_window.get("status") or row.get("outcome_window_status") or "")
+        row["outcome_failure_reason"] = str(latest_window.get("failure_reason") or row.get("outcome_failure_reason") or "")
+        merged_rows.append(row)
+    return merged_rows
+
+
 def notifier_line1(row: dict[str, Any]) -> str:
     stage_badge = str(row.get("trade_action_label") or row.get("lp_stage_badge") or "确认")
     pair_or_pool = str(row.get("pair_label") or row.get("pool_address") or "unknown")
@@ -485,20 +621,39 @@ def load_runtime_config() -> dict[str, dict[str, Any]]:
     return payload
 
 
+def fast_archive_ts_from_line(line: str) -> int | None:
+    marker = '"archive_ts":'
+    idx = line.find(marker)
+    if idx == -1:
+        return None
+    pos = idx + len(marker)
+    length = len(line)
+    while pos < length and line[pos] in {" ", "\t"}:
+        pos += 1
+    end = pos
+    while end < length and line[end].isdigit():
+        end += 1
+    if end == pos:
+        return None
+    try:
+        return int(line[pos:end])
+    except ValueError:
+        return None
+
+
 def inventory_ndjson(path: Path, notes: str) -> FileInventory:
     if not path.exists():
         return FileInventory(str(path.relative_to(ROOT)), False, 0, None, None, notes)
     count = 0
     start_ts: int | None = None
     end_ts: int | None = None
-    with path.open("r", encoding="utf-8") as handle:
+    with report_open_archive_text(path) as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
                 continue
             count += 1
-            payload = json.loads(line)
-            ts = to_int(payload.get("archive_ts"))
+            ts = fast_archive_ts_from_line(line)
             if start_ts is None:
                 start_ts = ts
             end_ts = ts
@@ -507,9 +662,9 @@ def inventory_ndjson(path: Path, notes: str) -> FileInventory:
 
 def inventory_category(category: str, notes: str) -> list[FileInventory]:
     root = ARCHIVE_DIR / category
-    paths = sorted(root.glob("*.ndjson"))
+    paths = report_archive_paths(category)
     if not paths:
-        return [FileInventory(str((root / "*.ndjson").relative_to(ROOT)), False, 0, None, None, notes)]
+        return [FileInventory(str((root / "*.ndjson(.gz)").relative_to(ROOT)), False, 0, None, None, notes)]
     return [inventory_ndjson(path, notes) for path in paths]
 
 
@@ -520,9 +675,9 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
             return [_db_signal_row(row) for row in db_payloads], db_inventory
     rows: list[dict[str, Any]] = []
     inventory: list[FileInventory] = []
-    for path in sorted((ARCHIVE_DIR / "signals").glob("*.ndjson")):
+    for path in report_archive_paths("signals"):
         inventory.append(inventory_ndjson(path, "signals archive"))
-        with path.open("r", encoding="utf-8") as handle:
+        with report_open_archive_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -979,6 +1134,8 @@ def join_lp_rows(
         )
         all_lp_rows.append(merged)
         lp_rows_window.append(merged)
+    all_lp_rows = merge_sqlite_outcomes_into_rows(all_lp_rows)
+    lp_rows_window = merge_sqlite_outcomes_into_rows(lp_rows_window)
     return window_signal_rows, all_lp_rows, lp_rows_window
 
 
@@ -993,11 +1150,11 @@ def stream_delivery_audit(
     delivered_matched_ids: set[str] = set()
     notifier_present = 0
     delivered_rows = 0
-    for path in sorted((ARCHIVE_DIR / "delivery_audit").glob("*.ndjson")):
+    for path in report_archive_paths("delivery_audit"):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
-        with path.open("r", encoding="utf-8") as handle:
+        with report_open_archive_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -1048,11 +1205,11 @@ def stream_cases(
     case_attached_ids: set[str] = set()
     case_ids: set[str] = set()
     lp_case_rows = 0
-    for path in sorted((ARCHIVE_DIR / "cases").glob("*.ndjson")):
+    for path in report_archive_paths("cases"):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
-        with path.open("r", encoding="utf-8") as handle:
+        with report_open_archive_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -1112,11 +1269,11 @@ def stream_case_followups(
     inventories: list[FileInventory] = []
     followup_signal_ids: set[str] = set()
     followup_rows = 0
-    for path in sorted((ARCHIVE_DIR / "case_followups").glob("*.ndjson")):
+    for path in report_archive_paths("case_followups"):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
-        with path.open("r", encoding="utf-8") as handle:
+        with report_open_archive_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -1639,13 +1796,16 @@ def compute_outcome_price_sources(lp_rows: list[dict[str, Any]]) -> dict[str, An
     counter = Counter()
     window_status = {"30s": Counter(), "60s": Counter(), "300s": Counter()}
     failure_reasons = Counter()
+    catchup_completed_count = 0
+    catchup_expired_count = 0
+    settled_by_counter = Counter()
     for row in lp_rows:
         source = str(row.get("outcome_price_source") or "")
         if source:
             counter[source] += 1
         reason = str(row.get("outcome_failure_reason") or "")
         if reason:
-            failure_reasons[reason] += 1
+            failure_reasons[normalize_outcome_failure_reason(reason)] += 1
         windows = row.get("outcome_windows") if isinstance(row.get("outcome_windows"), dict) else {}
         for window in ("30s", "60s", "300s"):
             item = dict(windows.get(window) or {})
@@ -1654,14 +1814,43 @@ def compute_outcome_price_sources(lp_rows: list[dict[str, Any]]) -> dict[str, An
                 window_status[window][status] += 1
             item_reason = str(item.get("failure_reason") or "")
             if item_reason:
-                failure_reasons[item_reason] += 1
+                failure_reasons[normalize_outcome_failure_reason(item_reason)] += 1
             item_source = str(item.get("price_source") or "")
             if item_source:
                 counter[item_source] += 1
+            settled_by = str(item.get("settled_by") or "")
+            if settled_by:
+                settled_by_counter[settled_by] += 1
+            is_catchup = bool(item.get("catchup")) or settled_by == "outcome_scheduler_catchup"
+            if is_catchup and status == "completed":
+                catchup_completed_count += 1
+            if is_catchup and status == "expired":
+                catchup_expired_count += 1
+    counts: dict[str, Any] = {}
+    for window in ("30s", "60s", "300s"):
+        for status_name in ("pending", "completed", "unavailable", "expired"):
+            counts[f"outcome_{window}_{status_name}_count"] = int(window_status[window].get(status_name, 0))
     return {
+        **counts,
+        "outcome_30s_completed_rate": rate(window_status["30s"].get("completed", 0), len(lp_rows)),
+        "outcome_60s_completed_rate": rate(window_status["60s"].get("completed", 0), len(lp_rows)),
+        "outcome_300s_completed_rate": rate(window_status["300s"].get("completed", 0), len(lp_rows)),
         "source_distribution": dict(sorted(counter.items())),
+        "outcome_price_source_distribution": dict(sorted(counter.items())),
         "window_status": {key: dict(value) for key, value in window_status.items()},
         "failure_reasons": dict(sorted(failure_reasons.items())),
+        "outcome_failure_reason_distribution": dict(sorted(failure_reasons.items())),
+        "catchup_completed_count": int(catchup_completed_count),
+        "catchup_expired_count": int(catchup_expired_count),
+        "scheduler_health_summary": {
+            "pending_count": sum(int(counter_value.get("pending", 0)) for counter_value in window_status.values()),
+            "completed_count": sum(int(counter_value.get("completed", 0)) for counter_value in window_status.values()),
+            "unavailable_count": sum(int(counter_value.get("unavailable", 0)) for counter_value in window_status.values()),
+            "expired_count": sum(int(counter_value.get("expired", 0)) for counter_value in window_status.values()),
+            "catchup_completed_count": int(catchup_completed_count),
+            "catchup_expired_count": int(catchup_expired_count),
+            "settled_by_distribution": dict(sorted(settled_by_counter.items())),
+        },
     }
 
 
@@ -2527,6 +2716,7 @@ def main() -> int:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
+    sqlite_source = sqlite_report_source_summary()
     signal_rows, signal_inventory = load_signals()
     primary_window, segments = choose_window(signal_rows)
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
@@ -2628,6 +2818,29 @@ def main() -> int:
         asset_case_inventory,
         quality_inventory,
     ]
+    data_sources.append(
+        FileInventory(
+            str(Path(sqlite_source.get("db_path") or (DATA_DIR / "chain_monitor.sqlite")).relative_to(ROOT))
+            if Path(str(sqlite_source.get("db_path") or (DATA_DIR / "chain_monitor.sqlite"))).is_absolute()
+            else str(sqlite_source.get("db_path") or "data/chain_monitor.sqlite"),
+            bool(sqlite_source.get("db_exists") or sqlite_source.get("sqlite_rows_by_table")),
+            sum(
+                int(v)
+                for v in (sqlite_source.get("sqlite_rows_by_table") or {}).values()
+                if isinstance(v, int) and v > 0
+            ),
+            None,
+            None,
+            (
+                f"sqlite mirror/query layer report_data_source={sqlite_source.get('report_data_source') or sqlite_source.get('data_source')} "
+                f"sqlite_rows_by_table={sqlite_source.get('sqlite_rows_by_table', {})} "
+                f"archive_rows_by_category={sqlite_source.get('archive_rows_by_category', {})} "
+                f"db_archive_mirror_match_rate={sqlite_source.get('db_archive_mirror_match_rate')} "
+                f"archive_fallback_used={bool(sqlite_source.get('archive_fallback_used'))} "
+                f"mismatch_warnings={sqlite_source.get('mismatch_warnings', [])}"
+            ),
+        )
+    )
 
     markdown = build_markdown(
         data_sources,
@@ -2716,6 +2929,18 @@ def main() -> int:
             }
             for item in data_sources
         ],
+        "report_data_source": sqlite_source.get("report_data_source", sqlite_source.get("data_source", "archive")),
+        "data_source": sqlite_source.get("data_source", "archive"),
+        "data_source_summary": sqlite_source.get("data_source_summary", sqlite_source),
+        "sqlite_health": sqlite_source.get("sqlite_health", {}),
+        "sqlite_rows_by_table": sqlite_source.get("sqlite_rows_by_table", {}),
+        "archive_rows_by_category": sqlite_source.get("archive_rows_by_category", {}),
+        "compressed_archive_rows": sqlite_source.get("compressed_archive_rows", {}),
+        "archive_fallback_used": bool(sqlite_source.get("archive_fallback_used")),
+        "db_archive_mirror_match_rate": sqlite_source.get("db_archive_mirror_match_rate"),
+        "db_archive_mirror_detail": sqlite_source.get("db_archive_mirror_detail", {}),
+        "db_archive_mismatch_warnings": sqlite_source.get("mismatch_warnings", []),
+        "mismatch_warnings": sqlite_source.get("mismatch_warnings", []),
         "runtime_config_summary": runtime_config,
         "lp_stage_summary": {
             **run_overview,

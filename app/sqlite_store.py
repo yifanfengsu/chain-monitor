@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
+import gzip
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import time
 from typing import Any
 
@@ -15,6 +17,7 @@ from config import (
     MARKET_CONTEXT_PRIMARY_VENUE,
     MARKET_CONTEXT_SECONDARY_VENUE,
     PROJECT_ROOT,
+    REPORT_ARCHIVE_READ_GZIP,
     SQLITE_ARCHIVE_MIRROR_ENABLE,
     SQLITE_BUSY_TIMEOUT_MS,
     SQLITE_DB_PATH,
@@ -76,6 +79,71 @@ ARCHIVE_CATEGORY_TABLES = {
     "delivery_audit": "delivery_audit",
     "case_followups": "case_followups",
 }
+
+
+def _archive_file_key(path: Path) -> str:
+    name = path.name
+    if name.endswith(".ndjson.gz"):
+        return name[: -len(".ndjson.gz")]
+    if name.endswith(".ndjson"):
+        return name[: -len(".ndjson")]
+    return path.stem
+
+
+def _archive_payload_paths(
+    category: str,
+    *,
+    base_dir: str | Path | None = None,
+    date: str | None = None,
+    all_dates: bool = False,
+) -> list[Path]:
+    root = Path(base_dir or ARCHIVE_BASE_DIR) / category
+    if all_dates:
+        plain = {_archive_file_key(path): path for path in sorted(root.glob("*.ndjson"))}
+        paths = dict(plain)
+        if bool(REPORT_ARCHIVE_READ_GZIP):
+            for path in sorted(root.glob("*.ndjson.gz")):
+                paths.setdefault(_archive_file_key(path), path)
+        return [paths[key] for key in sorted(paths)]
+    if date:
+        plain = root / f"{date}.ndjson"
+        if plain.exists():
+            return [plain]
+        gz = root / f"{date}.ndjson.gz"
+        if bool(REPORT_ARCHIVE_READ_GZIP) and gz.exists():
+            return [gz]
+    return []
+
+
+def _open_archive_payload_path(path: Path):
+    if path.name.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open(encoding="utf-8")
+
+
+def _count_archive_payload_lines(path: Path) -> int:
+    if path.name.endswith(".gz"):
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                return sum(1 for line in handle if line.strip())
+        except OSError:
+            return 0
+    try:
+        result = subprocess.run(
+            ["wc", "-l", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return int(str(result.stdout).strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return 0
 
 
 def _now() -> float:
@@ -470,7 +538,11 @@ def migrate_schema() -> bool:
                 pair TEXT,
                 direction TEXT,
                 window_sec INTEGER,
+                due_at REAL,
                 price_source TEXT,
+                start_price_source TEXT,
+                end_price_source TEXT,
+                outcome_price_source TEXT,
                 start_price REAL,
                 end_price REAL,
                 raw_move REAL,
@@ -483,6 +555,8 @@ def migrate_schema() -> bool:
                 completed_at REAL,
                 created_at REAL,
                 updated_at REAL,
+                settled_by TEXT,
+                catchup INTEGER,
                 UNIQUE(signal_id, window_sec)
             );
             CREATE INDEX IF NOT EXISTS idx_outcomes_signal_id ON outcomes(signal_id);
@@ -600,18 +674,29 @@ def migrate_schema() -> bool:
             CREATE TABLE IF NOT EXISTS opportunity_outcomes (
                 trade_opportunity_id TEXT,
                 window_sec INTEGER,
+                due_at REAL,
+                start_price REAL,
+                end_price REAL,
+                start_price_source TEXT,
+                end_price_source TEXT,
+                outcome_price_source TEXT,
                 raw_move REAL,
                 direction_adjusted_move REAL,
                 followthrough INTEGER,
                 adverse INTEGER,
+                reversal INTEGER,
                 result_label TEXT,
                 price_source TEXT,
                 status TEXT,
                 failure_reason TEXT,
                 completed_at REAL,
                 created_at REAL,
+                updated_at REAL,
+                settled_by TEXT,
+                catchup INTEGER,
                 PRIMARY KEY(trade_opportunity_id, window_sec)
             );
+            CREATE INDEX IF NOT EXISTS idx_opportunity_outcomes_status ON opportunity_outcomes(status);
 
             CREATE TABLE IF NOT EXISTS quality_stats (
                 scope_type TEXT,
@@ -724,6 +809,36 @@ def migrate_schema() -> bool:
             CREATE INDEX IF NOT EXISTS idx_case_followups_archive_written_at ON case_followups(archive_written_at);
             """
         )
+        _ensure_columns(
+            conn,
+            "outcomes",
+            {
+                "due_at": "REAL",
+                "start_price_source": "TEXT",
+                "end_price_source": "TEXT",
+                "outcome_price_source": "TEXT",
+                "settled_by": "TEXT",
+                "catchup": "INTEGER",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "opportunity_outcomes",
+            {
+                "due_at": "REAL",
+                "start_price": "REAL",
+                "end_price": "REAL",
+                "start_price_source": "TEXT",
+                "end_price_source": "TEXT",
+                "outcome_price_source": "TEXT",
+                "reversal": "INTEGER",
+                "updated_at": "REAL",
+                "settled_by": "TEXT",
+                "catchup": "INTEGER",
+            },
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_due_at ON outcomes(due_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_opportunity_outcomes_due_at ON opportunity_outcomes(due_at)")
         conn.execute(
             """
             INSERT INTO schema_meta(key, value, updated_at)
@@ -737,6 +852,17 @@ def migrate_schema() -> bool:
     except Exception as exc:
         _warn(f"migrate failed: {exc}")
         return False
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for column, column_type in columns.items():
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
 def _upsert(table: str, rows: dict[str, Any], key_columns: tuple[str, ...]) -> bool:
@@ -1238,7 +1364,11 @@ def _write_outcome_window(data: dict[str, Any], window: dict[str, Any], window_s
             "pair": _text(_first(data, "pair_label", "pair")),
             "direction": _direction_from_record(data),
             "window_sec": int(window_sec),
+            "due_at": _real(window.get("due_at")) or (created_at + int(window_sec)),
             "price_source": _text(window.get("price_source") or data.get("outcome_price_source")),
+            "start_price_source": _text(window.get("start_price_source") or data.get("start_price_source") or data.get("outcome_price_source")),
+            "end_price_source": _text(window.get("end_price_source") or window.get("price_source")),
+            "outcome_price_source": _text(window.get("outcome_price_source") or window.get("end_price_source") or window.get("price_source") or data.get("outcome_price_source")),
             "start_price": _real(window.get("price_start") if window.get("price_start") is not None else data.get("outcome_price_start")),
             "end_price": _real(window.get("price_end") if window.get("price_end") is not None else data.get("outcome_price_end")),
             "raw_move": raw_move,
@@ -1251,8 +1381,100 @@ def _write_outcome_window(data: dict[str, Any], window: dict[str, Any], window_s
             "completed_at": _real(window.get("completed_at")),
             "created_at": created_at,
             "updated_at": now,
+            "settled_by": _text(window.get("settled_by") or data.get("settled_by")),
+            "catchup": _bool_int(window.get("catchup") if window.get("catchup") is not None else data.get("catchup")),
         },
         ("signal_id", "window_sec"),
+    )
+
+
+def upsert_outcome_window(record: Any) -> bool:
+    if not bool(SQLITE_WRITE_OUTCOMES):
+        return False
+    data, _envelope = _unwrap(record)
+    if not data:
+        return False
+    signal_id = str(_first(data, "signal_id", "record_id", "outcome_tracking_key") or "").strip()
+    window_sec = _int(data.get("window_sec"))
+    if not signal_id or window_sec is None:
+        return False
+    window = {
+        "outcome_id": data.get("outcome_id"),
+        "due_at": data.get("due_at"),
+        "status": data.get("status"),
+        "price_source": data.get("price_source") or data.get("outcome_price_source"),
+        "start_price_source": data.get("start_price_source"),
+        "end_price_source": data.get("end_price_source"),
+        "outcome_price_source": data.get("outcome_price_source"),
+        "price_start": data.get("start_price") if data.get("start_price") is not None else data.get("price_start"),
+        "price_end": data.get("end_price") if data.get("end_price") is not None else data.get("price_end"),
+        "raw_move_after": data.get("raw_move"),
+        "direction_adjusted_move_after": data.get("direction_adjusted_move"),
+        "followthrough_positive": data.get("followthrough"),
+        "adverse_by_direction": data.get("adverse"),
+        "reversal": data.get("reversal"),
+        "failure_reason": data.get("failure_reason") or data.get("outcome_failure_reason"),
+        "completed_at": data.get("completed_at"),
+        "settled_by": data.get("settled_by"),
+        "catchup": data.get("catchup"),
+    }
+    payload = {
+        "signal_id": signal_id,
+        "record_id": str(data.get("record_id") or signal_id),
+        "trade_opportunity_id": data.get("trade_opportunity_id"),
+        "asset_symbol": data.get("asset") or data.get("asset_symbol"),
+        "pair_label": data.get("pair") or data.get("pair_label"),
+        "direction": data.get("direction"),
+        "direction_bucket": data.get("direction_bucket"),
+        "created_at": data.get("created_at"),
+        "outcome_price_source": data.get("outcome_price_source") or data.get("price_source"),
+        "outcome_price_start": data.get("start_price") if data.get("start_price") is not None else data.get("price_start"),
+        "outcome_price_end": data.get("end_price") if data.get("end_price") is not None else data.get("price_end"),
+        "outcome_window_status": data.get("status"),
+        "outcome_failure_reason": data.get("failure_reason") or data.get("outcome_failure_reason"),
+        "settled_by": data.get("settled_by"),
+        "catchup": data.get("catchup"),
+        "outcome_windows": {f"{int(window_sec)}s": window},
+    }
+    return _write_outcome_window(payload, window, int(window_sec), signal_id=signal_id)
+
+
+def upsert_opportunity_outcome(record: Any) -> bool:
+    data, _envelope = _unwrap(record)
+    if not data:
+        return False
+    opportunity_id = str(data.get("trade_opportunity_id") or "").strip()
+    window_sec = _int(data.get("window_sec"))
+    if not opportunity_id or window_sec is None:
+        return False
+    now = _now()
+    return _upsert(
+        "opportunity_outcomes",
+        {
+            "trade_opportunity_id": opportunity_id,
+            "window_sec": int(window_sec),
+            "due_at": _real(data.get("due_at")),
+            "start_price": _real(data.get("start_price") or data.get("price_start")),
+            "end_price": _real(data.get("end_price") or data.get("price_end")),
+            "start_price_source": _text(data.get("start_price_source")),
+            "end_price_source": _text(data.get("end_price_source")),
+            "outcome_price_source": _text(data.get("outcome_price_source") or data.get("price_source")),
+            "raw_move": _real(data.get("raw_move")),
+            "direction_adjusted_move": _real(data.get("direction_adjusted_move")),
+            "followthrough": _bool_int(data.get("followthrough")),
+            "adverse": _bool_int(data.get("adverse")),
+            "reversal": _bool_int(data.get("reversal")),
+            "result_label": _text(data.get("result_label")),
+            "price_source": _text(data.get("price_source") or data.get("outcome_price_source")),
+            "status": _text(data.get("status")),
+            "failure_reason": _text(data.get("failure_reason")),
+            "completed_at": _real(data.get("completed_at")),
+            "created_at": _real(data.get("created_at")) or now,
+            "updated_at": now,
+            "settled_by": _text(data.get("settled_by")),
+            "catchup": _bool_int(data.get("catchup")),
+        },
+        ("trade_opportunity_id", "window_sec"),
     )
 
 
@@ -1270,16 +1492,26 @@ def _write_opportunity_outcome_from_record(record: dict[str, Any], opportunity_i
         {
             "trade_opportunity_id": opportunity_id,
             "window_sec": int(window_sec),
+            "due_at": _real(record.get(f"due_at_{key}") or record.get("due_at")) or (created_at + int(window_sec)),
+            "start_price": _real(record.get(f"outcome_price_start_{key}") or record.get("outcome_price_start")),
+            "end_price": _real(record.get(f"outcome_price_end_{key}") or record.get("outcome_price_end")),
+            "start_price_source": _text(record.get(f"start_price_source_{key}") or record.get("start_price_source") or record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
+            "end_price_source": _text(record.get(f"end_price_source_{key}") or record.get("end_price_source") or record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
+            "outcome_price_source": _text(record.get(f"outcome_price_source_{key}") or record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
             "raw_move": _real(record.get(f"raw_move_after_{key}")),
             "direction_adjusted_move": _real(record.get(f"direction_adjusted_move_after_{key}")),
             "followthrough": _bool_int(followthrough),
             "adverse": _bool_int(adverse),
+            "reversal": _bool_int(record.get(f"opportunity_reversal_{key}") or record.get("reversal_after_climax")),
             "result_label": result_label,
-            "price_source": _text(record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
+            "price_source": _text(record.get(f"outcome_price_source_{key}") or record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
             "status": _text(status),
-            "failure_reason": _text(record.get("opportunity_invalidated_reason") or record.get("outcome_failure_reason")),
-            "completed_at": _real(record.get("opportunity_invalidated_at")),
+            "failure_reason": _text(record.get(f"outcome_failure_reason_{key}") or record.get("opportunity_invalidated_reason") or record.get("outcome_failure_reason")),
+            "completed_at": _real(record.get(f"outcome_completed_at_{key}") or record.get("opportunity_invalidated_at")),
             "created_at": created_at or now,
+            "updated_at": now,
+            "settled_by": _text(record.get("settled_by")),
+            "catchup": _bool_int(record.get("catchup")),
         },
         ("trade_opportunity_id", "window_sec"),
     )
@@ -1489,16 +1721,11 @@ def table_row_counts(tables: tuple[str, ...] = REQUIRED_TABLES) -> dict[str, int
 
 
 def archive_row_counts(base_dir: str | Path | None = None) -> dict[str, int]:
-    root = Path(base_dir or ARCHIVE_BASE_DIR)
     counts: dict[str, int] = {}
     for category in ARCHIVE_CATEGORY_TABLES:
         total = 0
-        for path in sorted((root / category).glob("*.ndjson")):
-            try:
-                with path.open(encoding="utf-8") as handle:
-                    total += sum(1 for line in handle if line.strip())
-            except OSError:
-                continue
+        for path in _archive_payload_paths(category, base_dir=base_dir, all_dates=True):
+            total += _count_archive_payload_lines(path)
         counts[category] = total
     return counts
 
@@ -1624,20 +1851,13 @@ def integrity_check() -> dict[str, Any]:
 
 
 def _iter_archive_payloads(category: str, *, date: str | None = None, all_dates: bool = False) -> tuple[int, int]:
-    root = Path(ARCHIVE_BASE_DIR) / category
-    if all_dates:
-        paths = sorted(root.glob("*.ndjson"))
-    elif date:
-        paths = [root / f"{date}.ndjson"]
-    else:
-        paths = []
     imported = 0
     bad_rows = 0
-    for path in paths:
+    for path in _archive_payload_paths(category, date=date, all_dates=all_dates):
         if not path.exists():
             continue
         try:
-            with path.open(encoding="utf-8") as handle:
+            with _open_archive_payload_path(path) as handle:
                 for raw_line in handle:
                     line = raw_line.strip()
                     if not line:
@@ -1845,6 +2065,65 @@ def rows_by_table() -> dict[str, int]:
     return table_row_counts()
 
 
+def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [dict(row) for row in rows]
+
+
+def load_pending_outcome_rows(limit: int | None = None) -> list[dict[str, Any]]:
+    conn = get_connection()
+    if conn is None:
+        return []
+    sql = (
+        "SELECT * FROM outcomes "
+        "WHERE COALESCE(status, '') = 'pending' "
+        "ORDER BY COALESCE(due_at, created_at + window_sec), created_at, signal_id, window_sec"
+    )
+    params: tuple[Any, ...] = ()
+    if limit is not None and int(limit) > 0:
+        sql = f"{sql} LIMIT ?"
+        params = (int(limit),)
+    try:
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
+    except sqlite3.Error as exc:
+        _warn(f"load pending outcomes failed: {exc}")
+        return []
+
+
+def load_outcome_rows_from_db(
+    *,
+    signal_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    conn = get_connection()
+    if conn is None:
+        return []
+    clauses = []
+    params: list[Any] = []
+    if signal_ids:
+        ids = [str(item) for item in signal_ids if str(item or "").strip()]
+        if ids:
+            placeholders = ", ".join("?" for _ in ids)
+            clauses.append(f"signal_id IN ({placeholders})")
+            params.extend(ids)
+    if start_ts is not None:
+        clauses.append("created_at >= ?")
+        params.append(int(start_ts))
+    if end_ts is not None:
+        clauses.append("created_at <= ?")
+        params.append(int(end_ts))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM outcomes {where} ORDER BY created_at, signal_id, window_sec",
+            tuple(params),
+        ).fetchall()
+        return _rows_to_dicts(rows)
+    except sqlite3.Error as exc:
+        _warn(f"load outcomes failed: {exc}")
+        return []
+
+
 def load_signal_rows_from_db(start_ts: int | None = None, end_ts: int | None = None) -> list[dict[str, Any]]:
     conn = get_connection()
     if conn is None:
@@ -1893,6 +2172,50 @@ def report_source_summary() -> dict[str, Any]:
     }
 
 
+def checkpoint(db_path: str | Path | None = None) -> dict[str, Any]:
+    resolved_db_path = _resolve_db_path(db_path) if db_path is not None else _DB_PATH
+    db_path = resolved_db_path if resolved_db_path is not None else _resolve_db_path()
+    wal_path = Path(f"{db_path}-wal")
+    wal_exists_before = wal_path.exists()
+    wal_size_before = wal_path.stat().st_size if wal_exists_before else 0
+    payload: dict[str, Any] = {
+        "db_path": str(db_path),
+        "enabled": bool(SQLITE_ENABLE),
+        "db_exists": db_path.exists(),
+        "wal_exists_before": wal_exists_before,
+        "wal_size_before": wal_size_before,
+        "checkpoint_result": None,
+        "wal_size_after": 0,
+        "success": False,
+        "message": "",
+    }
+    if not bool(SQLITE_ENABLE):
+        payload["message"] = "sqlite_disabled"
+        payload["success"] = True
+        return payload
+    if not db_path.exists():
+        payload["message"] = "db_not_found"
+        payload["success"] = True
+        return payload
+    conn = None
+    try:
+        conn = sqlite3.connect(
+            str(db_path),
+            timeout=max(float(SQLITE_BUSY_TIMEOUT_MS or 0) / 1000.0, 0.1),
+        )
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        payload["checkpoint_result"] = list(row) if row is not None else []
+        payload["wal_size_after"] = wal_path.stat().st_size if wal_path.exists() else 0
+        payload["success"] = True
+        payload["message"] = "ok"
+    except sqlite3.Error as exc:
+        payload["message"] = f"checkpoint_failed:{exc}"
+    finally:
+        if conn is not None:
+            conn.close()
+    return payload
+
+
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -1905,6 +2228,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", help="archive date YYYY-MM-DD for --migrate-archive")
     parser.add_argument("--all", action="store_true", help="migrate all archive dates")
     parser.add_argument("--integrity-check", action="store_true", help="run schema/count/integrity checks")
+    parser.add_argument("--checkpoint", action="store_true", help="run SQLite WAL checkpoint truncate")
     parser.add_argument("--prune", action="store_true", help="show or execute retention prune")
     parser.add_argument("--dry-run", action="store_true", help="dry-run retention prune")
     parser.add_argument("--execute", action="store_true", help="execute retention prune")
@@ -1927,6 +2251,10 @@ def main(argv: list[str] | None = None) -> int:
         payload = integrity_check()
         _print_json(payload)
         return 0 if payload.get("ok") else 1
+    if args.checkpoint:
+        payload = checkpoint()
+        _print_json(payload)
+        return 0 if payload.get("success") else 1
     if args.migrate_archive:
         if not args.all and not args.date:
             parser.error("--migrate-archive requires --date YYYY-MM-DD or --all")

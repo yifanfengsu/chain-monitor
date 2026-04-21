@@ -779,6 +779,18 @@ class StateManager:
             return []
         return [dict(item) for item in list(self._lp_outcome_history)[-limit:]]
 
+    def get_latest_pool_quote_proxy(self, pool_address: str, *, max_age_sec: int | None = None, now_ts: int | None = None) -> float | None:
+        address = str(pool_address or "").lower()
+        history = list(self._lp_price_history_by_pool.get(address) or [])
+        if not history:
+            return None
+        latest = dict(history[-1] or {})
+        if max_age_sec is not None:
+            reference = int(now_ts or time.time())
+            if reference - int(latest.get("ts") or 0) > int(max_age_sec):
+                return None
+        return self._coerce_outcome_price(latest.get("price_proxy"))
+
     def restore_lp_outcome_records(self, records: list[dict] | None) -> int:
         restored = 0
         for record in records or []:
@@ -803,6 +815,191 @@ class StateManager:
             )
             self._lp_outcome_history = deque(ordered[-1500:], maxlen=1500)
         return restored
+
+    def register_lp_outcome_pending_window(
+        self,
+        record_id: str,
+        *,
+        window_sec: int,
+        outcome_id: str,
+        due_at: int,
+        trade_opportunity_id: str = "",
+        start_price_source: str = "",
+    ) -> dict:
+        key = str(record_id or "").strip()
+        payload = self._lp_outcome_records.get(key)
+        if payload is None:
+            return {}
+        windows = payload.setdefault(
+            "outcome_windows",
+            self._init_lp_outcome_windows(
+                anchor_price=float(payload.get("outcome_price_start") or 0.0),
+                price_source=str(start_price_source or payload.get("outcome_price_source") or "unavailable"),
+                created_at=int(payload.get("created_at") or time.time()),
+            ),
+        )
+        window_key = f"{int(window_sec)}s"
+        window = dict(windows.get(window_key) or {})
+        if str(window.get("status") or "") in {"completed", "unavailable", "expired"}:
+            return dict(payload)
+        window.update(
+            {
+                "outcome_id": str(outcome_id or window.get("outcome_id") or f"outcome_{key}_{int(window_sec)}"),
+                "window_sec": int(window_sec),
+                "due_at": int(due_at),
+                "status": "pending",
+                "start_price_source": str(start_price_source or window.get("start_price_source") or payload.get("outcome_price_source") or "unavailable"),
+                "price_source": str(window.get("price_source") or start_price_source or payload.get("outcome_price_source") or "unavailable"),
+                "failure_reason": "",
+            }
+        )
+        windows[window_key] = window
+        payload["outcome_windows"] = windows
+        if trade_opportunity_id:
+            payload["trade_opportunity_id"] = str(trade_opportunity_id)
+        self._mirror_lp_outcome_record(payload)
+        return dict(payload)
+
+    def complete_lp_outcome_window(
+        self,
+        record_id: str,
+        *,
+        window_sec: int,
+        end_price: float,
+        price_source: str,
+        completed_at: int,
+        settled_by: str = "outcome_scheduler",
+        catchup: bool = False,
+    ) -> dict:
+        key = str(record_id or "").strip()
+        payload = self._lp_outcome_records.get(key)
+        if payload is None:
+            return {}
+        windows = payload.get("outcome_windows") if isinstance(payload.get("outcome_windows"), dict) else {}
+        window = dict(windows.get(f"{int(window_sec)}s") or {})
+        if str(window.get("status") or "") == "completed":
+            return dict(payload)
+        anchor_price = self._coerce_outcome_price(window.get("price_start") or payload.get("outcome_price_start"))
+        resolved_end_price = self._coerce_outcome_price(end_price)
+        if anchor_price is None or resolved_end_price is None:
+            return self.mark_lp_outcome_window_unavailable(
+                record_id,
+                window_sec=window_sec,
+                completed_at=completed_at,
+                reason="market_price_unavailable",
+                price_source=price_source or "unavailable",
+                settled_by=settled_by,
+                catchup=catchup,
+            )
+        move_after = (float(resolved_end_price) / float(anchor_price)) - 1.0
+        self._complete_lp_outcome_window(
+            payload,
+            window_sec=window_sec,
+            move_after=move_after,
+            completed_at=completed_at,
+            price_source=price_source,
+            price_end=resolved_end_price,
+        )
+        window = dict((payload.get("outcome_windows") or {}).get(f"{int(window_sec)}s") or {})
+        window["settled_by"] = str(settled_by or "outcome_scheduler")
+        window["catchup"] = bool(catchup)
+        window["start_price_source"] = str(window.get("start_price_source") or payload.get("outcome_price_source") or "")
+        window["end_price_source"] = str(price_source or window.get("end_price_source") or "")
+        window["outcome_price_source"] = str(price_source or window.get("outcome_price_source") or "")
+        payload["outcome_windows"][f"{int(window_sec)}s"] = window
+        payload["settled_by"] = str(settled_by or "outcome_scheduler")
+        payload["catchup"] = bool(catchup)
+        self._mirror_lp_outcome_record(payload)
+        return dict(payload)
+
+    def mark_lp_outcome_window_unavailable(
+        self,
+        record_id: str,
+        *,
+        window_sec: int,
+        completed_at: int,
+        reason: str,
+        price_source: str = "unavailable",
+        status: str = "unavailable",
+        settled_by: str = "outcome_scheduler",
+        catchup: bool = False,
+    ) -> dict:
+        key = str(record_id or "").strip()
+        payload = self._lp_outcome_records.get(key)
+        if payload is None:
+            return {}
+        if str(status or "unavailable") == "expired":
+            self.expire_lp_outcome_window(
+                record_id,
+                window_sec=window_sec,
+                completed_at=completed_at,
+                reason=reason,
+                settled_by=settled_by,
+                catchup=catchup,
+            )
+            return dict(self._lp_outcome_records.get(key) or {})
+        self._mark_lp_outcome_window_unavailable(
+            payload,
+            window_sec=window_sec,
+            completed_at=completed_at,
+            reason=reason,
+            price_source=price_source,
+        )
+        window = dict((payload.get("outcome_windows") or {}).get(f"{int(window_sec)}s") or {})
+        window["settled_by"] = str(settled_by or "outcome_scheduler")
+        window["catchup"] = bool(catchup)
+        payload["outcome_windows"][f"{int(window_sec)}s"] = window
+        payload["settled_by"] = str(settled_by or "outcome_scheduler")
+        payload["catchup"] = bool(catchup)
+        self._mirror_lp_outcome_record(payload)
+        return dict(payload)
+
+    def expire_lp_outcome_window(
+        self,
+        record_id: str,
+        *,
+        window_sec: int,
+        completed_at: int,
+        reason: str = "catchup_window_exceeded",
+        settled_by: str = "outcome_scheduler",
+        catchup: bool = False,
+    ) -> dict:
+        key = str(record_id or "").strip()
+        payload = self._lp_outcome_records.get(key)
+        if payload is None:
+            return {}
+        windows = payload.setdefault(
+            "outcome_windows",
+            self._init_lp_outcome_windows(
+                anchor_price=float(payload.get("outcome_price_start") or 0.0),
+                price_source=str(payload.get("outcome_price_source") or "unavailable"),
+                created_at=int(payload.get("created_at") or completed_at),
+            ),
+        )
+        window_key = f"{int(window_sec)}s"
+        item = dict(windows.get(window_key) or {})
+        if str(item.get("status") or "") == "completed":
+            return dict(payload)
+        item.update(
+            {
+                "status": "expired",
+                "price_source": str(item.get("price_source") or payload.get("outcome_price_source") or "unavailable"),
+                "outcome_price_source": str(item.get("outcome_price_source") or item.get("price_source") or payload.get("outcome_price_source") or "unavailable"),
+                "end_price_source": str(item.get("end_price_source") or item.get("price_source") or payload.get("outcome_price_source") or "unavailable"),
+                "completed_at": int(completed_at),
+                "failure_reason": str(reason or "catchup_window_exceeded"),
+                "settled_by": str(settled_by or "outcome_scheduler"),
+                "catchup": bool(catchup),
+            }
+        )
+        windows[window_key] = item
+        payload["outcome_windows"] = windows
+        payload["outcome_window_status"] = "expired"
+        payload["outcome_failure_reason"] = str(reason or "catchup_window_exceeded")
+        payload["settled_by"] = str(settled_by or "outcome_scheduler")
+        payload["catchup"] = bool(catchup)
+        self._mirror_lp_outcome_record(payload)
+        return dict(payload)
 
     def can_emit_signal(self, address: str, now_ts: int, cooldown_sec: int) -> bool:
         addr = (address or "").lower()
@@ -2221,8 +2418,10 @@ class StateManager:
         windows: dict[str, dict] = {}
         for window_sec in (30, 60, 300):
             windows[f"{window_sec}s"] = {
+                "outcome_id": "",
                 "status": "pending" if anchor_price > 0 else "unavailable",
                 "window_sec": int(window_sec),
+                "due_at": int(created_at) + int(window_sec),
                 "raw_move_after": None,
                 "direction_adjusted_move_after": None,
                 "followthrough_positive": None,
@@ -2230,6 +2429,8 @@ class StateManager:
                 "reversal": None,
                 "adverse_by_direction": None,
                 "price_source": str(price_source or "pool_quote_proxy"),
+                "start_price_source": str(price_source or "pool_quote_proxy"),
+                "end_price_source": None,
                 "price_start": round(float(anchor_price), 8) if anchor_price > 0 else None,
                 "price_end": None,
                 "completed_at": None if anchor_price > 0 else int(created_at),
@@ -2306,6 +2507,8 @@ class StateManager:
             "reversal": bool(adjusted_move is not None and adjusted_move < -0.002),
             "adverse_by_direction": adverse,
             "price_source": str(price_source or "pool_quote_proxy"),
+            "end_price_source": str(price_source or "pool_quote_proxy"),
+            "outcome_price_source": str(price_source or "pool_quote_proxy"),
             "price_start": window.get("price_start"),
             "price_end": round(float(price_end), 8),
             "completed_at": int(completed_at),
@@ -2342,6 +2545,8 @@ class StateManager:
         window.update({
             "status": "unavailable",
             "price_source": str(price_source or "unavailable"),
+            "end_price_source": str(price_source or "unavailable"),
+            "outcome_price_source": str(price_source or "unavailable"),
             "price_end": None,
             "completed_at": int(completed_at),
             "failure_reason": str(reason or "price_unavailable"),
@@ -2365,6 +2570,8 @@ class StateManager:
             item.update({
                 "status": "expired",
                 "price_source": str(item.get("price_source") or "pool_quote_proxy"),
+                "end_price_source": str(item.get("end_price_source") or item.get("price_source") or "pool_quote_proxy"),
+                "outcome_price_source": str(item.get("outcome_price_source") or item.get("price_source") or "pool_quote_proxy"),
                 "price_end": item.get("price_end"),
                 "completed_at": int(created_at),
                 "failure_reason": "window_elapsed_without_price_update",

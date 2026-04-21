@@ -56,6 +56,7 @@ from lp_product_helpers import stage_label_for_timing
 from liquidation_detector import LiquidationDetector
 from market_context_adapter import build_market_context_adapter
 from models import Event
+from outcome_scheduler import OutcomeScheduler
 from price_service import PriceService
 from processor import parse_tx
 from quality_manager import QualityManager
@@ -99,6 +100,7 @@ class SignalPipeline:
         trade_opportunity_manager: TradeOpportunityManager | None = None,
         market_context_adapter=None,
         quality_manager: QualityManager | None = None,
+        outcome_scheduler: OutcomeScheduler | None = None,
     ) -> None:
         self.price_service = price_service
         self.state_manager = state_manager
@@ -119,6 +121,12 @@ class SignalPipeline:
         )
         self.market_context_adapter = market_context_adapter or build_market_context_adapter()
         self.quality_manager = quality_manager or QualityManager(state_manager=state_manager)
+        self.outcome_scheduler = outcome_scheduler or OutcomeScheduler(
+            state_manager=state_manager,
+            market_context_adapter=self.market_context_adapter,
+            quality_manager=self.quality_manager,
+            trade_opportunity_manager=self.trade_opportunity_manager,
+        )
         self.address_intelligence = address_intelligence
         self.archive_store = archive_store
         self.followup_tracker = followup_tracker
@@ -432,6 +440,8 @@ class SignalPipeline:
             signal.context["outcome_tracking"] = outcome_tracking
             event.metadata["outcome_tracking"] = outcome_tracking
             signal.metadata["outcome_tracking"] = outcome_tracking
+        if self.outcome_scheduler is not None:
+            self.outcome_scheduler.register_from_lp_record(payload)
         self.quality_manager.sync_from_state_manager(force=True)
         return payload
 

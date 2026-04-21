@@ -3,10 +3,12 @@ APP ?= app
 REPORTS ?= reports
 DATE ?=
 CONFIRM ?= NO
+COMPRESS ?= NO
+ALLOW_TODAY ?= NO
 ENV_FILE ?= .env
 DB_PATH ?= data/chain_monitor.sqlite
 
-.PHONY: help env-check compile run run-research health coverage quality-summary quality-csv db-init db-summary db-integrity db-report db-migrate-all db-migrate-date db-prune-dry-run db-prune-execute report-overnight report-state report-run report-all smoke test-sqlite test-opportunity test-state test-action test-lp test-core test-all archive-check git-info preflight
+.PHONY: help env-check compile run run-research health coverage quality-summary quality-csv db-init db-summary db-integrity db-report db-migrate-all db-migrate-date sqlite-checkpoint archive-compress-date archive-compress-dry-run archive-status daily-close daily-close-strict db-prune-dry-run db-prune-execute report-overnight report-state report-run report-all smoke test-sqlite test-opportunity test-state test-action test-lp test-core test-all archive-check git-info preflight
 
 help:
 	@printf '%s\n' "chain-monitor common targets:"
@@ -25,6 +27,12 @@ help:
 	@printf '%s\n' "  make db-report           Run SQLite db-summary, db-integrity, opportunity summary."
 	@printf '%s\n' "  make db-migrate-all      Mirror all archive NDJSON into SQLite."
 	@printf '%s\n' "  make db-migrate-date     Mirror one archive date. Usage: make db-migrate-date DATE=YYYY-MM-DD"
+	@printf '%s\n' "  make sqlite-checkpoint   Run SQLite WAL checkpoint truncate."
+	@printf '%s\n' "  make archive-status      Show archive file status. Usage: make archive-status DATE=YYYY-MM-DD"
+	@printf '%s\n' "  make archive-compress-dry-run  Preview gzip for one date. Usage: make archive-compress-dry-run DATE=YYYY-MM-DD"
+	@printf '%s\n' "  make archive-compress-date     Gzip one date only with CONFIRM=YES."
+	@printf '%s\n' "  make daily-close         Migrate archive, check DB, generate reports, dry-run compression, checkpoint."
+	@printf '%s\n' "  make daily-close-strict  Daily close with strict DB/archive mismatch failure."
 	@printf '%s\n' "  make db-prune-dry-run    Preview SQLite retention prune."
 	@printf '%s\n' "  make db-prune-execute    Execute SQLite prune only with CONFIRM=YES."
 	@printf '%s\n' "  make report-overnight    Generate overnight trade action report."
@@ -88,6 +96,22 @@ db-migrate-date:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make db-migrate-date DATE=YYYY-MM-DD"; exit 2; fi
 	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
 
+sqlite-checkpoint:
+	$(PY) -m $(APP).sqlite_store --checkpoint
+
+archive-status:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-status DATE=YYYY-MM-DD"; exit 2; fi
+	$(PY) -m $(APP).archive_maintenance --status-date "$(DATE)"
+
+archive-compress-dry-run:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-dry-run DATE=YYYY-MM-DD"; exit 2; fi
+	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+
+archive-compress-date:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES"; exit 2; fi
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compress. Use make archive-compress-date DATE=$(DATE) CONFIRM=YES"; exit 2; fi
+	ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute
+
 db-prune-dry-run:
 	$(PY) -m $(APP).sqlite_store --prune --dry-run
 
@@ -108,6 +132,36 @@ report-all:
 	$(MAKE) report-overnight
 	$(MAKE) report-state
 	$(MAKE) report-run
+
+daily-close:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close DATE=YYYY-MM-DD [COMPRESS=YES]"; exit 2; fi
+	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+	$(PY) -m $(APP).sqlite_store --integrity-check
+	$(PY) -m $(APP).quality_reports --db-summary
+	$(PY) -m $(APP).quality_reports --db-integrity
+	$(PY) -m $(APP).quality_reports --opportunity-db-summary
+	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
+	$(PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	$(PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+	@if [ "$(COMPRESS)" = "YES" ]; then ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; else echo "Compression dry-run only. Use make daily-close DATE=$(DATE) COMPRESS=YES to gzip archive."; fi
+	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
+	$(PY) -m $(APP).sqlite_store --checkpoint
+
+daily-close-strict:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close-strict DATE=YYYY-MM-DD [COMPRESS=YES]"; exit 2; fi
+	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+	$(PY) -m $(APP).sqlite_store --integrity-check
+	$(PY) -m $(APP).quality_reports --db-summary
+	$(PY) -m $(APP).quality_reports --db-integrity --fail-on-mismatch
+	$(PY) -m $(APP).quality_reports --opportunity-db-summary
+	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
+	$(PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	$(PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+	@if [ "$(COMPRESS)" = "YES" ]; then ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; else echo "Compression dry-run only. Use make daily-close-strict DATE=$(DATE) COMPRESS=YES to gzip archive."; fi
+	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
+	$(PY) -m $(APP).sqlite_store --checkpoint
 
 smoke:
 	$(MAKE) compile

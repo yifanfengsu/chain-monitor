@@ -1355,6 +1355,22 @@ class TradeOpportunityManager:
             record[f"opportunity_outcome_{key}"] = status or record.get(f"opportunity_outcome_{key}") or "pending"
             record[f"opportunity_followthrough_{key}"] = followthrough if followthrough in {True, False} else record.get(f"opportunity_followthrough_{key}")
             record[f"opportunity_adverse_{key}"] = adverse if adverse in {True, False} else record.get(f"opportunity_adverse_{key}")
+            record[f"raw_move_after_{key}"] = window.get("raw_move_after", record.get(f"raw_move_after_{key}"))
+            record[f"direction_adjusted_move_after_{key}"] = window.get(
+                "direction_adjusted_move_after",
+                record.get(f"direction_adjusted_move_after_{key}"),
+            )
+            record[f"due_at_{key}"] = window.get("due_at", record.get(f"due_at_{key}"))
+            record[f"outcome_price_start_{key}"] = window.get("price_start", record.get(f"outcome_price_start_{key}"))
+            record[f"outcome_price_end_{key}"] = window.get("price_end", record.get(f"outcome_price_end_{key}"))
+            record[f"start_price_source_{key}"] = window.get("start_price_source", record.get(f"start_price_source_{key}"))
+            record[f"end_price_source_{key}"] = window.get("end_price_source", record.get(f"end_price_source_{key}"))
+            record[f"outcome_price_source_{key}"] = window.get("outcome_price_source") or window.get("price_source") or record.get(f"outcome_price_source_{key}")
+            record[f"outcome_failure_reason_{key}"] = window.get("failure_reason", record.get(f"outcome_failure_reason_{key}"))
+            record[f"outcome_completed_at_{key}"] = window.get("completed_at", record.get(f"outcome_completed_at_{key}"))
+            record[f"opportunity_reversal_{key}"] = window.get("reversal", record.get(f"opportunity_reversal_{key}"))
+            record["settled_by"] = window.get("settled_by", record.get("settled_by"))
+            record["catchup"] = window.get("catchup", record.get("catchup"))
         sixty_status = str(record.get("opportunity_outcome_60s") or "")
         record["opportunity_result_label"] = _result_label_from_outcome(
             sixty_status,

@@ -50,6 +50,14 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     to_int,
 )
 
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from report_data_loader import (  # noqa: E402
+    archive_date_key,
+    archive_paths as report_archive_paths,
+    open_archive_text as report_open_archive_text,
+)
 
 MARKDOWN_PATH = REPORTS_DIR / "afternoon_evening_state_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "afternoon_evening_state_metrics_latest.csv"
@@ -99,10 +107,23 @@ SAFE_CONFIG_KEYS = [
     "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
     "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
     "OPPORTUNITY_COOLDOWN_SEC",
+    "OUTCOME_SCHEDULER_ENABLE",
+    "OUTCOME_TICK_INTERVAL_SEC",
+    "OUTCOME_WINDOW_GRACE_SEC",
+    "OUTCOME_CATCHUP_MAX_SEC",
+    "OUTCOME_SETTLE_BATCH_SIZE",
+    "OUTCOME_USE_MARKET_CONTEXT_PRICE",
+    "OUTCOME_MARKET_CONTEXT_REFRESH_ON_DUE",
+    "OUTCOME_PREFER_OKX_MARK",
+    "OUTCOME_ALLOW_CATCHUP_WITH_LATEST_MARK",
+    "OUTCOME_EXPIRE_AFTER_SEC",
     "SQLITE_ENABLE",
     "SQLITE_DB_PATH",
     "SQLITE_REPORT_READ_PREFER_DB",
     "SQLITE_REPORT_FALLBACK_TO_ARCHIVE",
+    "REPORT_ARCHIVE_READ_GZIP",
+    "REPORT_DB_ARCHIVE_COMPARE",
+    "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH",
 ]
 
 LONG_ACTION_KEYS = {
@@ -179,6 +200,29 @@ def window_status_value(row: dict[str, Any], window_name: str, key: str) -> Any:
     return None
 
 
+def normalize_outcome_failure_reason(reason: str | None) -> str:
+    normalized = str(reason or "").strip()
+    if normalized in {
+        "market_price_unavailable",
+        "pending_not_processed",
+        "catchup_window_exceeded",
+        "symbol_unavailable",
+        "market_context_error",
+        "sqlite_write_failed",
+        "window_elapsed_without_price_update",
+    }:
+        return normalized
+    if not normalized:
+        return "unknown"
+    if normalized in {"price_unavailable", "live_market_price_unavailable", "market_context_and_pool_price_unavailable"}:
+        return "market_price_unavailable"
+    if normalized in {"no_symbol", "market_symbol_unavailable", "symbol_mismatch"}:
+        return "symbol_unavailable"
+    if normalized.startswith("market_context"):
+        return "market_context_error"
+    return normalized
+
+
 def env_whitelist() -> dict[str, str]:
     path = ROOT / ".env"
     payload: dict[str, str] = {}
@@ -216,7 +260,14 @@ def load_runtime_config() -> dict[str, dict[str, Any]]:
 
 
 def archive_files(category: str) -> list[Path]:
-    return sorted((ARCHIVE_DIR / category).glob("*.ndjson"))
+    return report_archive_paths(category)
+
+
+def archive_file_for_date(category: str, date: str) -> Path | None:
+    for path in archive_files(category):
+        if archive_date_key(path) == date:
+            return path
+    return None
 
 
 def fast_archive_ts_from_line(line: str) -> int | None:
@@ -243,7 +294,7 @@ def latest_archive_date() -> str:
     dates: set[str] = set()
     for category in ALL_ARCHIVE_CATEGORIES:
         for path in archive_files(category):
-            dates.add(path.stem)
+            dates.add(archive_date_key(path))
     if not dates:
         raise RuntimeError("no archive files found")
     return sorted(dates)[-1]
@@ -253,7 +304,7 @@ def ndjson_stats(path: Path, *, start_ts: int | None = None, end_ts: int | None 
     count = 0
     first_ts: int | None = None
     last_ts: int | None = None
-    with path.open("r", encoding="utf-8") as handle:
+    with report_open_archive_text(path) as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
@@ -275,7 +326,7 @@ def ndjson_stats(path: Path, *, start_ts: int | None = None, end_ts: int | None 
 def load_union_entries(paths_by_category: dict[str, Path], *, start_ts: int, end_ts: int | None = None) -> list[tuple[int, str]]:
     entries: list[tuple[int, str]] = []
     for category, path in paths_by_category.items():
-        with path.open("r", encoding="utf-8") as handle:
+        with report_open_archive_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -296,7 +347,7 @@ def fast_inventory_ndjson(path: Path, notes: str) -> FileInventory:
     count = 0
     start_ts: int | None = None
     end_ts: int | None = None
-    with path.open("r", encoding="utf-8") as handle:
+    with report_open_archive_text(path) as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
@@ -370,9 +421,9 @@ def choose_analysis_window(latest_date: str) -> dict[str, Any]:
     cutoff_bj = datetime.strptime(latest_date, "%Y-%m-%d").replace(tzinfo=BJ_TZ, hour=13, minute=0, second=0)
     cutoff_ts = int(cutoff_bj.timestamp())
     paths_by_category = {
-        category: ARCHIVE_DIR / category / f"{latest_date}.ndjson"
+        category: path
         for category in ALL_ARCHIVE_CATEGORIES
-        if (ARCHIVE_DIR / category / f"{latest_date}.ndjson").exists()
+        if (path := archive_file_for_date(category, latest_date)) is not None
     }
     missing_required = [category for category in REQUIRED_CATEGORIES if category not in paths_by_category]
     if missing_required:
@@ -483,12 +534,12 @@ def build_data_source_inventory(latest_date: str, window: dict[str, Any]) -> tup
     for category in ALL_ARCHIVE_CATEGORIES:
         paths = archive_files(category)
         if not paths:
-            missing.append(str((ARCHIVE_DIR / category / "*.ndjson").relative_to(ROOT)))
+            missing.append(str((ARCHIVE_DIR / category / "*.ndjson(.gz)").relative_to(ROOT)))
         for path in paths:
             info = fast_inventory_ndjson(path, f"{category} archive")
             window_count = ""
             after_cutoff_count = ""
-            if path.stem == latest_date:
+            if archive_date_key(path) == latest_date:
                 window_stats = ndjson_stats(path, start_ts=int(window["start_ts"]), end_ts=int(window["end_ts"]))
                 after_cutoff = ndjson_stats(path, start_ts=int(window["cutoff_ts"]))
                 window_count = window_stats["count"]
@@ -578,8 +629,8 @@ def load_asset_market_state_cache() -> tuple[list[dict[str, Any]], FileInventory
 def source_window_counts(window: dict[str, Any], latest_date: str) -> dict[str, int]:
     payload: dict[str, int] = {}
     for category in ALL_ARCHIVE_CATEGORIES:
-        path = ARCHIVE_DIR / category / f"{latest_date}.ndjson"
-        if not path.exists():
+        path = archive_file_for_date(category, latest_date)
+        if path is None:
             payload[category] = 0
             continue
         payload[category] = int(ndjson_stats(path, start_ts=int(window["start_ts"]), end_ts=int(window["end_ts"]))["count"])
@@ -1146,6 +1197,9 @@ def compute_outcome_detail(lp_rows: list[dict[str, Any]], previous_report: dict[
     status_by_window = {window_name: Counter() for window_name in WINDOW_NAMES}
     source_by_window = {window_name: Counter() for window_name in WINDOW_NAMES}
     failure_counter = Counter()
+    catchup_completed_count = 0
+    catchup_expired_count = 0
+    settled_by_counter = Counter()
 
     for row in lp_rows:
         for window_name in WINDOW_NAMES:
@@ -1157,7 +1211,16 @@ def compute_outcome_detail(lp_rows: list[dict[str, Any]], previous_report: dict[
                 source_by_window[window_name][source] += 1
             failure_reason = str(window_status_value(row, window_name, "failure_reason") or "")
             if failure_reason:
-                failure_counter[failure_reason] += 1
+                failure_counter[normalize_outcome_failure_reason(failure_reason)] += 1
+            window_payload = dict((row.get("outcome_windows") or {}).get(window_name) or {})
+            settled_by = str(window_payload.get("settled_by") or "")
+            if settled_by:
+                settled_by_counter[settled_by] += 1
+            is_catchup = bool(window_payload.get("catchup")) or settled_by == "outcome_scheduler_catchup"
+            if is_catchup and status == "completed":
+                catchup_completed_count += 1
+            if is_catchup and status == "expired":
+                catchup_expired_count += 1
 
     overall_source_distribution = Counter()
     for counter in source_by_window.values():
@@ -1180,13 +1243,30 @@ def compute_outcome_detail(lp_rows: list[dict[str, Any]], previous_report: dict[
             4,
         )
 
+    outcome_counts: dict[str, Any] = {}
+    for window_name in WINDOW_NAMES:
+        for status_name in ("pending", "completed", "unavailable", "expired"):
+            outcome_counts[f"outcome_{window_name}_{status_name}_count"] = int(status_by_window[window_name].get(status_name, 0))
+
     return {
+        **outcome_counts,
         "outcome_30s_completed_rate": rate(status_by_window["30s"].get("completed", 0), len(lp_rows)),
         "outcome_60s_completed_rate": rate(status_by_window["60s"].get("completed", 0), len(lp_rows)),
         "outcome_300s_completed_rate": rate(status_by_window["300s"].get("completed", 0), len(lp_rows)),
         "outcome_price_source_distribution": dict(sorted(overall_source_distribution.items())),
         "outcome_price_source_by_window": {key: dict(sorted(value.items())) for key, value in source_by_window.items()},
         "outcome_failure_reason_distribution": dict(sorted(failure_counter.items())),
+        "catchup_completed_count": int(catchup_completed_count),
+        "catchup_expired_count": int(catchup_expired_count),
+        "scheduler_health_summary": {
+            "pending_count": sum(int(counter.get("pending", 0)) for counter in status_by_window.values()),
+            "completed_count": sum(int(counter.get("completed", 0)) for counter in status_by_window.values()),
+            "unavailable_count": sum(int(counter.get("unavailable", 0)) for counter in status_by_window.values()),
+            "expired_count": sum(int(counter.get("expired", 0)) for counter in status_by_window.values()),
+            "catchup_completed_count": int(catchup_completed_count),
+            "catchup_expired_count": int(catchup_expired_count),
+            "settled_by_distribution": dict(sorted(settled_by_counter.items())),
+        },
         "window_status_distribution": {key: dict(sorted(value.items())) for key, value in status_by_window.items()},
         "expired_rate_by_window": {
             key: rate(counter.get("expired", 0), len(lp_rows))
@@ -1381,13 +1461,13 @@ def compute_archive_detail(
     window: dict[str, Any],
 ) -> dict[str, Any]:
     base = compute_archive_integrity(lp_rows, delivery_summary, cases_summary, followup_summary)
-    raw_path = ARCHIVE_DIR / "raw_events" / f"{latest_date}.ndjson"
-    parsed_path = ARCHIVE_DIR / "parsed_events" / f"{latest_date}.ndjson"
-    signal_path = ARCHIVE_DIR / "signals" / f"{latest_date}.ndjson"
+    raw_path = archive_file_for_date("raw_events", latest_date)
+    parsed_path = archive_file_for_date("parsed_events", latest_date)
+    signal_path = archive_file_for_date("signals", latest_date)
 
     parsed_event_ids: set[str] = set()
-    if parsed_path.exists():
-        with parsed_path.open("r", encoding="utf-8") as handle:
+    if parsed_path is not None:
+        with report_open_archive_text(parsed_path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
@@ -1414,9 +1494,9 @@ def compute_archive_detail(
 
     base.update(
         {
-            "raw_archive_exists": raw_path.exists(),
-            "parsed_archive_exists": parsed_path.exists(),
-            "signals_archive_exists": signal_path.exists(),
+            "raw_archive_exists": raw_path is not None,
+            "parsed_archive_exists": parsed_path is not None,
+            "signals_archive_exists": signal_path is not None,
             "signal_event_in_parsed_rate": rate(len(signal_event_ids & parsed_event_ids), len(signal_event_ids)),
             "suppressed_signal_archive_count": len(suppressed_ids),
             "suppressed_signal_delivery_match_rate": rate(len(suppressed_ids & matched_signal_ids), len(suppressed_ids)),
@@ -1702,6 +1782,20 @@ def build_csv_rows(
             append_metric(rows, "outcome", f"{window_name}_status", value, window=window_name, sample_size=run_overview["lp_signal_rows"], notes=status_name)
     for source_name, value in outcomes["outcome_price_source_distribution"].items():
         append_metric(rows, "outcome", "outcome_price_source_distribution", value, stage=source_name, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for reason, value in outcomes["outcome_failure_reason_distribution"].items():
+        append_metric(rows, "outcome", "outcome_failure_reason_distribution", value, stage=reason, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key in (
+        "outcome_30s_pending_count",
+        "outcome_30s_completed_count",
+        "outcome_30s_unavailable_count",
+        "outcome_30s_expired_count",
+        "outcome_30s_completed_rate",
+        "outcome_60s_completed_rate",
+        "outcome_300s_completed_rate",
+        "catchup_completed_count",
+        "catchup_expired_count",
+    ):
+        append_metric(rows, "outcome", key, outcomes.get(key), sample_size=run_overview["lp_signal_rows"], window=window_label)
 
     for key, value in market_context.items():
         if isinstance(value, dict) or isinstance(value, list):
@@ -1966,6 +2060,7 @@ def build_markdown(
     lines.append(f"- `window_status_distribution={outcomes['window_status_distribution']}`")
     lines.append(f"- `outcome_price_source_distribution={outcomes['outcome_price_source_distribution']}`")
     lines.append(f"- `outcome_failure_reason_distribution={outcomes['outcome_failure_reason_distribution']}`")
+    lines.append(f"- `scheduler_health_summary={outcomes['scheduler_health_summary']}`")
     lines.append(f"- `expired_rate_by_window={outcomes['expired_rate_by_window']}`")
     lines.append(f"- previous baseline `source_distribution={outcomes['previous_report_source_distribution']}`")
     lines.append(f"- `pool_quote_proxy_share_delta_vs_previous={outcomes['pool_quote_proxy_share_delta_vs_previous']}`")
@@ -2109,7 +2204,20 @@ def main() -> int:
             "record_count": sum(int(v) for v in (sqlite_source.get("sqlite_rows_by_table") or {}).values() if isinstance(v, int) and v > 0),
             "start_ts": None,
             "end_ts": None,
-            "notes": f"sqlite mirror/query layer data_source={sqlite_source.get('data_source')}",
+            "start_utc": "",
+            "end_utc": "",
+            "start_beijing": "",
+            "end_beijing": "",
+            "window_record_count": "",
+            "after_cutoff_count": "",
+            "notes": (
+                f"sqlite mirror/query layer report_data_source={sqlite_source.get('report_data_source') or sqlite_source.get('data_source')} "
+                f"sqlite_rows_by_table={sqlite_source.get('sqlite_rows_by_table', {})} "
+                f"archive_rows_by_category={sqlite_source.get('archive_rows_by_category', {})} "
+                f"db_archive_mirror_match_rate={sqlite_source.get('db_archive_mirror_match_rate')} "
+                f"archive_fallback_used={bool(sqlite_source.get('archive_fallback_used'))} "
+                f"mismatch_warnings={sqlite_source.get('mismatch_warnings', [])}"
+            ),
         }
     )
 
@@ -2194,16 +2302,22 @@ def main() -> int:
     summary_payload = {
         "analysis_window": window,
         "data_sources": data_sources,
+        "report_data_source": sqlite_source.get("report_data_source", sqlite_source.get("data_source", "archive")),
         "data_source": sqlite_source.get("data_source", "archive"),
+        "data_source_summary": sqlite_source.get("data_source_summary", sqlite_source),
+        "sqlite_health": sqlite_source.get("sqlite_health", {}),
         "sqlite_rows_by_table": sqlite_source.get("sqlite_rows_by_table", {}),
         "archive_rows_by_category": sqlite_source.get("archive_rows_by_category", {}),
+        "compressed_archive_rows": sqlite_source.get("compressed_archive_rows", {}),
+        "archive_fallback_used": bool(sqlite_source.get("archive_fallback_used")),
         "db_archive_mirror_match_rate": sqlite_source.get("db_archive_mirror_match_rate"),
         "db_archive_mirror_detail": sqlite_source.get("db_archive_mirror_detail", {}),
         "db_archive_mismatch_warnings": [
             category
             for category, item in (sqlite_source.get("db_archive_mirror_detail") or {}).items()
             if item.get("mismatch")
-        ],
+        ] + list(sqlite_source.get("mismatch_warnings") or []),
+        "mismatch_warnings": sqlite_source.get("mismatch_warnings", []),
         "runtime_config_summary": runtime_config,
         "run_overview": run_overview,
         "lp_stage_summary": stage_summary,
