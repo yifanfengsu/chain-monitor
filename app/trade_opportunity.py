@@ -408,6 +408,7 @@ class TradeOpportunityManager:
         event_metadata.update(payload)
         metadata.update(payload)
         context.update(payload)
+        self._mirror_sqlite_opportunity(payload)
         return payload
 
     def mark_notification(
@@ -424,6 +425,7 @@ class TradeOpportunityManager:
         record["trade_opportunity_delivered_notification"] = bool(delivered)
         self._mark_dirty()
         self.flush()
+        self._mirror_sqlite_opportunity(record)
         return dict(record)
 
     def flush(self, force: bool = False) -> None:
@@ -1368,6 +1370,17 @@ class TradeOpportunityManager:
         ]
         for row in pending:
             self._apply_outcome_snapshot(record=row)
+            self._mirror_sqlite_opportunity(row)
+
+    def _mirror_sqlite_opportunity(self, payload: dict[str, Any]) -> None:
+        if not payload:
+            return
+        try:
+            import sqlite_store
+
+            sqlite_store.upsert_trade_opportunity(payload)
+        except Exception as exc:
+            print(f"sqlite opportunity mirror failed: {exc}")
 
     def _invalidate_active(self, record: dict[str, Any], *, now_ts: int, reason: str) -> None:
         previous_status = str(record.get("trade_opportunity_status") or "")

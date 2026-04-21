@@ -353,6 +353,8 @@ class AssetMarketStateManager:
         self.flush()
 
         payload = {
+            "signal_id": str(summary.get("signal_id") or ""),
+            "asset_symbol": asset_symbol,
             "asset_market_state_key": record.asset_market_state_key,
             "asset_market_state_label": record.asset_market_state_label,
             "asset_market_state_reason": record.asset_market_state_reason,
@@ -394,11 +396,23 @@ class AssetMarketStateManager:
         event_metadata.update(payload)
         metadata.update(payload)
         context.update(payload)
+        self._mirror_sqlite_state(payload)
         return payload
 
     def get_current_state(self, asset_symbol: str) -> dict[str, Any]:
         record = self._records.get(str(asset_symbol or "").strip().upper())
         return asdict(record) if record is not None else {}
+
+    def _mirror_sqlite_state(self, payload: dict[str, Any]) -> None:
+        if not payload:
+            return
+        try:
+            import sqlite_store
+
+            sqlite_store.upsert_asset_market_state(payload)
+            sqlite_store.write_prealert_lifecycle(payload)
+        except Exception as exc:
+            print(f"sqlite asset market state mirror failed: {exc}")
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [asdict(item) for item in self.snapshot_records()]

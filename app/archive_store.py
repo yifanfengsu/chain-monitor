@@ -14,6 +14,7 @@ from config import (
     ARCHIVE_ENABLE_PARSED_EVENTS,
     ARCHIVE_ENABLE_RAW_EVENTS,
     ARCHIVE_ENABLE_SIGNALS,
+    SQLITE_ARCHIVE_MIRROR_ENABLE,
 )
 
 
@@ -138,8 +139,9 @@ class ArchiveStore:
         return self._enrich_time_fields(payload)
 
     def _write(self, category: str, payload: dict, *, dedupe_key: str = "") -> bool:
+        sqlite_wrote = self._mirror_to_sqlite(category, payload)
         if not self._is_enabled(category):
-            return False
+            return bool(sqlite_wrote)
         try:
             path = self._path_for(category, int(payload.get("archive_ts") or self._now_ts()))
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +150,7 @@ class ArchiveStore:
                 if dedupe_key:
                     seen = self._seen_keys_for_path(path)
                     if dedupe_key in seen:
-                        return False
+                        return bool(sqlite_wrote)
                 with path.open("a", encoding="utf-8") as fp:
                     fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
                 if dedupe_key:
@@ -156,6 +158,30 @@ class ArchiveStore:
             return True
         except Exception as e:
             print(f"归档失败[{category}]: {e}")
+            return bool(sqlite_wrote)
+
+    def _mirror_to_sqlite(self, category: str, payload: dict) -> bool:
+        if not bool(SQLITE_ARCHIVE_MIRROR_ENABLE):
+            return False
+        try:
+            import sqlite_store
+
+            if category == "raw_events":
+                return bool(sqlite_store.write_raw_event(payload))
+            if category == "parsed_events":
+                return bool(sqlite_store.write_parsed_event(payload))
+            if category == "signals":
+                return bool(sqlite_store.write_signal(payload))
+            if category == "delivery_audit":
+                return bool(sqlite_store.write_delivery_audit(payload))
+            if category == "case_followups":
+                return bool(sqlite_store.write_case_followup(payload))
+            if category == "cases":
+                data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                return bool(sqlite_store.upsert_asset_case(data))
+            return False
+        except Exception as e:
+            print(f"sqlite mirror failed[{category}]: {e}")
             return False
 
     def _is_enabled(self, category: str) -> bool:

@@ -11,6 +11,10 @@ archive/
 app/data/
 data/*
 !data/*.example.json
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.db
 *.sqlite
 *.db
 .idea/

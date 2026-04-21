@@ -145,6 +145,7 @@ class QualityManager:
             "summary": self.build_report(records=records, top_n=min(LP_QUALITY_REPORT_TOP_N, 10)),
         }
         write_json_file(self.stats_path, payload)
+        self._mirror_sqlite_quality(payload)
         self._dirty = False
         self._last_flush_monotonic = now_monotonic
 
@@ -177,6 +178,37 @@ class QualityManager:
         if self.state_manager is None or not hasattr(self.state_manager, "restore_lp_outcome_records"):
             return 0
         return int(self.state_manager.restore_lp_outcome_records(list(self._persisted_records.values())) or 0)
+
+    def _mirror_sqlite_quality(self, payload: dict) -> None:
+        try:
+            import sqlite_store
+
+            generated_at = int(payload.get("generated_at") or time.time())
+            for record in payload.get("records") or []:
+                if isinstance(record, dict):
+                    sqlite_store.write_outcome(record)
+                    sqlite_store.upsert_quality_stat(
+                        {
+                            **record,
+                            "scope_type": "signal",
+                            "scope_key": str(record.get("signal_id") or record.get("record_id") or ""),
+                            "updated_at": generated_at,
+                        }
+                    )
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            for dimension, rows in (summary.get("dimensions") or {}).items():
+                for row in rows or []:
+                    if isinstance(row, dict):
+                        sqlite_store.upsert_quality_stat(
+                            {
+                                **row,
+                                "scope_type": str(dimension),
+                                "scope_key": str(row.get("key") or ""),
+                                "updated_at": generated_at,
+                            }
+                        )
+        except Exception as exc:
+            print(f"sqlite quality mirror failed: {exc}")
 
     def build_report(
         self,

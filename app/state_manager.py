@@ -749,6 +749,7 @@ class StateManager:
         )
         self._lp_outcome_records[record_id] = record
         self._lp_outcome_history.append(record)
+        self._mirror_lp_outcome_record(record)
         return dict(record)
 
     def mark_lp_outcome_notification(
@@ -766,6 +767,7 @@ class StateManager:
             return {}
         payload["notifier_sent_at"] = int(notifier_sent_at or time.time())
         payload["delivered_notification"] = bool(delivered)
+        self._mirror_lp_outcome_record(payload)
         return dict(payload)
 
     def get_lp_outcome_record(self, record_id: str) -> dict:
@@ -2206,6 +2208,7 @@ class StateManager:
                 or (previous_direction and direction and previous_direction != direction)
             ):
                 payload["reversal_after_climax"] = True
+            self._mirror_lp_outcome_record(payload)
 
     def _init_lp_outcome_windows(
         self,
@@ -2233,6 +2236,16 @@ class StateManager:
                 "failure_reason": "" if anchor_price > 0 else str(failure_reason or "anchor_price_unavailable"),
             }
         return windows
+
+    def _mirror_lp_outcome_record(self, payload: dict) -> None:
+        if not payload:
+            return
+        try:
+            import sqlite_store
+
+            sqlite_store.write_outcome(payload)
+        except Exception as exc:
+            print(f"sqlite outcome mirror failed: {exc}")
 
     def _window_value(self, payload: dict, window_sec: int, field: str):
         windows = payload.get("outcome_windows") if isinstance(payload.get("outcome_windows"), dict) else {}

@@ -206,6 +206,191 @@ def first_value(row: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _sqlite_report_enabled() -> bool:
+    try:
+        if str(APP_DIR) not in sys.path:
+            sys.path.insert(0, str(APP_DIR))
+        import config  # type: ignore
+
+        return bool(getattr(config, "SQLITE_ENABLE", False))
+    except Exception:
+        return False
+
+
+def sqlite_report_source_summary() -> dict[str, Any]:
+    if not _sqlite_report_enabled():
+        return {
+            "data_source": "archive",
+            "sqlite_rows_by_table": {},
+            "archive_rows_by_category": {},
+            "db_archive_mirror_match_rate": None,
+            "warnings": ["sqlite disabled or unavailable"],
+        }
+    try:
+        if str(APP_DIR) not in sys.path:
+            sys.path.insert(0, str(APP_DIR))
+        import sqlite_store  # type: ignore
+
+        sqlite_store.init_sqlite_store()
+        return sqlite_store.report_source_summary()
+    except Exception as exc:
+        return {
+            "data_source": "archive",
+            "sqlite_rows_by_table": {},
+            "archive_rows_by_category": {},
+            "db_archive_mirror_match_rate": None,
+            "warnings": [f"sqlite report summary unavailable: {exc}"],
+        }
+
+
+def _sqlite_report_prefer_db() -> bool:
+    try:
+        if str(APP_DIR) not in sys.path:
+            sys.path.insert(0, str(APP_DIR))
+        import config  # type: ignore
+
+        db_path = Path(getattr(config, "SQLITE_DB_PATH", "data/chain_monitor.sqlite"))
+        if not db_path.is_absolute():
+            db_path = ROOT / db_path
+        return bool(getattr(config, "SQLITE_ENABLE", False)) and db_path.exists() and bool(
+            getattr(config, "SQLITE_REPORT_READ_PREFER_DB", False)
+        )
+    except Exception:
+        return False
+
+
+def _load_signal_payloads_from_db() -> tuple[list[dict[str, Any]], list[FileInventory]]:
+    try:
+        if str(APP_DIR) not in sys.path:
+            sys.path.insert(0, str(APP_DIR))
+        import sqlite_store  # type: ignore
+
+        rows = sqlite_store.load_signal_rows_from_db()
+        if not rows:
+            return [], []
+        times = [to_int(row.get("archive_written_at") or row.get("archive_ts")) for row in rows]
+        times = [ts for ts in times if ts is not None]
+        inventory = [
+            FileInventory(
+                str(Path(getattr(sqlite_store, "_DB_PATH", None) or (DATA_DIR / "chain_monitor.sqlite")).relative_to(ROOT)),
+                True,
+                len(rows),
+                min(times) if times else None,
+                max(times) if times else None,
+                "sqlite signals mirror",
+            )
+        ]
+        return rows, inventory
+    except Exception:
+        return [], []
+
+
+def _db_signal_row(data: dict[str, Any]) -> dict[str, Any]:
+    archive_ts = to_int(first_value(data, "archive_ts", "archive_written_at", "timestamp", "ts")) or 0
+    pair_label = str(first_value(data, "pair_label") or "")
+    intent_type = str(first_value(data, "intent_type", "canonical_semantic_key") or "")
+    outcome_record = data.get("lp_outcome_record") if isinstance(data.get("lp_outcome_record"), dict) else {}
+    row = dict(data)
+    row.update(
+        {
+            "archive_ts": archive_ts,
+            "signal_id": str(first_value(data, "signal_id") or ""),
+            "event_id": str(first_value(data, "event_id") or ""),
+            "asset_case_id": str(first_value(data, "asset_case_id") or ""),
+            "asset_case_key": str(first_value(data, "asset_case_key") or ""),
+            "asset_symbol": canonical_asset(first_value(data, "asset_symbol") or pair_parts(pair_label)[0]),
+            "pair_label": pair_label,
+            "pool_address": str(first_value(data, "pool_address", "address") or "").lower(),
+            "lp_alert_stage": str(first_value(data, "lp_alert_stage", "stage") or ""),
+            "intent_type": intent_type,
+            "direction_bucket": str(first_value(data, "direction_bucket") or direction_bucket(intent_type)),
+            "sent_to_telegram": bool(first_value(data, "sent_to_telegram")),
+            "notifier_sent_at": to_int(first_value(data, "notifier_sent_at")),
+            "market_context_attempts": list(first_value(data, "market_context_attempts") or []),
+            "outcome_windows": first_value(data, "outcome_windows") or {},
+            "outcome_record": outcome_record if isinstance(outcome_record, dict) else {},
+            "raw": data,
+            "data_source": "sqlite",
+        }
+    )
+    for key in (
+        "market_context_source",
+        "market_context_venue",
+        "market_context_requested_symbol",
+        "market_context_resolved_symbol",
+        "market_context_failure_reason",
+        "outcome_tracking_key",
+        "trade_action_key",
+        "trade_action_label",
+        "trade_action_direction",
+        "trade_action_reason",
+        "asset_market_state_key",
+        "asset_market_state_label",
+        "asset_market_state_reason",
+        "telegram_suppression_reason",
+        "telegram_update_kind",
+        "lp_confirm_quality",
+        "lp_confirm_scope",
+        "lp_absorption_context",
+        "lp_broader_alignment",
+        "lp_sweep_phase",
+        "alert_relative_timing",
+        "outcome_price_source",
+        "outcome_window_status",
+        "outcome_failure_reason",
+    ):
+        row[key] = str(first_value(data, key) or row.get(key) or "")
+    for key in (
+        "trade_action_confidence",
+        "asset_market_state_confidence",
+        "no_trade_lock_conflict_score",
+        "pair_quality_score",
+        "pool_quality_score",
+        "asset_case_quality_score",
+        "market_move_before_alert_30s",
+        "market_move_before_alert_60s",
+        "market_move_after_alert_60s",
+        "market_move_after_alert_300s",
+        "move_after_alert_30s",
+        "move_after_alert_60s",
+        "move_after_alert_300s",
+        "raw_move_after_30s",
+        "raw_move_after_60s",
+        "raw_move_after_300s",
+        "direction_adjusted_move_after_30s",
+        "direction_adjusted_move_after_60s",
+        "direction_adjusted_move_after_300s",
+        "outcome_price_start",
+        "outcome_price_end",
+    ):
+        row[key] = to_float(first_value(data, key))
+    for key in (
+        "asset_market_state_changed",
+        "prealert_visible_to_user",
+        "no_trade_lock_active",
+        "telegram_should_send",
+        "asset_case_multi_pool",
+        "lp_prealert_candidate",
+        "lp_prealert_gate_passed",
+        "asset_case_had_prealert",
+    ):
+        row[key] = bool(first_value(data, key))
+    for key in (
+        "first_seen_at",
+        "prealert_to_confirm_sec",
+        "no_trade_lock_started_at",
+        "no_trade_lock_until",
+        "suppressed_signal_count_in_state",
+        "asset_case_supporting_pair_count",
+        "asset_case_prealert_to_confirm_sec",
+    ):
+        row[key] = to_int(first_value(data, key))
+    for key in ("adverse_by_direction_30s", "adverse_by_direction_60s", "adverse_by_direction_300s"):
+        row[key] = first_value(data, key)
+    row["notifier_line1"] = notifier_line1(row)
+    return row
+
+
 def notifier_line1(row: dict[str, Any]) -> str:
     stage_badge = str(row.get("trade_action_label") or row.get("lp_stage_badge") or "确认")
     pair_or_pool = str(row.get("pair_label") or row.get("pool_address") or "unknown")
@@ -329,6 +514,10 @@ def inventory_category(category: str, notes: str) -> list[FileInventory]:
 
 
 def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
+    if _sqlite_report_prefer_db():
+        db_payloads, db_inventory = _load_signal_payloads_from_db()
+        if db_payloads:
+            return [_db_signal_row(row) for row in db_payloads], db_inventory
     rows: list[dict[str, Any]] = []
     inventory: list[FileInventory] = []
     for path in sorted((ARCHIVE_DIR / "signals").glob("*.ndjson")):
@@ -484,6 +673,10 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                 }
                 row["notifier_line1"] = notifier_line1(row)
                 rows.append(row)
+    if not rows and _sqlite_report_enabled():
+        db_payloads, db_inventory = _load_signal_payloads_from_db()
+        if db_payloads:
+            return [_db_signal_row(row) for row in db_payloads], db_inventory
     return rows, inventory
 
 

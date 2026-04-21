@@ -104,7 +104,32 @@ quality report / 导出入口：
 - `python -m app.quality_reports --market-context-health`
 - `python -m app.quality_reports --market-context-config-check`
 - `python -m app.quality_reports --major-pool-coverage`
+- `python -m app.quality_reports --db-summary`
+- `python -m app.quality_reports --db-integrity`
+- `python -m app.quality_reports --opportunity-db-summary`
 - `python -m app.quality_reports --format csv`
+
+SQLite mirror / query layer：
+- SQLite 是第一阶段 mirror / query layer，不替代现有 JSON / NDJSON archive / cache；主监听、report fallback 和历史研究仍保留旧 archive 路径
+- 默认 DB 路径：`data/chain_monitor.sqlite`
+- 运行数据库属于本地私有数据，不要提交到 git；仓库已忽略 `data/*.sqlite`、`data/*.sqlite-wal`、`data/*.sqlite-shm`、`data/*.db`
+- 初始化：
+  - `./venv/bin/python -m app.sqlite_store --init`
+- 检查：
+  - `./venv/bin/python -m app.sqlite_store --summary`
+  - `./venv/bin/python -m app.sqlite_store --integrity-check`
+  - `./venv/bin/python -m app.quality_reports --db-summary`
+  - `./venv/bin/python -m app.quality_reports --db-integrity`
+- 迁移已有 archive：
+  - `./venv/bin/python -m app.sqlite_store --migrate-archive --all`
+  - `./venv/bin/python -m app.sqlite_store --migrate-archive --date YYYY-MM-DD`
+- 迁移是可重复执行的；去重基于 `event_id / signal_id / signal_archive_key / trade_opportunity_id` 等主键，不会要求一次性迁完全部历史
+- 即使启用 SQLite，raw_events / parsed_events / signals / delivery_audit / case_followups 仍继续写 NDJSON archive；asset cases / asset market states / quality stats / trade opportunities 仍保留 JSON cache
+- 不建议删除旧 archive/cache：它们仍是兼容层、恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
+- SQLite 当前适合单人自用、本地查询和轻量 report；多进程/多用户/长期高并发以后再评估 Postgres
+- retention/prune 是可选能力，默认不自动删除：
+  - `./venv/bin/python -m app.sqlite_store --prune --dry-run`
+  - `./venv/bin/python -m app.sqlite_store --prune --execute`
 
 majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级

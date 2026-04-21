@@ -54,6 +54,7 @@ from generate_overnight_run_analysis_latest import (
     pct,
     rate,
     run_cli,
+    sqlite_report_source_summary,
     stream_case_followups,
     stream_cases,
     stream_delivery_audit,
@@ -128,6 +129,10 @@ SAFE_CONFIG_KEYS = [
     "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
     "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
     "OPPORTUNITY_COOLDOWN_SEC",
+    "SQLITE_ENABLE",
+    "SQLITE_DB_PATH",
+    "SQLITE_REPORT_READ_PREFER_DB",
+    "SQLITE_REPORT_FALLBACK_TO_ARCHIVE",
 ]
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
@@ -1752,6 +1757,7 @@ def main() -> int:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
+    sqlite_source = sqlite_report_source_summary()
     inventories = file_inventory_by_category()
     signal_rows, signal_inventory = load_signals()
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
@@ -1871,6 +1877,16 @@ def main() -> int:
     data_sources.append(asdict(asset_case_inventory))
     data_sources.append(asdict(quality_inventory))
     data_sources.append(asdict(trade_opportunity_inventory))
+    data_sources.append(
+        {
+            "path": sqlite_source.get("db_path", "data/chain_monitor.sqlite"),
+            "exists": bool(sqlite_source.get("sqlite_rows_by_table")),
+            "record_count": sum(int(v) for v in (sqlite_source.get("sqlite_rows_by_table") or {}).values() if isinstance(v, int) and v > 0),
+            "start_ts": None,
+            "end_ts": None,
+            "notes": f"sqlite mirror/query layer data_source={sqlite_source.get('data_source')}",
+        }
+    )
 
     markdown = build_markdown(
         data_sources,
@@ -1968,6 +1984,16 @@ def main() -> int:
             "segments": window["all_segments"],
         },
         "data_sources": data_sources,
+        "data_source": sqlite_source.get("data_source", "archive"),
+        "sqlite_rows_by_table": sqlite_source.get("sqlite_rows_by_table", {}),
+        "archive_rows_by_category": sqlite_source.get("archive_rows_by_category", {}),
+        "db_archive_mirror_match_rate": sqlite_source.get("db_archive_mirror_match_rate"),
+        "db_archive_mirror_detail": sqlite_source.get("db_archive_mirror_detail", {}),
+        "db_archive_mismatch_warnings": [
+            category
+            for category, item in (sqlite_source.get("db_archive_mirror_detail") or {}).items()
+            if item.get("mismatch")
+        ],
         "runtime_config_summary": runtime_config,
         "lp_stage_summary": {**run_overview, **stage_summary},
         "trade_action_summary": trade_action_summary,

@@ -24,6 +24,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--market-context-health", action="store_true", help="输出 live market context 健康度")
     parser.add_argument("--market-context-config-check", action="store_true", help="输出 live market context 启动配置自检")
     parser.add_argument("--major-pool-coverage", action="store_true", help="输出 majors pool 覆盖情况")
+    parser.add_argument("--db-summary", action="store_true", help="输出 SQLite mirror 表计数和健康摘要")
+    parser.add_argument("--db-integrity", action="store_true", help="输出 SQLite mirror 完整性检查")
+    parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/outcome 摘要")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
     parser.add_argument("--top-n", type=int, default=None, help="top/bottom 行数")
@@ -526,6 +529,34 @@ def build_major_pool_coverage_report(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.db_summary:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.health_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.db_integrity:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.integrity_check()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0 if payload.get("ok") else 1
+
+    if args.opportunity_db_summary:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.opportunity_db_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
     manager = QualityManager(state_manager=StateManager())
 
     if args.market_context_health:

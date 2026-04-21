@@ -42,6 +42,7 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     median,
     rate,
     run_cli,
+    sqlite_report_source_summary,
     stream_case_followups,
     stream_cases,
     stream_delivery_audit,
@@ -98,6 +99,10 @@ SAFE_CONFIG_KEYS = [
     "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
     "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
     "OPPORTUNITY_COOLDOWN_SEC",
+    "SQLITE_ENABLE",
+    "SQLITE_DB_PATH",
+    "SQLITE_REPORT_READ_PREFER_DB",
+    "SQLITE_REPORT_FALLBACK_TO_ARCHIVE",
 ]
 
 LONG_ACTION_KEYS = {
@@ -2047,6 +2052,7 @@ def main() -> int:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
+    sqlite_source = sqlite_report_source_summary()
     latest_date = latest_archive_date()
     window = choose_analysis_window(latest_date)
 
@@ -2096,6 +2102,16 @@ def main() -> int:
 
     previous_report = baseline_previous_report()
     data_sources, missing_sources = build_data_source_inventory(latest_date, window)
+    data_sources.append(
+        {
+            "path": "data/chain_monitor.sqlite",
+            "exists": bool(sqlite_source.get("sqlite_rows_by_table")),
+            "record_count": sum(int(v) for v in (sqlite_source.get("sqlite_rows_by_table") or {}).values() if isinstance(v, int) and v > 0),
+            "start_ts": None,
+            "end_ts": None,
+            "notes": f"sqlite mirror/query layer data_source={sqlite_source.get('data_source')}",
+        }
+    )
 
     asset_case_ids = {
         str(row.get("asset_case_id") or "")
@@ -2178,6 +2194,16 @@ def main() -> int:
     summary_payload = {
         "analysis_window": window,
         "data_sources": data_sources,
+        "data_source": sqlite_source.get("data_source", "archive"),
+        "sqlite_rows_by_table": sqlite_source.get("sqlite_rows_by_table", {}),
+        "archive_rows_by_category": sqlite_source.get("archive_rows_by_category", {}),
+        "db_archive_mirror_match_rate": sqlite_source.get("db_archive_mirror_match_rate"),
+        "db_archive_mirror_detail": sqlite_source.get("db_archive_mirror_detail", {}),
+        "db_archive_mismatch_warnings": [
+            category
+            for category, item in (sqlite_source.get("db_archive_mirror_detail") or {}).items()
+            if item.get("mismatch")
+        ],
         "runtime_config_summary": runtime_config,
         "run_overview": run_overview,
         "lp_stage_summary": stage_summary,

@@ -135,6 +135,7 @@ class AssetCaseManager:
         getattr(event, "metadata", {}).update(payload)
         getattr(signal, "metadata", {}).update(payload)
         getattr(signal, "context", {}).update(payload)
+        self._mirror_sqlite_case(payload)
         self._mark_dirty()
         self.flush()
         return payload
@@ -163,6 +164,7 @@ class AssetCaseManager:
         getattr(event, "metadata", {}).update(payload)
         getattr(signal, "metadata", {}).update(payload)
         getattr(signal, "context", {}).update(payload)
+        self._mirror_sqlite_case(payload)
         return payload
 
     def flush(self, force: bool = False) -> None:
@@ -214,6 +216,16 @@ class AssetCaseManager:
         removed = self._prune(now_ts=reference_ts)
         self.flush()
         return removed
+
+    def _mirror_sqlite_case(self, payload: dict) -> None:
+        if not payload:
+            return
+        try:
+            import sqlite_store
+
+            sqlite_store.upsert_asset_case(payload)
+        except Exception as exc:
+            print(f"sqlite asset case mirror failed: {exc}")
 
     def snapshot(self) -> list[dict]:
         return [asdict(item) for item in self.snapshot_cases()]
