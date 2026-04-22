@@ -18,6 +18,8 @@ class TradeOpportunityScoringTests(unittest.TestCase):
         payload = manager.apply_lp_signal(event, signal)
 
         self.assertEqual("CANDIDATE", payload["trade_opportunity_status"])
+        self.assertIn("opportunity_raw_score", payload)
+        self.assertIn("opportunity_calibrated_score", payload)
         self.assertGreaterEqual(payload["trade_opportunity_score"], OPPORTUNITY_MIN_CANDIDATE_SCORE)
         self.assertEqual("candidate", payload["telegram_update_kind"])
 

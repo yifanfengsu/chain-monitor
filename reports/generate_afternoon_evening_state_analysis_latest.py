@@ -27,6 +27,7 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     adverse_move,
     canonical_asset,
     compute_archive_integrity,
+    compute_final_trading_output_summary,
     compute_market_context,
     compute_majors,
     compute_trade_opportunities,
@@ -106,6 +107,20 @@ SAFE_CONFIG_KEYS = [
     "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE",
     "OPPORTUNITY_MAX_60S_ADVERSE_RATE",
     "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
+    "OPPORTUNITY_CALIBRATION_ENABLE",
+    "OPPORTUNITY_CALIBRATION_MIN_SAMPLES",
+    "OPPORTUNITY_CALIBRATION_STRONG_SAMPLES",
+    "OPPORTUNITY_CALIBRATION_MAX_POSITIVE_ADJUSTMENT",
+    "OPPORTUNITY_CALIBRATION_MAX_NEGATIVE_ADJUSTMENT",
+    "OPPORTUNITY_CALIBRATION_COMPLETION_MIN",
+    "OPPORTUNITY_CALIBRATION_ADVERSE_MAX",
+    "OPPORTUNITY_CALIBRATION_FOLLOWTHROUGH_MIN",
+    "OPPORTUNITY_NON_LP_EVIDENCE_ENABLE",
+    "OPPORTUNITY_NON_LP_EVIDENCE_WINDOW_SEC",
+    "OPPORTUNITY_NON_LP_SCORE_WEIGHT",
+    "OPPORTUNITY_NON_LP_STRONG_BLOCKER_ENABLE",
+    "OPPORTUNITY_NON_LP_TENTATIVE_WEIGHT",
+    "OPPORTUNITY_NON_LP_OBSERVE_WEIGHT",
     "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
     "OPPORTUNITY_COOLDOWN_SEC",
     "OUTCOME_SCHEDULER_ENABLE",
@@ -1936,6 +1951,7 @@ def build_markdown(
     no_trade_lock: dict[str, Any],
     prealerts: dict[str, Any],
     candidate_tradeable: dict[str, Any],
+    final_outputs: dict[str, Any],
     opportunities: dict[str, Any],
     outcomes: dict[str, Any],
     market_context: dict[str, Any],
@@ -2048,9 +2064,35 @@ def build_markdown(
     lines.append("")
     lines.append(f"- `opportunity_summary={opportunities['opportunity_summary']}`")
     lines.append(f"- `opportunity_score_median={opportunities['opportunity_score_median']}` `opportunity_score_p90={opportunities['opportunity_score_p90']}`")
+    lines.append(f"- `raw_score_vs_calibrated_score={opportunities['raw_score_vs_calibrated_score']}`")
+    lines.append(f"- `calibration_adjustment_distribution={opportunities['calibration_adjustment_distribution']}`")
     lines.append(f"- `candidate_outcome_60s={opportunities['candidate_outcome_60s']}`")
     lines.append(f"- `verified_outcome_60s={opportunities['verified_outcome_60s']}`")
+    lines.append(f"- `opportunity_profile_count={opportunities['opportunity_profile_count']}`")
+    lines.append(f"- `top_profiles_by_sample={opportunities['top_profiles_by_sample']}`")
+    lines.append(f"- `top_profiles_by_followthrough={opportunities['top_profiles_by_followthrough']}`")
+    lines.append(f"- `top_profiles_by_adverse={opportunities['top_profiles_by_adverse']}`")
+    lines.append(f"- `profiles_ready_for_verified={opportunities['profiles_ready_for_verified']}`")
+    lines.append(f"- `estimated_samples_needed_for_verified_by_profile={opportunities['estimated_samples_needed_for_verified_by_profile']}`")
+    lines.append(f"- `final_trading_output_distribution={final_outputs['final_trading_output_distribution']}`")
+    lines.append(f"- `legacy_chase_downgraded_count={final_outputs['legacy_chase_downgraded_count']}` `legacy_chase_leaked_count={final_outputs['legacy_chase_leaked_count']}`")
+    lines.append(f"- `all_opportunity_labels_verified={final_outputs['all_opportunity_labels_verified']}` `all_candidate_labels_are_candidate={final_outputs['all_candidate_labels_are_candidate']}` `blocked_covers_legacy_chase_risk={final_outputs['blocked_covers_legacy_chase_risk']}`")
     lines.append(f"- `blocker_effectiveness={opportunities['blocker_effectiveness']}`")
+    lines.append(f"- `hard_blocker_distribution={opportunities['hard_blocker_distribution']}`")
+    lines.append(f"- `verification_blocker_distribution={opportunities['verification_blocker_distribution']}`")
+    lines.append(f"- `non_lp_evidence_summary={opportunities['non_lp_evidence_summary']}`")
+    lines.append(f"- `opportunity_non_lp_support_count={opportunities['opportunity_non_lp_support_count']}` `opportunity_non_lp_risk_count={opportunities['opportunity_non_lp_risk_count']}`")
+    lines.append(f"- `top_non_lp_supporting_evidence={opportunities['top_non_lp_supporting_evidence']}`")
+    lines.append(f"- `top_non_lp_blockers={opportunities['top_non_lp_blockers']}`")
+    lines.append(f"- `opportunities_upgraded_by_non_lp={opportunities['opportunities_upgraded_by_non_lp']}` `opportunities_blocked_by_non_lp={opportunities['opportunities_blocked_by_non_lp']}`")
+    lines.append(f"- `opportunities_upgraded_by_calibration={opportunities['opportunities_upgraded_by_calibration']}` `opportunities_downgraded_by_calibration={opportunities['opportunities_downgraded_by_calibration']}`")
+    lines.append(f"- `candidates_blocked_by_calibration={opportunities['candidates_blocked_by_calibration']}` `verified_allowed_by_calibration={opportunities['verified_allowed_by_calibration']}`")
+    lines.append(f"- `top_positive_adjustments={opportunities['top_positive_adjustments']}`")
+    lines.append(f"- `top_negative_adjustments={opportunities['top_negative_adjustments']}`")
+    lines.append(f"- `calibration_reason_distribution={opportunities['calibration_reason_distribution']}`")
+    lines.append(f"- `calibration_source_distribution={opportunities['calibration_source_distribution']}`")
+    lines.append(f"- `calibration_confidence_distribution={opportunities['calibration_confidence_distribution']}`")
+    lines.append(f"- `non_lp_conflict_cases={opportunities['non_lp_conflict_cases']}`")
     lines.append(f"- `opportunity_budget_suppressed_count={opportunities['opportunity_budget_suppressed_count']}` `opportunity_cooldown_suppressed_count={opportunities['opportunity_cooldown_suppressed_count']}`")
     lines.append(f"- `why_no_opportunities={opportunities['why_no_opportunities']}`")
     lines.append(f"- `top_blockers={opportunities['top_blockers']}`")
@@ -2244,6 +2286,7 @@ def main() -> int:
     prealerts = compute_prealert_lifecycle_detail(lp_rows, asset_case_payload)
     candidate_tradeable = compute_candidate_tradeable_detail(lp_rows, runtime_config)
     opportunities = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
+    final_outputs = compute_final_trading_output_summary(lp_rows)
     outcome_detail = compute_outcome_detail(lp_rows, previous_report)
     market_context = compute_market_context(lp_rows)
     trade_actions = compute_trade_action_detail(lp_rows, candidate_tradeable)
@@ -2284,6 +2327,21 @@ def main() -> int:
         trade_actions,
         majors,
         archive_integrity,
+    )
+    top_findings.extend(
+        [
+            (
+                f"统一出口审计：final_output_distribution={final_outputs['final_trading_output_distribution']} "
+                f"verified={final_outputs['delivered_verified_count']} "
+                f"candidate={final_outputs['delivered_candidate_count']} "
+                f"blocked={final_outputs['delivered_blocked_count']}."
+            ),
+            (
+                f"legacy chase 审计：downgraded={final_outputs['legacy_chase_downgraded_count']} "
+                f"leaked={final_outputs['legacy_chase_leaked_count']} "
+                f"gate_failures={final_outputs['opportunity_gate_failures']}."
+            ),
+        ]
     )
     top_recommendations = build_recommendations(
         telegram,
@@ -2327,6 +2385,7 @@ def main() -> int:
         "telegram_suppression_summary": telegram,
         "prealert_lifecycle_summary": prealerts,
         "candidate_tradeable_summary": candidate_tradeable,
+        "final_trading_output_summary": final_outputs,
         "trade_opportunity_summary": opportunities,
         "outcome_source_summary": outcome_detail,
         "market_context_health": {
@@ -2355,6 +2414,7 @@ def main() -> int:
         telegram,
         prealerts,
         candidate_tradeable,
+        final_outputs,
         opportunities,
         outcome_detail,
         market_context,
@@ -2364,6 +2424,15 @@ def main() -> int:
         majors,
         scorecard,
     )
+    window_label = f"{fmt_ts(window['start_ts'])} -> {fmt_ts(window['end_ts'])}"
+    for key, value in final_outputs.items():
+        if isinstance(value, dict) or isinstance(value, list):
+            continue
+        append_metric(csv_rows, "final_trading_output", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in final_outputs.get("final_trading_output_distribution", {}).items():
+        append_metric(csv_rows, "final_trading_output", "final_trading_output_distribution", value, asset_market_state=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in final_outputs.get("opportunity_gate_failures", {}).items():
+        append_metric(csv_rows, "final_trading_output", "opportunity_gate_failures", value, asset_market_state=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
     markdown = build_markdown(
         data_sources,
         window,

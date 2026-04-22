@@ -16,11 +16,14 @@ class SQLiteReportsTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         self.original_archive_base = sqlite_store.ARCHIVE_BASE_DIR
+        self.original_project_root = sqlite_store.PROJECT_ROOT
         sqlite_store.ARCHIVE_BASE_DIR = str(self.root / "archive")
+        sqlite_store.PROJECT_ROOT = self.root
         sqlite_store.init_sqlite_store(self.root / "chain_monitor.sqlite")
 
     def tearDown(self) -> None:
         sqlite_store.ARCHIVE_BASE_DIR = self.original_archive_base
+        sqlite_store.PROJECT_ROOT = self.original_project_root
         sqlite_store.close()
         self.temp_dir.cleanup()
 
@@ -63,7 +66,14 @@ class SQLiteReportsTests(unittest.TestCase):
         self.assertIn("signals", payload["db_archive_mirror_detail"])
 
     def test_quality_reports_db_cli_commands_run(self) -> None:
-        for argv in (["--db-summary"], ["--opportunity-db-summary"]):
+        for argv in (
+            ["--db-summary"],
+            ["--db-size-breakdown"],
+            ["--db-value-audit"],
+            ["--db-retention-recommendation"],
+            ["--opportunity-db-summary"],
+            ["--opportunity-calibration"],
+        ):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = quality_reports.main(argv)

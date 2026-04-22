@@ -16,12 +16,12 @@
   "adverse_direction_summary": {
     "adverse_direction_consistency_errors": 0,
     "buy_pressure_adverse_300s_rate": 0.5,
-    "buy_pressure_adverse_30s_rate": 0.3565,
+    "buy_pressure_adverse_30s_rate": 0.3509,
     "buy_pressure_adverse_60s_rate": 0.3509,
     "consistency_error_examples": [],
     "raw_move_resolved_counts": {
       "buy_300s": 114,
-      "buy_30s": 115,
+      "buy_30s": 114,
       "buy_60s": 114,
       "sell_300s": 80,
       "sell_30s": 80,
@@ -467,41 +467,68 @@
       "active_major_pools": [
         {
           "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 408,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
           "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 392,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
+      "active_recent_major_pairs": [
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
       "configured_but_disabled_major_pools": [
         {
+          "chain": "ethereum",
+          "configured_pair_label": "WBTC/USDT",
+          "dex": "Uniswap V2",
           "index": 2,
           "pair_label": "BTC/USDT",
           "placeholder": false,
-          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2"
         },
         {
+          "chain": "ethereum",
+          "configured_pair_label": "WBTC/USDC",
+          "dex": "Uniswap V2",
           "index": 3,
           "pair_label": "BTC/USDC",
           "placeholder": false,
-          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2"
         }
       ],
+      "configured_enabled_no_recent_signal_major_pairs": [],
       "configured_major_assets": [
         "ETH",
         "BTC",
@@ -512,63 +539,99 @@
         "USDC"
       ],
       "covered_expected_pairs": [
-        "ETH/USDT",
-        "ETH/USDC"
+        "ETH/USDC",
+        "ETH/USDT"
       ],
       "covered_major_pairs": [
-        "ETH/USDT",
-        "ETH/USDC"
+        "ETH/USDC",
+        "ETH/USDT"
       ],
       "covered_major_pools": [
         {
           "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 408,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
           "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 392,
+          "trend_pool_match_mode": "explicit_whitelist"
+        }
+      ],
+      "duplicate_pool_warnings": [],
+      "enabled_major_pools": [
+        {
+          "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
+          "pair_label": "ETH/USDC",
+          "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 408,
+          "trend_pool_match_mode": "explicit_whitelist"
+        },
+        {
+          "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
+          "pair_label": "ETH/USDT",
+          "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 392,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
       "expected_major_pairs": [
-        "ETH/USDT",
-        "ETH/USDC",
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "ETH/USDC",
+        "ETH/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "major_pair_quality": [
         {
-          "actionable": true,
-          "climax_reversal_score": 0.1966,
-          "covered": true,
-          "market_context_alignment_score": 0.9625,
-          "pair_label": "ETH/USDT",
-          "quality_score": 0.6217,
-          "sample_size": 392
-        },
-        {
-          "actionable": true,
-          "climax_reversal_score": 0.2377,
-          "covered": true,
-          "market_context_alignment_score": 0.9571,
-          "pair_label": "ETH/USDC",
-          "quality_score": 0.6484,
-          "sample_size": 408
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": false,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "BTC/USDC",
+          "quality_score": 0.5864,
+          "sample_size": 0
         },
         {
           "actionable": false,
@@ -580,11 +643,29 @@
           "sample_size": 0
         },
         {
+          "actionable": true,
+          "climax_reversal_score": 0.2377,
+          "covered": true,
+          "market_context_alignment_score": 0.9571,
+          "pair_label": "ETH/USDC",
+          "quality_score": 0.6484,
+          "sample_size": 408
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.1966,
+          "covered": true,
+          "market_context_alignment_score": 0.9625,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6217,
+          "sample_size": 392
+        },
+        {
           "actionable": false,
           "climax_reversal_score": 0.45,
           "covered": false,
           "market_context_alignment_score": 0.5,
-          "pair_label": "BTC/USDC",
+          "pair_label": "SOL/USDC",
           "quality_score": 0.5864,
           "sample_size": 0
         },
@@ -596,46 +677,56 @@
           "pair_label": "SOL/USDT",
           "quality_score": 0.5864,
           "sample_size": 0
-        },
-        {
-          "actionable": false,
-          "climax_reversal_score": 0.45,
-          "covered": false,
-          "market_context_alignment_score": 0.5,
-          "pair_label": "SOL/USDC",
-          "quality_score": 0.5864,
-          "sample_size": 0
         }
       ],
       "malformed_major_pool_entries": [],
       "missing_expected_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "missing_major_assets": [
         "BTC",
         "SOL"
       ],
       "missing_major_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
+      "next_round_priority": [
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "SOL/USDC",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "SOL/USDT",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "reason": "configured_but_disabled"
+        },
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "configured_but_disabled"
+        }
+      ],
+      "no_recent_signal_major_pairs": [],
+      "placeholder_major_pool_entries": [],
       "pool_book_exists": true,
       "pool_book_path": "/run-project/chain-monitor/data/lp_pools.json",
       "quality_converging_major_pairs": [
-        {
-          "actionable": true,
-          "climax_reversal_score": 0.1966,
-          "covered": true,
-          "market_context_alignment_score": 0.9625,
-          "pair_label": "ETH/USDT",
-          "quality_score": 0.6217,
-          "sample_size": 392
-        },
         {
           "actionable": true,
           "climax_reversal_score": 0.2377,
@@ -644,6 +735,15 @@
           "pair_label": "ETH/USDC",
           "quality_score": 0.6484,
           "sample_size": 408
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.1966,
+          "covered": true,
+          "market_context_alignment_score": 0.9625,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6217,
+          "sample_size": 392
         }
       ],
       "recommended_local_config_actions": [
@@ -651,15 +751,15 @@
         "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
       ],
       "recommended_next_round_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "suggestions": [
-        "优先补齐：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
+        "优先补齐：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池",
-        "样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
+        "样本稀少的 majors pairs：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
       ],
@@ -675,19 +775,19 @@
       ],
       "under_sampled_major_pairs": [
         {
-          "pair_label": "BTC/USDT",
-          "sample_size": 0
-        },
-        {
           "pair_label": "BTC/USDC",
           "sample_size": 0
         },
         {
-          "pair_label": "SOL/USDT",
+          "pair_label": "BTC/USDT",
           "sample_size": 0
         },
         {
           "pair_label": "SOL/USDC",
+          "sample_size": 0
+        },
+        {
+          "pair_label": "SOL/USDT",
           "sample_size": 0
         }
       ],
@@ -999,12 +1099,12 @@
     }
   },
   "compressed_archive_rows": {
-    "case_followups": 5,
-    "cases": 2378,
-    "delivery_audit": 4260,
-    "parsed_events": 1921,
-    "raw_events": 4171,
-    "signals": 76
+    "case_followups": 72,
+    "cases": 37328,
+    "delivery_audit": 48984,
+    "parsed_events": 25906,
+    "raw_events": 47963,
+    "signals": 526
   },
   "confirm_summary": {
     "blank_confirm_quality_count": 41,
@@ -1103,12 +1203,12 @@
     },
     "compressed_archive_detected": true,
     "compressed_archive_rows": {
-      "case_followups": 5,
-      "cases": 2378,
-      "delivery_audit": 4260,
-      "parsed_events": 1921,
-      "raw_events": 4171,
-      "signals": 76
+      "case_followups": 72,
+      "cases": 37328,
+      "delivery_audit": 48984,
+      "parsed_events": 25906,
+      "raw_events": 47963,
+      "signals": 526
     },
     "current_report_read_preference": {
       "REPORT_ARCHIVE_READ_GZIP": true,
@@ -1156,11 +1256,11 @@
     "fallback_mode": "archive_cache_enabled",
     "loader_results": {
       "case_followups": {
-        "compressed_archive_rows": 5,
+        "compressed_archive_rows": 72,
         "fallback_used": false,
         "mismatch_info": {
           "archive_rows": 151,
-          "compressed_archive_rows": 5,
+          "compressed_archive_rows": 72,
           "loader": "case_followups",
           "match_rate": 1.0,
           "mismatch": false,
@@ -1172,11 +1272,11 @@
         "warnings": []
       },
       "delivery_audit": {
-        "compressed_archive_rows": 4260,
+        "compressed_archive_rows": 48984,
         "fallback_used": false,
         "mismatch_info": {
           "archive_rows": 156596,
-          "compressed_archive_rows": 4260,
+          "compressed_archive_rows": 48984,
           "loader": "delivery_audit",
           "match_rate": 0.9991,
           "mismatch": true,
@@ -1190,11 +1290,11 @@
         ]
       },
       "signals": {
-        "compressed_archive_rows": 76,
+        "compressed_archive_rows": 526,
         "fallback_used": false,
         "mismatch_info": {
           "archive_rows": 1633,
-          "compressed_archive_rows": 76,
+          "compressed_archive_rows": 526,
           "loader": "signals",
           "match_rate": 1.0,
           "mismatch": false,
@@ -1260,70 +1360,70 @@
       "last_updated": {
         "asset_cases": 1776835286.0,
         "asset_market_states": 1776835286.0,
-        "case_followups": 1776828243.9918156,
-        "delivery_audit": 1776835315.1752253,
+        "case_followups": 1776847561.7586288,
+        "delivery_audit": 1776847561.7251716,
         "market_context_attempts": 1776835290.0,
-        "market_context_snapshots": 1776835315.1606085,
-        "no_trade_locks": 1776835294.2010095,
+        "market_context_snapshots": 1776847462.083105,
+        "no_trade_locks": 1776855173.738302,
         "opportunity_outcomes": 1776835286.0,
-        "outcomes": 1776835319.7370255,
-        "parsed_events": 1776835315.1336744,
-        "prealert_lifecycle": 1776835315.1689897,
-        "quality_stats": 1776835311.0,
-        "raw_events": 1776835314.8197222,
+        "outcomes": 1776847564.2799816,
+        "parsed_events": 1776847449.7794368,
+        "prealert_lifecycle": 1776847462.091234,
+        "quality_stats": 1776858212.0,
+        "raw_events": 1776847374.90804,
         "runs": null,
-        "schema_meta": 1776836404.9250524,
+        "schema_meta": 1776860842.3862622,
         "signal_features": null,
-        "signals": 1776835315.1544676,
-        "telegram_deliveries": 1776835315.177341,
-        "trade_opportunities": 1776835313.5794241
+        "signals": 1776847462.0784888,
+        "telegram_deliveries": 1776847561.726833,
+        "trade_opportunities": 1776860829.5796514
       },
       "missing_tables": [],
       "schema_version": "sqlite_schema_v1",
       "table_row_counts": {
-        "asset_cases": 5390,
-        "asset_market_states": 419,
+        "asset_cases": 5391,
+        "asset_market_states": 420,
         "case_followups": 151,
         "delivery_audit": 156459,
         "market_context_attempts": 2283,
         "market_context_snapshots": 1633,
-        "no_trade_locks": 341,
-        "opportunity_outcomes": 1038,
+        "no_trade_locks": 342,
+        "opportunity_outcomes": 1440,
         "outcomes": 3009,
         "parsed_events": 48752,
         "prealert_lifecycle": 1829,
-        "quality_stats": 1026,
+        "quality_stats": 1034,
         "raw_events": 97467,
         "runs": 0,
         "schema_meta": 1,
         "signal_features": 6440,
         "signals": 1633,
-        "telegram_deliveries": 83021,
-        "trade_opportunities": 346
+        "telegram_deliveries": 107031,
+        "trade_opportunities": 480
       },
       "warnings": [],
       "write_error_count": 0
     },
     "sqlite_rows_by_table": {
-      "asset_cases": 5390,
-      "asset_market_states": 419,
+      "asset_cases": 5391,
+      "asset_market_states": 420,
       "case_followups": 151,
       "delivery_audit": 156459,
       "market_context_attempts": 2283,
       "market_context_snapshots": 1633,
-      "no_trade_locks": 341,
-      "opportunity_outcomes": 1038,
+      "no_trade_locks": 342,
+      "opportunity_outcomes": 1440,
       "outcomes": 3009,
       "parsed_events": 48752,
       "prealert_lifecycle": 1829,
-      "quality_stats": 1026,
+      "quality_stats": 1034,
       "raw_events": 97467,
       "runs": 0,
       "schema_meta": 1,
       "signal_features": 6440,
       "signals": 1633,
-      "telegram_deliveries": 83021,
-      "trade_opportunities": 346
+      "telegram_deliveries": 107031,
+      "trade_opportunities": 480
     },
     "warnings": [
       "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
@@ -1344,7 +1444,7 @@
       "end_ts": 1776750974,
       "exists": true,
       "notes": "raw events archive",
-      "path": "app/data/archive/raw_events/2026-04-21.ndjson",
+      "path": "app/data/archive/raw_events/2026-04-21.ndjson.gz",
       "record_count": 43792,
       "start_ts": 1776700805
     },
@@ -1368,7 +1468,7 @@
       "end_ts": 1776750974,
       "exists": true,
       "notes": "parsed events archive",
-      "path": "app/data/archive/parsed_events/2026-04-21.ndjson",
+      "path": "app/data/archive/parsed_events/2026-04-21.ndjson.gz",
       "record_count": 23985,
       "start_ts": 1776700805
     },
@@ -1408,7 +1508,7 @@
       "end_ts": 1776750792,
       "exists": true,
       "notes": "signals archive",
-      "path": "app/data/archive/signals/2026-04-21.ndjson",
+      "path": "app/data/archive/signals/2026-04-21.ndjson.gz",
       "record_count": 450,
       "start_ts": 1776700815
     },
@@ -1448,7 +1548,7 @@
       "end_ts": 1776750974,
       "exists": true,
       "notes": "case archive",
-      "path": "app/data/archive/cases/2026-04-21.ndjson",
+      "path": "app/data/archive/cases/2026-04-21.ndjson.gz",
       "record_count": 34950,
       "start_ts": 1776700805
     },
@@ -1488,7 +1588,7 @@
       "end_ts": 1776749261,
       "exists": true,
       "notes": "case followups archive",
-      "path": "app/data/archive/case_followups/2026-04-21.ndjson",
+      "path": "app/data/archive/case_followups/2026-04-21.ndjson.gz",
       "record_count": 67,
       "start_ts": 1776701152
     },
@@ -1528,7 +1628,7 @@
       "end_ts": 1776750974,
       "exists": true,
       "notes": "delivery audit archive",
-      "path": "app/data/archive/delivery_audit/2026-04-21.ndjson",
+      "path": "app/data/archive/delivery_audit/2026-04-21.ndjson.gz",
       "record_count": 44724,
       "start_ts": 1776700805
     },
@@ -1567,9 +1667,9 @@
     {
       "end_ts": null,
       "exists": true,
-      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5390, 'asset_market_states': 419, 'no_trade_locks': 341, 'trade_opportunities': 346, 'opportunity_outcomes': 1038, 'quality_stats': 1026, 'telegram_deliveries': 83021, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']",
+      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5391, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 480, 'opportunity_outcomes': 1440, 'quality_stats': 1034, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']",
       "path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
-      "record_count": 411238,
+      "record_count": 435795,
       "start_ts": null
     }
   ],
@@ -1613,6 +1713,27 @@
     "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
     "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
   ],
+  "final_trading_output_summary": {
+    "all_candidate_labels_are_candidate": true,
+    "all_opportunity_labels_verified": true,
+    "blocked_covers_legacy_chase_risk": true,
+    "blocked_legacy_chase_count": 5,
+    "candidate_label_without_candidate_count": 0,
+    "delivered_blocked_count": 0,
+    "delivered_candidate_count": 0,
+    "delivered_legacy_chase_count": 0,
+    "delivered_verified_count": 0,
+    "final_trading_output_audited_row_count": 196,
+    "final_trading_output_distribution": {
+      "missing": 196
+    },
+    "final_trading_output_unaudited_row_count": 0,
+    "legacy_chase_downgraded_count": 0,
+    "legacy_chase_leaked_count": 4,
+    "opportunity_gate_failures": {},
+    "opportunity_label_without_verified_count": 0,
+    "trade_action_chase_without_opportunity_count": 5
+  },
   "limitations": [
     "raw_events archive is missing in the selected overnight window.",
     "parsed_events archive is missing in the selected overnight window.",
@@ -1671,41 +1792,68 @@
       "active_major_pools": [
         {
           "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 408,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
           "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 392,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
+      "active_recent_major_pairs": [
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
       "configured_but_disabled_major_pools": [
         {
+          "chain": "ethereum",
+          "configured_pair_label": "WBTC/USDT",
+          "dex": "Uniswap V2",
           "index": 2,
           "pair_label": "BTC/USDT",
           "placeholder": false,
-          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2"
         },
         {
+          "chain": "ethereum",
+          "configured_pair_label": "WBTC/USDC",
+          "dex": "Uniswap V2",
           "index": 3,
           "pair_label": "BTC/USDC",
           "placeholder": false,
-          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2"
         }
       ],
+      "configured_enabled_no_recent_signal_major_pairs": [],
       "configured_major_assets": [
         "ETH",
         "BTC",
@@ -1716,63 +1864,99 @@
         "USDC"
       ],
       "covered_expected_pairs": [
-        "ETH/USDT",
-        "ETH/USDC"
+        "ETH/USDC",
+        "ETH/USDT"
       ],
       "covered_major_pairs": [
-        "ETH/USDT",
-        "ETH/USDC"
+        "ETH/USDC",
+        "ETH/USDT"
       ],
       "covered_major_pools": [
         {
           "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
           "pair_label": "ETH/USDC",
           "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 408,
           "trend_pool_match_mode": "explicit_whitelist"
         },
         {
           "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
           "is_primary_trend_pool": true,
           "major_match_mode": "major_family_match",
           "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
           "pair_label": "ETH/USDT",
           "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
           "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 392,
+          "trend_pool_match_mode": "explicit_whitelist"
+        }
+      ],
+      "duplicate_pool_warnings": [],
+      "enabled_major_pools": [
+        {
+          "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
+          "pair_label": "ETH/USDC",
+          "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 408,
+          "trend_pool_match_mode": "explicit_whitelist"
+        },
+        {
+          "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
+          "pair_label": "ETH/USDT",
+          "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
           "sample_size": 392,
           "trend_pool_match_mode": "explicit_whitelist"
         }
       ],
       "expected_major_pairs": [
-        "ETH/USDT",
-        "ETH/USDC",
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "ETH/USDC",
+        "ETH/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "major_pair_quality": [
         {
-          "actionable": true,
-          "climax_reversal_score": 0.1966,
-          "covered": true,
-          "market_context_alignment_score": 0.9625,
-          "pair_label": "ETH/USDT",
-          "quality_score": 0.6217,
-          "sample_size": 392
-        },
-        {
-          "actionable": true,
-          "climax_reversal_score": 0.2377,
-          "covered": true,
-          "market_context_alignment_score": 0.9571,
-          "pair_label": "ETH/USDC",
-          "quality_score": 0.6484,
-          "sample_size": 408
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": false,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "BTC/USDC",
+          "quality_score": 0.5864,
+          "sample_size": 0
         },
         {
           "actionable": false,
@@ -1784,11 +1968,29 @@
           "sample_size": 0
         },
         {
+          "actionable": true,
+          "climax_reversal_score": 0.2377,
+          "covered": true,
+          "market_context_alignment_score": 0.9571,
+          "pair_label": "ETH/USDC",
+          "quality_score": 0.6484,
+          "sample_size": 408
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.1966,
+          "covered": true,
+          "market_context_alignment_score": 0.9625,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6217,
+          "sample_size": 392
+        },
+        {
           "actionable": false,
           "climax_reversal_score": 0.45,
           "covered": false,
           "market_context_alignment_score": 0.5,
-          "pair_label": "BTC/USDC",
+          "pair_label": "SOL/USDC",
           "quality_score": 0.5864,
           "sample_size": 0
         },
@@ -1800,46 +2002,56 @@
           "pair_label": "SOL/USDT",
           "quality_score": 0.5864,
           "sample_size": 0
-        },
-        {
-          "actionable": false,
-          "climax_reversal_score": 0.45,
-          "covered": false,
-          "market_context_alignment_score": 0.5,
-          "pair_label": "SOL/USDC",
-          "quality_score": 0.5864,
-          "sample_size": 0
         }
       ],
       "malformed_major_pool_entries": [],
       "missing_expected_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "missing_major_assets": [
         "BTC",
         "SOL"
       ],
       "missing_major_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
+      "next_round_priority": [
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "SOL/USDC",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "SOL/USDT",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "reason": "configured_but_disabled"
+        },
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "configured_but_disabled"
+        }
+      ],
+      "no_recent_signal_major_pairs": [],
+      "placeholder_major_pool_entries": [],
       "pool_book_exists": true,
       "pool_book_path": "/run-project/chain-monitor/data/lp_pools.json",
       "quality_converging_major_pairs": [
-        {
-          "actionable": true,
-          "climax_reversal_score": 0.1966,
-          "covered": true,
-          "market_context_alignment_score": 0.9625,
-          "pair_label": "ETH/USDT",
-          "quality_score": 0.6217,
-          "sample_size": 392
-        },
         {
           "actionable": true,
           "climax_reversal_score": 0.2377,
@@ -1848,6 +2060,15 @@
           "pair_label": "ETH/USDC",
           "quality_score": 0.6484,
           "sample_size": 408
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.1966,
+          "covered": true,
+          "market_context_alignment_score": 0.9625,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6217,
+          "sample_size": 392
         }
       ],
       "recommended_local_config_actions": [
@@ -1855,15 +2076,15 @@
         "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
       ],
       "recommended_next_round_pairs": [
-        "BTC/USDT",
         "BTC/USDC",
-        "SOL/USDT",
-        "SOL/USDC"
+        "BTC/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
       ],
       "suggestions": [
-        "优先补齐：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
+        "优先补齐：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池",
-        "样本稀少的 majors pairs：BTC/USDT, BTC/USDC, SOL/USDT, SOL/USDC",
+        "样本稀少的 majors pairs：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "补齐本地 data/lp_pools.json：优先补 BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
         "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
       ],
@@ -1879,19 +2100,19 @@
       ],
       "under_sampled_major_pairs": [
         {
-          "pair_label": "BTC/USDT",
-          "sample_size": 0
-        },
-        {
           "pair_label": "BTC/USDC",
           "sample_size": 0
         },
         {
-          "pair_label": "SOL/USDT",
+          "pair_label": "BTC/USDT",
           "sample_size": 0
         },
         {
           "pair_label": "SOL/USDC",
+          "sample_size": 0
+        },
+        {
+          "pair_label": "SOL/USDT",
           "sample_size": 0
         }
       ],
@@ -2236,10 +2457,10 @@
     "outcome_300s_expired_count": 0,
     "outcome_300s_pending_count": 2,
     "outcome_300s_unavailable_count": 0,
-    "outcome_30s_completed_count": 195,
-    "outcome_30s_completed_rate": 0.9949,
+    "outcome_30s_completed_count": 194,
+    "outcome_30s_completed_rate": 0.9898,
     "outcome_30s_expired_count": 0,
-    "outcome_30s_pending_count": 1,
+    "outcome_30s_pending_count": 2,
     "outcome_30s_unavailable_count": 0,
     "outcome_60s_completed_count": 194,
     "outcome_60s_completed_rate": 0.9898,
@@ -2253,11 +2474,11 @@
     "scheduler_health_summary": {
       "catchup_completed_count": 0,
       "catchup_expired_count": 0,
-      "completed_count": 583,
+      "completed_count": 582,
       "expired_count": 0,
-      "pending_count": 5,
+      "pending_count": 6,
       "settled_by_distribution": {
-        "outcome_scheduler": 585
+        "outcome_scheduler": 582
       },
       "unavailable_count": 0
     },
@@ -2270,8 +2491,8 @@
         "pending": 2
       },
       "30s": {
-        "completed": 195,
-        "pending": 1
+        "completed": 194,
+        "pending": 2
       },
       "60s": {
         "completed": 194,
@@ -2325,11 +2546,11 @@
     },
     "buy_after_300s_fall_ratio": 0.5412,
     "buy_after_30s": {
-      "against_count": 33,
-      "against_rate": 0.3837,
-      "resolved_count": 86
+      "against_count": 32,
+      "against_rate": 0.3765,
+      "resolved_count": 85
     },
-    "buy_after_30s_fall_ratio": 0.3837,
+    "buy_after_30s_fall_ratio": 0.3765,
     "buy_after_60s": {
       "against_count": 33,
       "against_rate": 0.3882,
@@ -2350,7 +2571,7 @@
         "lp_confirm_quality": "",
         "lp_confirm_scope": "",
         "move_before_alert_30s": 0.001062,
-        "notifier_line1": "偏多观察｜ETH/USDC｜局部买压/买方清扫建立中，但还没到可以追多的严格条件。",
+        "notifier_line1": "偏多观察｜ETH/USDC｜当前不满足多源确认、后验准入或风险过滤，保持无机会。",
         "pair_label": "ETH/USDC",
         "raw_move_after": -0.000155,
         "signal_id": "sig_524ae9b0286175e8",
@@ -2369,7 +2590,7 @@
         "lp_confirm_quality": "",
         "lp_confirm_scope": "",
         "move_before_alert_30s": 0.001629,
-        "notifier_line1": "偏多观察｜ETH/USDC｜局部买压/买方清扫建立中，但还没到可以追多的严格条件。",
+        "notifier_line1": "偏多观察｜ETH/USDC｜当前不满足多源确认、后验准入或风险过滤，保持无机会。",
         "pair_label": "ETH/USDC",
         "raw_move_after": -0.000491,
         "signal_id": "sig_9f2ac0d2223391bd",
@@ -2390,7 +2611,7 @@
         "lp_confirm_quality": "unconfirmed_confirm",
         "lp_confirm_scope": "local_confirm",
         "move_before_alert_30s": -0.006329,
-        "notifier_line1": "不追空｜ETH/USDT｜局部卖压可能被承接，不宜把单池卖压误读成可以追空。",
+        "notifier_line1": "不追空｜ETH/USDT｜当前不满足多源确认、后验准入或风险过滤，保持无机会。",
         "pair_label": "ETH/USDT",
         "raw_move_after": 4.3e-05,
         "signal_id": "sig_ddbc82785f48aaf3",
@@ -2409,7 +2630,7 @@
         "lp_confirm_quality": "",
         "lp_confirm_scope": "",
         "move_before_alert_30s": -0.000717,
-        "notifier_line1": "偏空观察｜ETH/USDT｜局部卖压/卖方清扫建立中，但还没到可以追空的严格条件。",
+        "notifier_line1": "偏空观察｜ETH/USDT｜当前不满足多源确认、后验准入或风险过滤，保持无机会。",
         "pair_label": "ETH/USDT",
         "raw_move_after": 0.000288,
         "signal_id": "sig_7d3935f708091428",
@@ -2428,7 +2649,7 @@
         "lp_confirm_quality": "",
         "lp_confirm_scope": "",
         "move_before_alert_30s": -0.000729,
-        "notifier_line1": "偏空观察｜ETH/USDT｜局部卖压/卖方清扫建立中，但还没到可以追空的严格条件。",
+        "notifier_line1": "偏空观察｜ETH/USDT｜当前不满足多源确认、后验准入或风险过滤，保持无机会。",
         "pair_label": "ETH/USDT",
         "raw_move_after": 0.002084,
         "signal_id": "sig_706f934f1f4f1dea",
@@ -2441,7 +2662,7 @@
       "local_buy_pressure_absorption": 13,
       "local_confirm rather than broader_confirm": 33,
       "local_sell_pressure_absorption": 9,
-      "possible code misclassification": 17,
+      "possible code misclassification": 16,
       "single_pool / low resonance": 23
     },
     "sell_after_300s": {
@@ -2707,6 +2928,36 @@
       "env_value": null,
       "runtime_value": 0.78
     },
+    "OPPORTUNITY_NON_LP_EVIDENCE_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_NON_LP_EVIDENCE_WINDOW_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 300
+    },
+    "OPPORTUNITY_NON_LP_OBSERVE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.0
+    },
+    "OPPORTUNITY_NON_LP_SCORE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.1
+    },
+    "OPPORTUNITY_NON_LP_STRONG_BLOCKER_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_NON_LP_TENTATIVE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.25
+    },
     "OPPORTUNITY_REQUIRE_BROADER_CONFIRM": {
       "env_present": false,
       "env_value": null,
@@ -2930,70 +3181,70 @@
     "last_updated": {
       "asset_cases": 1776835286.0,
       "asset_market_states": 1776835286.0,
-      "case_followups": 1776828243.9918156,
-      "delivery_audit": 1776835315.1752253,
+      "case_followups": 1776847561.7586288,
+      "delivery_audit": 1776847561.7251716,
       "market_context_attempts": 1776835290.0,
-      "market_context_snapshots": 1776835315.1606085,
-      "no_trade_locks": 1776835294.2010095,
+      "market_context_snapshots": 1776847462.083105,
+      "no_trade_locks": 1776855173.738302,
       "opportunity_outcomes": 1776835286.0,
-      "outcomes": 1776835319.7370255,
-      "parsed_events": 1776835315.1336744,
-      "prealert_lifecycle": 1776835315.1689897,
-      "quality_stats": 1776835311.0,
-      "raw_events": 1776835314.8197222,
+      "outcomes": 1776847564.2799816,
+      "parsed_events": 1776847449.7794368,
+      "prealert_lifecycle": 1776847462.091234,
+      "quality_stats": 1776858212.0,
+      "raw_events": 1776847374.90804,
       "runs": null,
-      "schema_meta": 1776836404.9250524,
+      "schema_meta": 1776860842.3862622,
       "signal_features": null,
-      "signals": 1776835315.1544676,
-      "telegram_deliveries": 1776835315.177341,
-      "trade_opportunities": 1776835313.5794241
+      "signals": 1776847462.0784888,
+      "telegram_deliveries": 1776847561.726833,
+      "trade_opportunities": 1776860829.5796514
     },
     "missing_tables": [],
     "schema_version": "sqlite_schema_v1",
     "table_row_counts": {
-      "asset_cases": 5390,
-      "asset_market_states": 419,
+      "asset_cases": 5391,
+      "asset_market_states": 420,
       "case_followups": 151,
       "delivery_audit": 156459,
       "market_context_attempts": 2283,
       "market_context_snapshots": 1633,
-      "no_trade_locks": 341,
-      "opportunity_outcomes": 1038,
+      "no_trade_locks": 342,
+      "opportunity_outcomes": 1440,
       "outcomes": 3009,
       "parsed_events": 48752,
       "prealert_lifecycle": 1829,
-      "quality_stats": 1026,
+      "quality_stats": 1034,
       "raw_events": 97467,
       "runs": 0,
       "schema_meta": 1,
       "signal_features": 6440,
       "signals": 1633,
-      "telegram_deliveries": 83021,
-      "trade_opportunities": 346
+      "telegram_deliveries": 107031,
+      "trade_opportunities": 480
     },
     "warnings": [],
     "write_error_count": 0
   },
   "sqlite_rows_by_table": {
-    "asset_cases": 5390,
-    "asset_market_states": 419,
+    "asset_cases": 5391,
+    "asset_market_states": 420,
     "case_followups": 151,
     "delivery_audit": 156459,
     "market_context_attempts": 2283,
     "market_context_snapshots": 1633,
-    "no_trade_locks": 341,
-    "opportunity_outcomes": 1038,
+    "no_trade_locks": 342,
+    "opportunity_outcomes": 1440,
     "outcomes": 3009,
     "parsed_events": 48752,
     "prealert_lifecycle": 1829,
-    "quality_stats": 1026,
+    "quality_stats": 1034,
     "raw_events": 97467,
     "runs": 0,
     "schema_meta": 1,
     "signal_features": 6440,
     "signals": 1633,
-    "telegram_deliveries": 83021,
-    "trade_opportunities": 346
+    "telegram_deliveries": 107031,
+    "trade_opportunities": 480
   },
   "sweep_summary": {
     "direction_performance": {
@@ -3196,7 +3447,10 @@
     "adverse direction 校验没有发现矛盾，consistency_errors=0。",
     "asset-case 聚合已有作用：196 条 LP rows 聚合成 39 个 case，compression_ratio=5.0256，其中 multi-pair cases=22。",
     "majors 覆盖仍然只有 ETH/USDT 与 ETH/USDC，BTC/SOL 样本为 0；CLI 同时显示 BTC pools 是 configured but disabled，SOL 则仍缺 major 覆盖。",
-    "raw_events / parsed_events archive 仍然缺失，且 300s outcome 大面积 expired，这两点是本轮对 prealert funnel 和长窗口后验判断的最大限制。"
+    "raw_events / parsed_events archive 仍然缺失，且 300s outcome 大面积 expired，这两点是本轮对 prealert funnel 和长窗口后验判断的最大限制。",
+    "统一出口审计：final_output_distribution={'missing': 196} verified=0 candidate=0 blocked=0.",
+    "legacy chase 审计：downgraded=0 leaked=4 gate_failures={}.",
+    "报告校验：all_opportunity_labels_verified=True all_candidate_labels_are_candidate=True blocked_covers_legacy_chase_risk=True."
   ],
   "top_recommendations": [
     "优先补齐并启用 BTC/SOL majors pools，下一轮继续先补 majors，不要扩 long-tail。",
@@ -3854,11 +4108,11 @@
         "resolved_count": 35
       },
       "LONG_BIAS_OBSERVE": {
-        "adverse_count": 13,
-        "adverse_rate": 0.3095,
+        "adverse_count": 12,
+        "adverse_rate": 0.2927,
         "followthrough_count": 29,
-        "followthrough_rate": 0.6905,
-        "resolved_count": 42
+        "followthrough_rate": 0.7073,
+        "resolved_count": 41
       },
       "LONG_CHASE_ALLOWED": {
         "adverse_count": 1,
@@ -4038,11 +4292,11 @@
         "resolved_count": 35
       },
       "LONG_BIAS_OBSERVE": {
-        "adverse_count": 13,
-        "adverse_rate": 0.3095,
+        "adverse_count": 12,
+        "adverse_rate": 0.2927,
         "followthrough_count": 29,
-        "followthrough_rate": 0.6905,
-        "resolved_count": 42
+        "followthrough_rate": 0.7073,
+        "resolved_count": 41
       },
       "LONG_CHASE_ALLOWED": {
         "adverse_count": 1,
@@ -66914,8 +67168,52 @@
     "blocker_effectiveness": {
       "avoided_adverse_count": 0,
       "avoided_adverse_rate": 0.0,
-      "count": 68
+      "count": 68,
+      "false_block_count": 0,
+      "false_block_rate": 0.0,
+      "top_effective_blockers": [
+        {
+          "blocker": "history_completion_too_low",
+          "count": 39,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "late_or_chase",
+          "count": 21,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "no_trade_lock",
+          "count": 8,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        }
+      ],
+      "top_overblocking_blockers": [
+        {
+          "blocker": "history_completion_too_low",
+          "count": 39,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "late_or_chase",
+          "count": 21,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "no_trade_lock",
+          "count": 8,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        }
+      ]
     },
+    "blocker_false_block_rate": 0.0,
+    "blocker_saved_rate": 0.0,
     "candidate_outcome_60s": {
       "adverse_count": 0,
       "adverse_rate": null,
@@ -66927,7 +67225,25 @@
       "result_distribution": {},
       "unavailable_count": 0
     },
+    "candidate_to_verified_by_profile": {},
+    "estimated_samples_needed_for_verified_by_profile": {},
+    "hard_blocker_distribution": {
+      "history_completion_too_low": 39,
+      "late_or_chase": 21,
+      "no_trade_lock": 8
+    },
     "next_threshold_suggestions": [],
+    "non_lp_conflict_cases": [],
+    "non_lp_evidence_summary": {
+      "available_count": 0,
+      "blocked_count": 0,
+      "conflict_count": 0,
+      "risk_count": 0,
+      "support_count": 0,
+      "upgraded_count": 0
+    },
+    "opportunities_blocked_by_non_lp": 0,
+    "opportunities_upgraded_by_non_lp": 0,
     "opportunity_blocked_count": 68,
     "opportunity_blocker_avoided_adverse_rate": 0.0,
     "opportunity_budget_suppressed_count": 0,
@@ -66947,7 +67263,10 @@
       "no_trade_lock": 8
     },
     "opportunity_history_sample_sufficiency_rate": 0.9398,
+    "opportunity_non_lp_risk_count": 0,
+    "opportunity_non_lp_support_count": 0,
     "opportunity_none_count": 264,
+    "opportunity_profile_count": 0,
     "opportunity_score_distribution": {
       "median": 0.52775,
       "p90": 0.6865
@@ -66963,6 +67282,8 @@
     "opportunity_verified_adverse_60s_rate": null,
     "opportunity_verified_count": 0,
     "opportunity_verified_followthrough_60s_rate": null,
+    "profiles_blocked_by_sample_count": 0,
+    "profiles_ready_for_verified": [],
     "rolling_stats": {
       "blocker_result_distribution": {
         "neutral": 68
@@ -66996,6 +67317,12 @@
       "late_or_chase": 21,
       "no_trade_lock": 8
     },
+    "top_non_lp_blockers": [],
+    "top_non_lp_supporting_evidence": [],
+    "top_profiles_by_adverse": [],
+    "top_profiles_by_followthrough": [],
+    "top_profiles_by_sample": [],
+    "verification_blocker_distribution": {},
     "verified_outcome_60s": {
       "adverse_count": 0,
       "adverse_rate": null,

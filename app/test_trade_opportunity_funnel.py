@@ -19,6 +19,7 @@ class TradeOpportunityFunnelTests(unittest.TestCase):
 
         self.assertEqual("CANDIDATE", payload["trade_opportunity_status"])
         self.assertIn("history_samples_insufficient", payload["trade_opportunity_risk_flags"])
+        self.assertEqual("outcome_history_insufficient", payload["trade_opportunity_primary_verification_blocker"])
 
     def test_sufficient_samples_and_good_followthrough_unlock_verified(self) -> None:
         records = [make_outcome_row(direction_bucket="buy_pressure", move_60s=0.005, adverse=False) for _ in range(OPPORTUNITY_MIN_HISTORY_SAMPLES)]
@@ -31,7 +32,7 @@ class TradeOpportunityFunnelTests(unittest.TestCase):
         self.assertEqual("VERIFIED", payload["trade_opportunity_status"])
         self.assertEqual(OPPORTUNITY_MIN_HISTORY_SAMPLES, payload["trade_opportunity_history_snapshot"]["sample_size"])
 
-    def test_high_adverse_history_blocks_verified(self) -> None:
+    def test_high_adverse_history_keeps_candidate_but_not_verified(self) -> None:
         records = [make_outcome_row(direction_bucket="buy_pressure", move_60s=-0.004, adverse=True) for _ in range(OPPORTUNITY_MIN_HISTORY_SAMPLES)]
         manager = TradeOpportunityManager(state_manager=StubStateManager(records=records), persistence_enabled=False)
         event = make_event(ts=1_710_000_120)
@@ -39,8 +40,8 @@ class TradeOpportunityFunnelTests(unittest.TestCase):
 
         payload = manager.apply_lp_signal(event, signal)
 
-        self.assertEqual("BLOCKED", payload["trade_opportunity_status"])
-        self.assertEqual("history_adverse_too_high", payload["trade_opportunity_primary_blocker"])
+        self.assertEqual("CANDIDATE", payload["trade_opportunity_status"])
+        self.assertEqual("profile_adverse_too_high", payload["trade_opportunity_primary_verification_blocker"])
 
     def test_expired_outcomes_cannot_open_verified(self) -> None:
         records = [
@@ -54,8 +55,8 @@ class TradeOpportunityFunnelTests(unittest.TestCase):
         payload = manager.apply_lp_signal(event, signal)
 
         self.assertNotEqual("VERIFIED", payload["trade_opportunity_status"])
-        self.assertEqual("BLOCKED", payload["trade_opportunity_status"])
-        self.assertEqual("history_completion_too_low", payload["trade_opportunity_primary_blocker"])
+        self.assertEqual("CANDIDATE", payload["trade_opportunity_status"])
+        self.assertEqual("profile_completion_too_low", payload["trade_opportunity_primary_verification_blocker"])
 
 
 if __name__ == "__main__":

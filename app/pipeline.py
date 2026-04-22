@@ -1984,8 +1984,17 @@ class SignalPipeline:
             return None
 
         if self._is_lp_event(event=event):
+            final_output_allowed = (
+                event.metadata.get("final_trading_output_allowed")
+                if event.metadata.get("final_trading_output_allowed") is not None
+                else signal.metadata.get("final_trading_output_allowed")
+                if signal.metadata.get("final_trading_output_allowed") is not None
+                else signal.context.get("final_trading_output_allowed")
+            )
             telegram_should_send = bool(
-                event.metadata.get("telegram_should_send")
+                final_output_allowed
+                if final_output_allowed is not None
+                else event.metadata.get("telegram_should_send")
                 if event.metadata.get("telegram_should_send") is not None
                 else signal.metadata.get("telegram_should_send")
                 if signal.metadata.get("telegram_should_send") is not None
@@ -1993,7 +2002,10 @@ class SignalPipeline:
             )
             if not telegram_should_send:
                 suppression_reason = str(
-                    event.metadata.get("telegram_suppression_reason")
+                    event.metadata.get("opportunity_gate_failure_reason")
+                    or signal.metadata.get("opportunity_gate_failure_reason")
+                    or signal.context.get("opportunity_gate_failure_reason")
+                    or event.metadata.get("telegram_suppression_reason")
                     or signal.metadata.get("telegram_suppression_reason")
                     or signal.context.get("telegram_suppression_reason")
                     or "asset_market_state_suppressed"
@@ -3629,6 +3641,58 @@ class SignalPipeline:
                 if signal_metadata.get("trade_opportunity_delivered_notification") is not None
                 else event_metadata.get("trade_opportunity_delivered_notification")
             ),
+            "final_trading_output_source": str(
+                signal_context.get("final_trading_output_source")
+                or signal_metadata.get("final_trading_output_source")
+                or event_metadata.get("final_trading_output_source")
+                or ""
+            ),
+            "final_trading_output_label": str(
+                signal_context.get("final_trading_output_label")
+                or signal_metadata.get("final_trading_output_label")
+                or event_metadata.get("final_trading_output_label")
+                or ""
+            ),
+            "final_trading_output_allowed": bool(
+                signal_context.get("final_trading_output_allowed")
+                if signal_context.get("final_trading_output_allowed") is not None
+                else signal_metadata.get("final_trading_output_allowed")
+                if signal_metadata.get("final_trading_output_allowed") is not None
+                else event_metadata.get("final_trading_output_allowed")
+            ),
+            "legacy_chase_downgraded": bool(
+                signal_context.get("legacy_chase_downgraded")
+                if signal_context.get("legacy_chase_downgraded") is not None
+                else signal_metadata.get("legacy_chase_downgraded")
+                if signal_metadata.get("legacy_chase_downgraded") is not None
+                else event_metadata.get("legacy_chase_downgraded")
+            ),
+            "legacy_chase_downgrade_reason": str(
+                signal_context.get("legacy_chase_downgrade_reason")
+                or signal_metadata.get("legacy_chase_downgrade_reason")
+                or event_metadata.get("legacy_chase_downgrade_reason")
+                or ""
+            ),
+            "opportunity_gate_required": bool(
+                signal_context.get("opportunity_gate_required")
+                if signal_context.get("opportunity_gate_required") is not None
+                else signal_metadata.get("opportunity_gate_required")
+                if signal_metadata.get("opportunity_gate_required") is not None
+                else event_metadata.get("opportunity_gate_required")
+            ),
+            "opportunity_gate_passed": bool(
+                signal_context.get("opportunity_gate_passed")
+                if signal_context.get("opportunity_gate_passed") is not None
+                else signal_metadata.get("opportunity_gate_passed")
+                if signal_metadata.get("opportunity_gate_passed") is not None
+                else event_metadata.get("opportunity_gate_passed")
+            ),
+            "opportunity_gate_failure_reason": str(
+                signal_context.get("opportunity_gate_failure_reason")
+                or signal_metadata.get("opportunity_gate_failure_reason")
+                or event_metadata.get("opportunity_gate_failure_reason")
+                or ""
+            ),
             "first_seen_stage": str(
                 signal_context.get("first_seen_stage")
                 or signal_metadata.get("first_seen_stage")
@@ -5161,6 +5225,46 @@ class SignalPipeline:
                 signal_context.get("telegram_update_kind"),
                 signal_metadata.get("telegram_update_kind"),
                 event_metadata.get("telegram_update_kind"),
+            ),
+            "final_trading_output_source": _text(
+                signal_context.get("final_trading_output_source"),
+                signal_metadata.get("final_trading_output_source"),
+                event_metadata.get("final_trading_output_source"),
+            ),
+            "final_trading_output_label": _text(
+                signal_context.get("final_trading_output_label"),
+                signal_metadata.get("final_trading_output_label"),
+                event_metadata.get("final_trading_output_label"),
+            ),
+            "final_trading_output_allowed": _bool_value(
+                signal_context.get("final_trading_output_allowed"),
+                signal_metadata.get("final_trading_output_allowed"),
+                event_metadata.get("final_trading_output_allowed"),
+            ),
+            "legacy_chase_downgraded": _bool_value(
+                signal_context.get("legacy_chase_downgraded"),
+                signal_metadata.get("legacy_chase_downgraded"),
+                event_metadata.get("legacy_chase_downgraded"),
+            ),
+            "legacy_chase_downgrade_reason": _text(
+                signal_context.get("legacy_chase_downgrade_reason"),
+                signal_metadata.get("legacy_chase_downgrade_reason"),
+                event_metadata.get("legacy_chase_downgrade_reason"),
+            ),
+            "opportunity_gate_required": _bool_value(
+                signal_context.get("opportunity_gate_required"),
+                signal_metadata.get("opportunity_gate_required"),
+                event_metadata.get("opportunity_gate_required"),
+            ),
+            "opportunity_gate_passed": _bool_value(
+                signal_context.get("opportunity_gate_passed"),
+                signal_metadata.get("opportunity_gate_passed"),
+                event_metadata.get("opportunity_gate_passed"),
+            ),
+            "opportunity_gate_failure_reason": _text(
+                signal_context.get("opportunity_gate_failure_reason"),
+                signal_metadata.get("opportunity_gate_failure_reason"),
+                event_metadata.get("opportunity_gate_failure_reason"),
             ),
             "lp_confirm_scope": _text(
                 signal_context.get("lp_confirm_scope"),

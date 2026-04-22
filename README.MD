@@ -18,14 +18,20 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
   - `pair_label`
   - `base_symbol`
   - `quote_symbol`
+  - `canonical_asset`
   - `dex`
   - `protocol`
   - `pool_type`
   - `enabled`
   - `priority`
-  - 可选：`placeholder` / `note`
+  - `major_pool`
+  - `major_match_mode`
+  - `notes`
+  - 可选：`placeholder`
 - 可直接参考 `data/lp_pools.example.json`
+- validator 会 canonicalize `BTC/WBTC/CBBTC -> BTC`、`SOL/WSOL -> SOL`、`USDC/USDC.E -> USDC`
 - placeholder 地址必须保持 `enabled=false`；coverage validator 会把 `placeholder_enabled` 当成 malformed entry
+- malformed address 不会被静默忽略；duplicate pool address 和同 pair 同 priority 会给 warning
 
 CLMM replay fixture 分两层：
 - `app/test_fixtures/clmm/` 是 normalized replay，直接对齐 parser 当前稳定输入接口
@@ -111,7 +117,10 @@ quality report / 导出入口：
 - `python -m app.quality_reports --format csv`
 
 SQLite mirror / query layer：
-- SQLite 是第一阶段 mirror / query layer，不替代现有 JSON / NDJSON archive / cache；主监听、report fallback 和历史研究仍保留旧 archive 路径
+- SQLite 是分析库，不是 full archive 的第二份完整副本；主监听、report fallback 和历史研究仍保留 JSON / NDJSON archive / cache
+- 长期 full 保留的核心表是 `signals / signal_features / outcomes / trade_opportunities / opportunity_outcomes / quality_stats / asset_market_states / no_trade_locks / asset_cases / prealert_lifecycle / market_context_snapshots`
+- `raw_events / parsed_events` 默认按 `index_only` 导入；full raw/parsed payload 长期保留在 `.ndjson / .ndjson.gz` archive
+- `delivery_audit / telegram_deliveries / case_followups / market_context_attempts` 默认按 `slim` 或诊断型模式保留，不把 full payload 长期复制进 SQLite
 - 默认 DB 路径：`data/chain_monitor.sqlite`
 - reports 默认 `SQLITE_REPORT_READ_PREFER_DB=1`，会优先从 SQLite 读取；如果 DB 文件不存在、缺表、空表或读取失败，会在 `SQLITE_REPORT_FALLBACK_TO_ARCHIVE=1` 时回退到 archive/cache
 - report fallback 同时支持 `*.ndjson` 和 `*.ndjson.gz`；同一天两种文件都存在时优先未压缩 `*.ndjson`，避免重复计数
@@ -128,12 +137,35 @@ SQLite mirror / query layer：
   - `./venv/bin/python -m app.sqlite_store --integrity-check`
   - `./venv/bin/python -m app.quality_reports --db-summary`
   - `./venv/bin/python -m app.quality_reports --db-integrity`
+  - `./venv/bin/python -m app.quality_reports --db-size-breakdown`
+  - `./venv/bin/python -m app.quality_reports --db-value-audit`
+  - `./venv/bin/python -m app.quality_reports --db-retention-recommendation`
 - 迁移已有 archive：
   - `./venv/bin/python -m app.sqlite_store --migrate-archive --all`
   - `./venv/bin/python -m app.sqlite_store --migrate-archive --date YYYY-MM-DD`
+- 写入模式默认建议：
+  - `SQLITE_RAW_EVENTS_MODE=index_only`
+  - `SQLITE_PARSED_EVENTS_MODE=index_only`
+  - `SQLITE_DELIVERY_AUDIT_MODE=slim`
+  - `SQLITE_TELEGRAM_DELIVERY_MODE=slim`
+  - `SQLITE_MARKET_CONTEXT_ATTEMPT_MODE=slim`
+  - `SQLITE_CASE_FOLLOWUP_MODE=slim`
+  - `signals / outcomes / trade_opportunities / asset_market_states / quality_stats` 保持 `full`
 - 迁移是可重复执行的；去重基于 `event_id / signal_id / signal_archive_key / trade_opportunity_id` 等主键，不会要求一次性迁完全部历史
 - 即使启用 SQLite，raw_events / parsed_events / signals / delivery_audit / case_followups 仍继续写 NDJSON archive；asset cases / asset market states / quality stats / trade opportunities 仍保留 JSON cache
 - 不建议删除旧 archive/cache：它们仍是兼容层、恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
+- compact / retention 建议流程：
+  - 先压缩 archive：保留 `.ndjson.gz`
+  - 再做 `compact` 清理 DB 里的重复 full payload
+  - 如需真正释放磁盘，再单独做 `VACUUM`
+- compact / vacuum 命令：
+  - `./venv/bin/python -m app.sqlite_store --compact --dry-run`
+  - `./venv/bin/python -m app.sqlite_store --compact --execute`
+  - `./venv/bin/python -m app.sqlite_store --compact-table raw_events --dry-run`
+  - `CONFIRM=YES ./venv/bin/python -m app.sqlite_store --vacuum`
+- 安全约束：
+  - 没有 `archive_path / payload_hash` 或 archive 文件不存在时，compact 不会清 full payload
+  - `VACUUM` 是单独命令，不会在 compact 后自动执行
 - 日终收尾：
   - `make daily-close DATE=YYYY-MM-DD`：迁移指定日期 archive 到 SQLite、检查 DB、生成报告、压缩 dry-run、执行 WAL checkpoint
   - `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`：完整日终流程，并在 dry-run 后 gzip 指定日期 archive
@@ -154,8 +186,26 @@ majors-first pool book 指引：
   - `covered_major_pairs`
   - `missing_major_pairs`
   - `configured_but_disabled_major_pools`
+  - `placeholder_major_pool_entries`
   - `malformed_major_pool_entries`
+  - `enabled_major_pools`
+  - `active_recent_major_pairs`
+  - `no_recent_signal_major_pairs`
   - `recommended_local_config_actions`
+- 本地补 BTC/SOL 主池的最小流程：
+  - 以 `data/lp_pools.example.json` 为模板，把 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC` 复制到私有 `data/lp_pools.json`
+  - 填真实 `pool_address`；不要伪造地址，也不要把 placeholder 当 enabled pool
+  - 核对 `chain / dex / protocol / pool_type / base_symbol / quote_symbol / canonical_asset`
+  - 只有确认 metadata 正确后才把 `enabled=false` 改成 `enabled=true`
+  - 重启当前 research/listener 进程，让 `lp_registry` 重新加载本地 `data/lp_pools.json`
+  - 运行 `./venv/bin/python -m app.quality_reports --major-pool-coverage`
+  - 看到 `enabled_major_pools` 中出现目标 pair，且 `placeholder_major_pool_entries / malformed_major_pool_entries` 没有对应条目，才算配置通过
+  - 跑一轮 research 默认流程后，再看 `active_recent_major_pairs` 是否出现目标 pair；如果仍在 `no_recent_signal_major_pairs`，先排查 listener 是否扫到该池
+- 如何确认 listener 扫到了对应池：
+  - `major-pool-coverage` 中目标 pair 先进入 `enabled_major_pools`
+  - 跑过一轮 research/live 采样后，目标 pair 应从 `no_recent_signal_major_pairs` 迁移到 `active_recent_major_pairs`
+  - 如果长期没有迁移，优先检查 `pool_address`、`chain`、`dex`、`pool_type` 和本地 listener 扫描范围
+- `data/lp_pools.json` 属于本地私有配置，不要提交到 GitHub；公开仓库只保留 example
 - 先不扩 long-tail 的原因：
   - 当前 outcome / quality / market context 样本仍主要集中在 majors
   - 先把 majors 的 `prealert -> confirm`、confirm scope、reversal / exhaustion 统计做稳更有价值
@@ -174,6 +224,9 @@ majors-first pool book 指引：
 - `make health`：查看 market context 健康度。
 - `make coverage`：查看 major pool 覆盖。
 - `make db-init / db-summary / db-integrity / db-report`：初始化、摘要、完整性和 SQLite report 检查。
+- `make db-size / db-value-audit / db-retention`：查看 DB 体积、数据价值和 retention 建议。
+- `make db-compact-dry-run / db-compact-execute CONFIRM=YES / db-vacuum CONFIRM=YES`：预览 compact、执行 compact、执行 VACUUM。
+- `make db-maintenance`：串行执行 DB 体积、价值、retention 和 compact dry-run。
 - `make db-migrate-all / db-migrate-date DATE=YYYY-MM-DD`：把 NDJSON archive mirror 到 SQLite。
 - `make daily-close DATE=YYYY-MM-DD`：执行日终迁移、DB 检查、报告生成、压缩 dry-run 和 checkpoint。
 - `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`：日终流程并压缩指定日期 archive。
@@ -186,8 +239,9 @@ majors-first pool book 指引：
 
 提醒：
 - 不要在启动前删除 archive/cache/db。
+- 不要把 `.sqlite / .sqlite-wal / .sqlite-shm` 提交到 Git。
 - 不要压缩当天正在写的 UTC 日期；如确实需要，必须显式 `ALLOW_TODAY=YES`。
-- SQLite 是 mirror/query layer，不替代 archive。
+- SQLite 是分析库，不替代 archive。
 - compression 只把 `.ndjson` 替换为 `.ndjson.gz`，不等同于 prune；`make db-prune-execute` 才会删除过期 DB 数据。
 - `make db-prune-execute` 必须显式加 `CONFIRM=YES`。
 - 真实 DB 文件和运行数据不应提交 git。

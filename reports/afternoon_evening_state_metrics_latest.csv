@@ -82,18 +82,18 @@ trade_opportunity,opportunity_budget_suppressed_count,,,,,,0,4,2026-04-22 05:00:
 trade_opportunity,opportunity_cooldown_suppressed_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 trade_opportunity,opportunity_history_sample_sufficiency_rate,,,,,,0.9398,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 trade_opportunity,samples_until_verified_open,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-outcome,30s_status,,,,,,3,4,30s,completed
-outcome,30s_status,,,,,,1,4,30s,pending
+outcome,30s_status,,,,,,2,4,30s,completed
+outcome,30s_status,,,,,,2,4,30s,pending
 outcome,60s_status,,,,,,2,4,60s,completed
 outcome,60s_status,,,,,,2,4,60s,pending
 outcome,300s_status,,,,,,2,4,300s,completed
 outcome,300s_status,,,,,,2,4,300s,pending
 outcome,outcome_price_source_distribution,,,okx_mark,,,12,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-outcome,outcome_30s_pending_count,,,,,,1,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-outcome,outcome_30s_completed_count,,,,,,3,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+outcome,outcome_30s_pending_count,,,,,,2,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+outcome,outcome_30s_completed_count,,,,,,2,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 outcome,outcome_30s_unavailable_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 outcome,outcome_30s_expired_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-outcome,outcome_30s_completed_rate,,,,,,0.75,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+outcome,outcome_30s_completed_rate,,,,,,0.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 outcome,outcome_60s_completed_rate,,,,,,0.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 outcome,outcome_300s_completed_rate,,,,,,0.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 outcome,catchup_completed_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
@@ -135,7 +135,7 @@ trade_action,long_candidate_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22
 trade_action,short_candidate_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 trade_action,tradeable_count,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 trade_action,legacy_chase_action_rows,,,,,,0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-adverse_direction,buy_pressure_adverse_30s_rate,,,,,,0.3333,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+adverse_direction,buy_pressure_adverse_30s_rate,,,,,,0.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 adverse_direction,buy_pressure_adverse_60s_rate,,,,,,0.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 adverse_direction,buy_pressure_adverse_300s_rate,,,,,,0.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 adverse_direction,sell_pressure_adverse_30s_rate,,,,,,,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
@@ -169,8 +169,8 @@ score,asset_market_state_usability,,,,,,6.5,4,2026-04-22 05:00:01 UTC -> 2026-04
 score,no_trade_lock_protection_value,,,,,,3.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 score,prealert_lifecycle_effectiveness,,,,,,6.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 score,candidate_tradeable_credibility,,,,,,3.8,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-score,outcome_completeness,,,,,,7.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+score,outcome_completeness,,,,,,7.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 score,live_market_context_readiness,,,,,,9.5,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 score,trade_action_assistive_value,,,,,,5.0,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
 score,noise_control,,,,,,7.1,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
-score,overall_self_use_score,,,,,,6.2,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,
+score,overall_self_use_score,,,,,,6.1,4,2026-04-22 05:00:01 UTC -> 2026-04-22 05:21:54 UTC,

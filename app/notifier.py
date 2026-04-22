@@ -681,6 +681,10 @@ def _trade_opportunity_status(context: dict) -> str:
     return str(context.get("trade_opportunity_status") or "").strip().upper()
 
 
+def _final_trading_output_source(context: dict) -> str:
+    return str(context.get("final_trading_output_source") or "").strip().lower()
+
+
 def _has_trade_opportunity(context: dict) -> bool:
     return _trade_opportunity_status(context) in {"CANDIDATE", "VERIFIED", "BLOCKED", "INVALIDATED", "EXPIRED"}
 
@@ -755,7 +759,7 @@ def _trade_opportunity_blocker_headline(context: dict) -> tuple[str, str]:
         return ("不追多", "局部买压被吸收") if side == "LONG" else ("不追空", "局部卖压被承接")
     if blocker == "low_quality":
         return "不交易", "质量不足"
-    if blocker == "recent_opposite_strong_signal":
+    if blocker in {"strong_opposite_signal", "recent_opposite_strong_signal"}:
         return "不交易", "近期反向强信号"
     return "不交易", "机会被阻止"
 
@@ -769,8 +773,14 @@ def _trade_opportunity_blocker_labels(context: dict) -> str:
         "late_or_chase": "确认偏晚 / 追单风险",
         "crowded_basis": "basis 拥挤",
         "local_absorption": "局部压力被吸收/承接",
+        "strong_opposite_signal": "近期反向强信号",
         "recent_opposite_strong_signal": "近期反向强信号",
         "low_quality": "质量不足",
+        "profile_sample_count_insufficient": "profile 样本不足",
+        "profile_followthrough_too_low": "profile followthrough 未稳定",
+        "profile_completion_too_low": "profile completion 偏低",
+        "profile_adverse_too_high": "profile adverse 偏高",
+        "outcome_history_insufficient": "后验历史不足",
         "history_samples_insufficient": "历史样本不足",
         "history_followthrough_not_ready": "历史 followthrough 未稳定",
         "history_completion_too_low": "历史 completion 偏低",
@@ -831,8 +841,8 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
             f"解除：{required_confirmation}",
         ]
     else:
-        state_title = "机会失效" if status == "INVALIDATED" else "机会过期"
-        state_conclusion = "此前的 verified 条件已消失" if status == "INVALIDATED" else "机会窗口已结束"
+        state_title = "状态变化"
+        state_conclusion = "原条件失效" if status == "INVALIDATED" else "观察窗口结束"
         lines = [
             f"{state_title}｜{asset}｜{state_conclusion}",
             f"为什么：{reason}",
@@ -844,6 +854,45 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
 
 
 def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
+    final_source = _final_trading_output_source(context)
+    if final_source == "trade_opportunity":
+        return _trade_opportunity_message(signal, event, context)
+    if final_source in {"asset_market_state", "trade_action_legacy"}:
+        context = _ensure_lp_trade_action(signal, event, context)
+        pair_or_pool = _lp_case_label(context)
+        action_label = str(context.get("final_trading_output_label") or _trade_action_label(context, event))
+        conclusion = _trade_action_conclusion(context, event)
+        evidence = _trade_action_evidence_line(signal, context)
+        reason = _trade_action_reason(context, event)
+        required_confirmation = _trade_action_required_confirmation(context)
+        invalidation = _trade_action_invalidated_by(context)
+        latency_ms = int(
+            context.get("lp_end_to_end_latency_ms")
+            or context.get("lp_detect_latency_ms")
+            or 0
+        )
+        template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
+        user_tier = str(context.get("user_tier") or "research")
+        quality_hint = str(context.get("quality_score_brief") or "").strip() or "-"
+        show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
+
+        lines = [
+            f"{action_label}｜{pair_or_pool}｜{conclusion}",
+            f"证据：{evidence}",
+            f"为什么：{reason}",
+            f"触发：{required_confirmation}",
+            f"失效：{invalidation}",
+        ]
+        if show_debug:
+            debug_parts = [
+                f"调试：stage={str(context.get('lp_alert_stage') or '-')}",
+                f"scope={str(context.get('lp_confirm_scope') or '-')}",
+                f"context={str(context.get('market_context_source') or 'unavailable')}",
+                f"quality={quality_hint}",
+                f"latency={latency_ms}ms",
+            ]
+            lines.append("｜".join(debug_parts))
+        return _join_lines(lines)
     if _has_trade_opportunity(context):
         return _trade_opportunity_message(signal, event, context)
     context = _ensure_lp_trade_action(signal, event, context)

@@ -8,7 +8,7 @@ ALLOW_TODAY ?= NO
 ENV_FILE ?= .env
 DB_PATH ?= data/chain_monitor.sqlite
 
-.PHONY: help env-check compile run run-research health coverage quality-summary quality-csv db-init db-summary db-integrity db-report db-migrate-all db-migrate-date sqlite-checkpoint archive-compress-date archive-compress-dry-run archive-status daily-close daily-close-strict db-prune-dry-run db-prune-execute report-overnight report-state report-run report-all smoke test-sqlite test-opportunity test-state test-action test-lp test-core test-all archive-check git-info preflight
+.PHONY: help env-check compile run run-research health coverage quality-summary quality-csv db-init db-summary db-integrity db-report db-size db-value-audit db-retention db-compact-dry-run db-compact-execute db-vacuum db-maintenance db-migrate-all db-migrate-date sqlite-checkpoint archive-compress-date archive-compress-dry-run archive-status daily-close daily-close-strict db-prune-dry-run db-prune-execute report-overnight report-state report-run report-all smoke test-sqlite test-opportunity test-state test-action test-lp test-core test-all archive-check git-info preflight
 
 help:
 	@printf '%s\n' "chain-monitor common targets:"
@@ -25,6 +25,13 @@ help:
 	@printf '%s\n' "  make db-summary          Show SQLite health summary."
 	@printf '%s\n' "  make db-integrity        Run SQLite integrity checks."
 	@printf '%s\n' "  make db-report           Run SQLite db-summary, db-integrity, opportunity summary."
+	@printf '%s\n' "  make db-size             Show SQLite DB/WAL/table/json payload size breakdown."
+	@printf '%s\n' "  make db-value-audit      Generate SQLite data-value audit reports."
+	@printf '%s\n' "  make db-retention        Show SQLite retention / compact recommendations."
+	@printf '%s\n' "  make db-compact-dry-run  Preview compact savings without modifying DB."
+	@printf '%s\n' "  make db-compact-execute  Run compact only with CONFIRM=YES."
+	@printf '%s\n' "  make db-vacuum           Run VACUUM only with CONFIRM=YES."
+	@printf '%s\n' "  make db-maintenance      Run db-size, db-value-audit, db-retention, db-compact-dry-run."
 	@printf '%s\n' "  make db-migrate-all      Mirror all archive NDJSON into SQLite."
 	@printf '%s\n' "  make db-migrate-date     Mirror one archive date. Usage: make db-migrate-date DATE=YYYY-MM-DD"
 	@printf '%s\n' "  make sqlite-checkpoint   Run SQLite WAL checkpoint truncate."
@@ -88,6 +95,32 @@ db-report:
 	$(PY) -m $(APP).quality_reports --db-summary
 	$(PY) -m $(APP).quality_reports --db-integrity
 	$(PY) -m $(APP).quality_reports --opportunity-db-summary
+
+db-size:
+	$(PY) -m $(APP).quality_reports --db-size-breakdown
+
+db-value-audit:
+	$(PY) -m $(APP).quality_reports --db-value-audit
+
+db-retention:
+	$(PY) -m $(APP).quality_reports --db-retention-recommendation
+
+db-compact-dry-run:
+	$(PY) -m $(APP).sqlite_store --compact --dry-run
+
+db-compact-execute:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compact. Use make db-compact-execute CONFIRM=YES"; exit 2; fi
+	$(PY) -m $(APP).sqlite_store --compact --execute
+
+db-vacuum:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to vacuum. Use make db-vacuum CONFIRM=YES"; exit 2; fi
+	CONFIRM=YES $(PY) -m $(APP).sqlite_store --vacuum
+
+db-maintenance:
+	$(MAKE) db-size
+	$(MAKE) db-value-audit
+	$(MAKE) db-retention
+	$(MAKE) db-compact-dry-run
 
 db-migrate-all:
 	$(PY) -m $(APP).sqlite_store --migrate-archive --all

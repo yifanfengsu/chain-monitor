@@ -34,6 +34,7 @@ from generate_overnight_run_analysis_latest import (
     compute_asset_market_states,
     compute_archive_integrity,
     compute_candidate_tradeable_summary,
+    compute_final_trading_output_summary,
     compute_confirms,
     compute_majors,
     compute_market_context,
@@ -142,6 +143,20 @@ SAFE_CONFIG_KEYS = [
     "OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE",
     "OPPORTUNITY_MAX_60S_ADVERSE_RATE",
     "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE",
+    "OPPORTUNITY_CALIBRATION_ENABLE",
+    "OPPORTUNITY_CALIBRATION_MIN_SAMPLES",
+    "OPPORTUNITY_CALIBRATION_STRONG_SAMPLES",
+    "OPPORTUNITY_CALIBRATION_MAX_POSITIVE_ADJUSTMENT",
+    "OPPORTUNITY_CALIBRATION_MAX_NEGATIVE_ADJUSTMENT",
+    "OPPORTUNITY_CALIBRATION_COMPLETION_MIN",
+    "OPPORTUNITY_CALIBRATION_ADVERSE_MAX",
+    "OPPORTUNITY_CALIBRATION_FOLLOWTHROUGH_MIN",
+    "OPPORTUNITY_NON_LP_EVIDENCE_ENABLE",
+    "OPPORTUNITY_NON_LP_EVIDENCE_WINDOW_SEC",
+    "OPPORTUNITY_NON_LP_SCORE_WEIGHT",
+    "OPPORTUNITY_NON_LP_STRONG_BLOCKER_ENABLE",
+    "OPPORTUNITY_NON_LP_TENTATIVE_WEIGHT",
+    "OPPORTUNITY_NON_LP_OBSERVE_WEIGHT",
     "OPPORTUNITY_MAX_PER_ASSET_PER_HOUR",
     "OPPORTUNITY_COOLDOWN_SEC",
     "SQLITE_ENABLE",
@@ -1446,10 +1461,33 @@ def build_markdown(
     lines.append("")
     lines.append(f"- opportunity_summary=`{md_json(opportunity_summary.get('opportunity_summary') or {})}`")
     lines.append(f"- opportunity_score_distribution=`{md_json(opportunity_summary.get('opportunity_score_distribution') or {})}`")
+    lines.append(f"- raw_score_vs_calibrated_score=`{md_json(opportunity_summary.get('raw_score_vs_calibrated_score') or {})}`")
+    lines.append(f"- calibration_adjustment_distribution=`{md_json(opportunity_summary.get('calibration_adjustment_distribution') or {})}`")
     lines.append(f"- candidate_outcome_60s=`{md_json(opportunity_summary.get('candidate_outcome_60s') or {})}`")
     lines.append(f"- verified_outcome_60s=`{md_json(opportunity_summary.get('verified_outcome_60s') or {})}`")
+    lines.append(f"- opportunity_profile_count=`{opportunity_summary.get('opportunity_profile_count')}`")
+    lines.append(f"- top_profiles_by_sample=`{md_json(opportunity_summary.get('top_profiles_by_sample') or [])}`")
+    lines.append(f"- top_profiles_by_followthrough=`{md_json(opportunity_summary.get('top_profiles_by_followthrough') or [])}`")
+    lines.append(f"- top_profiles_by_adverse=`{md_json(opportunity_summary.get('top_profiles_by_adverse') or [])}`")
+    lines.append(f"- profiles_ready_for_verified=`{md_json(opportunity_summary.get('profiles_ready_for_verified') or [])}`")
+    lines.append(f"- estimated_samples_needed_for_verified_by_profile=`{md_json(opportunity_summary.get('estimated_samples_needed_for_verified_by_profile') or {})}`")
     lines.append(f"- blocker_effectiveness=`{md_json(opportunity_summary.get('blocker_effectiveness') or {})}`")
     lines.append(f"- why_no_opportunities=`{md_json(opportunity_summary.get('why_no_opportunities') or [])}`")
+    lines.append(f"- hard_blocker_distribution=`{md_json(opportunity_summary.get('hard_blocker_distribution') or {})}`")
+    lines.append(f"- verification_blocker_distribution=`{md_json(opportunity_summary.get('verification_blocker_distribution') or {})}`")
+    lines.append(f"- non_lp_evidence_summary=`{md_json(opportunity_summary.get('non_lp_evidence_summary') or {})}`")
+    lines.append(f"- opportunity_non_lp_support_count=`{opportunity_summary.get('opportunity_non_lp_support_count')}` `opportunity_non_lp_risk_count={opportunity_summary.get('opportunity_non_lp_risk_count')}`")
+    lines.append(f"- top_non_lp_supporting_evidence=`{md_json(opportunity_summary.get('top_non_lp_supporting_evidence') or [])}`")
+    lines.append(f"- top_non_lp_blockers=`{md_json(opportunity_summary.get('top_non_lp_blockers') or [])}`")
+    lines.append(f"- opportunities_upgraded_by_non_lp=`{opportunity_summary.get('opportunities_upgraded_by_non_lp')}` `opportunities_blocked_by_non_lp={opportunity_summary.get('opportunities_blocked_by_non_lp')}`")
+    lines.append(f"- opportunities_upgraded_by_calibration=`{opportunity_summary.get('opportunities_upgraded_by_calibration')}` `opportunities_downgraded_by_calibration={opportunity_summary.get('opportunities_downgraded_by_calibration')}`")
+    lines.append(f"- candidates_blocked_by_calibration=`{opportunity_summary.get('candidates_blocked_by_calibration')}` `verified_allowed_by_calibration={opportunity_summary.get('verified_allowed_by_calibration')}`")
+    lines.append(f"- top_positive_adjustments=`{md_json(opportunity_summary.get('top_positive_adjustments') or [])}`")
+    lines.append(f"- top_negative_adjustments=`{md_json(opportunity_summary.get('top_negative_adjustments') or [])}`")
+    lines.append(f"- calibration_reason_distribution=`{md_json(opportunity_summary.get('calibration_reason_distribution') or {})}`")
+    lines.append(f"- calibration_source_distribution=`{md_json(opportunity_summary.get('calibration_source_distribution') or {})}`")
+    lines.append(f"- calibration_confidence_distribution=`{md_json(opportunity_summary.get('calibration_confidence_distribution') or {})}`")
+    lines.append(f"- non_lp_conflict_cases=`{md_json(opportunity_summary.get('non_lp_conflict_cases') or [])}`")
     lines.append(f"- top_blockers=`{md_json(opportunity_summary.get('top_blockers') or {})}`")
     lines.append(
         "- 问题回答：如果没有机会，优先看 `why_no_opportunities` / `top_blockers` / `samples_until_verified_open`，"
@@ -1458,6 +1496,9 @@ def build_markdown(
     lines.append(
         "- 问题回答：如果 verified 机会存在，直接和 candidate/blocked 的 60s followthrough/adverse 对比，"
         "用来验证机会是否真的优于普通信号。"
+    )
+    lines.append(
+        "- 问题回答：profile posterior 现在可以直接回答哪些 profile 已 ready、哪些还差多少样本、哪些 adverse 仍偏高、哪些 blocker 真在 saving trade。"
     )
     lines.append("")
     lines.append("## 6. 交易状态机与降噪治理")
@@ -1828,6 +1869,7 @@ def main() -> int:
     no_trade_lock_summary = compute_no_trade_lock_summary(lp_rows)
     prealert_lifecycle_summary = compute_prealert_lifecycle_summary(lp_rows)
     candidate_tradeable_summary = compute_candidate_tradeable_summary(lp_rows)
+    final_output_summary = compute_final_trading_output_summary(lp_rows)
     outcome_price_source_summary = compute_outcome_price_sources(lp_rows)
     telegram_suppression_summary = compute_telegram_suppression(lp_rows)
     opportunity_summary = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
@@ -1874,6 +1916,26 @@ def main() -> int:
         asset_case_summary_payload,
         majors_summary,
         archive_summary,
+    )
+    findings.extend(
+        [
+            (
+                f"统一出口审计：final_output_distribution={final_output_summary['final_trading_output_distribution']} "
+                f"verified={final_output_summary['delivered_verified_count']} "
+                f"candidate={final_output_summary['delivered_candidate_count']} "
+                f"blocked={final_output_summary['delivered_blocked_count']}."
+            ),
+            (
+                f"legacy chase 审计：downgraded={final_output_summary['legacy_chase_downgraded_count']} "
+                f"leaked={final_output_summary['legacy_chase_leaked_count']} "
+                f"gate_failures={final_output_summary['opportunity_gate_failures']}."
+            ),
+            (
+                f"报告校验：all_opportunity_labels_verified={final_output_summary['all_opportunity_labels_verified']} "
+                f"all_candidate_labels_are_candidate={final_output_summary['all_candidate_labels_are_candidate']} "
+                f"blocked_covers_legacy_chase_risk={final_output_summary['blocked_covers_legacy_chase_risk']}."
+            ),
+        ]
     )
     recommendations = build_recommendations(
         prealert_summary,
@@ -1976,6 +2038,14 @@ def main() -> int:
         if isinstance(value, dict):
             continue
         add_metric(csv_rows, "candidate_tradeable", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in final_output_summary.items():
+        if isinstance(value, dict) or isinstance(value, list):
+            continue
+        add_metric(csv_rows, "final_trading_output", key, value, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in final_output_summary.get("final_trading_output_distribution", {}).items():
+        add_metric(csv_rows, "final_trading_output", "final_trading_output_distribution", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
+    for key, value in final_output_summary.get("opportunity_gate_failures", {}).items():
+        add_metric(csv_rows, "final_trading_output", "opportunity_gate_failures", value, stage=key, sample_size=run_overview["lp_signal_rows"], window=window_label)
     for key, value in opportunity_summary.items():
         if isinstance(value, dict) or isinstance(value, list):
             continue
@@ -2056,6 +2126,7 @@ def main() -> int:
         "no_trade_lock_summary": no_trade_lock_summary,
         "prealert_lifecycle_summary": prealert_lifecycle_summary,
         "candidate_tradeable_summary": candidate_tradeable_summary,
+        "final_trading_output_summary": final_output_summary,
         "trade_opportunity_summary": opportunity_summary,
         "outcome_price_source_summary": outcome_price_source_summary,
         "telegram_suppression_summary": telegram_suppression_summary,

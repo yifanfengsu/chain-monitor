@@ -7,15 +7,46 @@ from models import Event, Signal
 
 
 class StubStateManager:
-    def __init__(self, records=None, outcome_records=None) -> None:
+    def __init__(self, records=None, outcome_records=None, recent_signal_records=None) -> None:
         self._records = list(records or [])
         self._outcome_records = dict(outcome_records or {})
+        self._recent_signal_records = list(recent_signal_records or [])
 
     def get_recent_lp_outcome_records(self, limit: int = 500):
         return list(self._records)[-limit:]
 
     def get_lp_outcome_record(self, record_id: str):
         return dict(self._outcome_records.get(record_id) or {})
+
+    def get_recent_signal_records(
+        self,
+        *,
+        asset_symbol: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        limit: int = 120,
+    ):
+        rows = list(self._recent_signal_records)
+        if asset_symbol:
+            target = str(asset_symbol or "").strip().upper()
+            rows = [
+                row
+                for row in rows
+                if str(row.get("asset_symbol") or row.get("asset") or "").strip().upper() == target
+            ]
+        if since_ts is not None:
+            rows = [
+                row
+                for row in rows
+                if int(row.get("archive_ts") or row.get("timestamp") or row.get("ts") or 0) >= int(since_ts)
+            ]
+        if until_ts is not None:
+            rows = [
+                row
+                for row in rows
+                if int(row.get("archive_ts") or row.get("timestamp") or row.get("ts") or 0) <= int(until_ts)
+            ]
+        return rows[-limit:]
 
 
 def make_outcome_row(
@@ -74,6 +105,67 @@ def make_outcome_record(
             "30s": _window(status_30s, move_30s, adverse_30s),
             "60s": _window(status_60s, move_60s, adverse_60s),
             "300s": _window(status_300s, move_300s, adverse_300s),
+        },
+    }
+
+
+def make_recent_signal_row(
+    *,
+    asset_symbol: str = "ETH",
+    ts: int = 1_710_000_000,
+    operational_intent_key: str = "smart_money_entry_execution",
+    confidence: float = 0.88,
+    confirmation_score: float = 0.84,
+    intent_stage: str = "confirmed",
+    strategy_role: str = "smart_money_wallet",
+    pair_label: str | None = None,
+    liquidation_side: str = "",
+    liquidation_stage: str = "",
+) -> dict:
+    pair = pair_label or f"{asset_symbol}/USDC"
+    stage = liquidation_stage
+    if not stage:
+        if operational_intent_key == "liquidation_sell_pressure_release":
+            stage = "execution"
+        elif operational_intent_key == "liquidation_risk_building":
+            stage = "risk"
+        else:
+            stage = "none"
+    context = {
+        "asset_symbol": asset_symbol,
+        "pair_label": pair,
+        "operational_intent_key": operational_intent_key,
+        "operational_intent_family": operational_intent_key,
+        "operational_intent_confidence": confidence,
+        "confirmation_score": confirmation_score,
+        "intent_stage": intent_stage,
+        "strategy_role": strategy_role,
+        "liquidation_side": liquidation_side,
+        "liquidation_stage": stage,
+        "timestamp": ts,
+        "archive_ts": ts,
+    }
+    return {
+        "signal_id": f"recent:{operational_intent_key}:{ts}",
+        "asset_symbol": asset_symbol,
+        "asset": asset_symbol,
+        "pair_label": pair,
+        "timestamp": ts,
+        "archive_ts": ts,
+        "operational_intent_key": operational_intent_key,
+        "operational_intent_family": operational_intent_key,
+        "operational_intent_confidence": confidence,
+        "confirmation_score": confirmation_score,
+        "intent_stage": intent_stage,
+        "strategy_role": strategy_role,
+        "liquidation_side": liquidation_side,
+        "liquidation_stage": stage,
+        "signal": {
+            "context": dict(context),
+            "metadata": dict(context),
+        },
+        "event": {
+            "metadata": dict(context),
         },
     }
 

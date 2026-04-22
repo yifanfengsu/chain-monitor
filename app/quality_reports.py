@@ -26,7 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--major-pool-coverage", action="store_true", help="输出 majors pool 覆盖情况")
     parser.add_argument("--db-summary", action="store_true", help="输出 SQLite mirror 表计数和健康摘要")
     parser.add_argument("--db-integrity", action="store_true", help="输出 SQLite mirror 完整性检查")
-    parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/outcome 摘要")
+    parser.add_argument("--db-size-breakdown", action="store_true", help="输出 SQLite 文件大小、表大小和 JSON payload 大小")
+    parser.add_argument("--db-value-audit", action="store_true", help="输出 SQLite 数据价值审计并生成报告文件")
+    parser.add_argument("--db-retention-recommendation", action="store_true", help="输出 SQLite retention/compact 建议")
+    parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/profile/outcome/blocker posterior 摘要")
+    parser.add_argument("--opportunity-calibration", action="store_true", help="输出 SQLite opportunity score calibration 摘要")
     parser.add_argument("--report-source-summary", action="store_true", help="输出 report DB/archive/cache source 摘要")
     parser.add_argument("--fail-on-mismatch", action="store_true", help="DB/archive mirror mismatch 时返回非零")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
@@ -322,15 +326,22 @@ def build_major_pool_coverage_report(
     pool_book_path: Path | None = None,
 ) -> dict:
     manager = manager or QualityManager(state_manager=StateManager())
-    records = list(manager._combined_records(limit=manager.history_limit))
+    history_limit = getattr(manager, "history_limit", None)
+    actionable_min_samples = max(int(getattr(manager, "actionable_min_samples", 2) or 2), 1)
+    records = list(manager._combined_records(limit=history_limit)) if hasattr(manager, "_combined_records") else []
     pool_book_path = pool_book_path or (PROJECT_ROOT / "data" / "lp_pools.json")
     pool_book_exists = pool_book_path.exists()
     warnings: list[str] = []
     suggestions: list[str] = []
-    raw_pool_entries = []
+    raw_pool_entries: list[dict] = []
     if pool_book_exists:
         try:
-            raw_pool_entries = json.loads(pool_book_path.read_text(encoding="utf-8"))
+            payload = json.loads(pool_book_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                raw_pool_entries = payload
+            else:
+                warnings.append("data/lp_pools.json 顶层必须是数组；coverage 只能基于已加载 runtime pool metadata")
+                raw_pool_entries = []
         except (OSError, json.JSONDecodeError):
             warnings.append("data/lp_pools.json 无法解析；coverage 只能基于已加载 runtime pool metadata")
             raw_pool_entries = []
@@ -347,14 +358,7 @@ def build_major_pool_coverage_report(
         if normalized and normalized not in configured_quotes:
             configured_quotes.append(normalized)
 
-    expected_pairs = []
-    for asset in configured_assets:
-        if asset not in {"ETH", "BTC", "SOL"}:
-            continue
-        for quote in configured_quotes:
-            if quote not in {"USDT", "USDC"}:
-                continue
-            expected_pairs.append(f"{asset}/{quote}")
+    expected_pairs = list(validator_payload.get("expected_major_pairs") or [])
 
     sample_count_by_pair = defaultdict(int)
     sample_count_by_asset = defaultdict(int)
@@ -390,6 +394,11 @@ def build_major_pool_coverage_report(
                 "major_match_mode": str(meta.get("major_match_mode") or ""),
                 "trend_pool_match_mode": str(meta.get("trend_pool_match_mode") or ""),
                 "is_primary_trend_pool": bool(meta.get("is_primary_trend_pool")),
+                "chain": str(meta.get("chain") or ""),
+                "dex": str(meta.get("dex") or ""),
+                "protocol": str(meta.get("protocol") or ""),
+                "pool_type": str(meta.get("pool_type") or ""),
+                "notes": str(meta.get("notes") or meta.get("note") or ""),
                 "sample_size": int(sample_count_by_pair.get(canonical_pair_label) or 0),
             }
         )
@@ -416,13 +425,30 @@ def build_major_pool_coverage_report(
             "sample_size": int(sample_count_by_pair.get(pair) or 0),
         }
         for pair in expected_pairs
-        if int(sample_count_by_pair.get(pair) or 0) < manager.actionable_min_samples
+        if int(sample_count_by_pair.get(pair) or 0) < actionable_min_samples
     ]
+    active_recent_major_pairs = sorted(
+        pair for pair in covered_pairs if int(sample_count_by_pair.get(pair) or 0) > 0
+    )
+    no_recent_signal_major_pairs = sorted(
+        pair for pair in covered_pairs if int(sample_count_by_pair.get(pair) or 0) <= 0
+    )
     major_pair_quality = []
     quality_converging_pairs = []
+
+    def _scope_scores_for_pair(pair_records: list[dict]) -> dict:
+        if hasattr(manager, "_scope_scores"):
+            return manager._scope_scores(pair_records, lambda _: True)
+        return {
+            "sample_size": len(pair_records),
+            "quality_score": 0.0,
+            "climax_reversal_score": 0.0,
+            "market_context_alignment_score": 0.0,
+        }
+
     for pair in expected_pairs:
         pair_records = [record for record in records if _canonical_major_pair_label(record.get("pair_label") or "") == pair]
-        scores = manager._scope_scores(pair_records, lambda _: True)
+        scores = _scope_scores_for_pair(pair_records)
         payload = {
             "pair_label": pair,
             "covered": pair in covered_pairs,
@@ -430,7 +456,7 @@ def build_major_pool_coverage_report(
             "quality_score": round(float(scores.get("quality_score") or 0.0), 4),
             "climax_reversal_score": round(float(scores.get("climax_reversal_score") or 0.0), 4),
             "market_context_alignment_score": round(float(scores.get("market_context_alignment_score") or 0.0), 4),
-            "actionable": int(scores.get("sample_size") or 0) >= manager.actionable_min_samples,
+            "actionable": int(scores.get("sample_size") or 0) >= actionable_min_samples,
         }
         major_pair_quality.append(payload)
         if payload["covered"] and payload["actionable"]:
@@ -453,8 +479,23 @@ def build_major_pool_coverage_report(
             "样本稀少的 majors pairs："
             + ", ".join(item["pair_label"] for item in under_sampled_pairs[:6])
         )
+    if no_recent_signal_major_pairs:
+        warnings.append(
+            "存在 enabled 但最近无信号的 major pairs："
+            + ", ".join(no_recent_signal_major_pairs[:6])
+        )
+        suggestions.append(
+            "确认 listener 是否扫描到对应 pool，并检查链、DEX、pool_type、enabled 配置是否正确"
+        )
     if validator_payload.get("configured_but_disabled_major_pools"):
         warnings.append("存在 configured but disabled 的 major pools；覆盖缺口不一定是识别问题")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
+    if validator_payload.get("placeholder_major_pool_entries"):
+        warnings.append("存在 placeholder major pool entries；这些条目不会被当成有效 enabled pool")
         suggestions.extend(
             action
             for action in validator_payload.get("recommended_local_config_actions") or []
@@ -467,23 +508,58 @@ def build_major_pool_coverage_report(
             for action in validator_payload.get("recommended_local_config_actions") or []
             if action not in suggestions
         )
+    if validator_payload.get("duplicate_pool_warnings"):
+        warnings.append("major pool book 存在 duplicate/priority 冲突；建议先整理本地配置")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
     recommended_next_round_pairs = []
+    next_round_priority = []
     for pair in missing_pairs:
         if pair not in recommended_next_round_pairs:
             recommended_next_round_pairs.append(pair)
+            next_round_priority.append({"pair_label": pair, "reason": "missing"})
+    disabled_pairs = []
+    for item in validator_payload.get("configured_but_disabled_major_pools") or []:
+        pair = str(item.get("pair_label") or "")
+        if pair and pair not in disabled_pairs:
+            disabled_pairs.append(pair)
+    for pair in disabled_pairs:
+        if pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+        next_round_priority.append({"pair_label": pair, "reason": "configured_but_disabled"})
+    for pair in no_recent_signal_major_pairs:
+        if pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+        next_round_priority.append({"pair_label": pair, "reason": "enabled_no_recent_signal"})
     for item in under_sampled_pairs:
         pair = str(item.get("pair_label") or "")
         if pair and pair not in recommended_next_round_pairs:
             recommended_next_round_pairs.append(pair)
+            next_round_priority.append({"pair_label": pair, "reason": "under_sampled"})
     for item in major_pair_quality:
         pair = str(item.get("pair_label") or "")
         if (
             pair
             and bool(item.get("covered"))
-            and int(item.get("sample_size") or 0) < max(manager.actionable_min_samples * 2, 6)
+            and int(item.get("sample_size") or 0) < max(actionable_min_samples * 2, 6)
             and pair not in recommended_next_round_pairs
         ):
             recommended_next_round_pairs.append(pair)
+            next_round_priority.append({"pair_label": pair, "reason": "needs_more_samples"})
+
+    sorted_active_major_pools = sorted(
+        active_major_pools,
+        key=lambda item: (-float(item["major_priority_score"]), item["pair_label"]),
+    )
+    recommended_local_config_actions = list(validator_payload.get("recommended_local_config_actions") or [])
+    if no_recent_signal_major_pairs:
+        enabled_pairs_text = ", ".join(no_recent_signal_major_pairs[:6])
+        action = f"已启用但无最近信号：{enabled_pairs_text}；先确认 listener 已扫描到这些池"
+        if action not in recommended_local_config_actions:
+            recommended_local_config_actions.append(action)
 
     return {
         "pool_book_path": str(pool_book_path),
@@ -493,8 +569,9 @@ def build_major_pool_coverage_report(
         "expected_major_pairs": expected_pairs,
         "covered_expected_pairs": covered_expected_pairs,
         "covered_major_pairs": covered_expected_pairs,
-        "covered_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
-        "active_major_pools": sorted(active_major_pools, key=lambda item: (-float(item["major_priority_score"]), item["pair_label"])),
+        "covered_major_pools": sorted_active_major_pools,
+        "active_major_pools": sorted_active_major_pools,
+        "enabled_major_pools": sorted_active_major_pools,
         "missing_expected_pairs": missing_pairs,
         "missing_major_pairs": missing_pairs,
         "missing_major_assets": missing_assets,
@@ -502,10 +579,16 @@ def build_major_pool_coverage_report(
         "under_sampled_major_pairs": under_sampled_pairs,
         "configured_but_disabled_major_pools": list(validator_payload.get("configured_but_disabled_major_pools") or []),
         "malformed_major_pool_entries": list(validator_payload.get("malformed_major_pool_entries") or []),
+        "placeholder_major_pool_entries": list(validator_payload.get("placeholder_major_pool_entries") or []),
+        "duplicate_pool_warnings": list(validator_payload.get("duplicate_pool_warnings") or []),
+        "active_recent_major_pairs": active_recent_major_pairs,
+        "no_recent_signal_major_pairs": no_recent_signal_major_pairs,
+        "configured_enabled_no_recent_signal_major_pairs": no_recent_signal_major_pairs,
         "major_pair_quality": major_pair_quality,
         "quality_converging_major_pairs": quality_converging_pairs,
         "recommended_next_round_pairs": recommended_next_round_pairs,
-        "recommended_local_config_actions": list(validator_payload.get("recommended_local_config_actions") or []),
+        "next_round_priority": next_round_priority,
+        "recommended_local_config_actions": recommended_local_config_actions,
         "warnings": warnings,
         "suggestions": suggestions,
     }
@@ -535,11 +618,47 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0 if payload.get("ok") else 1
 
+    if args.db_size_breakdown:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.table_size_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.db_value_audit:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.sqlite_data_value_audit(write_reports=True)
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.db_retention_recommendation:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.db_retention_recommendation()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
     if args.opportunity_db_summary:
         import sqlite_store
 
         sqlite_store.init_sqlite_store()
         payload = sqlite_store.opportunity_db_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.opportunity_calibration:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.opportunity_calibration_summary()
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

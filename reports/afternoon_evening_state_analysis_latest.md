@@ -43,7 +43,7 @@
 - `data/asset_cases.cache.json` | records=`1` | range_utc=`2026-04-22 05:16:27 UTC -> 2026-04-22 05:21:30 UTC` | range_bj=`2026-04-22 13:16:27 UTC+08:00 -> 2026-04-22 13:21:30 UTC+08:00` | window_records=`` | note=`asset case snapshot cache`
 - `data/asset_market_states.cache.json` | records=`1` | range_utc=`2026-04-20 05:10:15 UTC -> 2026-04-22 05:21:32 UTC` | range_bj=`2026-04-20 13:10:15 UTC+08:00 -> 2026-04-22 13:21:32 UTC+08:00` | window_records=`` | note=`asset market state cache`
 - `data/trade_opportunities.cache.json` | records=`332` | range_utc=`2026-04-20 15:03:51 UTC -> 2026-04-22 05:26:26 UTC` | range_bj=`2026-04-20 23:03:51 UTC+08:00 -> 2026-04-22 13:26:26 UTC+08:00` | window_records=`` | note=`trade opportunity cache`
-- `data/chain_monitor.sqlite` | records=`411238` | range_utc=` -> ` | range_bj=` -> ` | window_records=`` | note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5390, 'asset_market_states': 419, 'no_trade_locks': 341, 'trade_opportunities': 346, 'opportunity_outcomes': 1038, 'quality_stats': 1026, 'telegram_deliveries': 83021, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']`
+- `data/chain_monitor.sqlite` | records=`435250` | range_utc=` -> ` | range_bj=` -> ` | window_records=`` | note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5390, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 346, 'opportunity_outcomes': 1038, 'quality_stats': 1026, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']`
 
 ## 3. 北京时间下午到晚上分析窗口
 
@@ -183,10 +183,10 @@
 
 ## 10. outcome price source 与 30s/60s/300s 分析
 
-- `window_status_distribution={'30s': {'completed': 3, 'pending': 1}, '60s': {'completed': 2, 'pending': 2}, '300s': {'completed': 2, 'pending': 2}}`
+- `window_status_distribution={'30s': {'completed': 2, 'pending': 2}, '60s': {'completed': 2, 'pending': 2}, '300s': {'completed': 2, 'pending': 2}}`
 - `outcome_price_source_distribution={'okx_mark': 12}`
 - `outcome_failure_reason_distribution={}`
-- `scheduler_health_summary={'pending_count': 5, 'completed_count': 7, 'unavailable_count': 0, 'expired_count': 0, 'catchup_completed_count': 0, 'catchup_expired_count': 0, 'settled_by_distribution': {'outcome_scheduler': 9}}`
+- `scheduler_health_summary={'pending_count': 6, 'completed_count': 6, 'unavailable_count': 0, 'expired_count': 0, 'catchup_completed_count': 0, 'catchup_expired_count': 0, 'settled_by_distribution': {'outcome_scheduler': 6}}`
 - `expired_rate_by_window={'30s': 0.0, '60s': 0.0, '300s': 0.0}`
 - previous baseline `source_distribution={'okx_mark': 784}`
 - `pool_quote_proxy_share_delta_vs_previous=0.0`
@@ -212,7 +212,7 @@
 - `sell_pressure_adverse_30s_rate=None`
 - `sell_pressure_adverse_60s_rate=None`
 - `sell_pressure_adverse_300s_rate=None`
-- `buy_pressure_adverse_30s_rate=0.3333`
+- `buy_pressure_adverse_30s_rate=0.0`
 - `buy_pressure_adverse_60s_rate=0.0`
 - `buy_pressure_adverse_300s_rate=0.0`
 - `counterexample_reason_distribution={}`
@@ -255,11 +255,11 @@
 - `no_trade_lock_protection_value=3.5/10`
 - `prealert_lifecycle_effectiveness=6.0/10`
 - `candidate_tradeable_credibility=3.8/10`
-- `outcome_completeness=7.5/10`
+- `outcome_completeness=7.0/10`
 - `live_market_context_readiness=9.5/10`
 - `trade_action_assistive_value=5.0/10`
 - `noise_control=7.1/10`
-- `overall_self_use_score=6.2/10`
+- `overall_self_use_score=6.1/10`
 
 ## 18. 下一轮建议
 
@@ -272,6 +272,7 @@
 
 - selected window contains too few prealert-stage rows to fully validate the new prealert lifecycle on its own.
 - selected window contains no TRADEABLE_* states, so candidate-to-tradeable promotion is only validated negatively (blocked), not positively (triggered).
+- 30s outcome completion is still incomplete enough that very short-term reversal conclusions must stay conservative.
 - BTC/SOL have no real selected-window samples, so market-state, lock, and outcome conclusions are ETH-centric.
 
 ## 附录: quality_reports CLI 参考

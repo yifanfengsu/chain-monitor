@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import datetime, timezone
+import csv
+from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -18,17 +20,37 @@ from config import (
     MARKET_CONTEXT_SECONDARY_VENUE,
     PROJECT_ROOT,
     REPORT_ARCHIVE_READ_GZIP,
+    OPPORTUNITY_MAX_60S_ADVERSE_RATE,
+    OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE,
+    OPPORTUNITY_MIN_HISTORY_SAMPLES,
+    OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE,
+    SQLITE_ARCHIVE_PATH_REFERENCE_ENABLE,
+    SQLITE_ARCHIVE_PAYLOAD_HASH_ENABLE,
     SQLITE_ARCHIVE_MIRROR_ENABLE,
     SQLITE_BUSY_TIMEOUT_MS,
+    SQLITE_CASE_FOLLOWUP_MODE,
+    SQLITE_COMPACT_DRY_RUN_DEFAULT,
+    SQLITE_COMPACT_ENABLE,
     SQLITE_DB_PATH,
+    SQLITE_DELIVERY_AUDIT_MODE,
     SQLITE_ENABLE,
+    SQLITE_FULL_JSON_RETENTION_DAYS,
+    SQLITE_MARKET_CONTEXT_ATTEMPT_MODE,
+    SQLITE_OPPORTUNITY_MODE,
+    SQLITE_OUTCOME_MODE,
+    SQLITE_PARSED_EVENTS_MODE,
     SQLITE_PRAGMA_SYNCHRONOUS,
+    SQLITE_QUALITY_MODE,
+    SQLITE_RAW_EVENTS_MODE,
     SQLITE_RETENTION_OPPORTUNITY_DAYS,
     SQLITE_RETENTION_OUTCOME_DAYS,
     SQLITE_RETENTION_PARSED_DAYS,
     SQLITE_RETENTION_RAW_DAYS,
     SQLITE_RETENTION_SIGNAL_DAYS,
     SQLITE_SCHEMA_VERSION,
+    SQLITE_SIGNAL_MODE,
+    SQLITE_STATE_MODE,
+    SQLITE_TELEGRAM_DELIVERY_MODE,
     SQLITE_WAL_MODE,
     SQLITE_WRITE_ASSET_CASES,
     SQLITE_WRITE_ASSET_MARKET_STATES,
@@ -78,6 +100,268 @@ ARCHIVE_CATEGORY_TABLES = {
     "signals": "signals",
     "delivery_audit": "delivery_audit",
     "case_followups": "case_followups",
+}
+
+TABLE_JSON_COLUMNS = {
+    "raw_events": ("raw_json",),
+    "parsed_events": ("parsed_json",),
+    "signals": ("signal_json",),
+    "asset_cases": ("case_json",),
+    "asset_market_states": ("state_json", "evidence_json"),
+    "trade_opportunities": (
+        "opportunity_json",
+        "evidence_json",
+        "score_components_json",
+        "quality_snapshot_json",
+        "history_snapshot_json",
+        "profile_features_json",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+    ),
+    "quality_stats": ("stats_json",),
+    "telegram_deliveries": ("message_json",),
+    "delivery_audit": ("audit_json",),
+    "case_followups": ("followup_json",),
+    "prealert_lifecycle": ("lifecycle_json",),
+    "market_context_snapshots": (),
+    "market_context_attempts": (),
+    "outcomes": (),
+    "opportunity_outcomes": (),
+    "signal_features": (),
+    "no_trade_locks": ("conflicting_signals_json",),
+}
+
+TABLE_VALUE_CLASSES = {
+    "signals": "core_learning",
+    "signal_features": "core_learning",
+    "outcomes": "core_outcome",
+    "trade_opportunities": "core_learning",
+    "opportunity_outcomes": "core_outcome",
+    "quality_stats": "core_learning",
+    "asset_market_states": "core_state",
+    "no_trade_locks": "core_state",
+    "asset_cases": "core_state",
+    "prealert_lifecycle": "core_state",
+    "market_context_snapshots": "core_learning",
+    "delivery_audit": "operational_diagnostics",
+    "telegram_deliveries": "operational_diagnostics",
+    "market_context_attempts": "operational_diagnostics",
+    "case_followups": "operational_diagnostics",
+    "raw_events": "archive_debug",
+    "parsed_events": "archive_debug",
+    "runs": "disposable_or_rebuildable",
+    "schema_meta": "disposable_or_rebuildable",
+}
+
+TABLE_RECOMMENDED_MODES = {
+    "raw_events": "index_only",
+    "parsed_events": "index_only",
+    "delivery_audit": "slim",
+    "telegram_deliveries": "slim",
+    "market_context_attempts": "slim",
+    "case_followups": "slim",
+    "signals": "full",
+    "signal_features": "full",
+    "outcomes": "full",
+    "trade_opportunities": "full",
+    "opportunity_outcomes": "full",
+    "quality_stats": "full",
+    "asset_market_states": "full",
+    "no_trade_locks": "full",
+    "asset_cases": "full",
+    "prealert_lifecycle": "full",
+    "market_context_snapshots": "full",
+}
+
+TABLE_VALUE_FLAGS = {
+    "signals": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": True,
+        "telegram_suppression": True,
+        "no_trade_lock": True,
+        "prealert_lifecycle": True,
+        "quality_outcome": True,
+        "market_context_health": True,
+        "archive_debug_only": False,
+    },
+    "signal_features": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "outcomes": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": True,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "trade_opportunities": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": True,
+        "telegram_suppression": True,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "opportunity_outcomes": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": True,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "quality_stats": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": True,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": True,
+        "market_context_health": True,
+        "archive_debug_only": False,
+    },
+    "asset_market_states": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": True,
+        "no_trade_lock": True,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "no_trade_locks": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": True,
+        "telegram_suppression": True,
+        "no_trade_lock": True,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "asset_cases": {
+        "candidate_to_verified": False,
+        "opportunity_score": True,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": True,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "prealert_lifecycle": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": True,
+        "no_trade_lock": False,
+        "prealert_lifecycle": True,
+        "quality_outcome": True,
+        "market_context_health": False,
+        "archive_debug_only": False,
+    },
+    "market_context_snapshots": {
+        "candidate_to_verified": True,
+        "opportunity_score": True,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": True,
+        "archive_debug_only": False,
+    },
+    "delivery_audit": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": True,
+        "no_trade_lock": False,
+        "prealert_lifecycle": True,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": True,
+    },
+    "telegram_deliveries": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": True,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": True,
+    },
+    "market_context_attempts": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": True,
+        "archive_debug_only": True,
+    },
+    "case_followups": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": True,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": True,
+    },
+    "raw_events": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": True,
+    },
+    "parsed_events": {
+        "candidate_to_verified": False,
+        "opportunity_score": False,
+        "blocker_effectiveness": False,
+        "telegram_suppression": False,
+        "no_trade_lock": False,
+        "prealert_lifecycle": False,
+        "quality_outcome": False,
+        "market_context_health": False,
+        "archive_debug_only": True,
+    },
 }
 
 
@@ -271,6 +555,80 @@ def _archive_ts(data: dict[str, Any], envelope: dict[str, Any]) -> float:
         or _real(data.get("ts"))
         or _now()
     )
+
+
+def _payload_hash(value: Any) -> str | None:
+    if not bool(SQLITE_ARCHIVE_PAYLOAD_HASH_ENABLE):
+        return None
+    try:
+        if isinstance(value, str):
+            payload = value
+        else:
+            payload = json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    except (TypeError, ValueError):
+        return None
+
+
+def _archive_date_from_ts(ts_value: Any) -> str | None:
+    ts = _real(ts_value)
+    if ts is None:
+        return None
+    bj = timezone(timedelta(hours=8))
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(bj).strftime("%Y-%m-%d")
+
+
+def _archive_reference_path(category: str, ts_value: Any) -> str | None:
+    if not bool(SQLITE_ARCHIVE_PATH_REFERENCE_ENABLE):
+        return None
+    archive_date = _archive_date_from_ts(ts_value)
+    if not archive_date:
+        return None
+    root = Path(ARCHIVE_BASE_DIR)
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    return str((root / category / f"{archive_date}.ndjson").resolve())
+
+
+def _payload_meta(category: str, data: dict[str, Any], envelope: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    archive_ts = _archive_ts(data, envelope)
+    archive_path = _archive_reference_path(category, archive_ts)
+    archive_date = _archive_date_from_ts(archive_ts)
+    payload_hash = _payload_hash(data)
+    return archive_path, archive_date, payload_hash
+
+
+def _row_mode(mode: str, allowed: tuple[str, ...], default: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _mode_for_table(table: str) -> str:
+    mapping = {
+        "raw_events": _row_mode(SQLITE_RAW_EVENTS_MODE, ("index_only", "full", "off"), "index_only"),
+        "parsed_events": _row_mode(SQLITE_PARSED_EVENTS_MODE, ("index_only", "full", "off"), "index_only"),
+        "delivery_audit": _row_mode(SQLITE_DELIVERY_AUDIT_MODE, ("slim", "full", "off"), "slim"),
+        "telegram_deliveries": _row_mode(SQLITE_TELEGRAM_DELIVERY_MODE, ("slim", "full", "off"), "slim"),
+        "market_context_attempts": _row_mode(SQLITE_MARKET_CONTEXT_ATTEMPT_MODE, ("slim", "full", "aggregate", "off"), "slim"),
+        "case_followups": _row_mode(SQLITE_CASE_FOLLOWUP_MODE, ("slim", "full", "off"), "slim"),
+        "signals": _row_mode(SQLITE_SIGNAL_MODE, ("full",), "full"),
+        "trade_opportunities": _row_mode(SQLITE_OPPORTUNITY_MODE, ("full",), "full"),
+        "outcomes": _row_mode(SQLITE_OUTCOME_MODE, ("full",), "full"),
+        "asset_market_states": _row_mode(SQLITE_STATE_MODE, ("full",), "full"),
+        "quality_stats": _row_mode(SQLITE_QUALITY_MODE, ("full",), "full"),
+    }
+    return mapping.get(table, TABLE_RECOMMENDED_MODES.get(table, "full"))
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _signal_id(data: dict[str, Any]) -> str:
@@ -644,18 +1002,41 @@ def migrate_schema() -> bool:
                 signal_id TEXT,
                 asset TEXT,
                 pair TEXT,
+                opportunity_profile_key TEXT,
+                opportunity_profile_version TEXT,
+                opportunity_profile_side TEXT,
+                opportunity_profile_asset TEXT,
+                opportunity_profile_pair_family TEXT,
+                opportunity_profile_strategy TEXT,
                 side TEXT,
                 status TEXT,
+                raw_score REAL,
                 score REAL,
+                calibrated_score REAL,
+                calibration_adjustment REAL,
+                calibration_reason TEXT,
+                calibration_sample_count INTEGER,
+                calibration_confidence REAL,
+                calibration_source TEXT,
                 confidence TEXT,
                 label TEXT,
                 reason TEXT,
                 primary_blocker TEXT,
+                primary_hard_blocker TEXT,
+                primary_verification_blocker TEXT,
                 blockers_json TEXT,
+                hard_blockers_json TEXT,
+                verification_blockers_json TEXT,
                 evidence_json TEXT,
                 score_components_json TEXT,
+                profile_features_json TEXT,
                 quality_snapshot_json TEXT,
                 history_snapshot_json TEXT,
+                blocker_type TEXT,
+                would_have_been_direction TEXT,
+                adverse_after_block INTEGER,
+                blocker_saved_trade INTEGER,
+                blocker_false_block_possible INTEGER,
                 required_confirmation TEXT,
                 invalidated_by TEXT,
                 created_at REAL,
@@ -674,6 +1055,12 @@ def migrate_schema() -> bool:
             CREATE TABLE IF NOT EXISTS opportunity_outcomes (
                 trade_opportunity_id TEXT,
                 window_sec INTEGER,
+                opportunity_profile_key TEXT,
+                opportunity_profile_version TEXT,
+                opportunity_profile_side TEXT,
+                opportunity_profile_asset TEXT,
+                opportunity_profile_pair_family TEXT,
+                opportunity_profile_strategy TEXT,
                 due_at REAL,
                 start_price REAL,
                 end_price REAL,
@@ -689,6 +1076,11 @@ def migrate_schema() -> bool:
                 price_source TEXT,
                 status TEXT,
                 failure_reason TEXT,
+                blocker_type TEXT,
+                would_have_been_direction TEXT,
+                adverse_after_block INTEGER,
+                blocker_saved_trade INTEGER,
+                blocker_false_block_possible INTEGER,
                 completed_at REAL,
                 created_at REAL,
                 updated_at REAL,
@@ -811,6 +1203,51 @@ def migrate_schema() -> bool:
         )
         _ensure_columns(
             conn,
+            "raw_events",
+            {
+                "archive_path": "TEXT",
+                "archive_date": "TEXT",
+                "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "parsed_events",
+            {
+                "archive_path": "TEXT",
+                "archive_date": "TEXT",
+                "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "delivery_audit",
+            {
+                "archive_path": "TEXT",
+                "archive_date": "TEXT",
+                "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "telegram_deliveries",
+            {
+                "archive_path": "TEXT",
+                "archive_date": "TEXT",
+                "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "case_followups",
+            {
+                "archive_path": "TEXT",
+                "archive_date": "TEXT",
+                "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
             "outcomes",
             {
                 "due_at": "REAL",
@@ -825,6 +1262,12 @@ def migrate_schema() -> bool:
             conn,
             "opportunity_outcomes",
             {
+                "opportunity_profile_key": "TEXT",
+                "opportunity_profile_version": "TEXT",
+                "opportunity_profile_side": "TEXT",
+                "opportunity_profile_asset": "TEXT",
+                "opportunity_profile_pair_family": "TEXT",
+                "opportunity_profile_strategy": "TEXT",
                 "due_at": "REAL",
                 "start_price": "REAL",
                 "end_price": "REAL",
@@ -835,10 +1278,85 @@ def migrate_schema() -> bool:
                 "updated_at": "REAL",
                 "settled_by": "TEXT",
                 "catchup": "INTEGER",
+                "blocker_type": "TEXT",
+                "would_have_been_direction": "TEXT",
+                "adverse_after_block": "INTEGER",
+                "blocker_saved_trade": "INTEGER",
+                "blocker_false_block_possible": "INTEGER",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "signals",
+            {
+                "final_trading_output_source": "TEXT",
+                "final_trading_output_label": "TEXT",
+                "final_trading_output_allowed": "INTEGER",
+                "legacy_chase_downgraded": "INTEGER",
+                "legacy_chase_downgrade_reason": "TEXT",
+                "opportunity_gate_required": "INTEGER",
+                "opportunity_gate_passed": "INTEGER",
+                "opportunity_gate_failure_reason": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "trade_opportunities",
+            {
+                "opportunity_profile_key": "TEXT",
+                "opportunity_profile_version": "TEXT",
+                "opportunity_profile_side": "TEXT",
+                "opportunity_profile_asset": "TEXT",
+                "opportunity_profile_pair_family": "TEXT",
+                "opportunity_profile_strategy": "TEXT",
+                "raw_score": "REAL",
+                "calibrated_score": "REAL",
+                "calibration_adjustment": "REAL",
+                "calibration_reason": "TEXT",
+                "calibration_sample_count": "INTEGER",
+                "calibration_confidence": "REAL",
+                "calibration_source": "TEXT",
+                "primary_hard_blocker": "TEXT",
+                "primary_verification_blocker": "TEXT",
+                "hard_blockers_json": "TEXT",
+                "verification_blockers_json": "TEXT",
+                "profile_features_json": "TEXT",
+                "blocker_type": "TEXT",
+                "would_have_been_direction": "TEXT",
+                "adverse_after_block": "INTEGER",
+                "blocker_saved_trade": "INTEGER",
+                "blocker_false_block_possible": "INTEGER",
+                "final_trading_output_source": "TEXT",
+                "final_trading_output_label": "TEXT",
+                "final_trading_output_allowed": "INTEGER",
+                "legacy_chase_downgraded": "INTEGER",
+                "legacy_chase_downgrade_reason": "TEXT",
+                "opportunity_gate_required": "INTEGER",
+                "opportunity_gate_passed": "INTEGER",
+                "opportunity_gate_failure_reason": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "delivery_audit",
+            {
+                "final_trading_output_source": "TEXT",
+                "final_trading_output_label": "TEXT",
+                "final_trading_output_allowed": "INTEGER",
+                "legacy_chase_downgraded": "INTEGER",
+                "legacy_chase_downgrade_reason": "TEXT",
+                "opportunity_gate_required": "INTEGER",
+                "opportunity_gate_passed": "INTEGER",
+                "opportunity_gate_failure_reason": "TEXT",
             },
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_due_at ON outcomes(due_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_opportunity_outcomes_due_at ON opportunity_outcomes(due_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_events_archive_date ON raw_events(archive_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_parsed_events_archive_date ON parsed_events(archive_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_delivery_audit_archive_date ON delivery_audit(archive_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_telegram_deliveries_archive_date ON telegram_deliveries(archive_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_case_followups_archive_date ON case_followups(archive_date)")
         conn.execute(
             """
             INSERT INTO schema_meta(key, value, updated_at)
@@ -883,13 +1401,15 @@ def _upsert(table: str, rows: dict[str, Any], key_columns: tuple[str, ...]) -> b
 
 
 def write_raw_event(record: Any) -> bool:
-    if not bool(SQLITE_WRITE_RAW_EVENTS):
+    mode = _mode_for_table("raw_events")
+    if not bool(SQLITE_WRITE_RAW_EVENTS) or mode == "off":
         return False
     data, envelope = _unwrap(record)
     if not data:
         return False
     now = _now()
     captured_at = _real(_first(data, "captured_at", "ingest_ts", "timestamp", "ts")) or _archive_ts(data, envelope)
+    archive_path, archive_date, payload_hash = _payload_meta("raw_events", data, envelope)
     event_id = str(_first(data, "event_id") or "").strip()
     if not event_id:
         event_id = "raw_" + _hash(
@@ -912,7 +1432,10 @@ def write_raw_event(record: Any) -> bool:
             "raw_kind": _text(_first(data, "raw_kind", "source_kind", "monitor_type")),
             "listener_scan_path": _text(_first(data, "listener_scan_path", "lp_scan_path")),
             "captured_at": captured_at,
-            "raw_json": _json(data),
+            "raw_json": _json(data) if mode == "full" else None,
+            "archive_path": archive_path,
+            "archive_date": archive_date,
+            "payload_hash": payload_hash,
             "created_at": now,
             "updated_at": now,
         },
@@ -921,13 +1444,15 @@ def write_raw_event(record: Any) -> bool:
 
 
 def write_parsed_event(record: Any) -> bool:
-    if not bool(SQLITE_WRITE_PARSED_EVENTS):
+    mode = _mode_for_table("parsed_events")
+    if not bool(SQLITE_WRITE_PARSED_EVENTS) or mode == "off":
         return False
     data, envelope = _unwrap(record)
     if not data:
         return False
     now = _now()
     parsed_at = _real(_first(data, "parsed_at", "timestamp", "ts")) or _archive_ts(data, envelope)
+    archive_path, archive_date, payload_hash = _payload_meta("parsed_events", data, envelope)
     event_id = str(_first(data, "event_id") or "").strip()
     if not event_id:
         event_id = "parsed_" + _hash(
@@ -951,7 +1476,10 @@ def write_parsed_event(record: Any) -> bool:
             "pair": _text(_first(data, "pair_label")),
             "pool_address": _text(_first(data, "pool_address", "address", "watch_address")),
             "parsed_at": parsed_at,
-            "parsed_json": _json(data),
+            "parsed_json": _json(data) if mode == "full" else None,
+            "archive_path": archive_path,
+            "archive_date": archive_date,
+            "payload_hash": payload_hash,
             "created_at": now,
             "updated_at": now,
         },
@@ -1007,6 +1535,14 @@ def write_signal(record: Any) -> bool:
             "delivery_decision": _text(_first(data, "delivery_decision", "delivery_reason", "delivery_class")),
             "sent_to_telegram": _bool_int(_first(data, "sent_to_telegram")),
             "notifier_sent_at": _real(_first(data, "notifier_sent_at")),
+            "final_trading_output_source": _text(_first(data, "final_trading_output_source")),
+            "final_trading_output_label": _text(_first(data, "final_trading_output_label")),
+            "final_trading_output_allowed": _bool_int(_first(data, "final_trading_output_allowed")),
+            "legacy_chase_downgraded": _bool_int(_first(data, "legacy_chase_downgraded")),
+            "legacy_chase_downgrade_reason": _text(_first(data, "legacy_chase_downgrade_reason")),
+            "opportunity_gate_required": _bool_int(_first(data, "opportunity_gate_required")),
+            "opportunity_gate_passed": _bool_int(_first(data, "opportunity_gate_passed")),
+            "opportunity_gate_failure_reason": _text(_first(data, "opportunity_gate_failure_reason")),
             "outcome_tracking_key": _text(_first(data, "outcome_tracking_key", "record_id")),
             "signal_json": _json(data),
             "archive_written_at": archive_written_at,
@@ -1045,6 +1581,13 @@ def _write_signal_features(signal_id: str, data: dict[str, Any]) -> None:
         "trade_action_confidence": _first(data, "trade_action_confidence"),
         "asset_market_state_confidence": _first(data, "asset_market_state_confidence"),
         "trade_opportunity_score": _first(data, "trade_opportunity_score"),
+        "trade_opportunity_raw_score": _first(data, "trade_opportunity_raw_score", "opportunity_raw_score"),
+        "trade_opportunity_calibrated_score": _first(data, "trade_opportunity_calibrated_score", "opportunity_calibrated_score"),
+        "trade_opportunity_calibration_adjustment": _first(data, "opportunity_calibration_adjustment"),
+        "trade_opportunity_calibration_confidence": _first(data, "opportunity_calibration_confidence"),
+        "non_lp_support_score": _first(data, "non_lp_support_score"),
+        "non_lp_risk_score": _first(data, "non_lp_risk_score"),
+        "non_lp_component_score": _first(data, "trade_opportunity_non_lp_component_score"),
     }
     created_at = _now()
     for name, value in features.items():
@@ -1072,13 +1615,15 @@ def _write_signal_features(signal_id: str, data: dict[str, Any]) -> None:
 
 
 def write_delivery_audit(record: Any) -> bool:
-    if not bool(SQLITE_WRITE_DELIVERY_AUDIT):
+    mode = _mode_for_table("delivery_audit")
+    if not bool(SQLITE_WRITE_DELIVERY_AUDIT) or mode == "off":
         return False
     data, envelope = _unwrap(record)
     if not data:
         return False
     now = _now()
     archive_written_at = _archive_ts(data, envelope)
+    archive_path, archive_date, payload_hash = _payload_meta("delivery_audit", data, envelope)
     signal_id = str(_first(data, "signal_id") or "").strip()
     audit_id = str(_first(data, "audit_id", "delivery_audit_id") or "").strip()
     if not audit_id:
@@ -1097,8 +1642,19 @@ def write_delivery_audit(record: Any) -> bool:
             "notifier_sent_at": _real(_first(data, "notifier_sent_at")),
             "telegram_update_kind": _text(_first(data, "telegram_update_kind")),
             "suppression_reason": _text(_first(data, "telegram_suppression_reason", "suppression_reason")),
-            "audit_json": _json(data),
+            "final_trading_output_source": _text(_first(data, "final_trading_output_source")),
+            "final_trading_output_label": _text(_first(data, "final_trading_output_label")),
+            "final_trading_output_allowed": _bool_int(_first(data, "final_trading_output_allowed")),
+            "legacy_chase_downgraded": _bool_int(_first(data, "legacy_chase_downgraded")),
+            "legacy_chase_downgrade_reason": _text(_first(data, "legacy_chase_downgrade_reason")),
+            "opportunity_gate_required": _bool_int(_first(data, "opportunity_gate_required")),
+            "opportunity_gate_passed": _bool_int(_first(data, "opportunity_gate_passed")),
+            "opportunity_gate_failure_reason": _text(_first(data, "opportunity_gate_failure_reason")),
+            "audit_json": _json(data) if mode == "full" else None,
             "archive_written_at": archive_written_at,
+            "archive_path": archive_path,
+            "archive_date": archive_date,
+            "payload_hash": payload_hash,
             "created_at": now,
             "updated_at": now,
         },
@@ -1110,7 +1666,8 @@ def write_delivery_audit(record: Any) -> bool:
 
 
 def write_case_followup(record: Any) -> bool:
-    if not bool(SQLITE_WRITE_CASE_FOLLOWUPS):
+    mode = _mode_for_table("case_followups")
+    if not bool(SQLITE_WRITE_CASE_FOLLOWUPS) or mode == "off":
         return False
     data, envelope = _unwrap(record)
     if not data:
@@ -1118,6 +1675,7 @@ def write_case_followup(record: Any) -> bool:
     followup = data.get("followup") if isinstance(data.get("followup"), dict) else data
     now = _now()
     archive_written_at = _archive_ts(data, envelope)
+    archive_path, archive_date, payload_hash = _payload_meta("case_followups", data, envelope)
     case_id = str(data.get("case_id") or _first(data, "case_id") or "").strip()
     signal_id = str(_first(followup if isinstance(followup, dict) else data, "signal_id") or "").strip()
     followup_id = str(_first(data, "followup_id") or "").strip()
@@ -1134,8 +1692,11 @@ def write_case_followup(record: Any) -> bool:
             "status": _text(_first(followup if isinstance(followup, dict) else data, "status")),
             "should_notify": _bool_int(_first(followup if isinstance(followup, dict) else data, "should_notify")),
             "reason": _text(_first(followup if isinstance(followup, dict) else data, "reason")),
-            "followup_json": _json(data),
+            "followup_json": _json(data) if mode == "full" else None,
             "archive_written_at": archive_written_at,
+            "archive_path": archive_path,
+            "archive_date": archive_date,
+            "payload_hash": payload_hash,
             "created_at": now,
             "updated_at": now,
         },
@@ -1283,23 +1844,54 @@ def upsert_trade_opportunity(record: Any) -> bool:
             "signal_id": _text(_first(data, "signal_id")),
             "asset": _text(_first(data, "asset_symbol", "asset")),
             "pair": _text(_first(data, "pair_label", "pair")),
+            "opportunity_profile_key": _text(_first(data, "opportunity_profile_key")),
+            "opportunity_profile_version": _text(_first(data, "opportunity_profile_version")),
+            "opportunity_profile_side": _text(_first(data, "opportunity_profile_side")),
+            "opportunity_profile_asset": _text(_first(data, "opportunity_profile_asset")),
+            "opportunity_profile_pair_family": _text(_first(data, "opportunity_profile_pair_family")),
+            "opportunity_profile_strategy": _text(_first(data, "opportunity_profile_strategy")),
             "side": _text(_first(data, "trade_opportunity_side", "side")),
             "status": status,
+            "raw_score": _real(_first(data, "opportunity_raw_score", "trade_opportunity_raw_score")),
             "score": _real(_first(data, "trade_opportunity_score", "score")),
+            "calibrated_score": _real(_first(data, "opportunity_calibrated_score", "trade_opportunity_calibrated_score", "trade_opportunity_score")),
+            "calibration_adjustment": _real(_first(data, "opportunity_calibration_adjustment")),
+            "calibration_reason": _text(_first(data, "opportunity_calibration_reason")),
+            "calibration_sample_count": _int(_first(data, "opportunity_calibration_sample_count")),
+            "calibration_confidence": _real(_first(data, "opportunity_calibration_confidence")),
+            "calibration_source": _text(_first(data, "opportunity_calibration_source")),
             "confidence": _text(_first(data, "trade_opportunity_confidence", "confidence")),
             "label": _text(_first(data, "trade_opportunity_label", "label")),
             "reason": _text(_first(data, "trade_opportunity_reason", "reason")),
             "primary_blocker": _text(_first(data, "trade_opportunity_primary_blocker", "primary_blocker")),
+            "primary_hard_blocker": _text(_first(data, "trade_opportunity_primary_hard_blocker")),
+            "primary_verification_blocker": _text(_first(data, "trade_opportunity_primary_verification_blocker")),
             "blockers_json": _json(_first(data, "trade_opportunity_blockers", "blockers", default=[])),
+            "hard_blockers_json": _json(_first(data, "trade_opportunity_hard_blockers", default=[])),
+            "verification_blockers_json": _json(_first(data, "trade_opportunity_verification_blockers", default=[])),
             "evidence_json": _json(_first(data, "trade_opportunity_evidence", "evidence", default=[])),
             "score_components_json": _json(_first(data, "trade_opportunity_score_components", "score_components", default={})),
+            "profile_features_json": _json(_first(data, "opportunity_profile_features_json", default={})),
             "quality_snapshot_json": _json(_first(data, "trade_opportunity_quality_snapshot", "quality_snapshot", default={})),
             "history_snapshot_json": _json(_first(data, "trade_opportunity_history_snapshot", "history_snapshot", default={})),
+            "blocker_type": _text(_first(data, "blocker_type", "trade_opportunity_primary_hard_blocker", "trade_opportunity_primary_blocker")),
+            "would_have_been_direction": _text(_first(data, "would_have_been_direction", "trade_opportunity_side")),
+            "adverse_after_block": _bool_int(_first(data, "adverse_after_block")),
+            "blocker_saved_trade": _bool_int(_first(data, "blocker_saved_trade")),
+            "blocker_false_block_possible": _bool_int(_first(data, "blocker_false_block_possible")),
             "required_confirmation": _text(_first(data, "trade_opportunity_required_confirmation", "required_confirmation")),
             "invalidated_by": _text(_first(data, "trade_opportunity_invalidated_by", "invalidated_by")),
             "created_at": created_at,
             "expires_at": _real(_first(data, "trade_opportunity_expires_at", "expires_at")),
             "telegram_sent": _bool_int(_first(data, "trade_opportunity_delivered_notification", "telegram_should_send", "sent_to_telegram")),
+            "final_trading_output_source": _text(_first(data, "final_trading_output_source")),
+            "final_trading_output_label": _text(_first(data, "final_trading_output_label")),
+            "final_trading_output_allowed": _bool_int(_first(data, "final_trading_output_allowed")),
+            "legacy_chase_downgraded": _bool_int(_first(data, "legacy_chase_downgraded")),
+            "legacy_chase_downgrade_reason": _text(_first(data, "legacy_chase_downgrade_reason")),
+            "opportunity_gate_required": _bool_int(_first(data, "opportunity_gate_required")),
+            "opportunity_gate_passed": _bool_int(_first(data, "opportunity_gate_passed")),
+            "opportunity_gate_failure_reason": _text(_first(data, "opportunity_gate_failure_reason")),
             "opportunity_json": _json(data),
             "updated_at": now,
         },
@@ -1439,6 +2031,28 @@ def upsert_outcome_window(record: Any) -> bool:
     return _write_outcome_window(payload, window, int(window_sec), signal_id=signal_id)
 
 
+def _trade_opportunity_profile_lookup(opportunity_id: str) -> dict[str, Any]:
+    conn = get_connection()
+    if conn is None or not opportunity_id:
+        return {}
+    row = conn.execute(
+        """
+        SELECT opportunity_profile_key,
+               opportunity_profile_version,
+               opportunity_profile_side,
+               opportunity_profile_asset,
+               opportunity_profile_pair_family,
+               opportunity_profile_strategy,
+               primary_blocker,
+               primary_hard_blocker
+        FROM trade_opportunities
+        WHERE trade_opportunity_id=?
+        """,
+        (str(opportunity_id),),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
 def upsert_opportunity_outcome(record: Any) -> bool:
     data, _envelope = _unwrap(record)
     if not data:
@@ -1447,12 +2061,19 @@ def upsert_opportunity_outcome(record: Any) -> bool:
     window_sec = _int(data.get("window_sec"))
     if not opportunity_id or window_sec is None:
         return False
+    lookup = _trade_opportunity_profile_lookup(opportunity_id)
     now = _now()
     return _upsert(
         "opportunity_outcomes",
         {
             "trade_opportunity_id": opportunity_id,
             "window_sec": int(window_sec),
+            "opportunity_profile_key": _text(data.get("opportunity_profile_key") or lookup.get("opportunity_profile_key")),
+            "opportunity_profile_version": _text(data.get("opportunity_profile_version") or lookup.get("opportunity_profile_version")),
+            "opportunity_profile_side": _text(data.get("opportunity_profile_side") or lookup.get("opportunity_profile_side")),
+            "opportunity_profile_asset": _text(data.get("opportunity_profile_asset") or lookup.get("opportunity_profile_asset")),
+            "opportunity_profile_pair_family": _text(data.get("opportunity_profile_pair_family") or lookup.get("opportunity_profile_pair_family")),
+            "opportunity_profile_strategy": _text(data.get("opportunity_profile_strategy") or lookup.get("opportunity_profile_strategy")),
             "due_at": _real(data.get("due_at")),
             "start_price": _real(data.get("start_price") or data.get("price_start")),
             "end_price": _real(data.get("end_price") or data.get("price_end")),
@@ -1468,6 +2089,11 @@ def upsert_opportunity_outcome(record: Any) -> bool:
             "price_source": _text(data.get("price_source") or data.get("outcome_price_source")),
             "status": _text(data.get("status")),
             "failure_reason": _text(data.get("failure_reason")),
+            "blocker_type": _text(data.get("blocker_type") or lookup.get("primary_hard_blocker") or lookup.get("primary_blocker")),
+            "would_have_been_direction": _text(data.get("would_have_been_direction") or lookup.get("opportunity_profile_side")),
+            "adverse_after_block": _bool_int(data.get("adverse_after_block")),
+            "blocker_saved_trade": _bool_int(data.get("blocker_saved_trade")),
+            "blocker_false_block_possible": _bool_int(data.get("blocker_false_block_possible")),
             "completed_at": _real(data.get("completed_at")),
             "created_at": _real(data.get("created_at")) or now,
             "updated_at": now,
@@ -1492,6 +2118,12 @@ def _write_opportunity_outcome_from_record(record: dict[str, Any], opportunity_i
         {
             "trade_opportunity_id": opportunity_id,
             "window_sec": int(window_sec),
+            "opportunity_profile_key": _text(record.get("opportunity_profile_key")),
+            "opportunity_profile_version": _text(record.get("opportunity_profile_version")),
+            "opportunity_profile_side": _text(record.get("opportunity_profile_side") or record.get("trade_opportunity_side")),
+            "opportunity_profile_asset": _text(record.get("opportunity_profile_asset") or record.get("asset_symbol")),
+            "opportunity_profile_pair_family": _text(record.get("opportunity_profile_pair_family")),
+            "opportunity_profile_strategy": _text(record.get("opportunity_profile_strategy")),
             "due_at": _real(record.get(f"due_at_{key}") or record.get("due_at")) or (created_at + int(window_sec)),
             "start_price": _real(record.get(f"outcome_price_start_{key}") or record.get("outcome_price_start")),
             "end_price": _real(record.get(f"outcome_price_end_{key}") or record.get("outcome_price_end")),
@@ -1507,6 +2139,11 @@ def _write_opportunity_outcome_from_record(record: dict[str, Any], opportunity_i
             "price_source": _text(record.get(f"outcome_price_source_{key}") or record.get("opportunity_outcome_source") or record.get("outcome_price_source")),
             "status": _text(status),
             "failure_reason": _text(record.get(f"outcome_failure_reason_{key}") or record.get("opportunity_invalidated_reason") or record.get("outcome_failure_reason")),
+            "blocker_type": _text(record.get("blocker_type") or record.get("trade_opportunity_primary_hard_blocker") or record.get("trade_opportunity_primary_blocker")),
+            "would_have_been_direction": _text(record.get("would_have_been_direction") or record.get("trade_opportunity_side")),
+            "adverse_after_block": _bool_int(record.get(f"adverse_after_block_{key}") if record.get(f"adverse_after_block_{key}") is not None else record.get("adverse_after_block")),
+            "blocker_saved_trade": _bool_int(record.get(f"blocker_saved_trade_{key}") if record.get(f"blocker_saved_trade_{key}") is not None else record.get("blocker_saved_trade")),
+            "blocker_false_block_possible": _bool_int(record.get(f"blocker_false_block_possible_{key}") if record.get(f"blocker_false_block_possible_{key}") is not None else record.get("blocker_false_block_possible")),
             "completed_at": _real(record.get(f"outcome_completed_at_{key}") or record.get("opportunity_invalidated_at")),
             "created_at": created_at or now,
             "updated_at": now,
@@ -1597,8 +2234,13 @@ def write_market_context_snapshot(record: Any) -> bool:
 
 
 def write_market_context_attempt(record: Any) -> bool:
+    mode = _mode_for_table("market_context_attempts")
+    if mode == "off":
+        return False
     data, _envelope = _unwrap(record)
     if not data:
+        return False
+    if mode == "aggregate" and not str(data.get("attempt_id") or "").strip():
         return False
     created_at = _real(data.get("created_at") or data.get("ts")) or _now()
     signal_id = str(data.get("signal_id") or "").strip()
@@ -1630,6 +2272,9 @@ def write_market_context_attempt(record: Any) -> bool:
 
 
 def write_telegram_delivery(record: Any) -> bool:
+    mode = _mode_for_table("telegram_deliveries")
+    if mode == "off":
+        return False
     data, _envelope = _unwrap(record)
     if not data:
         return False
@@ -1640,6 +2285,7 @@ def write_telegram_delivery(record: Any) -> bool:
         return False
     sent_at = _real(_first(data, "notifier_sent_at", "sent_at"))
     created_at = _real(_first(data, "archive_written_at", "timestamp", "ts")) or _now()
+    archive_path, archive_date, payload_hash = _payload_meta("signals", data, {})
     delivery_id = str(_first(data, "telegram_delivery_id") or "").strip()
     if not delivery_id:
         delivery_id = "tg_" + _hash({"signal_id": signal_id, "sent_at": sent_at, "suppression": suppressed_reason, "created_at": created_at})[:16]
@@ -1651,14 +2297,17 @@ def write_telegram_delivery(record: Any) -> bool:
             "trade_opportunity_id": _text(_first(data, "trade_opportunity_id")),
             "asset": _text(_first(data, "asset_symbol", "asset")),
             "template": _text(_first(data, "notifier_template", "message_template", "template")),
-            "headline": _text(_first(data, "headline", "headline_label", "market_state_label")),
+            "headline": _text(_first(data, "headline", "final_trading_output_label", "headline_label", "market_state_label")),
             "sent": sent if sent is not None else 0,
             "sent_at": sent_at,
             "suppressed": 1 if suppressed_reason else 0 if sent else None,
             "suppression_reason": suppressed_reason or None,
             "telegram_update_kind": _text(_first(data, "telegram_update_kind")),
             "chat_id_hash": _text(_first(data, "chat_id_hash")),
-            "message_json": _json(data),
+            "message_json": _json(data) if mode == "full" else None,
+            "archive_path": archive_path,
+            "archive_date": archive_date,
+            "payload_hash": payload_hash,
             "created_at": created_at,
         },
         ("telegram_delivery_id",),
@@ -1754,6 +2403,7 @@ def mirror_match_rate() -> dict[str, Any]:
 
 def health_summary() -> dict[str, Any]:
     conn = get_connection()
+    size_info = db_file_sizes()
     missing_tables: list[str] = []
     existing: set[str] = set()
     if conn is not None:
@@ -1782,6 +2432,7 @@ def health_summary() -> dict[str, Any]:
         except sqlite3.Error:
             last_updated[table] = None
     return {
+        **size_info,
         "enabled": bool(SQLITE_ENABLE),
         "db_path": str(_DB_PATH or _resolve_db_path()),
         "initialized": conn is not None and not missing_tables,
@@ -1816,6 +2467,28 @@ def opportunity_db_summary() -> dict[str, Any]:
     completed_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes WHERE status='completed'").fetchone()[0])
     attempts_total = int(conn.execute("SELECT COUNT(*) FROM market_context_attempts").fetchone()[0])
     attempts_success = int(conn.execute("SELECT COUNT(*) FROM market_context_attempts WHERE success=1").fetchone()[0])
+    profile_rows = conn.execute(
+        "SELECT scope_key, asset, pair, stats_json FROM quality_stats WHERE scope_type='opportunity_profile' AND stage='all'"
+    ).fetchall()
+    profiles: list[dict[str, Any]] = []
+    for row in profile_rows:
+        stats = _from_json(row["stats_json"], default={}) if row["stats_json"] else {}
+        if not isinstance(stats, dict):
+            stats = {}
+        profile = dict(stats)
+        profile.setdefault("profile_key", str(row["scope_key"] or ""))
+        profile.setdefault("asset", str(row["asset"] or ""))
+        profile.setdefault("pair_family", str(row["pair"] or ""))
+        profiles.append(profile)
+    ready_profiles = [
+        row
+        for row in profiles
+        if int(row.get("sample_count") or 0) >= int(OPPORTUNITY_MIN_HISTORY_SAMPLES)
+        and float(row.get("completion_60s_rate") or 0.0) >= float(OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE)
+        and float(row.get("followthrough_60s_rate") or 0.0) >= float(OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE)
+        and float(row.get("adverse_60s_rate") if row.get("adverse_60s_rate") is not None else 1.0) <= float(OPPORTUNITY_MAX_60S_ADVERSE_RATE)
+    ]
+    calibration_summary = opportunity_calibration_summary()
     return {
         "available": True,
         "status_counts": status_counts,
@@ -1826,7 +2499,77 @@ def opportunity_db_summary() -> dict[str, Any]:
         "blocker_counts": blocker_counts,
         "outcome_completion_rate": round(completed_outcomes / total_outcomes, 4) if total_outcomes else 0.0,
         "market_context_attempt_success_rate": round(attempts_success / attempts_total, 4) if attempts_total else 0.0,
+        "opportunity_profile_count": len(profiles),
+        "profiles_ready_for_verified": [str(row.get("profile_key") or "") for row in sorted(ready_profiles, key=lambda item: (-int(item.get("sample_count") or 0), str(item.get("profile_key") or "")))[:10]],
+        "top_profiles_by_sample": [
+            {
+                "profile_key": str(row.get("profile_key") or ""),
+                "sample_count": int(row.get("sample_count") or 0),
+                "followthrough_60s_rate": float(row.get("followthrough_60s_rate") or 0.0),
+                "adverse_60s_rate": float(row.get("adverse_60s_rate") if row.get("adverse_60s_rate") is not None else 1.0),
+            }
+            for row in sorted(profiles, key=lambda item: (-int(item.get("sample_count") or 0), str(item.get("profile_key") or "")))[:10]
+        ],
+        "top_profiles_by_followthrough": [
+            {
+                "profile_key": str(row.get("profile_key") or ""),
+                "sample_count": int(row.get("sample_count") or 0),
+                "followthrough_60s_rate": float(row.get("followthrough_60s_rate") or 0.0),
+            }
+            for row in sorted(
+                [item for item in profiles if int(item.get("completed_60s") or 0) > 0],
+                key=lambda item: (-float(item.get("followthrough_60s_rate") or 0.0), -int(item.get("sample_count") or 0), str(item.get("profile_key") or "")),
+            )[:10]
+        ],
+        "top_profiles_by_adverse": [
+            {
+                "profile_key": str(row.get("profile_key") or ""),
+                "sample_count": int(row.get("sample_count") or 0),
+                "adverse_60s_rate": float(row.get("adverse_60s_rate") if row.get("adverse_60s_rate") is not None else 1.0),
+            }
+            for row in sorted(
+                [item for item in profiles if int(item.get("completed_60s") or 0) > 0],
+                key=lambda item: (-float(item.get("adverse_60s_rate") if item.get("adverse_60s_rate") is not None else 1.0), -int(item.get("sample_count") or 0), str(item.get("profile_key") or "")),
+            )[:10]
+        ],
+        "calibration_summary": calibration_summary,
     }
+
+
+def opportunity_calibration_summary() -> dict[str, Any]:
+    conn = get_connection()
+    if conn is None:
+        return {"available": False, "reason": _INIT_FAILED_REASON or "not_initialized"}
+    try:
+        from opportunity_calibration import calibration_health_summary
+
+        calibration_rows = [
+            {
+                "scope_key": row["scope_key"],
+                "asset": row["asset"],
+                "pair": row["pair"],
+                "stats_json": _from_json(row["stats_json"], default={}) if row["stats_json"] else {},
+            }
+            for row in conn.execute(
+                "SELECT scope_key, asset, pair, stats_json FROM quality_stats WHERE scope_type='opportunity_calibration' AND stage='60s'"
+            ).fetchall()
+        ]
+        profile_rows = [
+            {
+                "scope_key": row["scope_key"],
+                "asset": row["asset"],
+                "pair": row["pair"],
+                "stats_json": _from_json(row["stats_json"], default={}) if row["stats_json"] else {},
+            }
+            for row in conn.execute(
+                "SELECT scope_key, asset, pair, stats_json FROM quality_stats WHERE scope_type='opportunity_profile' AND stage='all'"
+            ).fetchall()
+        ]
+        payload = calibration_health_summary(calibration_rows, profile_rows=profile_rows)
+        payload["available"] = True
+        return payload
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
 
 
 def integrity_check() -> dict[str, Any]:
@@ -1850,9 +2593,10 @@ def integrity_check() -> dict[str, Any]:
     return payload
 
 
-def _iter_archive_payloads(category: str, *, date: str | None = None, all_dates: bool = False) -> tuple[int, int]:
+def _iter_archive_payloads(category: str, *, date: str | None = None, all_dates: bool = False) -> tuple[int, int, int]:
     imported = 0
     bad_rows = 0
+    skipped_payload_bytes = 0
     for path in _archive_payload_paths(category, date=date, all_dates=all_dates):
         if not path.exists():
             continue
@@ -1869,10 +2613,14 @@ def _iter_archive_payloads(category: str, *, date: str | None = None, all_dates:
                         continue
                     if mirror_archive_record(category, payload):
                         imported += 1
+                        mode = _mode_for_table(ARCHIVE_CATEGORY_TABLES.get(category, category))
+                        if mode in {"index_only", "slim"}:
+                            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                            skipped_payload_bytes += len(_json(data).encode("utf-8"))
         except OSError:
             bad_rows += 1
             continue
-    return imported, bad_rows
+    return imported, bad_rows, skipped_payload_bytes
 
 
 def mirror_archive_record(category: str, payload: dict[str, Any]) -> bool:
@@ -1900,6 +2648,12 @@ def migrate_archive(*, date: str | None = None, all_dates: bool = False) -> dict
         "categories": {},
         "imported_rows": 0,
         "bad_row_count": 0,
+        "imported_rows_by_category": {},
+        "mode_by_category": {},
+        "full_payload_rows": 0,
+        "slim_rows": 0,
+        "index_only_rows": 0,
+        "estimated_payload_mb_skipped": 0.0,
     }
     conn = get_connection()
     previous_batch_mode = _BATCH_MODE
@@ -1908,13 +2662,24 @@ def migrate_archive(*, date: str | None = None, all_dates: bool = False) -> dict
         if conn is not None:
             conn.execute("BEGIN")
         for category in ARCHIVE_CATEGORY_TABLES:
-            imported, bad_rows = _iter_archive_payloads(category, date=date, all_dates=all_dates)
+            imported, bad_rows, skipped_payload_bytes = _iter_archive_payloads(category, date=date, all_dates=all_dates)
+            mode = _mode_for_table(ARCHIVE_CATEGORY_TABLES.get(category, category))
             result["categories"][category] = {
                 "imported_rows": imported,
                 "bad_row_count": bad_rows,
+                "mode": mode,
             }
+            result["imported_rows_by_category"][category] = imported
+            result["mode_by_category"][category] = mode
             result["imported_rows"] += imported
             result["bad_row_count"] += bad_rows
+            result["estimated_payload_mb_skipped"] += round(skipped_payload_bytes / (1024 * 1024), 6)
+            if mode == "full":
+                result["full_payload_rows"] += imported
+            elif mode == "slim":
+                result["slim_rows"] += imported
+            elif mode == "index_only":
+                result["index_only_rows"] += imported
         cache_payload = migrate_cache_snapshots()
         result["categories"]["cache_snapshots"] = cache_payload
         result["imported_rows"] += int(cache_payload.get("imported_rows") or 0)
@@ -2154,6 +2919,65 @@ def load_signal_rows_from_db(start_ts: int | None = None, end_ts: int | None = N
     return result
 
 
+def load_recent_non_lp_signal_rows(
+    *,
+    asset_symbol: str,
+    start_ts: int,
+    end_ts: int,
+    limit: int = 120,
+) -> list[dict[str, Any]]:
+    conn = get_connection()
+    if conn is None:
+        return []
+    asset = str(asset_symbol or "").strip().upper()
+    if not asset:
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT signal_id,
+                   asset,
+                   pair,
+                   timestamp,
+                   canonical_semantic_key,
+                   lp_alert_stage,
+                   trade_action_key,
+                   asset_market_state_key,
+                   direction,
+                   signal_json
+            FROM signals
+            WHERE asset = ?
+              AND timestamp >= ?
+              AND timestamp <= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (asset, int(start_ts), int(end_ts), max(int(limit or 0), 1)),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        _warn(f"load recent non-lp signals failed: {exc}")
+        return []
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        data = _from_json(row["signal_json"], {})
+        if not isinstance(data, dict):
+            data = {}
+        merged = dict(data)
+        merged.setdefault("signal_id", row["signal_id"])
+        merged.setdefault("asset_symbol", row["asset"])
+        merged.setdefault("asset", row["asset"])
+        merged.setdefault("pair_label", row["pair"])
+        merged.setdefault("timestamp", row["timestamp"])
+        merged.setdefault("archive_ts", row["timestamp"])
+        merged.setdefault("intent_type", row["canonical_semantic_key"])
+        merged.setdefault("lp_alert_stage", row["lp_alert_stage"])
+        merged.setdefault("trade_action_key", row["trade_action_key"])
+        merged.setdefault("asset_market_state_key", row["asset_market_state_key"])
+        merged.setdefault("direction", row["direction"])
+        payloads.append(merged)
+    return payloads
+
+
 def report_source_summary() -> dict[str, Any]:
     payload = health_summary()
     sqlite_rows = payload.get("table_row_counts") or {}
@@ -2216,6 +3040,544 @@ def checkpoint(db_path: str | Path | None = None) -> dict[str, Any]:
     return payload
 
 
+def db_file_sizes(db_path: str | Path | None = None) -> dict[str, Any]:
+    resolved = _resolve_db_path(db_path)
+    wal_path = Path(f"{resolved}-wal")
+    shm_path = Path(f"{resolved}-shm")
+    db_exists = resolved.exists()
+    db_size = int(resolved.stat().st_size) if db_exists else 0
+    wal_size = int(wal_path.stat().st_size) if wal_path.exists() else 0
+    shm_size = int(shm_path.stat().st_size) if shm_path.exists() else 0
+    return {
+        "db_path": str(resolved),
+        "db_exists": db_exists,
+        "db_size_bytes": db_size,
+        "db_size_mb": round(db_size / (1024 * 1024), 4) if db_size else 0.0,
+        "wal_path": str(wal_path),
+        "wal_exists": wal_path.exists(),
+        "wal_size_bytes": wal_size,
+        "wal_size_mb": round(wal_size / (1024 * 1024), 4) if wal_size else 0.0,
+        "shm_path": str(shm_path),
+        "shm_exists": shm_path.exists(),
+        "shm_size_bytes": shm_size,
+        "shm_size_mb": round(shm_size / (1024 * 1024), 4) if shm_size else 0.0,
+        "total_size_bytes": int(db_size + wal_size + shm_size),
+        "total_size_mb": round((db_size + wal_size + shm_size) / (1024 * 1024), 4) if (db_size + wal_size + shm_size) else 0.0,
+    }
+
+
+def _table_last_updated(conn: sqlite3.Connection, table: str) -> float | None:
+    columns = _table_columns(conn, table)
+    for column in ("updated_at", "archive_written_at", "created_at", "captured_at", "parsed_at", "sent_at", "started_at"):
+        if column not in columns:
+            continue
+        try:
+            row = conn.execute(f"SELECT MAX({column}) FROM {table}").fetchone()
+        except sqlite3.Error:
+            return None
+        return _real(row[0]) if row else None
+    return None
+
+
+def _dbstat_table_sizes(conn: sqlite3.Connection) -> tuple[dict[str, int], bool]:
+    try:
+        rows = conn.execute(
+            "SELECT name, SUM(pgsize) AS size_bytes FROM dbstat GROUP BY name"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}, False
+    sizes: dict[str, int] = {}
+    for row in rows:
+        name = str(row["name"] or "")
+        if not name:
+            continue
+        sizes[name] = int(row["size_bytes"] or 0)
+    return sizes, True
+
+
+def _json_payload_stats_for_table(conn: sqlite3.Connection, table: str) -> dict[str, Any]:
+    columns = _table_columns(conn, table)
+    payload_sizes: dict[str, int] = {}
+    total = 0
+    for column in TABLE_JSON_COLUMNS.get(table, ()):
+        if column not in columns:
+            continue
+        try:
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(LENGTH({column})), 0) AS payload_size FROM {table}"
+            ).fetchone()
+        except sqlite3.Error:
+            continue
+        size_bytes = int(row["payload_size"] or 0)
+        payload_sizes[column] = size_bytes
+        total += size_bytes
+    return {
+        "json_payload_columns": payload_sizes,
+        "json_payload_size_bytes": total,
+        "json_payload_size_mb": round(total / (1024 * 1024), 4) if total else 0.0,
+    }
+
+
+def table_size_summary() -> dict[str, Any]:
+    conn = get_connection()
+    size_info = db_file_sizes()
+    if conn is None:
+        return {
+            **size_info,
+            "available": False,
+            "reason": _INIT_FAILED_REASON or "not_initialized",
+            "table_row_counts": {},
+            "tables": [],
+        }
+    dbstat_sizes, dbstat_available = _dbstat_table_sizes(conn)
+    tables: list[dict[str, Any]] = []
+    counts = table_row_counts(tuple(table for table in REQUIRED_TABLES if _table_exists(conn, table)))
+    for table in REQUIRED_TABLES:
+        if not _table_exists(conn, table):
+            continue
+        row_count = max(int(counts.get(table) or 0), 0)
+        payload_stats = _json_payload_stats_for_table(conn, table)
+        size_bytes = int(dbstat_sizes.get(table) or 0)
+        current_mode = _mode_for_table(table)
+        recommended_mode = TABLE_RECOMMENDED_MODES.get(table, current_mode)
+        value_flags = TABLE_VALUE_FLAGS.get(table, {})
+        estimated_savings = payload_stats["json_payload_size_bytes"] if recommended_mode in {"index_only", "slim"} else 0
+        can_compact = table in {"raw_events", "parsed_events", "delivery_audit", "telegram_deliveries", "case_followups"} and payload_stats["json_payload_size_bytes"] > 0
+        tables.append(
+            {
+                "table": table,
+                "row_count": row_count,
+                "table_size_bytes": size_bytes,
+                "table_size_mb": round(size_bytes / (1024 * 1024), 4) if size_bytes else 0.0,
+                "last_updated": _table_last_updated(conn, table),
+                "data_value_class": TABLE_VALUE_CLASSES.get(table, "operational_diagnostics"),
+                "current_mode": current_mode,
+                "recommended_mode": recommended_mode,
+                "can_compact": can_compact,
+                "estimated_savings_bytes": estimated_savings,
+                "estimated_savings_mb": round(estimated_savings / (1024 * 1024), 4) if estimated_savings else 0.0,
+                "critical_for_verified": bool(value_flags.get("candidate_to_verified") or value_flags.get("quality_outcome")),
+                "critical_for_opportunity_score": bool(value_flags.get("opportunity_score")),
+                "archive_only_ok": table in {"raw_events", "parsed_events"},
+                **payload_stats,
+                **value_flags,
+            }
+        )
+    biggest_tables_by_rows = [
+        {"table": item["table"], "row_count": item["row_count"]}
+        for item in sorted(tables, key=lambda row: (-int(row["row_count"]), row["table"]))[:10]
+    ]
+    biggest_tables_by_size = [
+        {
+            "table": item["table"],
+            "table_size_bytes": item["table_size_bytes"],
+            "json_payload_size_bytes": item["json_payload_size_bytes"],
+        }
+        for item in sorted(tables, key=lambda row: (-int(row["table_size_bytes"]), row["table"]))[:10]
+    ]
+    return {
+        **size_info,
+        "available": True,
+        "dbstat_available": dbstat_available,
+        "table_row_counts": {item["table"]: item["row_count"] for item in tables},
+        "tables": tables,
+        "biggest_tables_by_rows": biggest_tables_by_rows,
+        "biggest_tables_by_size": biggest_tables_by_size,
+    }
+
+
+def sqlite_data_value_audit(*, write_reports: bool = False) -> dict[str, Any]:
+    summary = table_size_summary()
+    tables = list(summary.get("tables") or [])
+    must_keep_full = [
+        item["table"]
+        for item in tables
+        if item["table"] in {
+            "signals",
+            "signal_features",
+            "outcomes",
+            "trade_opportunities",
+            "opportunity_outcomes",
+            "quality_stats",
+            "asset_market_states",
+            "no_trade_locks",
+            "asset_cases",
+            "prealert_lifecycle",
+            "market_context_snapshots",
+        }
+    ]
+    long_term_slim = [
+        item["table"]
+        for item in tables
+        if item["table"] in {"delivery_audit", "telegram_deliveries", "market_context_attempts", "case_followups"}
+    ]
+    index_only = [
+        item["table"]
+        for item in tables
+        if item["table"] in {"raw_events", "parsed_events"}
+    ]
+    archive_only_payload_fields = [
+        "raw_events.raw_json",
+        "parsed_events.parsed_json",
+        "delivery_audit.audit_json",
+        "telegram_deliveries.message_json",
+        "case_followups.followup_json",
+    ]
+    fields_not_recommended_for_db = [
+        "raw_events.raw_json",
+        "parsed_events.parsed_json",
+        "delivery_audit.audit_json",
+        "telegram_deliveries.message_json",
+    ]
+    fields_required_for_verified = [
+        "signals.signal_id",
+        "signals.asset",
+        "signals.pair",
+        "signals.trade_opportunity_status",
+        "signal_features.trade_opportunity_score",
+        "outcomes.direction_adjusted_move",
+        "opportunity_outcomes.followthrough",
+        "opportunity_outcomes.adverse",
+        "quality_stats.sample_count",
+        "quality_stats.stats_json",
+        "asset_market_states.current_state",
+        "no_trade_locks.reason",
+        "trade_opportunities.status",
+        "trade_opportunities.score_components_json",
+        "trade_opportunities.history_snapshot_json",
+        "trade_opportunities.evidence_json",
+    ]
+    compact_candidates = [
+        item["table"]
+        for item in tables
+        if bool(item.get("can_compact"))
+    ]
+    total_json_payload = sum(int(item.get("json_payload_size_bytes") or 0) for item in tables)
+    estimated_compact_savings = sum(int(item.get("estimated_savings_bytes") or 0) for item in tables)
+    payload = {
+        **summary,
+        "must_keep_full_tables": must_keep_full,
+        "long_term_slim_tables": long_term_slim,
+        "index_only_tables": index_only,
+        "archive_only_full_payload_fields": archive_only_payload_fields,
+        "compact_candidate_tables": compact_candidates,
+        "safe_prune_or_compact_tables": compact_candidates + ["runs", "schema_meta"],
+        "fields_not_recommended_for_db": fields_not_recommended_for_db,
+        "fields_required_for_verified_and_score": fields_required_for_verified,
+        "total_json_payload_size_bytes": total_json_payload,
+        "total_json_payload_size_mb": round(total_json_payload / (1024 * 1024), 4) if total_json_payload else 0.0,
+        "estimated_compact_savings_bytes": estimated_compact_savings,
+        "estimated_compact_savings_mb": round(estimated_compact_savings / (1024 * 1024), 4) if estimated_compact_savings else 0.0,
+        "answers": {
+            "must_long_term_retain": must_keep_full,
+            "should_keep_slim_or_index_only": long_term_slim + index_only,
+            "full_json_archive_only": archive_only_payload_fields,
+            "safe_to_prune_or_compact": compact_candidates,
+            "fields_not_for_future_import": fields_not_recommended_for_db,
+            "fields_required_for_verified": fields_required_for_verified,
+        },
+    }
+    if write_reports:
+        payload["report_files"] = write_sqlite_data_value_audit_reports(payload)
+    return payload
+
+
+def db_retention_recommendation() -> dict[str, Any]:
+    audit = sqlite_data_value_audit(write_reports=False)
+    actions = [
+        "signals/outcomes/opportunities/states/quality 保持 full，作为长期分析主数据",
+        "raw_events / parsed_events 默认切到 index_only，full payload 交给 .ndjson/.ndjson.gz archive",
+        "delivery_audit / telegram_deliveries / case_followups 默认 slim，保留路由决策与 headline，不保留长期 full payload",
+        "compact 前先确认 archive_path + payload_hash + archive 文件存在；没有备份不清 payload",
+        "compact 后如需真正回收磁盘，再单独执行 vacuum",
+    ]
+    if audit.get("estimated_compact_savings_bytes"):
+        actions.append(
+            f"当前按推荐模式预计可释放约 {round(float(audit['estimated_compact_savings_bytes']) / (1024 * 1024), 2)} MB 的 JSON payload 空间"
+        )
+    return {
+        "db_path": audit.get("db_path"),
+        "db_size_bytes": audit.get("db_size_bytes"),
+        "wal_size_bytes": audit.get("wal_size_bytes"),
+        "current_modes": {
+            "raw_events": _mode_for_table("raw_events"),
+            "parsed_events": _mode_for_table("parsed_events"),
+            "delivery_audit": _mode_for_table("delivery_audit"),
+            "telegram_deliveries": _mode_for_table("telegram_deliveries"),
+            "market_context_attempts": _mode_for_table("market_context_attempts"),
+            "case_followups": _mode_for_table("case_followups"),
+            "signals": _mode_for_table("signals"),
+            "trade_opportunities": _mode_for_table("trade_opportunities"),
+            "outcomes": _mode_for_table("outcomes"),
+            "asset_market_states": _mode_for_table("asset_market_states"),
+            "quality_stats": _mode_for_table("quality_stats"),
+        },
+        "recommended_modes": {
+            key: value
+            for key, value in TABLE_RECOMMENDED_MODES.items()
+            if key in {
+                "raw_events",
+                "parsed_events",
+                "delivery_audit",
+                "telegram_deliveries",
+                "market_context_attempts",
+                "case_followups",
+                "signals",
+                "trade_opportunities",
+                "outcomes",
+                "asset_market_states",
+                "quality_stats",
+            }
+        },
+        "retention_policy": {
+            "long_term_full": audit.get("must_keep_full_tables") or [],
+            "long_term_slim": audit.get("long_term_slim_tables") or [],
+            "index_only": audit.get("index_only_tables") or [],
+            "archive_only_full_payload_fields": audit.get("archive_only_full_payload_fields") or [],
+        },
+        "can_compact": audit.get("compact_candidate_tables") or [],
+        "estimated_compact_savings_bytes": audit.get("estimated_compact_savings_bytes"),
+        "estimated_compact_savings_mb": audit.get("estimated_compact_savings_mb"),
+        "recommended_actions": actions,
+    }
+
+
+def _write_audit_csv(path: Path, tables: list[dict[str, Any]]) -> None:
+    fieldnames = [
+        "table",
+        "row_count",
+        "table_size_bytes",
+        "json_payload_size_bytes",
+        "data_value_class",
+        "current_mode",
+        "recommended_mode",
+        "can_compact",
+        "estimated_savings_bytes",
+        "critical_for_verified",
+        "critical_for_opportunity_score",
+        "archive_only_ok",
+        "last_updated",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in tables:
+            writer.writerow({key: item.get(key) for key in fieldnames})
+
+
+def _render_audit_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# SQLite Data Value Audit",
+        "",
+        f"- DB path: `{payload.get('db_path')}`",
+        f"- DB size: `{payload.get('db_size_mb')}` MB",
+        f"- WAL size: `{payload.get('wal_size_mb')}` MB",
+        f"- Total JSON payload: `{payload.get('total_json_payload_size_mb')}` MB",
+        f"- Estimated compact savings: `{payload.get('estimated_compact_savings_mb')}` MB",
+        "",
+        "## Long-term Full",
+        "",
+        ", ".join(payload.get("must_keep_full_tables") or []) or "(none)",
+        "",
+        "## Long-term Slim",
+        "",
+        ", ".join(payload.get("long_term_slim_tables") or []) or "(none)",
+        "",
+        "## Index-only",
+        "",
+        ", ".join(payload.get("index_only_tables") or []) or "(none)",
+        "",
+        "## Archive-only Full Payload",
+        "",
+        ", ".join(payload.get("archive_only_full_payload_fields") or []) or "(none)",
+        "",
+        "## Table Audit",
+        "",
+        "| table | rows | value_class | current_mode | recommended_mode | json_payload_mb | table_size_mb | can_compact |",
+        "| --- | ---: | --- | --- | --- | ---: | ---: | --- |",
+    ]
+    for item in payload.get("tables") or []:
+        lines.append(
+            "| {table} | {row_count} | {data_value_class} | {current_mode} | {recommended_mode} | {json_payload_size_mb:.4f} | {table_size_mb:.4f} | {can_compact} |".format(
+                table=item.get("table"),
+                row_count=int(item.get("row_count") or 0),
+                data_value_class=item.get("data_value_class"),
+                current_mode=item.get("current_mode"),
+                recommended_mode=item.get("recommended_mode"),
+                json_payload_size_mb=float(item.get("json_payload_size_mb") or 0.0),
+                table_size_mb=float(item.get("table_size_mb") or 0.0),
+                can_compact="yes" if item.get("can_compact") else "no",
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Audit Answers",
+            "",
+            f"- 必须长期保留：{', '.join(payload.get('answers', {}).get('must_long_term_retain') or []) or '(none)'}",
+            f"- 应只保留 slim/index：{', '.join(payload.get('answers', {}).get('should_keep_slim_or_index_only') or []) or '(none)'}",
+            f"- full JSON 只留 archive：{', '.join(payload.get('answers', {}).get('full_json_archive_only') or []) or '(none)'}",
+            f"- 可安全 compact/prune：{', '.join(payload.get('answers', {}).get('safe_to_prune_or_compact') or []) or '(none)'}",
+            f"- 不应再导入数据库字段：{', '.join(payload.get('answers', {}).get('fields_not_for_future_import') or []) or '(none)'}",
+            f"- 支持 verified/opportunity_score 必留字段：{', '.join(payload.get('answers', {}).get('fields_required_for_verified') or []) or '(none)'}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_sqlite_data_value_audit_reports(payload: dict[str, Any], *, report_dir: str | Path | None = None) -> dict[str, str]:
+    root = Path(report_dir or (PROJECT_ROOT / "reports"))
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / "sqlite_data_value_audit_latest.json"
+    csv_path = root / "sqlite_data_value_audit_latest.csv"
+    md_path = root / "sqlite_data_value_audit_latest.md"
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    _write_audit_csv(csv_path, list(payload.get("tables") or []))
+    md_path.write_text(_render_audit_markdown(payload), encoding="utf-8")
+    return {
+        "json": str(json_path),
+        "csv": str(csv_path),
+        "md": str(md_path),
+    }
+
+
+def _resolve_archive_reference(path_value: str | None) -> Path | None:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
+def _archive_reference_exists(path_value: str | None) -> bool:
+    path = _resolve_archive_reference(path_value)
+    if path is None:
+        return False
+    if path.exists():
+        return True
+    if str(path).endswith(".ndjson"):
+        gz = Path(f"{path}.gz")
+        return gz.exists()
+    if str(path).endswith(".ndjson.gz"):
+        plain = Path(str(path)[: -len(".gz")])
+        return plain.exists()
+    return False
+
+
+def compact_table(table: str, *, dry_run: bool = True) -> dict[str, Any]:
+    conn = get_connection()
+    if conn is None:
+        return {"ok": False, "reason": _INIT_FAILED_REASON or "not_initialized", "table": table}
+    specs = {
+        "raw_events": {"json_column": "raw_json", "archive_required": True},
+        "parsed_events": {"json_column": "parsed_json", "archive_required": True},
+        "delivery_audit": {"json_column": "audit_json", "archive_required": True},
+        "telegram_deliveries": {"json_column": "message_json", "archive_required": True},
+        "case_followups": {"json_column": "followup_json", "archive_required": True},
+    }
+    if table not in specs:
+        return {"ok": False, "reason": "table_not_compactable", "table": table}
+    spec = specs[table]
+    columns = _table_columns(conn, table)
+    json_column = str(spec["json_column"])
+    if json_column not in columns:
+        return {"ok": False, "reason": "json_column_missing", "table": table}
+    selected_columns = ["rowid", json_column]
+    if "archive_path" in columns:
+        selected_columns.append("archive_path")
+    if "payload_hash" in columns:
+        selected_columns.append("payload_hash")
+    sql = f"SELECT {', '.join(selected_columns)} FROM {table} WHERE {json_column} IS NOT NULL AND {json_column} != ''"
+    rows = conn.execute(sql).fetchall()
+    result = {
+        "ok": True,
+        "table": table,
+        "dry_run": bool(dry_run),
+        "rows_examined": len(rows),
+        "rows_compacted": 0,
+        "skipped_missing_archive": 0,
+        "skipped_no_payload_hash": 0,
+        "estimated_bytes_freed": 0,
+        "actual_bytes_freed_after_vacuum": None,
+    }
+    if not rows:
+        return result
+    updates: list[int] = []
+    archive_cache: dict[str, bool] = {}
+    for row in rows:
+        payload_hash = str(row["payload_hash"] or "").strip() if "payload_hash" in row.keys() else ""
+        archive_path = str(row["archive_path"] or "").strip() if "archive_path" in row.keys() else ""
+        payload = row[json_column]
+        payload_bytes = len(str(payload).encode("utf-8")) if payload not in (None, "") else 0
+        if not payload_hash:
+            result["skipped_no_payload_hash"] += 1
+            continue
+        archive_ok = archive_cache.get(archive_path)
+        if archive_ok is None:
+            archive_ok = _archive_reference_exists(archive_path)
+            archive_cache[archive_path] = archive_ok
+        if spec["archive_required"] and not archive_ok:
+            result["skipped_missing_archive"] += 1
+            continue
+        result["estimated_bytes_freed"] += payload_bytes
+        updates.append(int(row["rowid"]))
+    if not dry_run and updates:
+        placeholders = ", ".join("?" for _ in updates)
+        conn.execute(
+            f"UPDATE {table} SET {json_column}=NULL WHERE rowid IN ({placeholders})",
+            tuple(updates),
+        )
+        conn.commit()
+    result["rows_compacted"] = len(updates)
+    return result
+
+
+def compact(*, dry_run: bool = True, table: str | None = None) -> dict[str, Any]:
+    if not bool(SQLITE_COMPACT_ENABLE):
+        return {"ok": False, "reason": "sqlite_compact_disabled"}
+    target_tables = [table] if table else ["raw_events", "parsed_events", "delivery_audit", "telegram_deliveries", "case_followups"]
+    summaries = [compact_table(name, dry_run=dry_run) for name in target_tables]
+    return {
+        "ok": all(bool(item.get("ok")) for item in summaries),
+        "dry_run": bool(dry_run),
+        "tables": {str(item.get("table")): item for item in summaries},
+        "rows_examined": sum(int(item.get("rows_examined") or 0) for item in summaries),
+        "rows_compacted": sum(int(item.get("rows_compacted") or 0) for item in summaries),
+        "skipped_missing_archive": sum(int(item.get("skipped_missing_archive") or 0) for item in summaries),
+        "skipped_no_payload_hash": sum(int(item.get("skipped_no_payload_hash") or 0) for item in summaries),
+        "estimated_bytes_freed": sum(int(item.get("estimated_bytes_freed") or 0) for item in summaries),
+        "estimated_mb_freed": round(sum(int(item.get("estimated_bytes_freed") or 0) for item in summaries) / (1024 * 1024), 4),
+        "vacuum_recommended": True,
+    }
+
+
+def vacuum_database(*, confirm: bool = False, db_path: str | Path | None = None) -> dict[str, Any]:
+    resolved = _resolve_db_path(db_path)
+    if not confirm:
+        return {
+            "ok": False,
+            "reason": "confirm_required",
+            "db_path": str(resolved),
+        }
+    before = db_file_sizes(resolved)
+    close()
+    conn = sqlite3.connect(str(resolved))
+    try:
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    after = db_file_sizes(resolved)
+    return {
+        "ok": True,
+        "db_path": str(resolved),
+        "before": before,
+        "after": after,
+        "actual_bytes_freed": int(before.get("db_size_bytes") or 0) - int(after.get("db_size_bytes") or 0),
+    }
+
+
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -2224,12 +3586,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="chain-monitor SQLite mirror store")
     parser.add_argument("--init", action="store_true", help="initialize SQLite schema")
     parser.add_argument("--summary", action="store_true", help="print table row counts and health")
+    parser.add_argument("--table-size-summary", action="store_true", help="print SQLite size / table size summary")
+    parser.add_argument("--data-value-audit", action="store_true", help="print SQLite data value audit and write reports")
     parser.add_argument("--migrate-archive", action="store_true", help="mirror archive NDJSON into SQLite")
     parser.add_argument("--date", help="archive date YYYY-MM-DD for --migrate-archive")
     parser.add_argument("--all", action="store_true", help="migrate all archive dates")
     parser.add_argument("--integrity-check", action="store_true", help="run schema/count/integrity checks")
     parser.add_argument("--checkpoint", action="store_true", help="run SQLite WAL checkpoint truncate")
     parser.add_argument("--prune", action="store_true", help="show or execute retention prune")
+    parser.add_argument("--compact", action="store_true", help="dry-run or execute compact on compactable tables")
+    parser.add_argument("--compact-table", help="dry-run or execute compact on one table")
+    parser.add_argument("--vacuum", action="store_true", help="run VACUUM only with CONFIRM=YES")
     parser.add_argument("--dry-run", action="store_true", help="dry-run retention prune")
     parser.add_argument("--execute", action="store_true", help="execute retention prune")
     return parser
@@ -2245,6 +3612,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.summary:
         init_sqlite_store()
         _print_json(health_summary())
+        return 0
+    if args.table_size_summary:
+        init_sqlite_store()
+        _print_json(table_size_summary())
+        return 0
+    if args.data_value_audit:
+        init_sqlite_store()
+        _print_json(sqlite_data_value_audit(write_reports=True))
         return 0
     if args.integrity_check:
         init_sqlite_store()
@@ -2270,6 +3645,21 @@ def main(argv: list[str] | None = None) -> int:
             dry_run = True
         _print_json(prune(dry_run=dry_run))
         return 0
+    if args.compact or args.compact_table:
+        init_sqlite_store()
+        dry_run = bool(SQLITE_COMPACT_DRY_RUN_DEFAULT)
+        if args.execute:
+            dry_run = False
+        elif args.dry_run:
+            dry_run = True
+        payload = compact(dry_run=dry_run, table=args.compact_table if args.compact_table else None)
+        _print_json(payload)
+        return 0 if payload.get("ok") else 1
+    if args.vacuum:
+        confirm = str(os.environ.get("CONFIRM") or "").strip().upper() == "YES"
+        payload = vacuum_database(confirm=confirm)
+        _print_json(payload)
+        return 0 if payload.get("ok") else 1
     parser.print_help()
     return 0
 

@@ -434,7 +434,7 @@
     {
       "path": "data/chain_monitor.sqlite",
       "exists": true,
-      "record_count": 411238,
+      "record_count": 435250,
       "start_ts": null,
       "end_ts": null,
       "start_utc": "",
@@ -443,7 +443,7 @@
       "end_beijing": "",
       "window_record_count": "",
       "after_cutoff_count": "",
-      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5390, 'asset_market_states': 419, 'no_trade_locks': 341, 'trade_opportunities': 346, 'opportunity_outcomes': 1038, 'quality_stats': 1026, 'telegram_deliveries': 83021, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']"
+      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5390, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 346, 'opportunity_outcomes': 1038, 'quality_stats': 1026, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']"
     }
   ],
   "report_data_source": "sqlite",
@@ -482,36 +482,36 @@
         "market_context_attempts": 2283,
         "outcomes": 3009,
         "asset_cases": 5390,
-        "asset_market_states": 419,
-        "no_trade_locks": 341,
+        "asset_market_states": 420,
+        "no_trade_locks": 342,
         "trade_opportunities": 346,
         "opportunity_outcomes": 1038,
         "quality_stats": 1026,
-        "telegram_deliveries": 83021,
+        "telegram_deliveries": 107031,
         "prealert_lifecycle": 1829,
         "delivery_audit": 156459,
         "case_followups": 151
       },
       "last_updated": {
-        "schema_meta": 1776837896.112629,
+        "schema_meta": 1776848598.5896127,
         "runs": null,
-        "raw_events": 1776835314.8197222,
-        "parsed_events": 1776835315.1336744,
-        "signals": 1776835315.1544676,
+        "raw_events": 1776847374.90804,
+        "parsed_events": 1776847449.7794368,
+        "signals": 1776847462.0784888,
         "signal_features": null,
-        "market_context_snapshots": 1776835315.1606085,
+        "market_context_snapshots": 1776847462.083105,
         "market_context_attempts": 1776835290.0,
-        "outcomes": 1776835319.7370255,
+        "outcomes": 1776847564.2799816,
         "asset_cases": 1776835286.0,
         "asset_market_states": 1776835286.0,
-        "no_trade_locks": 1776835294.2010095,
-        "trade_opportunities": 1776835313.5794241,
+        "no_trade_locks": 1776847561.769867,
+        "trade_opportunities": 1776847563.1962814,
         "opportunity_outcomes": 1776835286.0,
         "quality_stats": 1776835311.0,
-        "telegram_deliveries": 1776835315.177341,
-        "prealert_lifecycle": 1776835315.1689897,
-        "delivery_audit": 1776835315.1752253,
-        "case_followups": 1776828243.9918156
+        "telegram_deliveries": 1776847561.726833,
+        "prealert_lifecycle": 1776847462.091234,
+        "delivery_audit": 1776847561.7251716,
+        "case_followups": 1776847561.7586288
       },
       "missing_tables": [],
       "write_error_count": 0,
@@ -563,12 +563,12 @@
       "market_context_attempts": 2283,
       "outcomes": 3009,
       "asset_cases": 5390,
-      "asset_market_states": 419,
-      "no_trade_locks": 341,
+      "asset_market_states": 420,
+      "no_trade_locks": 342,
       "trade_opportunities": 346,
       "opportunity_outcomes": 1038,
       "quality_stats": 1026,
-      "telegram_deliveries": 83021,
+      "telegram_deliveries": 107031,
       "prealert_lifecycle": 1829,
       "delivery_audit": 156459,
       "case_followups": 151
@@ -705,36 +705,36 @@
       "market_context_attempts": 2283,
       "outcomes": 3009,
       "asset_cases": 5390,
-      "asset_market_states": 419,
-      "no_trade_locks": 341,
+      "asset_market_states": 420,
+      "no_trade_locks": 342,
       "trade_opportunities": 346,
       "opportunity_outcomes": 1038,
       "quality_stats": 1026,
-      "telegram_deliveries": 83021,
+      "telegram_deliveries": 107031,
       "prealert_lifecycle": 1829,
       "delivery_audit": 156459,
       "case_followups": 151
     },
     "last_updated": {
-      "schema_meta": 1776837896.112629,
+      "schema_meta": 1776848598.5896127,
       "runs": null,
-      "raw_events": 1776835314.8197222,
-      "parsed_events": 1776835315.1336744,
-      "signals": 1776835315.1544676,
+      "raw_events": 1776847374.90804,
+      "parsed_events": 1776847449.7794368,
+      "signals": 1776847462.0784888,
       "signal_features": null,
-      "market_context_snapshots": 1776835315.1606085,
+      "market_context_snapshots": 1776847462.083105,
       "market_context_attempts": 1776835290.0,
-      "outcomes": 1776835319.7370255,
+      "outcomes": 1776847564.2799816,
       "asset_cases": 1776835286.0,
       "asset_market_states": 1776835286.0,
-      "no_trade_locks": 1776835294.2010095,
-      "trade_opportunities": 1776835313.5794241,
+      "no_trade_locks": 1776847561.769867,
+      "trade_opportunities": 1776847563.1962814,
       "opportunity_outcomes": 1776835286.0,
       "quality_stats": 1776835311.0,
-      "telegram_deliveries": 1776835315.177341,
-      "prealert_lifecycle": 1776835315.1689897,
-      "delivery_audit": 1776835315.1752253,
-      "case_followups": 1776828243.9918156
+      "telegram_deliveries": 1776847561.726833,
+      "prealert_lifecycle": 1776847462.091234,
+      "delivery_audit": 1776847561.7251716,
+      "case_followups": 1776847561.7586288
     },
     "missing_tables": [],
     "write_error_count": 0,
@@ -786,12 +786,12 @@
     "market_context_attempts": 2283,
     "outcomes": 3009,
     "asset_cases": 5390,
-    "asset_market_states": 419,
-    "no_trade_locks": 341,
+    "asset_market_states": 420,
+    "no_trade_locks": 342,
     "trade_opportunities": 346,
     "opportunity_outcomes": 1038,
     "quality_stats": 1026,
-    "telegram_deliveries": 83021,
+    "telegram_deliveries": 107031,
     "prealert_lifecycle": 1829,
     "delivery_audit": 156459,
     "case_followups": 151
@@ -1439,8 +1439,8 @@
     }
   },
   "outcome_source_summary": {
-    "outcome_30s_pending_count": 1,
-    "outcome_30s_completed_count": 3,
+    "outcome_30s_pending_count": 2,
+    "outcome_30s_completed_count": 2,
     "outcome_30s_unavailable_count": 0,
     "outcome_30s_expired_count": 0,
     "outcome_60s_pending_count": 2,
@@ -1451,7 +1451,7 @@
     "outcome_300s_completed_count": 2,
     "outcome_300s_unavailable_count": 0,
     "outcome_300s_expired_count": 0,
-    "outcome_30s_completed_rate": 0.75,
+    "outcome_30s_completed_rate": 0.5,
     "outcome_60s_completed_rate": 0.5,
     "outcome_300s_completed_rate": 0.5,
     "outcome_price_source_distribution": {
@@ -1472,20 +1472,20 @@
     "catchup_completed_count": 0,
     "catchup_expired_count": 0,
     "scheduler_health_summary": {
-      "pending_count": 5,
-      "completed_count": 7,
+      "pending_count": 6,
+      "completed_count": 6,
       "unavailable_count": 0,
       "expired_count": 0,
       "catchup_completed_count": 0,
       "catchup_expired_count": 0,
       "settled_by_distribution": {
-        "outcome_scheduler": 9
+        "outcome_scheduler": 6
       }
     },
     "window_status_distribution": {
       "30s": {
-        "completed": 3,
-        "pending": 1
+        "completed": 2,
+        "pending": 2
       },
       "60s": {
         "completed": 2,
@@ -1828,11 +1828,11 @@
         "adverse_rate": 0.0
       },
       "LONG_BIAS_OBSERVE": {
-        "resolved_count": 2,
+        "resolved_count": 1,
         "followthrough_count": 1,
-        "followthrough_rate": 0.5,
-        "adverse_count": 1,
-        "adverse_rate": 0.5
+        "followthrough_rate": 1.0,
+        "adverse_count": 0,
+        "adverse_rate": 0.0
       }
     },
     "trade_action_adverse_60s": {
@@ -1876,11 +1876,11 @@
         "adverse_rate": 0.0
       },
       "LONG_BIAS_OBSERVE": {
-        "resolved_count": 2,
+        "resolved_count": 1,
         "followthrough_count": 1,
-        "followthrough_rate": 0.5,
-        "adverse_count": 1,
-        "adverse_rate": 0.5
+        "followthrough_rate": 1.0,
+        "adverse_count": 0,
+        "adverse_rate": 0.0
       }
     },
     "trade_action_followthrough_60s": {
@@ -1933,7 +1933,7 @@
     "legacy_chase_action_rows": 0
   },
   "adverse_direction_summary": {
-    "buy_pressure_adverse_30s_rate": 0.3333,
+    "buy_pressure_adverse_30s_rate": 0.0,
     "buy_pressure_adverse_60s_rate": 0.0,
     "buy_pressure_adverse_300s_rate": 0.0,
     "sell_pressure_adverse_30s_rate": null,
@@ -1955,9 +1955,9 @@
       "adverse_rate": null
     },
     "bullish_group_30s": {
-      "resolved_count": 3,
-      "adverse_count": 1,
-      "adverse_rate": 0.3333
+      "resolved_count": 2,
+      "adverse_count": 0,
+      "adverse_rate": 0.0
     },
     "bullish_group_60s": {
       "resolved_count": 2,
@@ -2278,11 +2278,11 @@
     "no_trade_lock_protection_value": 3.5,
     "prealert_lifecycle_effectiveness": 6.0,
     "candidate_tradeable_credibility": 3.8,
-    "outcome_completeness": 7.5,
+    "outcome_completeness": 7.0,
     "live_market_context_readiness": 9.5,
     "trade_action_assistive_value": 5.0,
     "noise_control": 7.1,
-    "overall_self_use_score": 6.2
+    "overall_self_use_score": 6.1
   },
   "top_findings": [
     "selected a fully covered Beijing afternoon-evening window from 2026-04-22 13:00:01 UTC+08:00 to 2026-04-22 13:21:54 UTC+08:00 (0.36h); raw/parsed/signals/delivery/cases all overlap in this interval.",
@@ -2307,6 +2307,7 @@
   "limitations": [
     "selected window contains too few prealert-stage rows to fully validate the new prealert lifecycle on its own.",
     "selected window contains no TRADEABLE_* states, so candidate-to-tradeable promotion is only validated negatively (blocked), not positively (triggered).",
+    "30s outcome completion is still incomplete enough that very short-term reversal conclusions must stay conservative.",
     "BTC/SOL have no real selected-window samples, so market-state, lock, and outcome conclusions are ETH-centric."
   ],
   "quality_reports_cli_summary": {
@@ -2747,7 +2748,7 @@
       "limit": null,
       "top_n": 10
     },
-    "generated_at": 1776838131,
+    "generated_at": 1776848834,
     "overall": {
       "actionable": true,
       "climax_count": 221,

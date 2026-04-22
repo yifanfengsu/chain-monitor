@@ -98,15 +98,32 @@ class SQLiteWriterTests(unittest.TestCase):
                         "signal_id": f"sig-{status.lower()}",
                         "asset_symbol": "ETH",
                         "pair_label": "ETH/USDC",
+                        "opportunity_profile_key": "ETH|LONG|broader_confirm|confirm|confirming|no_absorption|major|basis_normal|quality_high",
+                        "opportunity_profile_version": "v1",
+                        "opportunity_profile_side": "LONG",
+                        "opportunity_profile_asset": "ETH",
+                        "opportunity_profile_pair_family": "USDC",
+                        "opportunity_profile_strategy": "lp_continuation",
                         "trade_opportunity_side": "LONG",
                         "trade_opportunity_status": status,
+                        "opportunity_raw_score": 0.76,
+                        "opportunity_calibrated_score": 0.8,
+                        "opportunity_calibration_adjustment": 0.04,
+                        "opportunity_calibration_reason": "followthrough>0.65",
+                        "opportunity_calibration_sample_count": 60,
+                        "opportunity_calibration_confidence": 0.88,
+                        "opportunity_calibration_source": "profile",
                         "trade_opportunity_score": 0.8,
                         "trade_opportunity_primary_blocker": "no_trade_lock" if status == "BLOCKED" else "",
+                        "trade_opportunity_primary_hard_blocker": "no_trade_lock" if status == "BLOCKED" else "",
+                        "trade_opportunity_primary_verification_blocker": "profile_sample_count_insufficient" if status == "CANDIDATE" else "",
                         "opportunity_outcome_30s": "pending",
                         "opportunity_outcome_60s": "completed",
                         "opportunity_outcome_300s": "expired",
                         "opportunity_followthrough_60s": True,
                         "opportunity_adverse_60s": False,
+                        "blocker_saved_trade": True if status == "BLOCKED" else None,
+                        "blocker_false_block_possible": False if status == "BLOCKED" else None,
                     }
                 )
             )
@@ -130,6 +147,18 @@ class SQLiteWriterTests(unittest.TestCase):
         self.assertEqual(1, self._count("asset_market_states"))
         self.assertEqual(1, self._count("no_trade_locks"))
         self.assertEqual(1, self._count("quality_stats"))
+        self.assertEqual(
+            "ETH|LONG|broader_confirm|confirm|confirming|no_absorption|major|basis_normal|quality_high",
+            self.conn.execute("SELECT opportunity_profile_key FROM trade_opportunities WHERE trade_opportunity_id='opp-candidate'").fetchone()[0],
+        )
+        row = self.conn.execute(
+            "SELECT raw_score, calibrated_score, calibration_adjustment, calibration_source FROM trade_opportunities WHERE trade_opportunity_id='opp-candidate'"
+        ).fetchone()
+        self.assertEqual((0.76, 0.8, 0.04, "profile"), tuple(row))
+        self.assertEqual(
+            "ETH|LONG|broader_confirm|confirm|confirming|no_absorption|major|basis_normal|quality_high",
+            self.conn.execute("SELECT opportunity_profile_key FROM opportunity_outcomes WHERE trade_opportunity_id='opp-candidate' AND window_sec=60").fetchone()[0],
+        )
 
 
 if __name__ == "__main__":

@@ -283,6 +283,10 @@ def _load_db_rows(loader_key: str, *, window: Any = None, db_path: str | Path | 
                 if isinstance(decoded, dict) and decoded:
                     decoded.update({key: value for key, value in item.items() if key not in decoded})
                     item = decoded
+            if time_column and time_column in item and item.get("archive_written_at") in (None, ""):
+                item.setdefault("archive_written_at", item.get(time_column))
+            if time_column and time_column in item and item.get("archive_ts") in (None, ""):
+                item.setdefault("archive_ts", item.get(time_column))
             item.setdefault("data_source", "sqlite")
             result.append(item)
         return result, ""
