@@ -58,6 +58,7 @@ from report_data_loader import (  # noqa: E402
     archive_paths as report_archive_paths,
     open_archive_text as report_open_archive_text,
 )
+from report_output_utils import write_dated_report_copies
 
 MARKDOWN_PATH = REPORTS_DIR / "afternoon_evening_state_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "afternoon_evening_state_metrics_latest.csv"
@@ -2394,6 +2395,14 @@ def main() -> int:
     MARKDOWN_PATH.write_text(markdown, encoding="utf-8")
     write_csv(CSV_PATH, csv_rows)
     JSON_PATH.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_dated_report_copies(
+        {
+            "markdown": MARKDOWN_PATH,
+            "csv": CSV_PATH,
+            "json": JSON_PATH,
+        },
+        tz=BJ_TZ,
+    )
     return 0
 
 

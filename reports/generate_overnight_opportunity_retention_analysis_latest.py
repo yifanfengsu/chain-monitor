@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+THIS_DIR = Path(__file__).resolve().parent
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = ROOT / "app"
@@ -20,6 +21,9 @@ DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 ENV_PATH = ROOT / ".env"
 
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
 MARKDOWN_PATH = REPORTS_DIR / "overnight_opportunity_retention_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "overnight_opportunity_retention_metrics_latest.csv"
 JSON_PATH = REPORTS_DIR / "overnight_opportunity_retention_summary_latest.json"
@@ -27,6 +31,8 @@ JSON_PATH = REPORTS_DIR / "overnight_opportunity_retention_summary_latest.json"
 UTC = timezone.utc
 SERVER_TZ = UTC
 BJ_TZ = timezone(timedelta(hours=8))
+
+from report_output_utils import write_dated_report_copies  # noqa: E402
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
 OPPORTUNITY_STATUSES = ("NONE", "CANDIDATE", "VERIFIED", "BLOCKED", "EXPIRED", "INVALIDATED")
@@ -1894,10 +1900,19 @@ def main() -> int:
     MARKDOWN_PATH.write_text(build_markdown(summary), encoding="utf-8")
     write_csv(CSV_PATH, build_csv_rows(summary))
     JSON_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    dated_outputs = write_dated_report_copies(
+        {
+            "markdown": MARKDOWN_PATH,
+            "csv": CSV_PATH,
+            "json": JSON_PATH,
+        },
+        tz=BJ_TZ,
+    )
     print(json.dumps({
         "markdown": str(MARKDOWN_PATH.relative_to(ROOT)),
         "csv": str(CSV_PATH.relative_to(ROOT)),
         "json": str(JSON_PATH.relative_to(ROOT)),
+        "dated_files": {name: str(path.relative_to(ROOT)) for name, path in dated_outputs.items()},
         "analysis_window_utc": {
             "start": summary["analysis_window"]["analysis_window_start_utc"],
             "end": summary["analysis_window"]["analysis_window_end_utc"],

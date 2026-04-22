@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+THIS_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = ROOT / "app"
 ARCHIVE_DIR = APP_DIR / "data" / "archive"
@@ -19,6 +20,8 @@ DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 ENV_PATH = ROOT / ".env"
 
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
@@ -28,6 +31,7 @@ from report_data_loader import (  # noqa: E402
     open_archive_text as report_open_archive_text,
     report_source_summary as loader_report_source_summary,
 )
+from report_output_utils import write_dated_report_copies  # noqa: E402
 
 MARKDOWN_PATH = REPORTS_DIR / "overnight_run_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "overnight_run_metrics_latest.csv"
@@ -2997,6 +3001,14 @@ def main() -> int:
         },
     }
     JSON_PATH.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    dated_outputs = write_dated_report_copies(
+        {
+            "markdown": MARKDOWN_PATH,
+            "csv": CSV_PATH,
+            "json": JSON_PATH,
+        },
+        tz=BJ_TZ,
+    )
 
     print(
         json.dumps(
@@ -3004,6 +3016,7 @@ def main() -> int:
                 "markdown": str(MARKDOWN_PATH),
                 "csv": str(CSV_PATH),
                 "json": str(JSON_PATH),
+                "dated_files": {name: str(path) for name, path in dated_outputs.items()},
             },
             ensure_ascii=False,
         )
