@@ -10,7 +10,11 @@ import sys
 
 from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
-from lp_registry import ACTIVE_LP_POOLS, normalize_lp_pool_entries, validate_lp_pool_book_entries
+from lp_registry import (
+    ACTIVE_LP_POOLS,
+    flatten_lp_pool_book_payload,
+    validate_lp_pool_book_entries,
+)
 from market_context_adapter import build_market_context_runtime_self_check
 from quality_manager import QualityManager
 from state_manager import StateManager
@@ -324,6 +328,7 @@ def build_major_pool_coverage_report(
     manager: QualityManager | None = None,
     *,
     pool_book_path: Path | None = None,
+    onchain_validator=None,
 ) -> dict:
     manager = manager or QualityManager(state_manager=StateManager())
     history_limit = getattr(manager, "history_limit", None)
@@ -337,15 +342,19 @@ def build_major_pool_coverage_report(
     if pool_book_exists:
         try:
             payload = json.loads(pool_book_path.read_text(encoding="utf-8"))
-            if isinstance(payload, list):
-                raw_pool_entries = payload
+            raw_pool_entries = flatten_lp_pool_book_payload(payload)
+            if raw_pool_entries:
+                raw_pool_entries = raw_pool_entries
             else:
-                warnings.append("data/lp_pools.json 顶层必须是数组；coverage 只能基于已加载 runtime pool metadata")
+                warnings.append("data/lp_pools.json 为空或格式不可识别；coverage 只能基于已加载 runtime pool metadata")
                 raw_pool_entries = []
         except (OSError, json.JSONDecodeError):
             warnings.append("data/lp_pools.json 无法解析；coverage 只能基于已加载 runtime pool metadata")
             raw_pool_entries = []
-    validator_payload = validate_lp_pool_book_entries(raw_pool_entries)
+    validator_payload = validate_lp_pool_book_entries(
+        raw_pool_entries,
+        onchain_validator=onchain_validator,
+    )
 
     configured_assets = []
     for item in LP_MAJOR_ASSETS:
@@ -370,40 +379,64 @@ def build_major_pool_coverage_report(
         if pair_label:
             sample_count_by_pair[pair_label] += 1
 
-    runtime_pools = ACTIVE_LP_POOLS if not raw_pool_entries else {
-        address: meta
-        for address, meta in normalize_lp_pool_entries(raw_pool_entries).items()
-        if bool(meta.get("is_active", True))
-    }
-
     active_major_pools = []
     covered_pairs = set()
-    for meta in runtime_pools.values():
-        if not bool(meta.get("is_major_pool")):
-            continue
+    if raw_pool_entries:
+        enabled_major_pools = list(validator_payload.get("enabled_major_pools") or [])
+    else:
+        enabled_major_pools = []
+        runtime_pools = {
+            address: meta
+            for address, meta in ACTIVE_LP_POOLS.items()
+            if bool(meta.get("is_active", True))
+        }
+        for meta in runtime_pools.values():
+            if not bool(meta.get("is_major_pool")):
+                continue
+            enabled_major_pools.append(
+                {
+                    "pair_label": _canonical_major_pair_label(meta.get("pair_label") or ""),
+                    "configured_pair_label": str(meta.get("pair_label") or ""),
+                    "pool_address": str(meta.get("pool_address") or meta.get("address") or ""),
+                    "priority": int(meta.get("priority") or 3),
+                    "chain": str(meta.get("chain") or ""),
+                    "dex": str(meta.get("dex") or ""),
+                    "protocol": str(meta.get("protocol") or ""),
+                    "pool_type": str(meta.get("pool_type") or ""),
+                    "canonical_asset": canonical_asset_symbol(meta.get("canonical_asset") or ""),
+                    "major_match_mode": str(meta.get("major_match_mode") or ""),
+                    "validation_status": "runtime_loaded",
+                    "validation_reasons": [],
+                    "notes": str(meta.get("notes") or meta.get("note") or ""),
+                }
+            )
+    for meta in enabled_major_pools:
         pair_label = str(meta.get("pair_label") or "")
         canonical_pair_label = _canonical_major_pair_label(pair_label)
         covered_pairs.add(canonical_pair_label)
         active_major_pools.append(
             {
-                "pair_label": pair_label,
+                "pair_label": str(meta.get("configured_pair_label") or pair_label),
                 "canonical_pair_label": canonical_pair_label,
-                "pool_address": str(meta.get("pool_address") or meta.get("address") or ""),
+                "pool_address": str(meta.get("pool_address") or ""),
                 "priority": int(meta.get("priority") or 3),
                 "major_priority_score": float(meta.get("major_priority_score") or 1.0),
                 "major_match_mode": str(meta.get("major_match_mode") or ""),
                 "trend_pool_match_mode": str(meta.get("trend_pool_match_mode") or ""),
-                "is_primary_trend_pool": bool(meta.get("is_primary_trend_pool")),
+                "is_primary_trend_pool": bool(meta.get("is_primary_trend_pool", True)),
                 "chain": str(meta.get("chain") or ""),
                 "dex": str(meta.get("dex") or ""),
                 "protocol": str(meta.get("protocol") or ""),
                 "pool_type": str(meta.get("pool_type") or ""),
+                "fee_tier": meta.get("fee_tier"),
+                "validation_status": str(meta.get("validation_status") or ""),
+                "validation_reasons": list(meta.get("validation_reasons") or []),
                 "notes": str(meta.get("notes") or meta.get("note") or ""),
                 "sample_size": int(sample_count_by_pair.get(canonical_pair_label) or 0),
             }
         )
 
-    missing_pairs = [pair for pair in expected_pairs if pair not in covered_pairs]
+    missing_pairs = list(validator_payload.get("missing_major_pairs") or [])
     covered_expected_pairs = [pair for pair in expected_pairs if pair in covered_pairs]
     missing_assets = [
         asset
@@ -494,6 +527,20 @@ def build_major_pool_coverage_report(
             for action in validator_payload.get("recommended_local_config_actions") or []
             if action not in suggestions
         )
+    if validator_payload.get("configured_but_unsupported_chain"):
+        warnings.append("存在 configured but unsupported 的 major pools；这些条目不会进入当前 Ethereum active scan")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
+    if validator_payload.get("configured_but_validation_failed"):
+        warnings.append("存在 enabled 但未通过 validator 的 major pools；这些条目不会计入 covered majors")
+        suggestions.extend(
+            action
+            for action in validator_payload.get("recommended_local_config_actions") or []
+            if action not in suggestions
+        )
     if validator_payload.get("placeholder_major_pool_entries"):
         warnings.append("存在 placeholder major pool entries；这些条目不会被当成有效 enabled pool")
         suggestions.extend(
@@ -530,6 +577,24 @@ def build_major_pool_coverage_report(
         if pair not in recommended_next_round_pairs:
             recommended_next_round_pairs.append(pair)
         next_round_priority.append({"pair_label": pair, "reason": "configured_but_disabled"})
+    unsupported_pairs = []
+    for item in validator_payload.get("configured_but_unsupported_chain") or []:
+        pair = str(item.get("pair_label") or "")
+        if pair and pair not in unsupported_pairs:
+            unsupported_pairs.append(pair)
+    for pair in unsupported_pairs:
+        if pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+        next_round_priority.append({"pair_label": pair, "reason": "configured_but_unsupported_chain"})
+    validation_failed_pairs = []
+    for item in validator_payload.get("configured_but_validation_failed") or []:
+        pair = str(item.get("pair_label") or "")
+        if pair and pair not in validation_failed_pairs:
+            validation_failed_pairs.append(pair)
+    for pair in validation_failed_pairs:
+        if pair not in recommended_next_round_pairs:
+            recommended_next_round_pairs.append(pair)
+        next_round_priority.append({"pair_label": pair, "reason": "validation_failed"})
     for pair in no_recent_signal_major_pairs:
         if pair not in recommended_next_round_pairs:
             recommended_next_round_pairs.append(pair)
@@ -578,6 +643,8 @@ def build_major_pool_coverage_report(
         "under_sampled_major_assets": under_sampled_assets,
         "under_sampled_major_pairs": under_sampled_pairs,
         "configured_but_disabled_major_pools": list(validator_payload.get("configured_but_disabled_major_pools") or []),
+        "configured_but_unsupported_chain": list(validator_payload.get("configured_but_unsupported_chain") or []),
+        "configured_but_validation_failed": list(validator_payload.get("configured_but_validation_failed") or []),
         "malformed_major_pool_entries": list(validator_payload.get("malformed_major_pool_entries") or []),
         "placeholder_major_pool_entries": list(validator_payload.get("placeholder_major_pool_entries") or []),
         "duplicate_pool_warnings": list(validator_payload.get("duplicate_pool_warnings") or []),

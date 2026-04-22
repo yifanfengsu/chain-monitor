@@ -102,6 +102,7 @@ class MajorPoolEnabledRoutingTests(unittest.TestCase):
                     "base_symbol": "BTC",
                     "quote_symbol": "USDT",
                     "canonical_asset": "BTC",
+                    "quote_canonical": "USDT",
                     "dex": "UnitTest",
                     "protocol": "unit_test",
                     "pool_type": "spot_lp",
@@ -109,6 +110,8 @@ class MajorPoolEnabledRoutingTests(unittest.TestCase):
                     "priority": 1,
                     "major_pool": True,
                     "major_match_mode": "major_family_match",
+                    "validation_required": False,
+                    "source_note": "unit_test",
                     "notes": "btc/usdt enabled major pool",
                 }
             ]
@@ -149,6 +152,7 @@ class MajorPoolEnabledRoutingTests(unittest.TestCase):
                     "base_symbol": "PEPE",
                     "quote_symbol": "USDC",
                     "canonical_asset": "PEPE",
+                    "quote_canonical": "USDC",
                     "dex": "UnitTest",
                     "protocol": "unit_test",
                     "pool_type": "spot_lp",
@@ -156,6 +160,8 @@ class MajorPoolEnabledRoutingTests(unittest.TestCase):
                     "priority": 1,
                     "major_pool": False,
                     "major_match_mode": "non_major_pool",
+                    "validation_required": False,
+                    "source_note": "unit_test",
                     "notes": "non major pool",
                 }
             ]

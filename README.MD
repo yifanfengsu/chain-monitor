@@ -19,19 +19,23 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
   - `base_symbol`
   - `quote_symbol`
   - `canonical_asset`
+  - `quote_canonical`
   - `dex`
   - `protocol`
   - `pool_type`
+  - `fee_tier`
   - `enabled`
   - `priority`
   - `major_pool`
+  - `validation_required`
+  - `source_note`
   - `major_match_mode`
   - `notes`
   - 可选：`placeholder`
-- 可直接参考 `data/lp_pools.example.json`
+- `data/lp_pools.json` 既支持顶层数组，也支持按 section 分组的对象；`data/lp_pools.example.json` 现在就是 sectioned example
 - validator 会 canonicalize `BTC/WBTC/CBBTC -> BTC`、`SOL/WSOL -> SOL`、`USDC/USDC.E -> USDC`
 - placeholder 地址必须保持 `enabled=false`；coverage validator 会把 `placeholder_enabled` 当成 malformed entry
-- malformed address 不会被静默忽略；duplicate pool address 和同 pair 同 priority 会给 warning
+- malformed address 不会被静默忽略；duplicate pool address、unsupported chain、validator failure 和同 pair 同 priority 都会给 warning
 
 CLMM replay fixture 分两层：
 - `app/test_fixtures/clmm/` 是 normalized replay，直接对齐 parser 当前稳定输入接口
@@ -150,7 +154,9 @@ SQLite mirror / query layer：
   - `SQLITE_TELEGRAM_DELIVERY_MODE=slim`
   - `SQLITE_MARKET_CONTEXT_ATTEMPT_MODE=slim`
   - `SQLITE_CASE_FOLLOWUP_MODE=slim`
+  - `SQLITE_FULL_JSON_RETENTION_DAYS=3`
   - `signals / outcomes / trade_opportunities / asset_market_states / quality_stats` 保持 `full`
+- `raw_events / parsed_events / delivery_audit / telegram_deliveries` 新写入会补 `archive_path / archive_date / payload_hash / payload_mode`，用于后续安全 compact；`market_context_attempts` 至少保留 `payload_hash / payload_mode`
 - 迁移是可重复执行的；去重基于 `event_id / signal_id / signal_archive_key / trade_opportunity_id` 等主键，不会要求一次性迁完全部历史
 - 即使启用 SQLite，raw_events / parsed_events / signals / delivery_audit / case_followups 仍继续写 NDJSON archive；asset cases / asset market states / quality stats / trade opportunities 仍保留 JSON cache
 - 不建议删除旧 archive/cache：它们仍是兼容层、恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
@@ -180,27 +186,43 @@ SQLite mirror / query layer：
 
 majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
-- 本地扩 `data/lp_pools.json` 时优先补 `ETH / BTC / SOL` 对 `USDT / USDC` 主池
-- 下一轮研究采样明确优先补 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC`，以及更多已验证的 `ETH` 主池
+- 当前第一优先级是补 Ethereum BTC majors：
+  - `WBTC/USDC` Uniswap v3 `0.3%`
+  - `WBTC/USDC` Uniswap v3 `0.05%`
+  - `WBTC/USDT` Uniswap v3 `0.3%`
+  - 可选 `USDC/cbBTC`
+- `data/lp_pools.example.json` 已按 section 提供公开候选：
+  - `ethereum_btc_major_pools`
+  - `optional_ethereum_cbbtc_pools`
+  - `solana_sol_major_candidates`
+  - `base_sol_evm_candidates`
+- 当前系统运行态默认只把 `chain=ethereum` 的 pool 视作 active scan 候选；Solana 原生池和 Base 池只做 coverage / warning，不会误算进 Ethereum majors
 - `python -m app.quality_reports --major-pool-coverage` 现在会额外输出：
   - `covered_major_pairs`
   - `missing_major_pairs`
   - `configured_but_disabled_major_pools`
+  - `configured_but_unsupported_chain`
+  - `configured_but_validation_failed`
   - `placeholder_major_pool_entries`
   - `malformed_major_pool_entries`
   - `enabled_major_pools`
   - `active_recent_major_pairs`
   - `no_recent_signal_major_pairs`
   - `recommended_local_config_actions`
-- 本地补 BTC/SOL 主池的最小流程：
-  - 以 `data/lp_pools.example.json` 为模板，把 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC` 复制到私有 `data/lp_pools.json`
-  - 填真实 `pool_address`；不要伪造地址，也不要把 placeholder 当 enabled pool
-  - 核对 `chain / dex / protocol / pool_type / base_symbol / quote_symbol / canonical_asset`
-  - 只有确认 metadata 正确后才把 `enabled=false` 改成 `enabled=true`
-  - 重启当前 research/listener 进程，让 `lp_registry` 重新加载本地 `data/lp_pools.json`
+- 本地启用流程：
+  - 复制 `data/lp_pools.example.json` 中需要的 entry 到私有 `data/lp_pools.json`；可以复制整段 section，也可以只拷单个条目
+  - 先启用 Ethereum BTC pools；`enabled=true` 前必须确认 `chain / dex / protocol / pool_type / base_symbol / quote_symbol / canonical_asset / fee_tier`
   - 运行 `./venv/bin/python -m app.quality_reports --major-pool-coverage`
-  - 看到 `enabled_major_pools` 中出现目标 pair，且 `placeholder_major_pool_entries / malformed_major_pool_entries` 没有对应条目，才算配置通过
-  - 跑一轮 research 默认流程后，再看 `active_recent_major_pairs` 是否出现目标 pair；如果仍在 `no_recent_signal_major_pairs`，先排查 listener 是否扫到该池
+  - 确认 validator 通过：`token0 / token1 / fee / factory` 没有落到 `configured_but_validation_failed`
+  - 确认没有进入 `configured_but_unsupported_chain / malformed_major_pool_entries / placeholder_major_pool_entries`
+  - 重启当前 research/listener 进程，让 `lp_registry` 重新加载本地 `data/lp_pools.json`
+  - 跑一轮 research 默认流程后，再看目标 pair 是否从 `enabled_major_pools` 迁移到 `active_recent_major_pairs`
+- Solana 原生池不是 Ethereum 池：
+  - Orca / Raydium 的 `SOL/USDC` 需要 Solana listener/parser
+  - 不要把 Solana base58 pool address 放进 Ethereum scanner
+- Base `SOL/USDC` 是 EVM，但不是 Ethereum mainnet：
+  - 需要 Base RPC/listener
+  - 当前 Ethereum-only 运行态下只会显示 `configured_but_unsupported_chain`
 - 如何确认 listener 扫到了对应池：
   - `major-pool-coverage` 中目标 pair 先进入 `enabled_major_pools`
   - 跑过一轮 research/live 采样后，目标 pair 应从 `no_recent_signal_major_pairs` 迁移到 `active_recent_major_pairs`

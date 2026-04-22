@@ -14,6 +14,11 @@ from filter import format_address_label, strategy_role_group
 from lp_analyzer import canonicalize_pool_semantic_key
 from models import Event, Signal
 from trade_action import apply_trade_action
+from trade_opportunity import (
+    ASSET_STATE_OPPORTUNITY_KEYS,
+    canonical_final_trading_output_label,
+    legacy_output_requires_opportunity_gate,
+)
 from user_tiers import get_user_tier_profile, should_use_asset_case_primary
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -853,55 +858,20 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
     return _join_lines(lines)
 
 
-def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
-    final_source = _final_trading_output_source(context)
-    if final_source == "trade_opportunity":
-        return _trade_opportunity_message(signal, event, context)
-    if final_source in {"asset_market_state", "trade_action_legacy"}:
-        context = _ensure_lp_trade_action(signal, event, context)
-        pair_or_pool = _lp_case_label(context)
-        action_label = str(context.get("final_trading_output_label") or _trade_action_label(context, event))
-        conclusion = _trade_action_conclusion(context, event)
-        evidence = _trade_action_evidence_line(signal, context)
-        reason = _trade_action_reason(context, event)
-        required_confirmation = _trade_action_required_confirmation(context)
-        invalidation = _trade_action_invalidated_by(context)
-        latency_ms = int(
-            context.get("lp_end_to_end_latency_ms")
-            or context.get("lp_detect_latency_ms")
-            or 0
-        )
-        template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
-        user_tier = str(context.get("user_tier") or "research")
-        quality_hint = str(context.get("quality_score_brief") or "").strip() or "-"
-        show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
-
-        lines = [
-            f"{action_label}｜{pair_or_pool}｜{conclusion}",
-            f"证据：{evidence}",
-            f"为什么：{reason}",
-            f"触发：{required_confirmation}",
-            f"失效：{invalidation}",
-        ]
-        if show_debug:
-            debug_parts = [
-                f"调试：stage={str(context.get('lp_alert_stage') or '-')}",
-                f"scope={str(context.get('lp_confirm_scope') or '-')}",
-                f"context={str(context.get('market_context_source') or 'unavailable')}",
-                f"quality={quality_hint}",
-                f"latency={latency_ms}ms",
-            ]
-            lines.append("｜".join(debug_parts))
-        return _join_lines(lines)
-    if _has_trade_opportunity(context):
-        return _trade_opportunity_message(signal, event, context)
-    context = _ensure_lp_trade_action(signal, event, context)
+def _lp_action_message(
+    signal: Signal,
+    event: Event,
+    context: dict,
+    *,
+    action_label: str,
+    conclusion: str | None = None,
+    reason_override: str | None = None,
+    required_confirmation_override: str | None = None,
+) -> str:
     pair_or_pool = _lp_case_label(context)
-    action_label = _trade_action_label(context, event)
-    conclusion = _trade_action_conclusion(context, event)
     evidence = _trade_action_evidence_line(signal, context)
-    reason = _trade_action_reason(context, event)
-    required_confirmation = _trade_action_required_confirmation(context)
+    reason = str(reason_override or _trade_action_reason(context, event))
+    required_confirmation = str(required_confirmation_override or _trade_action_required_confirmation(context))
     invalidation = _trade_action_invalidated_by(context)
     latency_ms = int(
         context.get("lp_end_to_end_latency_ms")
@@ -914,7 +884,7 @@ def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
     show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
 
     lines = [
-        f"{action_label}｜{pair_or_pool}｜{conclusion}",
+        f"{action_label}｜{pair_or_pool}｜{conclusion or _trade_action_conclusion(context, event)}",
         f"证据：{evidence}",
         f"为什么：{reason}",
         f"触发：{required_confirmation}",
@@ -930,6 +900,75 @@ def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
         ]
         lines.append("｜".join(debug_parts))
     return _join_lines(lines)
+
+
+def _legacy_action_requires_opportunity_gate(context: dict) -> bool:
+    labels = [
+        str(context.get("trade_action_label") or ""),
+        str(context.get("asset_market_state_label") or ""),
+        str(context.get("final_trading_output_label") or ""),
+        str(context.get("headline_label") or ""),
+        str(context.get("market_state_label") or ""),
+    ]
+    return legacy_output_requires_opportunity_gate(
+        trade_action_key=str(context.get("trade_action_key") or ""),
+        asset_market_state_key=str(context.get("asset_market_state_key") or ""),
+        labels=labels,
+    )
+
+
+def _legacy_gate_wait_message(signal: Signal, event: Event, context: dict) -> str:
+    return _lp_action_message(
+        signal,
+        event,
+        context,
+        action_label="等待确认",
+        conclusion="旧动作层仅作内部证据",
+        required_confirmation_override="等待后验证明 / 等待触发条件",
+    )
+
+
+def _lp_stage_first_message(signal: Signal, event: Event, context: dict) -> str:
+    final_source = _final_trading_output_source(context)
+    if final_source == "trade_opportunity":
+        return _trade_opportunity_message(signal, event, context)
+    if _has_trade_opportunity(context):
+        return _trade_opportunity_message(signal, event, context)
+    if final_source in {"asset_market_state", "trade_action_legacy"}:
+        context = _ensure_lp_trade_action(signal, event, context)
+        if _legacy_action_requires_opportunity_gate(context):
+            status = _trade_opportunity_status(context)
+            side = str(context.get("trade_opportunity_side") or "NONE")
+            blocker = str(context.get("trade_opportunity_primary_blocker") or "")
+            if status in {"VERIFIED", "CANDIDATE", "BLOCKED"}:
+                context = dict(context)
+                context["final_trading_output_label"] = canonical_final_trading_output_label(status, side, blocker)
+                return _trade_opportunity_message(signal, event, context)
+            return _legacy_gate_wait_message(signal, event, context)
+        return _lp_action_message(
+            signal,
+            event,
+            context,
+            action_label=str(context.get("final_trading_output_label") or _trade_action_label(context, event)),
+        )
+    asset_state_key = str(context.get("asset_market_state_key") or "").strip().upper()
+    if asset_state_key and asset_state_key not in ASSET_STATE_OPPORTUNITY_KEYS:
+        context = _ensure_lp_trade_action(signal, event, context)
+        return _lp_action_message(
+            signal,
+            event,
+            context,
+            action_label=str(context.get("asset_market_state_label") or _trade_action_label(context, event)),
+        )
+    context = _ensure_lp_trade_action(signal, event, context)
+    if _legacy_action_requires_opportunity_gate(context):
+        return _legacy_gate_wait_message(signal, event, context)
+    return _lp_action_message(
+        signal,
+        event,
+        context,
+        action_label=_trade_action_label(context, event),
+    )
 
 
 def _is_downstream_early_warning(context: dict) -> bool:

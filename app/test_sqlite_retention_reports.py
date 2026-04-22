@@ -34,6 +34,7 @@ class SQLiteRetentionReportsTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_quality_report_cli_outputs_db_retention_payloads(self) -> None:
+        payloads = {}
         for argv in (["--db-size-breakdown"], ["--db-value-audit"], ["--db-retention-recommendation"]):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
@@ -41,6 +42,19 @@ class SQLiteRetentionReportsTests(unittest.TestCase):
             self.assertEqual(0, code)
             payload = json.loads(buffer.getvalue())
             self.assertIsInstance(payload, dict)
+            payloads[argv[0]] = payload
+        size_payload = payloads["--db-size-breakdown"]
+        self.assertIn("db_size_mb", size_payload)
+        self.assertIn("wal_size_mb", size_payload)
+        signals = next(item for item in size_payload["tables"] if item["table"] == "signals")
+        self.assertIn("table_size_mb", signals)
+        self.assertIn("json_payload_size_mb", signals)
+        value_audit = payloads["--db-value-audit"]
+        self.assertIn("estimated_compact_savings_mb", value_audit)
+        self.assertIn("long_term_slim_tables", value_audit)
+        retention = payloads["--db-retention-recommendation"]
+        self.assertIn("market_context_attempts", retention["recommended_modes"])
+        self.assertIn("recommended_actions", retention)
         reports_dir = self.root / "reports"
         self.assertTrue((reports_dir / "sqlite_data_value_audit_latest.json").exists())
         self.assertTrue((reports_dir / "sqlite_data_value_audit_latest.csv").exists())

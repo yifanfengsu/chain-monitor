@@ -1918,6 +1918,11 @@ def compute_telegram_suppression(lp_rows: list[dict[str, Any]]) -> dict[str, Any
 
 
 def compute_final_trading_output_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    legacy_chase_labels = {"可追多", "可追空", "可顺势追多", "可顺势追空"}
+    verified_terms = tuple(sorted(legacy_chase_labels | {"多头机会", "空头机会"}))
+    candidate_terms = ("多头候选", "空头候选")
+    blocked_terms = ("机会被阻止", "不追多", "不追空", "不交易")
+
     def _delivered(row: dict[str, Any]) -> bool:
         return bool(row.get("sent_to_telegram") or row.get("notifier_sent_at"))
 
@@ -1942,8 +1947,43 @@ def compute_final_trading_output_summary(lp_rows: list[dict[str, Any]]) -> dict[
                 return True
         return False
 
+    def _label_kind(text: str | None) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return "empty"
+        if normalized == "状态变化":
+            return "state_change"
+        if any(term in normalized for term in verified_terms):
+            return "verified_like"
+        if any(term in normalized for term in candidate_terms):
+            return "candidate_like"
+        if any(term in normalized for term in blocked_terms):
+            return "blocked_like"
+        return "informational"
+
+    def _any_chase_leak_surface(row: dict[str, Any]) -> bool:
+        surfaces = [
+            str(row.get("final_trading_output_label") or ""),
+            str(row.get("notifier_line1") or ""),
+        ]
+        if not _audited(row):
+            surfaces.extend(
+                [
+                    str(row.get("trade_action_label") or ""),
+                    str(row.get("asset_market_state_label") or ""),
+                ]
+            )
+        if str(row.get("final_trading_output_source") or "").strip() == "trade_action_legacy":
+            return True
+        return any(
+            surface in legacy_chase_labels
+            or surface.startswith(tuple(f"{label}｜" for label in legacy_chase_labels))
+            for surface in surfaces
+        )
+
     audited_rows = [row for row in lp_rows if _audited(row)]
-    delivered_rows = [row for row in audited_rows if _delivered(row)]
+    delivered_rows = [row for row in lp_rows if _delivered(row)]
+    audited_delivered_rows = [row for row in audited_rows if _delivered(row)]
     distribution = Counter(str(row.get("final_trading_output_source") or "missing") for row in audited_rows)
     gate_failures = Counter(
         str(row.get("opportunity_gate_failure_reason") or "")
@@ -1953,33 +1993,29 @@ def compute_final_trading_output_summary(lp_rows: list[dict[str, Any]]) -> dict[
     opportunity_label_without_verified = [
         row
         for row in delivered_rows
-        if "机会" in str(row.get("final_trading_output_label") or "")
+        if _label_kind(str(row.get("final_trading_output_label") or row.get("notifier_line1") or "")) == "verified_like"
         and _status(row) != "VERIFIED"
     ]
     candidate_label_without_candidate = [
         row
         for row in delivered_rows
-        if "候选" in str(row.get("final_trading_output_label") or "")
+        if _label_kind(str(row.get("final_trading_output_label") or row.get("notifier_line1") or "")) == "candidate_like"
         and _status(row) != "CANDIDATE"
     ]
     legacy_chase_leaked_rows = [
         row
         for row in delivered_rows
         if str(row.get("trade_action_key") or "") in LEGACY_CHASE_ACTION_KEYS
-        and (
-            str(row.get("final_trading_output_source") or "") == "trade_action_legacy"
-            or str(row.get("final_trading_output_label") or "") in {"可顺势追多", "可顺势追空"}
-            or str(row.get("notifier_line1") or "").startswith(("可顺势追多｜", "可顺势追空｜"))
-        )
+        and _any_chase_leak_surface(row)
     ]
     blocked_legacy_chase_rows = [
         row
-        for row in audited_rows
+        for row in lp_rows
         if str(row.get("trade_action_key") or "") in LEGACY_CHASE_ACTION_KEYS
         and _status(row) == "BLOCKED"
     ]
     audited_legacy_chase_rows = [
-        row for row in audited_rows if str(row.get("trade_action_key") or "") in LEGACY_CHASE_ACTION_KEYS
+        row for row in lp_rows if str(row.get("trade_action_key") or "") in LEGACY_CHASE_ACTION_KEYS
     ]
     return {
         "final_trading_output_audited_row_count": len(audited_rows),
@@ -1987,27 +2023,36 @@ def compute_final_trading_output_summary(lp_rows: list[dict[str, Any]]) -> dict[
         "final_trading_output_distribution": dict(sorted(distribution.items())),
         "delivered_verified_count": sum(
             1
-            for row in delivered_rows
+            for row in audited_delivered_rows
             if str(row.get("final_trading_output_source") or "") == "trade_opportunity" and _status(row) == "VERIFIED"
         ),
         "delivered_candidate_count": sum(
             1
-            for row in delivered_rows
+            for row in audited_delivered_rows
             if str(row.get("final_trading_output_source") or "") == "trade_opportunity" and _status(row) == "CANDIDATE"
         ),
         "delivered_blocked_count": sum(
             1
-            for row in delivered_rows
+            for row in audited_delivered_rows
             if str(row.get("final_trading_output_source") or "") == "trade_opportunity" and _status(row) == "BLOCKED"
         ),
         "delivered_legacy_chase_count": sum(
             1
             for row in delivered_rows
             if str(row.get("trade_action_key") or "") in LEGACY_CHASE_ACTION_KEYS
-            and str(row.get("final_trading_output_source") or "") == "trade_action_legacy"
+            and _any_chase_leak_surface(row)
         ),
         "legacy_chase_downgraded_count": sum(1 for row in audited_rows if row.get("legacy_chase_downgraded")),
         "legacy_chase_leaked_count": len(legacy_chase_leaked_rows),
+        "messages_blocked_by_opportunity_gate": sum(
+            1
+            for row in lp_rows
+            if not _delivered(row)
+            and (
+                (row.get("opportunity_gate_required") and not row.get("opportunity_gate_passed"))
+                or str(row.get("opportunity_gate_failure_reason") or "").strip() != ""
+            )
+        ),
         "opportunity_gate_failures": dict(sorted(gate_failures.items())),
         "trade_action_chase_without_opportunity_count": sum(
             1
@@ -3127,7 +3172,7 @@ def build_markdown(
         f"- final output 分布：`{final_outputs['final_trading_output_distribution']}`；verified=`{final_outputs['delivered_verified_count']}` candidate=`{final_outputs['delivered_candidate_count']}` blocked=`{final_outputs['delivered_blocked_count']}`。"
     )
     lines.append(
-        f"- legacy chase 审计：downgraded=`{final_outputs['legacy_chase_downgraded_count']}` leaked=`{final_outputs['legacy_chase_leaked_count']}` chase_without_verified=`{final_outputs['trade_action_chase_without_opportunity_count']}`。"
+        f"- legacy chase 审计：downgraded=`{final_outputs['legacy_chase_downgraded_count']}` leaked=`{final_outputs['legacy_chase_leaked_count']}` chase_without_verified=`{final_outputs['trade_action_chase_without_opportunity_count']}` blocked_by_gate=`{final_outputs['messages_blocked_by_opportunity_gate']}`。"
     )
     lines.append(
         f"- 验证问题：all_opportunity_labels_verified=`{final_outputs['all_opportunity_labels_verified']}` all_candidate_labels_are_candidate=`{final_outputs['all_candidate_labels_are_candidate']}` blocked_covers_legacy_chase_risk=`{final_outputs['blocked_covers_legacy_chase_risk']}`。"

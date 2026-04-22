@@ -2075,7 +2075,7 @@ def build_markdown(
     lines.append(f"- `profiles_ready_for_verified={opportunities['profiles_ready_for_verified']}`")
     lines.append(f"- `estimated_samples_needed_for_verified_by_profile={opportunities['estimated_samples_needed_for_verified_by_profile']}`")
     lines.append(f"- `final_trading_output_distribution={final_outputs['final_trading_output_distribution']}`")
-    lines.append(f"- `legacy_chase_downgraded_count={final_outputs['legacy_chase_downgraded_count']}` `legacy_chase_leaked_count={final_outputs['legacy_chase_leaked_count']}`")
+    lines.append(f"- `legacy_chase_downgraded_count={final_outputs['legacy_chase_downgraded_count']}` `legacy_chase_leaked_count={final_outputs['legacy_chase_leaked_count']}` `messages_blocked_by_opportunity_gate={final_outputs['messages_blocked_by_opportunity_gate']}`")
     lines.append(f"- `all_opportunity_labels_verified={final_outputs['all_opportunity_labels_verified']}` `all_candidate_labels_are_candidate={final_outputs['all_candidate_labels_are_candidate']}` `blocked_covers_legacy_chase_risk={final_outputs['blocked_covers_legacy_chase_risk']}`")
     lines.append(f"- `blocker_effectiveness={opportunities['blocker_effectiveness']}`")
     lines.append(f"- `hard_blocker_distribution={opportunities['hard_blocker_distribution']}`")
@@ -2339,7 +2339,8 @@ def main() -> int:
             (
                 f"legacy chase 审计：downgraded={final_outputs['legacy_chase_downgraded_count']} "
                 f"leaked={final_outputs['legacy_chase_leaked_count']} "
-                f"gate_failures={final_outputs['opportunity_gate_failures']}."
+                f"gate_failures={final_outputs['opportunity_gate_failures']} "
+                f"blocked_by_gate={final_outputs['messages_blocked_by_opportunity_gate']}."
             ),
         ]
     )

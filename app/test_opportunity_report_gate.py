@@ -64,11 +64,12 @@ class OpportunityReportGateTests(unittest.TestCase):
         self.assertEqual(0, summary["legacy_chase_leaked_count"])
         self.assertEqual(0, summary["delivered_legacy_chase_count"])
         self.assertEqual(3, summary["legacy_chase_downgraded_count"])
+        self.assertEqual(1, summary["messages_blocked_by_opportunity_gate"])
         self.assertTrue(summary["all_opportunity_labels_verified"])
         self.assertTrue(summary["all_candidate_labels_are_candidate"])
         self.assertTrue(summary["blocked_covers_legacy_chase_risk"])
 
-    def test_report_ignores_historical_rows_without_unified_audit_fields(self) -> None:
+    def test_report_detects_historical_legacy_chase_leak_without_unified_audit_fields(self) -> None:
         summary = compute_final_trading_output_summary(
             [
                 {
@@ -84,8 +85,9 @@ class OpportunityReportGateTests(unittest.TestCase):
 
         self.assertEqual(0, summary["final_trading_output_audited_row_count"])
         self.assertEqual(1, summary["final_trading_output_unaudited_row_count"])
-        self.assertEqual(0, summary["legacy_chase_leaked_count"])
-        self.assertEqual(0, summary["delivered_legacy_chase_count"])
+        self.assertEqual(1, summary["legacy_chase_leaked_count"])
+        self.assertEqual(1, summary["delivered_legacy_chase_count"])
+        self.assertEqual(1, summary["trade_action_chase_without_opportunity_count"])
 
 
 if __name__ == "__main__":

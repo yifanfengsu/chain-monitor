@@ -51,17 +51,19 @@ class SQLiteCompactModeTests(unittest.TestCase):
             )
         )
         row = self.conn.execute(
-            "SELECT raw_json, archive_path, payload_hash FROM raw_events WHERE event_id='raw-index'"
+            "SELECT raw_json, archive_path, payload_hash, payload_mode FROM raw_events WHERE event_id='raw-index'"
         ).fetchone()
         self.assertIsNone(row["raw_json"])
         self.assertTrue(str(row["archive_path"] or "").endswith(".ndjson"))
         self.assertTrue(str(row["payload_hash"] or "").strip())
+        self.assertEqual("index_only", row["payload_mode"])
         row = self.conn.execute(
-            "SELECT parsed_json, archive_path, payload_hash FROM parsed_events WHERE event_id='parsed-index'"
+            "SELECT parsed_json, archive_path, payload_hash, payload_mode FROM parsed_events WHERE event_id='parsed-index'"
         ).fetchone()
         self.assertIsNone(row["parsed_json"])
         self.assertTrue(str(row["archive_path"] or "").endswith(".ndjson"))
         self.assertTrue(str(row["payload_hash"] or "").strip())
+        self.assertEqual("index_only", row["payload_mode"])
 
     def test_delivery_and_telegram_slim_do_not_store_full_payload(self) -> None:
         self.assertTrue(
@@ -71,6 +73,12 @@ class SQLiteCompactModeTests(unittest.TestCase):
                     "signal_id": "sig-slim",
                     "asset_symbol": "ETH",
                     "stage": "candidate",
+                    "delivery_decision": "suppress",
+                    "reason": "duplicate_signal",
+                    "telegram_suppression_reason": "duplicate_signal",
+                    "notifier_variant": "research",
+                    "notifier_template": "candidate_v2",
+                    "sent_to_telegram": False,
                     "archive_written_at": 1_710_000_020,
                 }
             )
@@ -87,17 +95,53 @@ class SQLiteCompactModeTests(unittest.TestCase):
             )
         )
         audit_row = self.conn.execute(
-            "SELECT audit_json, archive_path, payload_hash FROM delivery_audit WHERE audit_id='audit-slim'"
+            """
+            SELECT audit_json,
+                   archive_path,
+                   payload_hash,
+                   payload_mode,
+                   delivery_decision,
+                   reason,
+                   sent_to_telegram,
+                   suppressed,
+                   notifier_variant,
+                   notifier_template
+            FROM delivery_audit
+            WHERE audit_id='audit-slim'
+            """
         ).fetchone()
         self.assertIsNone(audit_row["audit_json"])
         self.assertTrue(str(audit_row["archive_path"] or "").endswith(".ndjson"))
         self.assertTrue(str(audit_row["payload_hash"] or "").strip())
+        self.assertEqual("slim", audit_row["payload_mode"])
+        self.assertEqual("suppress", audit_row["delivery_decision"])
+        self.assertEqual("duplicate_signal", audit_row["reason"])
+        self.assertEqual(0, audit_row["sent_to_telegram"])
+        self.assertEqual(1, audit_row["suppressed"])
+        self.assertEqual("research", audit_row["notifier_variant"])
+        self.assertEqual("candidate_v2", audit_row["notifier_template"])
         telegram_row = self.conn.execute(
-            "SELECT message_json, archive_path, payload_hash FROM telegram_deliveries WHERE telegram_delivery_id='tg-slim'"
+            """
+            SELECT message_json,
+                   archive_path,
+                   payload_hash,
+                   payload_mode,
+                   headline,
+                   sent,
+                   suppressed,
+                   suppression_reason
+            FROM telegram_deliveries
+            WHERE telegram_delivery_id='tg-slim'
+            """
         ).fetchone()
         self.assertIsNone(telegram_row["message_json"])
         self.assertTrue(str(telegram_row["archive_path"] or "").endswith(".ndjson"))
         self.assertTrue(str(telegram_row["payload_hash"] or "").strip())
+        self.assertEqual("slim", telegram_row["payload_mode"])
+        self.assertEqual("多头候选", telegram_row["headline"])
+        self.assertEqual(0, telegram_row["sent"])
+        self.assertIsNone(telegram_row["suppressed"])
+        self.assertIsNone(telegram_row["suppression_reason"])
 
     def test_core_signal_outcome_opportunity_rows_still_keep_full_analysis_payload(self) -> None:
         self.assertTrue(

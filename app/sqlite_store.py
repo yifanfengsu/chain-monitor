@@ -598,6 +598,23 @@ def _payload_meta(category: str, data: dict[str, Any], envelope: dict[str, Any])
     return archive_path, archive_date, payload_hash
 
 
+def _suppressed_flag(sent: int | None, reason: str | None) -> int | None:
+    if str(reason or "").strip():
+        return 1
+    if sent is None:
+        return None
+    return 0
+
+
+def _telegram_archive_category(data: dict[str, Any]) -> str:
+    explicit = str(_first(data, "archive_category") or "").strip()
+    if explicit in ARCHIVE_CATEGORY_TABLES:
+        return explicit
+    if str(_first(data, "delivery_audit_id", "audit_id") or "").strip():
+        return "delivery_audit"
+    return "signals"
+
+
 def _row_mode(mode: str, allowed: tuple[str, ...], default: str) -> str:
     normalized = str(mode or "").strip().lower()
     return normalized if normalized in allowed else default
@@ -750,6 +767,7 @@ def migrate_schema() -> bool:
                 listener_scan_path TEXT,
                 captured_at REAL,
                 raw_json TEXT,
+                payload_mode TEXT,
                 created_at REAL,
                 updated_at REAL
             );
@@ -771,6 +789,7 @@ def migrate_schema() -> bool:
                 pool_address TEXT,
                 parsed_at REAL,
                 parsed_json TEXT,
+                payload_mode TEXT,
                 created_at REAL,
                 updated_at REAL
             );
@@ -880,6 +899,8 @@ def migrate_schema() -> bool:
                 success INTEGER,
                 failure_reason TEXT,
                 latency_ms REAL,
+                payload_hash TEXT,
+                payload_mode TEXT,
                 created_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_market_context_attempts_signal_id ON market_context_attempts(signal_id);
@@ -1126,6 +1147,7 @@ def migrate_schema() -> bool:
                 telegram_update_kind TEXT,
                 chat_id_hash TEXT,
                 message_json TEXT,
+                payload_mode TEXT,
                 created_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_telegram_deliveries_signal_id ON telegram_deliveries(signal_id);
@@ -1166,6 +1188,13 @@ def migrate_schema() -> bool:
                 event_id TEXT,
                 trade_opportunity_id TEXT,
                 asset TEXT,
+                delivery_decision TEXT,
+                reason TEXT,
+                sent_to_telegram INTEGER,
+                suppressed INTEGER,
+                notifier_variant TEXT,
+                notifier_template TEXT,
+                timestamp REAL,
                 stage TEXT,
                 gate_reason TEXT,
                 delivered INTEGER,
@@ -1173,6 +1202,7 @@ def migrate_schema() -> bool:
                 telegram_update_kind TEXT,
                 suppression_reason TEXT,
                 audit_json TEXT,
+                payload_mode TEXT,
                 archive_written_at REAL,
                 created_at REAL,
                 updated_at REAL
@@ -1192,6 +1222,7 @@ def migrate_schema() -> bool:
                 should_notify INTEGER,
                 reason TEXT,
                 followup_json TEXT,
+                payload_mode TEXT,
                 archive_written_at REAL,
                 created_at REAL,
                 updated_at REAL
@@ -1208,6 +1239,7 @@ def migrate_schema() -> bool:
                 "archive_path": "TEXT",
                 "archive_date": "TEXT",
                 "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
             },
         )
         _ensure_columns(
@@ -1217,15 +1249,32 @@ def migrate_schema() -> bool:
                 "archive_path": "TEXT",
                 "archive_date": "TEXT",
                 "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "market_context_attempts",
+            {
+                "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
             },
         )
         _ensure_columns(
             conn,
             "delivery_audit",
             {
+                "delivery_decision": "TEXT",
+                "reason": "TEXT",
+                "sent_to_telegram": "INTEGER",
+                "suppressed": "INTEGER",
+                "notifier_variant": "TEXT",
+                "notifier_template": "TEXT",
+                "timestamp": "REAL",
                 "archive_path": "TEXT",
                 "archive_date": "TEXT",
                 "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
             },
         )
         _ensure_columns(
@@ -1235,6 +1284,7 @@ def migrate_schema() -> bool:
                 "archive_path": "TEXT",
                 "archive_date": "TEXT",
                 "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
             },
         )
         _ensure_columns(
@@ -1244,6 +1294,7 @@ def migrate_schema() -> bool:
                 "archive_path": "TEXT",
                 "archive_date": "TEXT",
                 "payload_hash": "TEXT",
+                "payload_mode": "TEXT",
             },
         )
         _ensure_columns(
@@ -1436,6 +1487,7 @@ def write_raw_event(record: Any) -> bool:
             "archive_path": archive_path,
             "archive_date": archive_date,
             "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": now,
             "updated_at": now,
         },
@@ -1480,6 +1532,7 @@ def write_parsed_event(record: Any) -> bool:
             "archive_path": archive_path,
             "archive_date": archive_date,
             "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": now,
             "updated_at": now,
         },
@@ -1628,6 +1681,9 @@ def write_delivery_audit(record: Any) -> bool:
     audit_id = str(_first(data, "audit_id", "delivery_audit_id") or "").strip()
     if not audit_id:
         audit_id = "audit_" + _hash({"signal_id": signal_id, "stage": _first(data, "stage"), "ts": archive_written_at, "data": data})[:16]
+    sent_to_telegram = _bool_int(_first(data, "sent_to_telegram", "delivered_notification", "delivered"))
+    suppression_reason = _text(_first(data, "telegram_suppression_reason", "suppression_reason"))
+    timestamp_value = _real(_first(data, "timestamp", "archive_written_at", "ts", "created_at")) or archive_written_at
     ok = _upsert(
         "delivery_audit",
         {
@@ -1636,12 +1692,19 @@ def write_delivery_audit(record: Any) -> bool:
             "event_id": _text(_first(data, "event_id")),
             "trade_opportunity_id": _text(_first(data, "trade_opportunity_id")),
             "asset": _text(_first(data, "asset_symbol", "asset")),
+            "delivery_decision": _text(_first(data, "delivery_decision", "delivery_reason", "delivery_class")),
+            "reason": _text(_first(data, "reason", "gate_reason", "delivery_reason", "suppression_reason")),
+            "sent_to_telegram": sent_to_telegram,
+            "suppressed": _suppressed_flag(sent_to_telegram, suppression_reason),
+            "notifier_variant": _text(_first(data, "notifier_variant", "message_variant")),
+            "notifier_template": _text(_first(data, "notifier_template", "message_template", "template")),
+            "timestamp": timestamp_value,
             "stage": _text(_first(data, "stage")),
             "gate_reason": _text(_first(data, "gate_reason", "delivery_reason")),
-            "delivered": _bool_int(_first(data, "delivered_notification", "delivered", "sent_to_telegram")),
+            "delivered": sent_to_telegram,
             "notifier_sent_at": _real(_first(data, "notifier_sent_at")),
             "telegram_update_kind": _text(_first(data, "telegram_update_kind")),
-            "suppression_reason": _text(_first(data, "telegram_suppression_reason", "suppression_reason")),
+            "suppression_reason": suppression_reason,
             "final_trading_output_source": _text(_first(data, "final_trading_output_source")),
             "final_trading_output_label": _text(_first(data, "final_trading_output_label")),
             "final_trading_output_allowed": _bool_int(_first(data, "final_trading_output_allowed")),
@@ -1655,13 +1718,17 @@ def write_delivery_audit(record: Any) -> bool:
             "archive_path": archive_path,
             "archive_date": archive_date,
             "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": now,
             "updated_at": now,
         },
         ("audit_id",),
     )
     if ok:
-        write_telegram_delivery(data)
+        telegram_payload = dict(data)
+        telegram_payload.setdefault("delivery_audit_id", audit_id)
+        telegram_payload.setdefault("archive_category", "delivery_audit")
+        write_telegram_delivery(telegram_payload)
     return ok
 
 
@@ -1697,6 +1764,7 @@ def write_case_followup(record: Any) -> bool:
             "archive_path": archive_path,
             "archive_date": archive_date,
             "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": now,
             "updated_at": now,
         },
@@ -2243,6 +2311,7 @@ def write_market_context_attempt(record: Any) -> bool:
     if mode == "aggregate" and not str(data.get("attempt_id") or "").strip():
         return False
     created_at = _real(data.get("created_at") or data.get("ts")) or _now()
+    payload_hash = _payload_hash(data)
     signal_id = str(data.get("signal_id") or "").strip()
     venue = str(data.get("venue") or "").strip()
     endpoint = str(data.get("endpoint") or "").strip()
@@ -2265,6 +2334,8 @@ def write_market_context_attempt(record: Any) -> bool:
             "success": 1 if status == "success" or bool(data.get("success")) else 0,
             "failure_reason": _text(data.get("failure_reason")),
             "latency_ms": _real(data.get("latency_ms")),
+            "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": created_at,
         },
         ("attempt_id",),
@@ -2275,7 +2346,7 @@ def write_telegram_delivery(record: Any) -> bool:
     mode = _mode_for_table("telegram_deliveries")
     if mode == "off":
         return False
-    data, _envelope = _unwrap(record)
+    data, envelope = _unwrap(record)
     if not data:
         return False
     signal_id = str(_first(data, "signal_id") or "").strip()
@@ -2285,7 +2356,7 @@ def write_telegram_delivery(record: Any) -> bool:
         return False
     sent_at = _real(_first(data, "notifier_sent_at", "sent_at"))
     created_at = _real(_first(data, "archive_written_at", "timestamp", "ts")) or _now()
-    archive_path, archive_date, payload_hash = _payload_meta("signals", data, {})
+    archive_path, archive_date, payload_hash = _payload_meta(_telegram_archive_category(data), data, envelope)
     delivery_id = str(_first(data, "telegram_delivery_id") or "").strip()
     if not delivery_id:
         delivery_id = "tg_" + _hash({"signal_id": signal_id, "sent_at": sent_at, "suppression": suppressed_reason, "created_at": created_at})[:16]
@@ -2300,7 +2371,7 @@ def write_telegram_delivery(record: Any) -> bool:
             "headline": _text(_first(data, "headline", "final_trading_output_label", "headline_label", "market_state_label")),
             "sent": sent if sent is not None else 0,
             "sent_at": sent_at,
-            "suppressed": 1 if suppressed_reason else 0 if sent else None,
+            "suppressed": _suppressed_flag(sent, suppressed_reason),
             "suppression_reason": suppressed_reason or None,
             "telegram_update_kind": _text(_first(data, "telegram_update_kind")),
             "chat_id_hash": _text(_first(data, "chat_id_hash")),
@@ -2308,6 +2379,7 @@ def write_telegram_delivery(record: Any) -> bool:
             "archive_path": archive_path,
             "archive_date": archive_date,
             "payload_hash": payload_hash,
+            "payload_mode": mode,
             "created_at": created_at,
         },
         ("telegram_delivery_id",),
@@ -3287,7 +3359,7 @@ def db_retention_recommendation() -> dict[str, Any]:
     actions = [
         "signals/outcomes/opportunities/states/quality 保持 full，作为长期分析主数据",
         "raw_events / parsed_events 默认切到 index_only，full payload 交给 .ndjson/.ndjson.gz archive",
-        "delivery_audit / telegram_deliveries / case_followups 默认 slim，保留路由决策与 headline，不保留长期 full payload",
+        "delivery_audit / telegram_deliveries / market_context_attempts / case_followups 默认 slim，保留路由决策与关键诊断索引，不保留长期 full payload",
         "compact 前先确认 archive_path + payload_hash + archive 文件存在；没有备份不清 payload",
         "compact 后如需真正回收磁盘，再单独执行 vacuum",
     ]
@@ -3539,10 +3611,12 @@ def compact(*, dry_run: bool = True, table: str | None = None) -> dict[str, Any]
         return {"ok": False, "reason": "sqlite_compact_disabled"}
     target_tables = [table] if table else ["raw_events", "parsed_events", "delivery_audit", "telegram_deliveries", "case_followups"]
     summaries = [compact_table(name, dry_run=dry_run) for name in target_tables]
+    tables_compacted = [str(item.get("table")) for item in summaries if int(item.get("rows_compacted") or 0) > 0]
     return {
         "ok": all(bool(item.get("ok")) for item in summaries),
         "dry_run": bool(dry_run),
         "tables": {str(item.get("table")): item for item in summaries},
+        "tables_compacted": tables_compacted,
         "rows_examined": sum(int(item.get("rows_examined") or 0) for item in summaries),
         "rows_compacted": sum(int(item.get("rows_compacted") or 0) for item in summaries),
         "skipped_missing_archive": sum(int(item.get("skipped_missing_archive") or 0) for item in summaries),

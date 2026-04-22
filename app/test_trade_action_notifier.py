@@ -104,14 +104,15 @@ class TradeActionNotifierTests(unittest.TestCase):
         event.metadata.update(context)
         return signal
 
-    def test_first_line_starts_with_trade_action_label(self) -> None:
+    def test_first_line_downgrades_legacy_chase_to_wait_confirmation(self) -> None:
         event = self._event(intent_type="pool_buy_pressure")
         signal = self._signal(event)
         apply_trade_action(event, signal)
 
         message = format_signal_message(signal, event)
 
-        self.assertTrue(message.splitlines()[0].startswith("可顺势追多｜"))
+        self.assertTrue(message.splitlines()[0].startswith("等待确认｜"))
+        self.assertNotIn("可顺势追多", message)
 
     def test_long_chase_message_explains_why_long_is_allowed(self) -> None:
         event = self._event(intent_type="pool_buy_pressure")
@@ -130,7 +131,8 @@ class TradeActionNotifierTests(unittest.TestCase):
 
         message = format_signal_message(signal, event)
 
-        self.assertTrue(message.splitlines()[0].startswith("可顺势追空｜"))
+        self.assertTrue(message.splitlines()[0].startswith("等待确认｜"))
+        self.assertNotIn("可顺势追空", message)
         self.assertIn("为什么：", message)
 
     def test_do_not_chase_message_contains_reason_and_trigger(self) -> None:

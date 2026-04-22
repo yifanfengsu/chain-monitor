@@ -10,20 +10,24 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
         pools = normalize_lp_pool_entries(
             [
                 {
-                    "pool_address": "0x1111111111111111111111111111111111111111",
+                    "pool_address": "0x99ac8ca7087fa4a2a1fb6357269965a2014abc35",
                     "chain": "ethereum",
-                    "pair_label": "WBTC/USDC.E",
+                    "pair_label": "WBTC/USDC",
                     "base_symbol": "WBTC",
-                    "quote_symbol": "USDC.E",
+                    "quote_symbol": "USDC",
                     "canonical_asset": "BTC",
-                    "dex": "UnitTest",
-                    "protocol": "unit_test",
-                    "pool_type": "spot_lp",
+                    "quote_canonical": "USDC",
+                    "dex": "Uniswap",
+                    "protocol": "uniswap_v3",
+                    "pool_type": "clmm",
                     "enabled": True,
                     "priority": 1,
+                    "fee_tier": 3000,
                     "major_pool": True,
                     "major_match_mode": "major_family_match",
-                    "notes": "wbtc/usdce major pool",
+                    "validation_required": False,
+                    "source_note": "unit_test",
+                    "notes": "wbtc/usdc major pool",
                 },
                 {
                     "pool_address": "0x2222222222222222222222222222222222222222",
@@ -32,6 +36,7 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
                     "base_symbol": "WSOL",
                     "quote_symbol": "USDT",
                     "canonical_asset": "SOL",
+                    "quote_canonical": "USDT",
                     "dex": "UnitTest",
                     "protocol": "unit_test",
                     "pool_type": "spot_lp",
@@ -39,12 +44,14 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
                     "priority": 2,
                     "major_pool": True,
                     "major_match_mode": "major_family_match",
+                    "validation_required": False,
+                    "source_note": "unit_test",
                     "notes": "wsol/usdt major pool",
                 },
             ]
         )
 
-        btc_meta = pools["0x1111111111111111111111111111111111111111"]
+        btc_meta = pools["0x99ac8ca7087fa4a2a1fb6357269965a2014abc35"]
         sol_meta = pools["0x2222222222222222222222222222222222222222"]
 
         self.assertTrue(btc_meta["is_major_pool"])
@@ -68,6 +75,7 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
                     "base_symbol": "PEPE",
                     "quote_symbol": "USDC",
                     "canonical_asset": "PEPE",
+                    "quote_canonical": "USDC",
                     "dex": "UnitTest",
                     "protocol": "unit_test",
                     "pool_type": "spot_lp",
@@ -75,6 +83,8 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
                     "priority": 1,
                     "major_pool": False,
                     "major_match_mode": "non_major_pool",
+                    "validation_required": False,
+                    "source_note": "unit_test",
                     "notes": "non-major pool",
                 }
             ]
@@ -105,6 +115,50 @@ class LpRegistryMajorPoolsTests(unittest.TestCase):
         self.assertEqual("BTC", meta["major_base_symbol"])
         self.assertEqual("USDC", meta["major_quote_symbol"])
         self.assertTrue(meta["is_primary_trend_pool"])
+
+    def test_base_and_solana_candidates_do_not_enter_runtime_registry(self) -> None:
+        pools = normalize_lp_pool_entries(
+            [
+                {
+                    "pool_address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+                    "chain": "solana",
+                    "pair_label": "SOL/USDC",
+                    "base_symbol": "SOL",
+                    "quote_symbol": "USDC",
+                    "canonical_asset": "SOL",
+                    "quote_canonical": "USDC",
+                    "dex": "Orca",
+                    "protocol": "orca_whirlpool",
+                    "pool_type": "clmm",
+                    "enabled": True,
+                    "priority": 1,
+                    "major_pool": True,
+                    "validation_required": False,
+                    "source_note": "unit_test",
+                    "notes": "solana candidate",
+                },
+                {
+                    "pool_address": "0x1cca8388e671e83010843a1a0535b04f2d7e946b",
+                    "chain": "base",
+                    "pair_label": "SOL/USDC",
+                    "base_symbol": "SOL",
+                    "quote_symbol": "USDC",
+                    "canonical_asset": "SOL",
+                    "quote_canonical": "USDC",
+                    "dex": "Uniswap",
+                    "protocol": "uniswap_v3",
+                    "pool_type": "clmm",
+                    "enabled": True,
+                    "priority": 1,
+                    "major_pool": True,
+                    "validation_required": False,
+                    "source_note": "unit_test",
+                    "notes": "base candidate",
+                },
+            ]
+        )
+
+        self.assertEqual({}, pools)
 
 
 if __name__ == "__main__":

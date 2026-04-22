@@ -1928,7 +1928,8 @@ def main() -> int:
             (
                 f"legacy chase 审计：downgraded={final_output_summary['legacy_chase_downgraded_count']} "
                 f"leaked={final_output_summary['legacy_chase_leaked_count']} "
-                f"gate_failures={final_output_summary['opportunity_gate_failures']}."
+                f"gate_failures={final_output_summary['opportunity_gate_failures']} "
+                f"blocked_by_gate={final_output_summary['messages_blocked_by_opportunity_gate']}."
             ),
             (
                 f"报告校验：all_opportunity_labels_verified={final_output_summary['all_opportunity_labels_verified']} "

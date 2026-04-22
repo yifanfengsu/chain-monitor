@@ -192,7 +192,8 @@ class LpConfirmDowngradeTests(unittest.TestCase):
 
         self.assertEqual("clean_confirm", signal.context["lp_confirm_quality"])
         self.assertTrue(
-            message.splitlines()[0].startswith("可顺势追多｜")
+            message.splitlines()[0].startswith("等待确认｜")
+            or message.splitlines()[0].startswith("可顺势追多｜")
             or message.splitlines()[0].startswith("偏多观察｜")
         )
 

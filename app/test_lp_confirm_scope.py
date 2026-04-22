@@ -200,7 +200,8 @@ class LpConfirmScopeTests(unittest.TestCase):
 
         self.assertEqual("broader_confirm", signal.context["lp_confirm_scope"])
         self.assertTrue(
-            first_line.startswith("可顺势追空｜ETH｜")
+            first_line.startswith("等待确认｜ETH｜")
+            or first_line.startswith("可顺势追空｜ETH｜")
             or first_line.startswith("偏空观察｜ETH｜")
             or first_line.startswith("等待确认｜ETH｜")
         )

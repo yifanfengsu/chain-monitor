@@ -1353,7 +1353,10 @@
           }
         }
       },
+      "db_exists": true,
       "db_path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
+      "db_size_bytes": 5456580608,
+      "db_size_mb": 5203.8008,
       "enabled": true,
       "init_failed_reason": "",
       "initialized": true,
@@ -1364,22 +1367,26 @@
         "delivery_audit": 1776847561.7251716,
         "market_context_attempts": 1776835290.0,
         "market_context_snapshots": 1776847462.083105,
-        "no_trade_locks": 1776855173.738302,
+        "no_trade_locks": 1776870265.2170572,
         "opportunity_outcomes": 1776835286.0,
         "outcomes": 1776847564.2799816,
         "parsed_events": 1776847449.7794368,
         "prealert_lifecycle": 1776847462.091234,
-        "quality_stats": 1776858212.0,
+        "quality_stats": 1776870265.0,
         "raw_events": 1776847374.90804,
         "runs": null,
-        "schema_meta": 1776860842.3862622,
+        "schema_meta": 1776870284.3936892,
         "signal_features": null,
         "signals": 1776847462.0784888,
         "telegram_deliveries": 1776847561.726833,
-        "trade_opportunities": 1776860829.5796514
+        "trade_opportunities": 1776870265.81628
       },
       "missing_tables": [],
       "schema_version": "sqlite_schema_v1",
+      "shm_exists": true,
+      "shm_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-shm",
+      "shm_size_bytes": 32768,
+      "shm_size_mb": 0.0312,
       "table_row_counts": {
         "asset_cases": 5391,
         "asset_market_states": 420,
@@ -1388,19 +1395,25 @@
         "market_context_attempts": 2283,
         "market_context_snapshots": 1633,
         "no_trade_locks": 342,
-        "opportunity_outcomes": 1440,
+        "opportunity_outcomes": 1530,
         "outcomes": 3009,
         "parsed_events": 48752,
         "prealert_lifecycle": 1829,
-        "quality_stats": 1034,
+        "quality_stats": 1049,
         "raw_events": 97467,
         "runs": 0,
         "schema_meta": 1,
         "signal_features": 6440,
         "signals": 1633,
         "telegram_deliveries": 107031,
-        "trade_opportunities": 480
+        "trade_opportunities": 510
       },
+      "total_size_bytes": 5456617528,
+      "total_size_mb": 5203.836,
+      "wal_exists": true,
+      "wal_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-wal",
+      "wal_size_bytes": 4152,
+      "wal_size_mb": 0.004,
       "warnings": [],
       "write_error_count": 0
     },
@@ -1412,18 +1425,18 @@
       "market_context_attempts": 2283,
       "market_context_snapshots": 1633,
       "no_trade_locks": 342,
-      "opportunity_outcomes": 1440,
+      "opportunity_outcomes": 1530,
       "outcomes": 3009,
       "parsed_events": 48752,
       "prealert_lifecycle": 1829,
-      "quality_stats": 1034,
+      "quality_stats": 1049,
       "raw_events": 97467,
       "runs": 0,
       "schema_meta": 1,
       "signal_features": 6440,
       "signals": 1633,
       "telegram_deliveries": 107031,
-      "trade_opportunities": 480
+      "trade_opportunities": 510
     },
     "warnings": [
       "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
@@ -1667,9 +1680,9 @@
     {
       "end_ts": null,
       "exists": true,
-      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5391, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 480, 'opportunity_outcomes': 1440, 'quality_stats': 1034, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']",
+      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5391, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 510, 'opportunity_outcomes': 1530, 'quality_stats': 1049, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']",
       "path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
-      "record_count": 435795,
+      "record_count": 435930,
       "start_ts": null
     }
   ],
@@ -1715,13 +1728,13 @@
   ],
   "final_trading_output_summary": {
     "all_candidate_labels_are_candidate": true,
-    "all_opportunity_labels_verified": true,
+    "all_opportunity_labels_verified": false,
     "blocked_covers_legacy_chase_risk": true,
     "blocked_legacy_chase_count": 5,
     "candidate_label_without_candidate_count": 0,
     "delivered_blocked_count": 0,
     "delivered_candidate_count": 0,
-    "delivered_legacy_chase_count": 0,
+    "delivered_legacy_chase_count": 4,
     "delivered_verified_count": 0,
     "final_trading_output_audited_row_count": 196,
     "final_trading_output_distribution": {
@@ -1730,8 +1743,9 @@
     "final_trading_output_unaudited_row_count": 0,
     "legacy_chase_downgraded_count": 0,
     "legacy_chase_leaked_count": 4,
+    "messages_blocked_by_opportunity_gate": 0,
     "opportunity_gate_failures": {},
-    "opportunity_label_without_verified_count": 0,
+    "opportunity_label_without_verified_count": 4,
     "trade_action_chase_without_opportunity_count": 5
   },
   "limitations": [
@@ -2883,6 +2897,46 @@
       "env_value": null,
       "runtime_value": "https://www.okx.com"
     },
+    "OPPORTUNITY_CALIBRATION_ADVERSE_MAX": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.35
+    },
+    "OPPORTUNITY_CALIBRATION_COMPLETION_MIN": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.7
+    },
+    "OPPORTUNITY_CALIBRATION_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_CALIBRATION_FOLLOWTHROUGH_MIN": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.58
+    },
+    "OPPORTUNITY_CALIBRATION_MAX_NEGATIVE_ADJUSTMENT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": -0.12
+    },
+    "OPPORTUNITY_CALIBRATION_MAX_POSITIVE_ADJUSTMENT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.08
+    },
+    "OPPORTUNITY_CALIBRATION_MIN_SAMPLES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 20
+    },
+    "OPPORTUNITY_CALIBRATION_STRONG_SAMPLES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 50
+    },
     "OPPORTUNITY_COOLDOWN_SEC": {
       "env_present": false,
       "env_value": null,
@@ -3174,7 +3228,10 @@
         }
       }
     },
+    "db_exists": true,
     "db_path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
+    "db_size_bytes": 5456580608,
+    "db_size_mb": 5203.8008,
     "enabled": true,
     "init_failed_reason": "",
     "initialized": true,
@@ -3185,22 +3242,26 @@
       "delivery_audit": 1776847561.7251716,
       "market_context_attempts": 1776835290.0,
       "market_context_snapshots": 1776847462.083105,
-      "no_trade_locks": 1776855173.738302,
+      "no_trade_locks": 1776870265.2170572,
       "opportunity_outcomes": 1776835286.0,
       "outcomes": 1776847564.2799816,
       "parsed_events": 1776847449.7794368,
       "prealert_lifecycle": 1776847462.091234,
-      "quality_stats": 1776858212.0,
+      "quality_stats": 1776870265.0,
       "raw_events": 1776847374.90804,
       "runs": null,
-      "schema_meta": 1776860842.3862622,
+      "schema_meta": 1776870284.3936892,
       "signal_features": null,
       "signals": 1776847462.0784888,
       "telegram_deliveries": 1776847561.726833,
-      "trade_opportunities": 1776860829.5796514
+      "trade_opportunities": 1776870265.81628
     },
     "missing_tables": [],
     "schema_version": "sqlite_schema_v1",
+    "shm_exists": true,
+    "shm_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-shm",
+    "shm_size_bytes": 32768,
+    "shm_size_mb": 0.0312,
     "table_row_counts": {
       "asset_cases": 5391,
       "asset_market_states": 420,
@@ -3209,19 +3270,25 @@
       "market_context_attempts": 2283,
       "market_context_snapshots": 1633,
       "no_trade_locks": 342,
-      "opportunity_outcomes": 1440,
+      "opportunity_outcomes": 1530,
       "outcomes": 3009,
       "parsed_events": 48752,
       "prealert_lifecycle": 1829,
-      "quality_stats": 1034,
+      "quality_stats": 1049,
       "raw_events": 97467,
       "runs": 0,
       "schema_meta": 1,
       "signal_features": 6440,
       "signals": 1633,
       "telegram_deliveries": 107031,
-      "trade_opportunities": 480
+      "trade_opportunities": 510
     },
+    "total_size_bytes": 5456617528,
+    "total_size_mb": 5203.836,
+    "wal_exists": true,
+    "wal_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-wal",
+    "wal_size_bytes": 4152,
+    "wal_size_mb": 0.004,
     "warnings": [],
     "write_error_count": 0
   },
@@ -3233,18 +3300,18 @@
     "market_context_attempts": 2283,
     "market_context_snapshots": 1633,
     "no_trade_locks": 342,
-    "opportunity_outcomes": 1440,
+    "opportunity_outcomes": 1530,
     "outcomes": 3009,
     "parsed_events": 48752,
     "prealert_lifecycle": 1829,
-    "quality_stats": 1034,
+    "quality_stats": 1049,
     "raw_events": 97467,
     "runs": 0,
     "schema_meta": 1,
     "signal_features": 6440,
     "signals": 1633,
     "telegram_deliveries": 107031,
-    "trade_opportunities": 480
+    "trade_opportunities": 510
   },
   "sweep_summary": {
     "direction_performance": {
@@ -3449,8 +3516,8 @@
     "majors 覆盖仍然只有 ETH/USDT 与 ETH/USDC，BTC/SOL 样本为 0；CLI 同时显示 BTC pools 是 configured but disabled，SOL 则仍缺 major 覆盖。",
     "raw_events / parsed_events archive 仍然缺失，且 300s outcome 大面积 expired，这两点是本轮对 prealert funnel 和长窗口后验判断的最大限制。",
     "统一出口审计：final_output_distribution={'missing': 196} verified=0 candidate=0 blocked=0.",
-    "legacy chase 审计：downgraded=0 leaked=4 gate_failures={}.",
-    "报告校验：all_opportunity_labels_verified=True all_candidate_labels_are_candidate=True blocked_covers_legacy_chase_risk=True."
+    "legacy chase 审计：downgraded=0 leaked=4 gate_failures={} blocked_by_gate=0.",
+    "报告校验：all_opportunity_labels_verified=False all_candidate_labels_are_candidate=True blocked_covers_legacy_chase_risk=True."
   ],
   "top_recommendations": [
     "优先补齐并启用 BTC/SOL majors pools，下一轮继续先补 majors，不要扩 long-tail。",
@@ -67214,6 +67281,22 @@
     },
     "blocker_false_block_rate": 0.0,
     "blocker_saved_rate": 0.0,
+    "calibration_adjustment_distribution": {
+      "max": null,
+      "median": null,
+      "min": null,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "p90": null,
+      "positive_count": 0
+    },
+    "calibration_confidence_distribution": {
+      "low": 332
+    },
+    "calibration_reason_distribution": {},
+    "calibration_source_distribution": {
+      "none": 332
+    },
     "candidate_outcome_60s": {
       "adverse_count": 0,
       "adverse_rate": null,
@@ -67226,6 +67309,7 @@
       "unavailable_count": 0
     },
     "candidate_to_verified_by_profile": {},
+    "candidates_blocked_by_calibration": 0,
     "estimated_samples_needed_for_verified_by_profile": {},
     "hard_blocker_distribution": {
       "history_completion_too_low": 39,
@@ -67243,6 +67327,8 @@
       "upgraded_count": 0
     },
     "opportunities_blocked_by_non_lp": 0,
+    "opportunities_downgraded_by_calibration": 0,
+    "opportunities_upgraded_by_calibration": 0,
     "opportunities_upgraded_by_non_lp": 0,
     "opportunity_blocked_count": 68,
     "opportunity_blocker_avoided_adverse_rate": 0.0,
@@ -67284,6 +67370,12 @@
     "opportunity_verified_followthrough_60s_rate": null,
     "profiles_blocked_by_sample_count": 0,
     "profiles_ready_for_verified": [],
+    "raw_score_vs_calibrated_score": {
+      "calibrated_median": 0.52775,
+      "calibrated_p90": 0.6865,
+      "raw_median": 0.52775,
+      "raw_p90": 0.6865
+    },
     "rolling_stats": {
       "blocker_result_distribution": {
         "neutral": 68
@@ -67317,12 +67409,15 @@
       "late_or_chase": 21,
       "no_trade_lock": 8
     },
+    "top_negative_adjustments": [],
     "top_non_lp_blockers": [],
     "top_non_lp_supporting_evidence": [],
+    "top_positive_adjustments": [],
     "top_profiles_by_adverse": [],
     "top_profiles_by_followthrough": [],
     "top_profiles_by_sample": [],
     "verification_blocker_distribution": {},
+    "verified_allowed_by_calibration": 0,
     "verified_outcome_60s": {
       "adverse_count": 0,
       "adverse_rate": null,

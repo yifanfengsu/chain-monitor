@@ -33,9 +33,12 @@ class SQLiteDataValueAuditTests(unittest.TestCase):
         self.assertEqual("archive_debug", by_table["raw_events"]["data_value_class"])
         self.assertEqual("core_learning", by_table["signals"]["data_value_class"])
         self.assertEqual("index_only", by_table["raw_events"]["recommended_mode"])
+        self.assertEqual("slim", by_table["market_context_attempts"]["recommended_mode"])
+        self.assertEqual("operational_diagnostics", by_table["market_context_attempts"]["data_value_class"])
         self.assertTrue(by_table["signals"]["critical_for_verified"])
         self.assertIn("signals", payload["must_keep_full_tables"])
         self.assertIn("raw_events", payload["index_only_tables"])
+        self.assertIn("market_context_attempts", payload["long_term_slim_tables"])
         self.assertIn("raw_events.raw_json", payload["fields_not_recommended_for_db"])
 
 

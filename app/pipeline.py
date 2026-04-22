@@ -5,7 +5,12 @@ from collections import defaultdict, deque
 from analyzer import BehaviorAnalyzer
 from asset_market_state import AssetMarketStateManager
 from asset_case_manager import AssetCaseManager
-from trade_opportunity import TradeOpportunityManager
+from trade_opportunity import (
+    LEGACY_CHASE_ACTION_KEYS,
+    TradeOpportunityManager,
+    canonical_final_trading_output_label,
+    validate_final_trading_output_gate,
+)
 from config import (
     ADJACENT_WATCH_NOTIFY_ALLOWED_STAGES,
     ADJACENT_WATCH_NOTIFY_MIN_ABNORMAL_RATIO,
@@ -2000,6 +2005,17 @@ class SignalPipeline:
                 if signal.metadata.get("telegram_should_send") is not None
                 else signal.context.get("telegram_should_send")
             )
+            gate_allowed, gate_reason = self._enforce_lp_final_output_gate(
+                event,
+                signal,
+                telegram_should_send=telegram_should_send,
+            )
+            if telegram_should_send and not gate_allowed:
+                telegram_should_send = False
+                if gate_reason:
+                    event.metadata["delivery_block_reason"] = gate_reason
+                    signal.metadata["delivery_block_reason"] = gate_reason
+                    signal.context["delivery_block_reason"] = gate_reason
             if not telegram_should_send:
                 suppression_reason = str(
                     event.metadata.get("opportunity_gate_failure_reason")
@@ -8078,6 +8094,208 @@ class SignalPipeline:
             evaluated_at_stage="pipeline_pre_send",
         )
         return allowed
+
+    def _lp_final_output_gate_state(self, event: Event, signal) -> dict[str, object]:
+        signal_context = getattr(signal, "context", {}) or {}
+        signal_metadata = getattr(signal, "metadata", {}) or {}
+        event_metadata = event.metadata or {}
+
+        def _first(*values):
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        return {
+            "status": str(
+                _first(
+                    signal_context.get("trade_opportunity_status"),
+                    signal_metadata.get("trade_opportunity_status"),
+                    event_metadata.get("trade_opportunity_status"),
+                    "NONE",
+                )
+                or "NONE"
+            ).strip().upper(),
+            "side": str(
+                _first(
+                    signal_context.get("trade_opportunity_side"),
+                    signal_metadata.get("trade_opportunity_side"),
+                    event_metadata.get("trade_opportunity_side"),
+                    "NONE",
+                )
+                or "NONE"
+            ).strip().upper(),
+            "primary_blocker": str(
+                _first(
+                    signal_context.get("trade_opportunity_primary_blocker"),
+                    signal_metadata.get("trade_opportunity_primary_blocker"),
+                    event_metadata.get("trade_opportunity_primary_blocker"),
+                    "",
+                )
+                or ""
+            ),
+            "final_source": str(
+                _first(
+                    signal_context.get("final_trading_output_source"),
+                    signal_metadata.get("final_trading_output_source"),
+                    event_metadata.get("final_trading_output_source"),
+                    "",
+                )
+                or ""
+            ).strip().lower(),
+            "final_label": str(
+                _first(
+                    signal_context.get("final_trading_output_label"),
+                    signal_metadata.get("final_trading_output_label"),
+                    event_metadata.get("final_trading_output_label"),
+                    "",
+                )
+                or ""
+            ),
+            "asset_market_state_key": str(
+                _first(
+                    signal_context.get("asset_market_state_key"),
+                    signal_metadata.get("asset_market_state_key"),
+                    event_metadata.get("asset_market_state_key"),
+                    "",
+                )
+                or ""
+            ).strip().upper(),
+            "opportunity_gate_passed": bool(
+                _first(
+                    signal_context.get("opportunity_gate_passed"),
+                    signal_metadata.get("opportunity_gate_passed"),
+                    event_metadata.get("opportunity_gate_passed"),
+                    False,
+                )
+            ),
+            "opportunity_gate_required": bool(
+                _first(
+                    signal_context.get("opportunity_gate_required"),
+                    signal_metadata.get("opportunity_gate_required"),
+                    event_metadata.get("opportunity_gate_required"),
+                    False,
+                )
+            ),
+            "opportunity_gate_failure_reason": str(
+                _first(
+                    signal_context.get("opportunity_gate_failure_reason"),
+                    signal_metadata.get("opportunity_gate_failure_reason"),
+                    event_metadata.get("opportunity_gate_failure_reason"),
+                    "",
+                )
+                or ""
+            ),
+            "trade_action_key": str(
+                _first(
+                    signal_context.get("trade_action_key"),
+                    signal_metadata.get("trade_action_key"),
+                    event_metadata.get("trade_action_key"),
+                    "",
+                )
+                or ""
+            ).strip().upper(),
+            "legacy_chase_downgrade_reason": str(
+                _first(
+                    signal_context.get("legacy_chase_downgrade_reason"),
+                    signal_metadata.get("legacy_chase_downgrade_reason"),
+                    event_metadata.get("legacy_chase_downgrade_reason"),
+                    "",
+                )
+                or ""
+            ),
+        }
+
+    def _apply_lp_final_output_gate_payload(self, event: Event, signal, payload: dict[str, object]) -> None:
+        event.metadata.update(payload)
+        signal.metadata.update(payload)
+        signal.context.update(payload)
+
+    def _enforce_lp_final_output_gate(self, event: Event, signal, *, telegram_should_send: bool) -> tuple[bool, str]:
+        if not telegram_should_send:
+            return False, ""
+
+        gate_state = self._lp_final_output_gate_state(event, signal)
+        status = str(gate_state["status"])
+        trade_action_key = str(gate_state["trade_action_key"])
+        asset_market_state_key = str(gate_state["asset_market_state_key"])
+        forced_gate_reason = ""
+        if trade_action_key in LEGACY_CHASE_ACTION_KEYS and status != "VERIFIED":
+            forced_gate_reason = "legacy_chase_requires_verified_opportunity"
+        elif asset_market_state_key in {"LONG_CANDIDATE", "SHORT_CANDIDATE", "TRADEABLE_LONG", "TRADEABLE_SHORT"} and status not in {"CANDIDATE", "VERIFIED", "BLOCKED"}:
+            forced_gate_reason = "asset_market_state_candidate_without_opportunity"
+        gate_allowed, gate_reason = validate_final_trading_output_gate(
+            trade_opportunity_status=status,
+            final_trading_output_source=str(gate_state["final_source"]),
+            final_trading_output_label=str(gate_state["final_label"]),
+            opportunity_gate_passed=bool(gate_state["opportunity_gate_passed"]),
+            asset_market_state_key=asset_market_state_key,
+            delivered_to_trader=True,
+        )
+        if forced_gate_reason:
+            gate_allowed = False
+            gate_reason = gate_reason or forced_gate_reason
+        if gate_allowed:
+            return True, ""
+
+        side = str(gate_state["side"])
+        primary_blocker = str(gate_state["primary_blocker"])
+        legacy_downgrade_reason = str(gate_state["legacy_chase_downgrade_reason"])
+
+        if status in {"VERIFIED", "CANDIDATE", "BLOCKED"}:
+            canonical_label = canonical_final_trading_output_label(status, side, primary_blocker)
+            canonical_gate_passed = bool(gate_state["opportunity_gate_passed"]) or status in {"CANDIDATE", "BLOCKED"}
+            canonical_allowed, _ = validate_final_trading_output_gate(
+                trade_opportunity_status=status,
+                final_trading_output_source="trade_opportunity",
+                final_trading_output_label=canonical_label,
+                opportunity_gate_passed=canonical_gate_passed,
+                asset_market_state_key=str(gate_state["asset_market_state_key"]),
+                delivered_to_trader=True,
+            )
+            if canonical_allowed:
+                payload: dict[str, object] = {
+                    "final_trading_output_source": "trade_opportunity",
+                    "final_trading_output_label": canonical_label,
+                    "final_trading_output_allowed": True,
+                    "telegram_should_send": True,
+                    "telegram_suppression_reason": "",
+                    "telegram_update_kind": {
+                        "VERIFIED": "opportunity",
+                        "CANDIDATE": "candidate",
+                        "BLOCKED": "risk_blocker",
+                    }.get(status, "opportunity"),
+                    "opportunity_gate_required": True,
+                    "opportunity_gate_passed": True,
+                    "opportunity_gate_failure_reason": "",
+                }
+                if trade_action_key in LEGACY_CHASE_ACTION_KEYS and status != "VERIFIED":
+                    payload["legacy_chase_downgraded"] = True
+                    payload["legacy_chase_downgrade_reason"] = legacy_downgrade_reason or (
+                        "candidate_only_not_verified"
+                        if status == "CANDIDATE"
+                        else f"blocked:{primary_blocker or 'blocked'}"
+                    )
+                self._apply_lp_final_output_gate_payload(event, signal, payload)
+                return True, ""
+
+        suppression_reason = gate_reason or str(gate_state["opportunity_gate_failure_reason"] or "") or "opportunity_gate_rejected"
+        payload = {
+            "final_trading_output_source": "suppressed",
+            "final_trading_output_label": "",
+            "final_trading_output_allowed": False,
+            "telegram_should_send": False,
+            "telegram_suppression_reason": suppression_reason,
+            "telegram_update_kind": "suppressed",
+            "opportunity_gate_required": True,
+            "opportunity_gate_passed": False,
+            "opportunity_gate_failure_reason": suppression_reason,
+        }
+        if trade_action_key in LEGACY_CHASE_ACTION_KEYS:
+            payload["legacy_chase_downgraded"] = True
+            payload["legacy_chase_downgrade_reason"] = legacy_downgrade_reason or suppression_reason
+        self._apply_lp_final_output_gate_payload(event, signal, payload)
+        return False, suppression_reason
 
     def _resolve_behavior_case_for_signal(self, signal):
         if self.followup_tracker is None:

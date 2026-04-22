@@ -18,8 +18,8 @@
 - majors 覆盖仍然只有 ETH/USDT 与 ETH/USDC，BTC/SOL 样本为 0；CLI 同时显示 BTC pools 是 configured but disabled，SOL 则仍缺 major 覆盖。
 - raw_events / parsed_events archive 仍然缺失，且 300s outcome 大面积 expired，这两点是本轮对 prealert funnel 和长窗口后验判断的最大限制。
 - 统一出口审计：final_output_distribution={'missing': 196} verified=0 candidate=0 blocked=0.
-- legacy chase 审计：downgraded=0 leaked=4 gate_failures={}.
-- 报告校验：all_opportunity_labels_verified=True all_candidate_labels_are_candidate=True blocked_covers_legacy_chase_risk=True.
+- legacy chase 审计：downgraded=0 leaked=4 gate_failures={} blocked_by_gate=0.
+- 报告校验：all_opportunity_labels_verified=False all_candidate_labels_are_candidate=True blocked_covers_legacy_chase_risk=True.
 
 ## 2. 数据源与完整性说明
 
@@ -52,7 +52,7 @@
 - `data/asset_cases.cache.json`: exists=`True` records=`1` range=`2026-04-22 05:16:27 UTC -> 2026-04-22 05:21:30 UTC` note=`asset case snapshot cache`
 - `data/lp_quality_stats.cache.json`: exists=`True` records=`800` range=`2026-04-18 00:34:38 UTC -> 2026-04-22 05:21:51 UTC` note=`quality stats cache`
 - `data/trade_opportunities.cache.json`: exists=`True` records=`332` range=`2026-04-20 15:03:51 UTC -> 2026-04-22 05:26:26 UTC` note=`trade opportunity cache`
-- `/run-project/chain-monitor/data/chain_monitor.sqlite`: exists=`True` records=`435795` range=`n/a -> n/a` note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5391, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 480, 'opportunity_outcomes': 1440, 'quality_stats': 1034, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']`
+- `/run-project/chain-monitor/data/chain_monitor.sqlite`: exists=`True` records=`435930` range=`n/a -> n/a` note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 97467, 'parsed_events': 48752, 'signals': 1633, 'signal_features': 6440, 'market_context_snapshots': 1633, 'market_context_attempts': 2283, 'outcomes': 3009, 'asset_cases': 5391, 'asset_market_states': 420, 'no_trade_locks': 342, 'trade_opportunities': 510, 'opportunity_outcomes': 1530, 'quality_stats': 1049, 'telegram_deliveries': 107031, 'prealert_lifecycle': 1829, 'delivery_audit': 156459, 'case_followups': 151} archive_rows_by_category={'raw_events': 97467, 'parsed_events': 48751, 'signals': 1633, 'delivery_audit': 156596, 'cases': 111898, 'case_followups': 151} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596', 'db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751', 'db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596']`
 - 关键缺口：`raw_events` / `parsed_events` 目录不存在，且配置里也被禁用；因此 prealert funnel 无法从 raw->parsed->signal 三层闭环回溯。
 
 ## 3. overnight 分析窗口
@@ -141,6 +141,14 @@
 - `OPPORTUNITY_MIN_60S_FOLLOWTHROUGH_RATE` = `0.58`
 - `OPPORTUNITY_MAX_60S_ADVERSE_RATE` = `0.35`
 - `OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE` = `0.7`
+- `OPPORTUNITY_CALIBRATION_ENABLE` = `True`
+- `OPPORTUNITY_CALIBRATION_MIN_SAMPLES` = `20`
+- `OPPORTUNITY_CALIBRATION_STRONG_SAMPLES` = `50`
+- `OPPORTUNITY_CALIBRATION_MAX_POSITIVE_ADJUSTMENT` = `0.08`
+- `OPPORTUNITY_CALIBRATION_MAX_NEGATIVE_ADJUSTMENT` = `-0.12`
+- `OPPORTUNITY_CALIBRATION_COMPLETION_MIN` = `0.7`
+- `OPPORTUNITY_CALIBRATION_ADVERSE_MAX` = `0.35`
+- `OPPORTUNITY_CALIBRATION_FOLLOWTHROUGH_MIN` = `0.58`
 - `OPPORTUNITY_NON_LP_EVIDENCE_ENABLE` = `True`
 - `OPPORTUNITY_NON_LP_EVIDENCE_WINDOW_SEC` = `300`
 - `OPPORTUNITY_NON_LP_SCORE_WEIGHT` = `0.1`
@@ -170,6 +178,8 @@
 
 - opportunity_summary=`{"candidates": 0, "verified": 0, "blocked": 68, "none": 264}`
 - opportunity_score_distribution=`{"median": 0.52775, "p90": 0.6865}`
+- raw_score_vs_calibrated_score=`{"raw_median": 0.52775, "calibrated_median": 0.52775, "raw_p90": 0.6865, "calibrated_p90": 0.6865}`
+- calibration_adjustment_distribution=`{"positive_count": 0, "negative_count": 0, "neutral_count": 0, "median": null, "p90": null, "min": null, "max": null}`
 - candidate_outcome_60s=`{"count": 0, "resolved_count": 0, "followthrough_count": 0, "followthrough_rate": null, "adverse_count": 0, "adverse_rate": null, "expired_count": 0, "unavailable_count": 0, "result_distribution": {}}`
 - verified_outcome_60s=`{"count": 0, "resolved_count": 0, "followthrough_count": 0, "followthrough_rate": null, "adverse_count": 0, "adverse_rate": null, "expired_count": 0, "unavailable_count": 0, "result_distribution": {}}`
 - opportunity_profile_count=`0`
@@ -187,6 +197,13 @@
 - top_non_lp_supporting_evidence=`[]`
 - top_non_lp_blockers=`[]`
 - opportunities_upgraded_by_non_lp=`0` `opportunities_blocked_by_non_lp=0`
+- opportunities_upgraded_by_calibration=`0` `opportunities_downgraded_by_calibration=0`
+- candidates_blocked_by_calibration=`0` `verified_allowed_by_calibration=0`
+- top_positive_adjustments=`[]`
+- top_negative_adjustments=`[]`
+- calibration_reason_distribution=`{}`
+- calibration_source_distribution=`{"none": 332}`
+- calibration_confidence_distribution=`{"low": 332}`
 - non_lp_conflict_cases=`[]`
 - top_blockers=`{"history_completion_too_low": 39, "late_or_chase": 21, "no_trade_lock": 8}`
 - 问题回答：如果没有机会，优先看 `why_no_opportunities` / `top_blockers` / `samples_until_verified_open`，它们会直接解释是历史样本不足、data gap、冲突还是质量阈值导致。

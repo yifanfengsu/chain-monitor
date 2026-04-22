@@ -52,6 +52,11 @@ LONG_KEYS = {"LONG_CHASE_ALLOWED", "DO_NOT_CHASE_LONG", "LONG_CANDIDATE", "TRADE
 SHORT_KEYS = {"SHORT_CHASE_ALLOWED", "DO_NOT_CHASE_SHORT", "SHORT_CANDIDATE", "TRADEABLE_SHORT"}
 LEGACY_CHASE_ACTION_KEYS = {"LONG_CHASE_ALLOWED", "SHORT_CHASE_ALLOWED"}
 ASSET_STATE_OPPORTUNITY_KEYS = {"LONG_CANDIDATE", "SHORT_CANDIDATE", "TRADEABLE_LONG", "TRADEABLE_SHORT"}
+ASSET_STATE_RISK_BLOCKER_KEYS = {"NO_TRADE_LOCK", "DO_NOT_CHASE_LONG", "DO_NOT_CHASE_SHORT", "DATA_GAP_NO_TRADE"}
+LEGACY_CHASE_LABELS = {"可追多", "可追空", "可顺势追多", "可顺势追空"}
+VERIFIED_OUTPUT_TERMS = tuple(sorted(LEGACY_CHASE_LABELS | {"多头机会", "空头机会"}))
+CANDIDATE_OUTPUT_TERMS = ("多头候选", "空头候选")
+BLOCKED_OUTPUT_TERMS = ("机会被阻止", "不追多", "不追空", "不交易")
 _OUTCOME_WINDOWS = (30, 60, 300)
 _FOLLOWTHROUGH_MIN_MOVE = 0.002
 _STRONG_SIGNAL_MIN = 0.60
@@ -165,6 +170,106 @@ BLOCKER_LABELS = {
     "history_samples_insufficient": "历史样本不足",
     "history_followthrough_not_ready": "历史 followthrough 未稳定",
 }
+
+
+def canonical_final_trading_output_label(
+    status: str,
+    side: str,
+    primary_blocker: str = "",
+) -> str:
+    normalized_status = str(status or "").strip().upper()
+    normalized_side = str(side or "").strip().upper()
+    if normalized_status == "VERIFIED":
+        return "多头机会" if normalized_side == "LONG" else "空头机会" if normalized_side == "SHORT" else "机会"
+    if normalized_status == "CANDIDATE":
+        return "多头候选" if normalized_side == "LONG" else "空头候选" if normalized_side == "SHORT" else "候选"
+    if normalized_status == "BLOCKED":
+        return _blocked_output_label(normalized_side, str(primary_blocker or ""))
+    if normalized_status in OPPORTUNITY_TERMINAL_STATUSES:
+        return "状态变化"
+    return ""
+
+
+def classify_trading_output_label(label: str | None) -> str:
+    normalized = str(label or "").strip()
+    if not normalized:
+        return "empty"
+    if normalized == "状态变化":
+        return "state_change"
+    if any(term in normalized for term in VERIFIED_OUTPUT_TERMS):
+        return "verified_like"
+    if any(term in normalized for term in CANDIDATE_OUTPUT_TERMS):
+        return "candidate_like"
+    if any(term in normalized for term in BLOCKED_OUTPUT_TERMS):
+        return "blocked_like"
+    return "informational"
+
+
+def legacy_output_requires_opportunity_gate(
+    *,
+    trade_action_key: str | None = None,
+    asset_market_state_key: str | None = None,
+    labels: list[str] | tuple[str, ...] | None = None,
+) -> bool:
+    if str(trade_action_key or "").strip().upper() in LEGACY_CHASE_ACTION_KEYS:
+        return True
+    if str(asset_market_state_key or "").strip().upper() in ASSET_STATE_OPPORTUNITY_KEYS:
+        return True
+    for label in labels or ():
+        if classify_trading_output_label(label) in {"verified_like", "candidate_like"}:
+            return True
+    return False
+
+
+def validate_final_trading_output_gate(
+    *,
+    trade_opportunity_status: str | None,
+    final_trading_output_source: str | None,
+    final_trading_output_label: str | None,
+    opportunity_gate_passed: bool | None,
+    asset_market_state_key: str | None = None,
+    delivered_to_trader: bool = False,
+) -> tuple[bool, str]:
+    status = str(trade_opportunity_status or "NONE").strip().upper()
+    source = str(final_trading_output_source or "").strip().lower()
+    label = str(final_trading_output_label or "").strip()
+    asset_state_key = str(asset_market_state_key or "").strip().upper()
+    label_kind = classify_trading_output_label(label)
+
+    if delivered_to_trader and source == "trade_action_legacy":
+        return False, "legacy_trade_action_not_deliverable"
+
+    if label_kind == "verified_like":
+        if status != "VERIFIED":
+            return False, "verified_output_requires_verified"
+        if source != "trade_opportunity":
+            return False, "verified_output_requires_trade_opportunity"
+        if not bool(opportunity_gate_passed):
+            return False, "verified_output_requires_gate_pass"
+        return True, ""
+
+    if label_kind == "candidate_like":
+        if status != "CANDIDATE":
+            return False, "candidate_output_requires_candidate"
+        if source != "trade_opportunity":
+            return False, "candidate_output_requires_trade_opportunity"
+        return True, ""
+
+    if label_kind == "blocked_like":
+        if status == "BLOCKED" and source == "trade_opportunity":
+            return True, ""
+        if source == "asset_market_state" and asset_state_key in ASSET_STATE_RISK_BLOCKER_KEYS:
+            return True, ""
+        return False, "blocked_output_requires_blocked_or_risk_state"
+
+    if label_kind == "state_change":
+        if source == "trade_opportunity" and status in OPPORTUNITY_TERMINAL_STATUSES:
+            return True, ""
+        if source == "asset_market_state":
+            return True, ""
+        return False, "state_change_requires_state_source"
+
+    return True, ""
 
 
 def _text(*values: Any) -> str:
@@ -2737,7 +2842,7 @@ class TradeOpportunityManager:
         else:
             final_suppression_reason = final_suppression_reason or "no_trade_opportunity"
 
-        opportunity_gate_passed = bool(
+        base_opportunity_gate_passed = bool(
             not opportunity_gate_required
             or (
                 final_source == "trade_opportunity"
@@ -2754,6 +2859,23 @@ class TradeOpportunityManager:
                 and final_label not in {"可顺势追多", "可顺势追空", "偏多候选", "偏空候选"}
             )
         )
+        label_gate_passed, label_gate_failure_reason = validate_final_trading_output_gate(
+            trade_opportunity_status=status,
+            final_trading_output_source=final_source,
+            final_trading_output_label=final_label,
+            opportunity_gate_passed=base_opportunity_gate_passed,
+            asset_market_state_key=asset_state_key,
+            delivered_to_trader=bool(final_allowed),
+        )
+        opportunity_gate_passed = bool(base_opportunity_gate_passed and label_gate_passed)
+        if opportunity_gate_required and not opportunity_gate_passed and not opportunity_gate_failure_reason:
+            opportunity_gate_failure_reason = label_gate_failure_reason or final_suppression_reason or "opportunity_gate_rejected"
+        elif not opportunity_gate_required and not label_gate_passed and not opportunity_gate_failure_reason:
+            opportunity_gate_failure_reason = label_gate_failure_reason
+        if bool(final_allowed) and not label_gate_passed:
+            final_allowed = False
+            final_suppression_reason = label_gate_failure_reason or final_suppression_reason or "opportunity_gate_rejected"
+            final_update_kind = "suppressed"
         if opportunity_gate_required and not opportunity_gate_passed and not opportunity_gate_failure_reason:
             opportunity_gate_failure_reason = final_suppression_reason or "opportunity_gate_rejected"
 

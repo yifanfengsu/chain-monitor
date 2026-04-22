@@ -69,9 +69,21 @@ class SQLiteMigrationModesTests(unittest.TestCase):
         self.assertEqual("index_only", payload["mode_by_category"]["parsed_events"])
         self.assertEqual("slim", payload["mode_by_category"]["delivery_audit"])
         conn = sqlite_store.get_connection()
-        self.assertIsNone(conn.execute("SELECT raw_json FROM raw_events WHERE event_id='raw-migrate-mode'").fetchone()[0])
-        self.assertIsNone(conn.execute("SELECT parsed_json FROM parsed_events WHERE event_id='parsed-migrate-mode'").fetchone()[0])
-        self.assertIsNone(conn.execute("SELECT audit_json FROM delivery_audit WHERE audit_id='audit-migrate-mode'").fetchone()[0])
+        raw_row = conn.execute(
+            "SELECT raw_json, payload_mode FROM raw_events WHERE event_id='raw-migrate-mode'"
+        ).fetchone()
+        parsed_row = conn.execute(
+            "SELECT parsed_json, payload_mode FROM parsed_events WHERE event_id='parsed-migrate-mode'"
+        ).fetchone()
+        audit_row = conn.execute(
+            "SELECT audit_json, payload_mode FROM delivery_audit WHERE audit_id='audit-migrate-mode'"
+        ).fetchone()
+        self.assertIsNone(raw_row["raw_json"])
+        self.assertEqual("index_only", raw_row["payload_mode"])
+        self.assertIsNone(parsed_row["parsed_json"])
+        self.assertEqual("index_only", parsed_row["payload_mode"])
+        self.assertIsNone(audit_row["audit_json"])
+        self.assertEqual("slim", audit_row["payload_mode"])
 
     def test_db_loader_can_read_index_only_rows(self) -> None:
         self._write_archive(
@@ -120,6 +132,13 @@ class SQLiteMigrationModesTests(unittest.TestCase):
         self.assertIn("archive_path", columns)
         self.assertIn("archive_date", columns)
         self.assertIn("payload_hash", columns)
+        self.assertIn("payload_mode", columns)
+        market_attempt_columns = {
+            row[1]
+            for row in new_conn.execute("PRAGMA table_info(market_context_attempts)").fetchall()
+        }
+        self.assertIn("payload_hash", market_attempt_columns)
+        self.assertIn("payload_mode", market_attempt_columns)
 
 
 if __name__ == "__main__":

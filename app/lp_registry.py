@@ -11,10 +11,12 @@ from config import (
     LP_TREND_PRIMARY_PAIR_OVERRIDES,
     LP_TREND_SOL_LIKE_SYMBOLS,
     LP_TREND_STABLE_SYMBOLS,
+    RPC_URL,
 )
 from constants import (
     ETH_EQUIVALENT_CONTRACTS,
     ETH_EQUIVALENT_SYMBOLS,
+    STABLE_TOKEN_METADATA,
     STABLE_TOKEN_CONTRACTS,
     STABLE_TOKEN_SYMBOLS,
     WBTC_TOKEN_CONTRACT,
@@ -32,6 +34,41 @@ PRIMARY_TREND_PAIR_OVERRIDES = {
     for item in LP_TREND_PRIMARY_PAIR_OVERRIDES
     if str(item).strip()
 }
+RUNTIME_SUPPORTED_CHAIN_KEYS = {"ethereum"}
+EVM_CHAIN_KEYS = {"ethereum", "base"}
+SOLANA_CHAIN_KEYS = {"solana"}
+BASE58_ALPHABET = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+UNISWAP_V3_POOL_ABI = [
+    {
+        "inputs": [],
+        "name": "token0",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "token1",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "fee",
+        "outputs": [{"internalType": "uint24", "name": "", "type": "uint24"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "factory",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+UNISWAP_V3_ETHEREUM_FACTORY = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
 
 
 def _normalize_symbol_key(value: str | None) -> str:
@@ -174,6 +211,38 @@ def _is_hex_address(value: str | None) -> bool:
     return bool(raw.startswith("0x") and len(raw) == 42 and all(ch in "0123456789abcdef" for ch in raw[2:]))
 
 
+def _is_base58_address(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    return bool(32 <= len(raw) <= 64 and all(ch in BASE58_ALPHABET for ch in raw))
+
+
+def _normalize_chain_key(value: str | None) -> str:
+    normalized = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "eth": "ethereum",
+        "ethereum_mainnet": "ethereum",
+        "mainnet": "ethereum",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def runtime_supported_chains() -> set[str]:
+    return set(RUNTIME_SUPPORTED_CHAIN_KEYS)
+
+
+def _is_runtime_supported_chain(chain: str | None) -> bool:
+    return _normalize_chain_key(chain) in runtime_supported_chains()
+
+
+def _is_pool_address_for_chain(value: str | None, chain: str | None) -> bool:
+    normalized_chain = _normalize_chain_key(chain)
+    if normalized_chain in EVM_CHAIN_KEYS:
+        return _is_hex_address(value)
+    if normalized_chain in SOLANA_CHAIN_KEYS:
+        return _is_base58_address(value)
+    return False
+
+
 def is_placeholder_pool_address(value: str | None) -> bool:
     raw = str(value or "").strip()
     normalized = raw.lower()
@@ -212,6 +281,34 @@ def _expected_major_pairs() -> list[str]:
                 continue
             pairs.append(f"{asset}/{quote}")
     return pairs
+
+
+def flatten_lp_pool_book_payload(payload) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    entries: list[dict] = []
+    for section_name, value in payload.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            entry.setdefault("example_section", str(section_name))
+            entries.append(entry)
+    return entries
+
+
+def _normalize_fee_tier(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        fee_tier = int(value)
+    except (TypeError, ValueError):
+        return None
+    return fee_tier if fee_tier >= 0 else None
 
 
 def normalize_lp_pair_label(value: str | None) -> str:
@@ -267,7 +364,7 @@ def _pool_book_entry_view(item: dict, *, index: int | None = None) -> dict:
     pool_address = str(item.get("pool_address") or "").strip()
     enabled = _coerce_bool(item.get("enabled", item.get("is_active", True)), default=True)
     placeholder = _coerce_bool(item.get("placeholder"), default=False) or is_placeholder_pool_address(pool_address)
-    chain = str(item.get("chain") or "ethereum").strip().lower()
+    chain = _normalize_chain_key(item.get("chain") or "ethereum")
     dex = str(item.get("dex") or "").strip()
     protocol = str(item.get("protocol") or "").strip()
     pool_type = str(item.get("pool_type") or "spot_lp").strip().lower()
@@ -288,10 +385,16 @@ def _pool_book_entry_view(item: dict, *, index: int | None = None) -> dict:
         major_pool = derived_major_pool
     else:
         major_pool = _coerce_bool(explicit_major_pool, default=derived_major_pool)
+    fee_tier = _normalize_fee_tier(item.get("fee_tier"))
+    source_note = str(item.get("source_note") or "").strip()
     major_match_mode = str(
         item.get("major_match_mode")
         or ("major_family_match" if derived_major_pool else "non_major_pool")
     ).strip()
+    validation_required = _coerce_bool(
+        item.get("validation_required"),
+        default=bool(protocol == "uniswap_v3"),
+    )
     return {
         "index": index,
         "pool_address": pool_address,
@@ -307,14 +410,156 @@ def _pool_book_entry_view(item: dict, *, index: int | None = None) -> dict:
         "quote_symbol": quote_symbol,
         "canonical_asset": canonical_asset,
         "canonical_quote_symbol": canonical_quote_symbol,
+        "quote_canonical": canonical_quote_symbol,
         "pair_label": pair_label,
         "canonical_pair": canonical_pair,
         "priority": _normalize_priority(item.get("priority", 3)),
         "priority_raw": item.get("priority"),
+        "fee_tier": fee_tier,
         "major_pool": major_pool,
         "derived_major_pool": derived_major_pool,
         "major_match_mode": major_match_mode,
+        "source_note": source_note,
+        "validation_required": validation_required,
+        "example_section": str(item.get("example_section") or ""),
         "notes": _pool_notes(item),
+    }
+
+
+def _known_symbol_contracts(symbol: str | None) -> set[str]:
+    normalized = _normalize_symbol_key(symbol)
+    if not normalized:
+        return set()
+    if normalized in {"USDC", "USDT", "DAI", "BUSD", "FRAX", "TUSD", "USDP"}:
+        return {
+            address
+            for address, meta in STABLE_TOKEN_METADATA.items()
+            if _normalize_symbol_key(meta.get("symbol")) == normalized
+        }
+    if normalized in {"BTC", "WBTC"} and str(WBTC_TOKEN_CONTRACT or "").strip():
+        return {str(WBTC_TOKEN_CONTRACT).lower()}
+    if normalized in {"ETH", "WETH"} and ETH_EQUIVALENT_CONTRACTS:
+        return {str(item).lower() for item in ETH_EQUIVALENT_CONTRACTS}
+    return set()
+
+
+def _expected_contracts_for_entry(resolved: dict, *, role: str) -> set[str]:
+    explicit_contract = str(resolved.get(f"{role}_contract") or "").strip().lower()
+    if explicit_contract:
+        return {explicit_contract}
+    symbol = resolved.get(f"{role}_symbol")
+    if role == "base":
+        symbol = resolved.get("base_symbol") or resolved.get("canonical_asset") or symbol
+    if role == "quote":
+        symbol = resolved.get("quote_symbol") or resolved.get("canonical_quote_symbol") or symbol
+    return _known_symbol_contracts(symbol)
+
+
+def _default_uniswap_v3_pool_validation(item: dict, resolved: dict) -> dict:
+    del item
+    if not str(RPC_URL or "").strip():
+        return {"status": "unavailable", "reasons": ["rpc_url_missing"]}
+    try:
+        from web3 import Web3
+    except Exception:
+        return {"status": "unavailable", "reasons": ["web3_missing"]}
+
+    pool_address = str(resolved.get("pool_address") or "").strip()
+    if not _is_hex_address(pool_address):
+        return {"status": "failed", "reasons": ["invalid_pool_address"]}
+    try:
+        provider = Web3.HTTPProvider(str(RPC_URL), request_kwargs={"timeout": 5})
+        web3 = Web3(provider)
+        contract = web3.eth.contract(
+            address=Web3.to_checksum_address(pool_address),
+            abi=UNISWAP_V3_POOL_ABI,
+        )
+        token0 = str(contract.functions.token0().call()).lower()
+        token1 = str(contract.functions.token1().call()).lower()
+        fee = int(contract.functions.fee().call())
+        factory = str(contract.functions.factory().call()).lower()
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "reasons": [f"rpc_validation_error:{type(exc).__name__}"],
+        }
+    return {
+        "status": "passed",
+        "token0": token0,
+        "token1": token1,
+        "fee": fee,
+        "factory": factory,
+        "reasons": [],
+    }
+
+
+def _validate_enabled_pool_entry(
+    item: dict,
+    resolved: dict,
+    *,
+    onchain_validator=None,
+) -> dict:
+    chain = _normalize_chain_key(resolved.get("chain"))
+    protocol = str(resolved.get("protocol") or "").strip().lower()
+    validation_required = bool(resolved.get("validation_required"))
+    if not validation_required or chain != "ethereum" or protocol != "uniswap_v3":
+        return {"status": "not_required", "reasons": []}
+
+    validator = onchain_validator or _default_uniswap_v3_pool_validation
+    try:
+        payload = validator(dict(item), dict(resolved)) or {}
+    except Exception as exc:
+        payload = {
+            "status": "unavailable",
+            "reasons": [f"validator_exception:{type(exc).__name__}"],
+        }
+
+    status = str(payload.get("status") or "").strip().lower() or "unavailable"
+    reasons = list(payload.get("reasons") or [])
+    token0 = str(payload.get("token0") or "").strip().lower()
+    token1 = str(payload.get("token1") or "").strip().lower()
+    actual_fee = _normalize_fee_tier(payload.get("fee"))
+    actual_factory = str(payload.get("factory") or "").strip().lower()
+    if status not in {"passed", "failed", "unavailable"}:
+        status = "unavailable"
+        if not reasons:
+            reasons.append("validation_status_unknown")
+
+    expected_base_contracts = _expected_contracts_for_entry(resolved, role="base")
+    expected_quote_contracts = _expected_contracts_for_entry(resolved, role="quote")
+    expected_fee_tier = _normalize_fee_tier(resolved.get("fee_tier"))
+    expected_factory = UNISWAP_V3_ETHEREUM_FACTORY if chain == "ethereum" else ""
+
+    if status == "passed":
+        if not token0 or not token1:
+            reasons.append("missing_token0_or_token1")
+        elif expected_base_contracts and expected_quote_contracts:
+            expected_pairs = {
+                (base_contract, quote_contract)
+                for base_contract in expected_base_contracts
+                for quote_contract in expected_quote_contracts
+            }
+            if (token0, token1) not in expected_pairs and (token1, token0) not in expected_pairs:
+                reasons.append("token_pair_mismatch")
+        else:
+            if not expected_base_contracts:
+                reasons.append("missing_expected_base_contract")
+            if not expected_quote_contracts:
+                reasons.append("missing_expected_quote_contract")
+        if expected_fee_tier is not None and actual_fee != expected_fee_tier:
+            reasons.append("fee_tier_mismatch")
+        if expected_factory and actual_factory and actual_factory != expected_factory:
+            reasons.append("factory_mismatch")
+        if reasons:
+            status = "failed"
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "token0": token0,
+        "token1": token1,
+        "fee": actual_fee,
+        "factory": actual_factory,
     }
 
 
@@ -400,14 +645,23 @@ def _normalize_pool(item: dict) -> dict | None:
     if not isinstance(item, dict):
         return None
     resolved = _pool_book_entry_view(item)
+    chain = _normalize_chain_key(resolved.get("chain"))
     pool_address = str(resolved["pool_address"] or "").lower()
-    if not pool_address or resolved["placeholder"] or not _is_hex_address(pool_address):
+    if (
+        not pool_address
+        or resolved["placeholder"]
+        or not _is_runtime_supported_chain(chain)
+        or not _is_pool_address_for_chain(pool_address, chain)
+    ):
         return None
+    if bool(resolved.get("enabled")):
+        validation_payload = _validate_enabled_pool_entry(item, resolved)
+        if str(validation_payload.get("status") or "") in {"failed", "unavailable"}:
+            return None
 
     pair_label = str(resolved["pair_label"] or "").strip()
     dex = str(resolved["dex"] or "").strip() or "DEX"
     protocol = str(resolved["protocol"] or "").strip() or dex.lower().replace(" ", "_")
-    chain = str(resolved["chain"] or "ethereum").strip().lower() or "ethereum"
     pool_type = str(resolved["pool_type"] or "spot_lp").strip().lower() or "spot_lp"
     base_contract = str(resolved["base_contract"] or "").lower()
     base_symbol = str(resolved["base_symbol"] or "")
@@ -470,7 +724,7 @@ def _normalize_pool(item: dict) -> dict | None:
 def _load_lp_pool_book():
     try:
         with LP_POOLS_PATH.open(encoding="utf-8") as fp:
-            return json.load(fp)
+            return flatten_lp_pool_book_payload(json.load(fp))
     except FileNotFoundError:
         print(f"Warning: {LP_POOLS_PATH.name} missing; using empty LP pool book.")
         return []
@@ -525,7 +779,7 @@ ACTIVE_EXTENDED_LP_POOL_ADDRESSES = {
 
 def normalize_lp_pool_entries(entries: list[dict] | None) -> dict[str, dict]:
     pools: dict[str, dict] = {}
-    for raw_item in entries or []:
+    for raw_item in flatten_lp_pool_book_payload(entries):
         normalized = _normalize_pool(raw_item)
         if normalized is None:
             continue
@@ -533,11 +787,14 @@ def normalize_lp_pool_entries(entries: list[dict] | None) -> dict[str, dict]:
     return pools
 
 
-def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
-    payload = list(entries) if isinstance(entries, list) else list(LP_POOL_BOOK or [])
+def validate_lp_pool_book_entries(entries=None, *, onchain_validator=None) -> dict:
+    payload = flatten_lp_pool_book_payload(entries if entries is not None else LP_POOL_BOOK)
     expected_pairs = _expected_major_pairs()
     covered_major_pairs: set[str] = set()
+    configured_major_pairs: set[str] = set()
     configured_but_disabled_major_pools: list[dict] = []
+    configured_but_unsupported_chain: list[dict] = []
+    configured_but_validation_failed: list[dict] = []
     malformed_major_pool_entries: list[dict] = []
     placeholder_major_pool_entries: list[dict] = []
     enabled_major_pools: list[dict] = []
@@ -572,19 +829,24 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
         pool_type = str(resolved["pool_type"] or "")
         priority_raw = resolved["priority_raw"]
         priority = int(resolved["priority"] or 3)
+        fee_tier = _normalize_fee_tier(resolved.get("fee_tier"))
         major_match_mode = str(resolved["major_match_mode"] or "")
+        source_note = str(resolved.get("source_note") or "")
+        example_section = str(resolved.get("example_section") or "")
         notes = str(resolved["notes"] or "")
         canonical_quote_symbol = str(resolved["canonical_quote_symbol"] or "")
         is_major_candidate = bool(
             canonical_pair in expected_pairs
             or (resolved["major_pool"] and canonical_asset in {"ETH", "BTC", "SOL"})
         )
+        if is_major_candidate and canonical_pair:
+            configured_major_pairs.add(canonical_pair)
         malformed_reasons = []
         if not pool_address:
             malformed_reasons.append("missing_pool_address")
         elif placeholder and enabled:
             malformed_reasons.append("placeholder_enabled")
-        elif not placeholder and not _is_hex_address(pool_address):
+        elif not placeholder and not _is_pool_address_for_chain(pool_address, chain):
             malformed_reasons.append("invalid_pool_address")
         if not pair_label or "/" not in pair_label:
             malformed_reasons.append("missing_pair_label")
@@ -653,9 +915,56 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
             continue
         if not is_major_candidate:
             continue
+        if not _is_runtime_supported_chain(chain):
+            configured_but_unsupported_chain.append(
+                {
+                    "index": index,
+                    "pair_label": canonical_pair,
+                    "configured_pair_label": pair_label,
+                    "pool_address": pool_address,
+                    "enabled": enabled,
+                    "priority": priority,
+                    "chain": chain,
+                    "dex": dex,
+                    "protocol": protocol,
+                    "pool_type": pool_type,
+                    "quote_canonical": canonical_quote_symbol,
+                    "source_note": source_note,
+                    "example_section": example_section,
+                    "reason": "unsupported_chain",
+                }
+            )
+            continue
         if pool_address:
             seen_addresses.setdefault(pool_address.lower(), []).append(index)
         seen_major_pair_priority.setdefault((canonical_pair, priority), []).append(index)
+        validation_payload = _validate_enabled_pool_entry(
+            item,
+            resolved,
+            onchain_validator=onchain_validator,
+        ) if enabled else {"status": "not_required", "reasons": []}
+        validation_status = str(validation_payload.get("status") or "")
+        validation_reasons = list(validation_payload.get("reasons") or [])
+        if enabled and validation_status in {"failed", "unavailable"}:
+            configured_but_validation_failed.append(
+                {
+                    "index": index,
+                    "pair_label": canonical_pair,
+                    "configured_pair_label": pair_label,
+                    "pool_address": pool_address,
+                    "priority": priority,
+                    "chain": chain,
+                    "dex": dex,
+                    "protocol": protocol,
+                    "pool_type": pool_type,
+                    "fee_tier": fee_tier,
+                    "validation_status": validation_status,
+                    "validation_reasons": validation_reasons,
+                    "source_note": source_note,
+                    "example_section": example_section,
+                }
+            )
+            continue
         if enabled:
             covered_major_pairs.add(canonical_pair)
             enabled_major_pools.append(
@@ -669,8 +978,15 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
                     "dex": dex,
                     "protocol": protocol,
                     "pool_type": pool_type,
+                    "quote_canonical": canonical_quote_symbol,
                     "canonical_asset": canonical_asset,
+                    "fee_tier": fee_tier,
+                    "major_priority_score": float(LP_MAJOR_PRIORITY_SCORE),
                     "major_match_mode": major_match_mode,
+                    "validation_status": validation_status,
+                    "validation_reasons": validation_reasons,
+                    "source_note": source_note,
+                    "example_section": example_section,
                     "notes": notes,
                 }
             )
@@ -687,6 +1003,10 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
                     "dex": dex,
                     "protocol": protocol,
                     "pool_type": pool_type,
+                    "fee_tier": fee_tier,
+                    "quote_canonical": canonical_quote_symbol,
+                    "source_note": source_note,
+                    "example_section": example_section,
                 }
             )
 
@@ -714,7 +1034,7 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
             }
         )
 
-    missing_major_pairs = [pair for pair in expected_pairs if pair not in covered_major_pairs]
+    missing_major_pairs = [pair for pair in expected_pairs if pair not in configured_major_pairs]
     if missing_major_pairs:
         recommended_local_config_actions.append(
             "补齐本地 data/lp_pools.json：优先补 " + ", ".join(missing_major_pairs[:6])
@@ -726,6 +1046,14 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
     if configured_but_disabled_major_pools:
         recommended_local_config_actions.append(
             "校验并启用已配置但 disabled 的 major pools，避免 majors 覆盖停留在 ETH"
+        )
+    if configured_but_unsupported_chain:
+        recommended_local_config_actions.append(
+            "Base/Solana pools 需要对应链 listener/RPC；未支持前不会进入 Ethereum active scan"
+        )
+    if configured_but_validation_failed:
+        recommended_local_config_actions.append(
+            "enabled 的 Uniswap v3 major pools 需先通过 token0/token1/fee/factory 校验，再进入 majors 覆盖"
         )
     if malformed_major_pool_entries:
         recommended_local_config_actions.append(
@@ -740,6 +1068,8 @@ def validate_lp_pool_book_entries(entries: list[dict] | None = None) -> dict:
         "covered_major_pairs": sorted(covered_major_pairs),
         "missing_major_pairs": missing_major_pairs,
         "configured_but_disabled_major_pools": configured_but_disabled_major_pools,
+        "configured_but_unsupported_chain": configured_but_unsupported_chain,
+        "configured_but_validation_failed": configured_but_validation_failed,
         "malformed_major_pool_entries": malformed_major_pool_entries,
         "placeholder_major_pool_entries": placeholder_major_pool_entries,
         "enabled_major_pools": enabled_major_pools,

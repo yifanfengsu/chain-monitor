@@ -172,7 +172,8 @@ class LpAbsorptionContextTests(unittest.TestCase):
 
         self.assertEqual("broader_sell_pressure_confirmed", signal.context["lp_absorption_context"])
         self.assertTrue(
-            message.splitlines()[0].startswith("可顺势追空｜ETH｜")
+            message.splitlines()[0].startswith("等待确认｜ETH｜")
+            or message.splitlines()[0].startswith("可顺势追空｜ETH｜")
             or message.splitlines()[0].startswith("偏空观察｜ETH｜")
             or message.splitlines()[0].startswith("等待确认｜ETH｜")
         )

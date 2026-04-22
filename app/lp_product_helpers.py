@@ -22,7 +22,7 @@ def normalize_symbol(symbol: str | None) -> str:
 
 
 ETH_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_ETH_LIKE_SYMBOLS} | ETH_EQUIVALENT_SYMBOLS
-BTC_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_BTC_LIKE_SYMBOLS} | {"WBTC", "BTC"}
+BTC_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_BTC_LIKE_SYMBOLS} | {"WBTC", "BTC", "CBBTC"}
 SOL_LIKE_SYMBOLS = {normalize_symbol(item) for item in LP_TREND_SOL_LIKE_SYMBOLS} | {"SOL", "WSOL"}
 MAJOR_ASSET_SYMBOLS = {normalize_symbol(item) for item in LP_MAJOR_ASSETS}
 

@@ -71,6 +71,8 @@ class SQLiteCompactSafetyTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["rows_compacted"])
         self.assertEqual(before, after)
+        aggregate = sqlite_store.compact(dry_run=True, table="raw_events")
+        self.assertEqual(["raw_events"], aggregate["tables_compacted"])
 
     def test_compact_execute_requires_archive_and_payload_hash(self) -> None:
         self._write_full_row()
@@ -98,6 +100,8 @@ class SQLiteCompactSafetyTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["rows_compacted"])
         self.assertIsNone(row["raw_json"])
+        aggregate = sqlite_store.compact(dry_run=False, table="raw_events")
+        self.assertEqual([], aggregate["tables_compacted"])
 
 
 if __name__ == "__main__":

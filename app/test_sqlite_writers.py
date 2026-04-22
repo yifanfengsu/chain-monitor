@@ -10,9 +10,21 @@ class SQLiteWriterTests(unittest.TestCase):
         sqlite_store.close()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "chain_monitor.sqlite"
+        self.original_modes = {
+            "SQLITE_RAW_EVENTS_MODE": sqlite_store.SQLITE_RAW_EVENTS_MODE,
+            "SQLITE_PARSED_EVENTS_MODE": sqlite_store.SQLITE_PARSED_EVENTS_MODE,
+            "SQLITE_TELEGRAM_DELIVERY_MODE": sqlite_store.SQLITE_TELEGRAM_DELIVERY_MODE,
+            "SQLITE_MARKET_CONTEXT_ATTEMPT_MODE": sqlite_store.SQLITE_MARKET_CONTEXT_ATTEMPT_MODE,
+        }
+        sqlite_store.SQLITE_RAW_EVENTS_MODE = "index_only"
+        sqlite_store.SQLITE_PARSED_EVENTS_MODE = "index_only"
+        sqlite_store.SQLITE_TELEGRAM_DELIVERY_MODE = "slim"
+        sqlite_store.SQLITE_MARKET_CONTEXT_ATTEMPT_MODE = "slim"
         self.conn = sqlite_store.init_sqlite_store(self.db_path)
 
     def tearDown(self) -> None:
+        for key, value in self.original_modes.items():
+            setattr(sqlite_store, key, value)
         sqlite_store.close()
         self.temp_dir.cleanup()
 
@@ -88,6 +100,26 @@ class SQLiteWriterTests(unittest.TestCase):
         self.assertEqual(1, self._count("market_context_attempts"))
         self.assertEqual(3, self._count("outcomes"))
         self.assertEqual(1, self._count("telegram_deliveries"))
+        raw_row = self.conn.execute(
+            "SELECT raw_json, payload_mode FROM raw_events WHERE event_id='evt-raw'"
+        ).fetchone()
+        parsed_row = self.conn.execute(
+            "SELECT parsed_json, payload_mode FROM parsed_events WHERE event_id='evt-parsed'"
+        ).fetchone()
+        attempt_row = self.conn.execute(
+            "SELECT payload_hash, payload_mode FROM market_context_attempts WHERE signal_id='sig-mc'"
+        ).fetchone()
+        telegram_row = self.conn.execute(
+            "SELECT message_json, payload_mode FROM telegram_deliveries WHERE signal_id='sig-tg'"
+        ).fetchone()
+        self.assertIsNone(raw_row["raw_json"])
+        self.assertEqual("index_only", raw_row["payload_mode"])
+        self.assertIsNone(parsed_row["parsed_json"])
+        self.assertEqual("index_only", parsed_row["payload_mode"])
+        self.assertTrue(str(attempt_row["payload_hash"] or "").strip())
+        self.assertEqual("slim", attempt_row["payload_mode"])
+        self.assertIsNone(telegram_row["message_json"])
+        self.assertEqual("slim", telegram_row["payload_mode"])
 
     def test_trade_opportunity_asset_state_and_quality_writers(self) -> None:
         for status in ("CANDIDATE", "VERIFIED", "BLOCKED"):
