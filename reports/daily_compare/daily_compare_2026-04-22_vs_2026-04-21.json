@@ -1,0 +1,3037 @@
+{
+  "compare_available": true,
+  "compare_basis": "exact_previous_day",
+  "compare_window": "2026-04-22 vs 2026-04-21",
+  "core_metrics_compare": [
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.total_raw_events",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "raw_events_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 534
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.total_parsed_events",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "parsed_events_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 534
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.total_signal_rows",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "signals_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 6
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.lp_signal_rows",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "lp_signal_rows",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 4
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.delivered_lp_signals",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "delivered_lp_signals",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.suppressed_lp_signals",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "suppressed_lp_signals",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 4
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.asset_case_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "asset_case_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 1
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "run_overview.case_followup_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "run_data_integrity",
+      "metric_name": "case_followup_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "data_source_summary",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "archive_fallback_used": false,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        }
+      },
+      "today_value": {
+        "archive_fallback_used": false,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        }
+      }
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.db_archive_mirror_match_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.db_archive_mirror_match_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "db_archive_mirror_match_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 0.9998,
+      "today_value": 0.9998
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.sqlite_health.missing_tables",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.sqlite_health.missing_tables",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "missing_tables",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [],
+      "today_value": []
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.sqlite_health.missing_tables.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.sqlite_health.missing_tables.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "missing_tables_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.mismatch_warnings",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.mismatch_warnings",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "mismatch_warnings",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+        "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+        "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+      ],
+      "today_value": [
+        "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+        "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+        "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+      ]
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.mismatch_warnings.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.mismatch_warnings.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "mismatch_warning_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 3,
+      "today_value": 3
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "telegram_suppression_summary.telegram_should_send_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "telegram_denoise",
+      "metric_name": "telegram_should_send_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": -123.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "telegram_suppression_summary.total_suppressed",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "telegram_suppression_summary.telegram_suppressed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "telegram_denoise",
+      "metric_name": "telegram_suppressed_count",
+      "notes": [
+        "source_path_changed:telegram_suppression_summary.total_suppressed->telegram_suppression_summary.telegram_suppressed_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -96.85,
+      "previous_value": 127,
+      "today_value": 4
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "telegram_suppression_summary.telegram_suppression_ratio",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "telegram_denoise",
+      "metric_name": "telegram_suppression_ratio",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 1.0
+    },
+    {
+      "abs_change": null,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "telegram_suppression_summary.suppression_reasons",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "telegram_suppression_summary.telegram_suppression_reasons",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容变化；需人工查看差异",
+      "metric_group": "telegram_denoise",
+      "metric_name": "telegram_suppression_reasons",
+      "notes": [
+        "source_path_changed:telegram_suppression_summary.suppression_reasons->telegram_suppression_summary.telegram_suppression_reasons",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "no_trade_opportunity": 121,
+        "same_blocker_repeat": 6
+      },
+      "today_value": {
+        "no_trade_opportunity": 4
+      }
+    },
+    {
+      "abs_change": -132.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "telegram_suppression_summary.messages_before_after_suppression_estimate.raw_lp_signals",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "telegram_suppression_summary.messages_before_suppression_estimate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "telegram_denoise",
+      "metric_name": "messages_before_suppression_estimate",
+      "notes": [
+        "source_path_changed:telegram_suppression_summary.messages_before_after_suppression_estimate.raw_lp_signals->telegram_suppression_summary.messages_before_suppression_estimate",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -97.06,
+      "previous_value": 136,
+      "today_value": 4
+    },
+    {
+      "abs_change": -7.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "telegram_suppression_summary.messages_before_after_suppression_estimate.sent_telegram_messages",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "telegram_suppression_summary.messages_after_suppression_actual",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "telegram_denoise",
+      "metric_name": "messages_after_suppression_actual",
+      "notes": [
+        "source_path_changed:telegram_suppression_summary.messages_before_after_suppression_estimate.sent_telegram_messages->telegram_suppression_summary.messages_after_suppression_actual",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -100.0,
+      "previous_value": 7,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "telegram_suppression_summary.high_value_suppressed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "telegram_denoise",
+      "metric_name": "high_value_suppressed_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 2
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "final_trading_output_summary.legacy_chase_leaked_count",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "telegram_denoise",
+      "metric_name": "legacy_chase_leaked_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 4
+    },
+    {
+      "abs_change": null,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "asset_market_state_summary.state_distribution",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "asset_market_state_summary.state_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容变化；需人工查看差异",
+      "metric_group": "asset_market_state",
+      "metric_name": "state_distribution",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "DO_NOT_CHASE_LONG": 30,
+        "DO_NOT_CHASE_SHORT": 29,
+        "NO_TRADE_CHOP": 3,
+        "NO_TRADE_LOCK": 13,
+        "OBSERVE_LONG": 37,
+        "OBSERVE_SHORT": 22,
+        "SHORT_CANDIDATE": 1,
+        "WAIT_CONFIRMATION": 1
+      },
+      "today_value": {
+        "DO_NOT_CHASE_LONG": 1,
+        "OBSERVE_LONG": 3
+      }
+    },
+    {
+      "abs_change": -61.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "asset_market_state_summary.state_change_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "asset_market_state_summary.state_transition_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "asset_market_state",
+      "metric_name": "state_transition_count",
+      "notes": [
+        "source_path_changed:asset_market_state_summary.state_change_count->asset_market_state_summary.state_transition_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -96.83,
+      "previous_value": 63,
+      "today_value": 2
+    },
+    {
+      "abs_change": null,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "asset_market_state_summary.current_final_state_per_asset",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "asset_market_state_summary.final_state_by_asset",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容变化；需人工查看差异",
+      "metric_group": "asset_market_state",
+      "metric_name": "final_state_by_asset",
+      "notes": [
+        "source_path_changed:asset_market_state_summary.current_final_state_per_asset->asset_market_state_summary.final_state_by_asset",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "ETH": {
+          "state_key": "OBSERVE_LONG",
+          "state_label": "偏多观察",
+          "telegram_should_send": false,
+          "telegram_update_kind": "suppressed",
+          "updated_at": 1776748136
+        }
+      },
+      "today_value": {
+        "ETH": {
+          "state_key": "OBSERVE_LONG",
+          "state_label": "偏多观察",
+          "telegram_update_kind": "suppressed",
+          "updated_at": 1776835290,
+          "updated_at_beijing": "2026-04-22 13:21:30 UTC+08:00",
+          "updated_at_utc": "2026-04-22 05:21:30 UTC"
+        }
+      }
+    },
+    {
+      "abs_change": -4.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "no_trade_lock_summary.lock_entered_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "no_trade_lock_summary.lock_entered_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "asset_market_state",
+      "metric_name": "no_trade_lock_entered_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -100.0,
+      "previous_value": 4,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "no_trade_lock_summary.suppressed_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "no_trade_lock_summary.lock_suppressed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "asset_market_state",
+      "metric_name": "no_trade_lock_suppressed_count",
+      "notes": [
+        "source_path_changed:no_trade_lock_summary.suppressed_count->no_trade_lock_summary.lock_suppressed_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": -123.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "no_trade_lock_summary.release_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "no_trade_lock_summary.lock_released_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "asset_market_state",
+      "metric_name": "no_trade_lock_released_count",
+      "notes": [
+        "source_path_changed:no_trade_lock_summary.release_count->no_trade_lock_summary.lock_released_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -100.0,
+      "previous_value": 123,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_action_summary.trade_action_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "trade_action_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "DO_NOT_CHASE_LONG": 1,
+        "LONG_BIAS_OBSERVE": 3
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_none_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_none_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 264
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_candidate_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_candidate_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_verified_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_verified_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_blocked_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_blocked_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 68
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_invalidated_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "candidate_to_verified_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_hard_blocker_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "hard_blocker_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "history_completion_too_low": 39,
+        "late_or_chase": 21,
+        "no_trade_lock": 8
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.verification_blocker_distribution",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "verification_blocker_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {}
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_score_median",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_score_median",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.52775
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.opportunity_score_p90",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "opportunity_score_p90",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.6865
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "object",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "why_no_verified",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.why_no_opportunities",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "trade_action_opportunity",
+      "metric_name": "why_no_opportunities",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": [
+        "top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}",
+        "no_candidate_reached_opportunity_score_gate"
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_30s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_60s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_300s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_30s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_60s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_300s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "candidate_outcome_completion_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_30s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_60s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_300s_followthrough_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_30s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_60s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_300s_adverse_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "candidate_verified_posterior",
+      "metric_name": "verified_outcome_completion_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.blocker_saved_rate",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "blocker_risk_filter",
+      "metric_name": "blocker_saved_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.blocker_false_block_rate",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "blocker_risk_filter",
+      "metric_name": "blocker_false_block_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.top_blockers",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "blocker_risk_filter",
+      "metric_name": "blocker_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "history_completion_too_low": 39,
+        "late_or_chase": 21,
+        "no_trade_lock": 8
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.blocker_effectiveness.top_effective_blockers",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "blocker_risk_filter",
+      "metric_name": "top_effective_blockers",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": [
+        {
+          "blocker": "history_completion_too_low",
+          "count": 39,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "late_or_chase",
+          "count": 21,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "no_trade_lock",
+          "count": 8,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        }
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "trade_opportunity_summary.blocker_effectiveness.top_overblocking_blockers",
+          "report_type": "overnight_trade_action"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "blocker_risk_filter",
+      "metric_name": "top_overblocking_blockers",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": [
+        {
+          "blocker": "history_completion_too_low",
+          "count": 39,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "late_or_chase",
+          "count": 21,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        },
+        {
+          "blocker": "no_trade_lock",
+          "count": 8,
+          "false_block_rate": 0.0,
+          "saved_rate": 0.0
+        }
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_candidate_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "prealert",
+      "metric_name": "prealert_candidate_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 1
+    },
+    {
+      "abs_change": -135.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "prealert_summary.prealert_gate_passed_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_gate_passed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "prealert",
+      "metric_name": "prealert_gate_passed_count",
+      "notes": [
+        "source_path_changed:prealert_summary.prealert_gate_passed_count->prealert_lifecycle_summary.prealert_gate_passed_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -99.26,
+      "previous_value": 136,
+      "today_value": 1
+    },
+    {
+      "abs_change": -1.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.active_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_active_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "prealert",
+      "metric_name": "prealert_active_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.active_count->prealert_lifecycle_summary.prealert_active_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -100.0,
+      "previous_value": 1,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.delivered_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_delivered_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "prealert",
+      "metric_name": "prealert_delivered_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.delivered_count->prealert_lifecycle_summary.prealert_delivered_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": -75.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.upgraded_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_upgraded_to_confirm_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "prealert",
+      "metric_name": "prealert_upgraded_to_confirm_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.upgraded_count->prealert_lifecycle_summary.prealert_upgraded_to_confirm_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -98.68,
+      "previous_value": 76,
+      "today_value": 1
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.expired_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_expired_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "prealert",
+      "metric_name": "prealert_expired_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.expired_count->prealert_lifecycle_summary.prealert_expired_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.median_prealert_to_confirm_sec",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "prealert",
+      "metric_name": "median_prealert_to_confirm_sec",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.outcome_30s_completed_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "outcome_30s_completed_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.5
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.outcome_60s_completed_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "outcome_60s_completed_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.5
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.outcome_300s_completed_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "outcome_300s_completed_rate",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0.5
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.outcome_price_source_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "outcome_price_source_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "okx_mark": 12
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.expired_rate_by_window",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "expired_rate_by_window",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "300s": 0.0,
+        "30s": 0.0,
+        "60s": 0.0
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.outcome_failure_reason_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "outcome_failure_reason_distribution",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {}
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.catchup_completed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "catchup_completed_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.catchup_expired_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "catchup_expired_count",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": "outcome_source_summary.scheduler_health_summary",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "previous 字段缺失，无法判断",
+      "metric_group": "outcome_integrity",
+      "metric_name": "scheduler_health_summary",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": {
+        "catchup_completed_count": 0,
+        "catchup_expired_count": 0,
+        "completed_count": 6,
+        "expired_count": 0,
+        "pending_count": 6,
+        "settled_by_distribution": {
+          "outcome_scheduler": 6
+        },
+        "unavailable_count": 0
+      }
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.live_public_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.live_public_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "live_public_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 1.0,
+      "today_value": 1.0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.unavailable_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.unavailable_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "unavailable_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0.0,
+      "today_value": 0.0
+    },
+    {
+      "abs_change": -716.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.okx_success",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.okx_success",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "market_context",
+      "metric_name": "okx_success",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -96.76,
+      "previous_value": 740,
+      "today_value": 24
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.kraken_success",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.kraken_success",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "kraken_success",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0013,
+      "classification": "improvement",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.derived_attempt_success_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.derived_attempt_success_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "改善：指标上升",
+      "metric_group": "market_context",
+      "metric_name": "market_context_attempt_success_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.13,
+      "previous_value": 0.9987,
+      "today_value": 1.0
+    },
+    {
+      "abs_change": null,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.resolved_symbol_distribution",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.resolved_symbol_distribution",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容变化；需人工查看差异",
+      "metric_group": "market_context",
+      "metric_name": "resolved_symbol_distribution",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "ETH-USDT-SWAP": 136
+      },
+      "today_value": {
+        "ETH-USDT-SWAP": 4
+      }
+    },
+    {
+      "abs_change": null,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.top_failure_reasons",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.top_failure_reasons",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容变化；需人工查看差异",
+      "metric_group": "market_context",
+      "metric_name": "top_failure_reasons",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        {
+          "count": 1,
+          "reason": "timeout"
+        }
+      ],
+      "today_value": []
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.covered_major_pairs",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.covered_major_pairs",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "covered_major_pairs",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "ETH/USDT",
+        "ETH/USDC"
+      ],
+      "today_value": [
+        "ETH/USDT",
+        "ETH/USDC"
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.major_cli_summary.configured_but_disabled_major_pools",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.major_cli_summary.configured_but_disabled_major_pools",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "configured_but_disabled_major_pools",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        {
+          "index": 2,
+          "pair_label": "BTC/USDT",
+          "placeholder": false,
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+        },
+        {
+          "index": 3,
+          "pair_label": "BTC/USDC",
+          "placeholder": false,
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+        }
+      ],
+      "today_value": [
+        {
+          "index": 2,
+          "pair_label": "BTC/USDT",
+          "placeholder": false,
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+        },
+        {
+          "index": 3,
+          "pair_label": "BTC/USDC",
+          "placeholder": false,
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+        }
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "object",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "majors_coverage",
+      "metric_name": "configured_but_unsupported_chain",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "insufficient",
+      "data_source": {
+        "previous": {
+          "path": null,
+          "report_type": null
+        },
+        "today": {
+          "path": null,
+          "report_type": null
+        }
+      },
+      "direction": "object",
+      "interpretation": "today/previous 字段都缺失，无法判断",
+      "metric_group": "majors_coverage",
+      "metric_name": "configured_but_validation_failed",
+      "notes": [],
+      "pct_change": null,
+      "previous_value": null,
+      "today_value": null
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.missing_major_pairs",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.missing_major_pairs",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "missing_major_pairs",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "BTC/USDT",
+        "BTC/USDC",
+        "SOL/USDT",
+        "SOL/USDC"
+      ],
+      "today_value": [
+        "BTC/USDT",
+        "BTC/USDC",
+        "SOL/USDT",
+        "SOL/USDC"
+      ]
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.missing_major_pairs.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.missing_major_pairs.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "missing_major_pairs_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 4,
+      "today_value": 4
+    },
+    {
+      "abs_change": -132.0,
+      "classification": "changed",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.eth_signal_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.eth_signal_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "数量变化；仅表示规模/活动变化，不直接代表质量改善",
+      "metric_group": "majors_coverage",
+      "metric_name": "eth_signal_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": -97.06,
+      "previous_value": 136,
+      "today_value": 4
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.btc_signal_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.btc_signal_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "btc_signal_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.sol_signal_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.sol_signal_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "sol_signal_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.current_sample_still_eth_only",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.current_sample_still_eth_only",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "布尔状态未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "current_sample_still_eth_only",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": true,
+      "today_value": true
+    }
+  ],
+  "data_source_summary": {
+    "previous": {
+      "overnight_run": {
+        "archive_fallback_used": false,
+        "available": true,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "path": "reports/overnight_run_summary_latest.json",
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        },
+        "source_kind": "latest_summary_json"
+      }
+    },
+    "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON",
+    "today": {
+      "afternoon_evening_state": {
+        "archive_fallback_used": false,
+        "available": true,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "path": "reports/afternoon_evening_state_summary_latest_2026-04-22.json",
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        },
+        "source_kind": "dated_summary_json"
+      },
+      "overnight_trade_action": {
+        "archive_fallback_used": false,
+        "available": true,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "path": "reports/overnight_trade_action_summary_latest_2026-04-22.json",
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        },
+        "source_kind": "dated_summary_json"
+      }
+    }
+  },
+  "improvement_flags": [
+    {
+      "abs_change": 0.0013,
+      "classification": "improvement",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.derived_attempt_success_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.derived_attempt_success_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "改善：指标上升",
+      "metric_group": "market_context",
+      "metric_name": "market_context_attempt_success_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.13,
+      "previous_value": 0.9987,
+      "today_value": 1.0
+    }
+  ],
+  "key_findings": [
+    "证据不足，无法把整体明确判定为进步/持平/退步；当前可直接判定的方向性指标太少，仅有 db_archive_mirror_match_rate, mismatch_warning_count, live_public_rate, unavailable_rate, market_context_attempt_success_rate, missing_major_pairs_count。",
+    "实际发出消息 7 -> 0，但缺少高价值误抑制或 suppression previous 数据，不足以严格判断 Telegram 噪音是否改善。",
+    "Candidate 数量和质量的 day-over-day 证据都不足。",
+    "今天没有 verified；主要结构化原因是 top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}, no_candidate_reached_opportunity_score_gate。",
+    "Market context 命中率改善；market_context_attempt_success_rate: 0.9987 -> 1 (+0.13%)。",
+    "covered_major_pairs: [\"ETH/USDT\", \"ETH/USDC\"] -> [\"ETH/USDT\", \"ETH/USDC\"]；btc_signal_count: 0 -> 0；sol_signal_count: 0 -> 0"
+  ],
+  "key_risks": [
+    "今天没有 verified；主要结构化原因是 top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}, no_candidate_reached_opportunity_score_gate。",
+    "证据不足；缺少 blocker_saved_rate 或 blocker_false_block_rate。",
+    "证据不足；缺少 outcome completed rate。",
+    "今天仍然主要只在 ETH 上学习；current_sample_still_eth_only=True。",
+    "证据不足；没有足够强的方向性退步指标。"
+  ],
+  "limitations": [
+    "missing_metrics=asset_case_count,blocker_distribution,blocker_false_block_rate,blocker_saved_rate,candidate_300s_adverse_rate,candidate_300s_followthrough_rate,candidate_30s_adverse_rate,candidate_30s_followthrough_rate,candidate_60s_adverse_rate,candidate_60s_followthrough_rate,candidate_outcome_completion_rate,candidate_to_verified_rate,case_followup_count,catchup_completed_count,catchup_expired_count,configured_but_unsupported_chain,configured_but_validation_failed,delivered_lp_signals,expired_rate_by_window,hard_blocker_distribution",
+    "missing_summary:afternoon_evening_state:2026-04-21",
+    "missing_summary:overnight_run:2026-04-22",
+    "missing_summary:overnight_trade_action:2026-04-21",
+    "previous:overnight_run:Exact 30s move_after fields are not persisted in a way that supports overnight ratio calculation.",
+    "previous:overnight_run:Window-level 60s move_after coverage is near zero, so only 300s reversal analysis is robust.",
+    "previous:overnight_run:raw_events and parsed_events archives are missing.",
+    "today:afternoon_evening_state:30s outcome completion is still incomplete enough that very short-term reversal conclusions must stay conservative.",
+    "today:afternoon_evening_state:BTC/SOL have no real selected-window samples, so market-state, lock, and outcome conclusions are ETH-centric.",
+    "today:afternoon_evening_state:selected window contains no TRADEABLE_* states, so candidate-to-tradeable promotion is only validated negatively (blocked), not positively (triggered).",
+    "today:afternoon_evening_state:selected window contains too few prealert-stage rows to fully validate the new prealert lifecycle on its own.",
+    "today:overnight_trade_action:300s outcome coverage is almost entirely expired due window_elapsed_without_price_update.",
+    "today:overnight_trade_action:parsed_events archive is missing in the selected overnight window.",
+    "today:overnight_trade_action:prealert diagnostics show overwritten=true everywhere, so the exact overwrite point cannot be reconstructed from raw/parsed layers.",
+    "today:overnight_trade_action:raw_events archive is missing in the selected overnight window."
+  ],
+  "next_actions": [
+    "明天最优先处理 verified 缺失的主因：top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}, no_candidate_reached_opportunity_score_gate。"
+  ],
+  "previous_date": "2026-04-21",
+  "question_answers": {
+    "1": "证据不足，无法把整体明确判定为进步/持平/退步；当前可直接判定的方向性指标太少，仅有 db_archive_mirror_match_rate, mismatch_warning_count, live_public_rate, unavailable_rate, market_context_attempt_success_rate, missing_major_pairs_count。",
+    "10": "今天仍然主要只在 ETH 上学习；current_sample_still_eth_only=True。",
+    "11": "market_context_attempt_success_rate: 0.9987 -> 1 (+0.13%)",
+    "12": "证据不足；没有足够强的方向性退步指标。",
+    "13": "明天最优先处理 verified 缺失的主因：top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}, no_candidate_reached_opportunity_score_gate。",
+    "2": "判断依据基于 compare_basis=exact_previous_day 的结构化 JSON 指标，不使用 markdown 正文字符串比较。",
+    "3": "实际发出消息 7 -> 0，但缺少高价值误抑制或 suppression previous 数据，不足以严格判断 Telegram 噪音是否改善。",
+    "4": "Candidate 数量和质量的 day-over-day 证据都不足。",
+    "5": "今天没有 verified；主要结构化原因是 top_blockers={'history_completion_too_low': 39, 'late_or_chase': 21, 'no_trade_lock': 8}, no_candidate_reached_opportunity_score_gate。",
+    "6": "证据不足；缺少 blocker_saved_rate 或 blocker_false_block_rate。",
+    "7": "证据不足；缺少 outcome completed rate。",
+    "8": "Market context 命中率改善；market_context_attempt_success_rate: 0.9987 -> 1 (+0.13%)。",
+    "9": "covered_major_pairs: [\"ETH/USDT\", \"ETH/USDC\"] -> [\"ETH/USDT\", \"ETH/USDC\"]；btc_signal_count: 0 -> 0；sol_signal_count: 0 -> 0"
+  },
+  "regression_flags": [],
+  "source_files": {
+    "previous": {
+      "overnight_run": {
+        "logical_date": "2026-04-21",
+        "path": "reports/overnight_run_summary_latest.json",
+        "source_kind": "latest_summary_json",
+        "warnings": []
+      }
+    },
+    "today": {
+      "afternoon_evening_state": {
+        "logical_date": "2026-04-22",
+        "path": "reports/afternoon_evening_state_summary_latest_2026-04-22.json",
+        "source_kind": "dated_summary_json",
+        "warnings": []
+      },
+      "overnight_trade_action": {
+        "logical_date": "2026-04-22",
+        "path": "reports/overnight_trade_action_summary_latest_2026-04-22.json",
+        "source_kind": "dated_summary_json",
+        "warnings": []
+      }
+    }
+  },
+  "today_date": "2026-04-22",
+  "unchanged_flags": [
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "data_source_summary",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": {
+        "archive_fallback_used": false,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        }
+      },
+      "today_value": {
+        "archive_fallback_used": false,
+        "data_source": "sqlite",
+        "db_archive_mirror_match_rate": 0.9998,
+        "mismatch_warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+          "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+          "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+        ],
+        "report_data_source": "sqlite",
+        "source_components": {
+          "case_followups": "sqlite",
+          "delivery_audit": "sqlite",
+          "signals": "sqlite"
+        }
+      }
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.db_archive_mirror_match_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.db_archive_mirror_match_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "db_archive_mirror_match_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 0.9998,
+      "today_value": 0.9998
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.sqlite_health.missing_tables",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.sqlite_health.missing_tables",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "missing_tables",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [],
+      "today_value": []
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.sqlite_health.missing_tables.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.sqlite_health.missing_tables.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "missing_tables_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.mismatch_warnings",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.mismatch_warnings",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "run_data_integrity",
+      "metric_name": "mismatch_warnings",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+        "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+        "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+      ],
+      "today_value": [
+        "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
+        "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
+        "db_archive_mirror_mismatch:delivery_audit:sqlite=156459:archive=156596"
+      ]
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "data_source_summary.mismatch_warnings.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "data_source_summary.mismatch_warnings.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "run_data_integrity",
+      "metric_name": "mismatch_warning_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 3,
+      "today_value": 3
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "no_trade_lock_summary.suppressed_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "no_trade_lock_summary.lock_suppressed_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "asset_market_state",
+      "metric_name": "no_trade_lock_suppressed_count",
+      "notes": [
+        "source_path_changed:no_trade_lock_summary.suppressed_count->no_trade_lock_summary.lock_suppressed_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.delivered_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_delivered_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "prealert",
+      "metric_name": "prealert_delivered_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.delivered_count->prealert_lifecycle_summary.prealert_delivered_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "prealert_lifecycle_summary.expired_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "prealert_lifecycle_summary.prealert_expired_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "prealert",
+      "metric_name": "prealert_expired_count",
+      "notes": [
+        "source_path_changed:prealert_lifecycle_summary.expired_count->prealert_lifecycle_summary.prealert_expired_count",
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.live_public_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.live_public_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "higher_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "live_public_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 1.0,
+      "today_value": 1.0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.unavailable_rate",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.unavailable_rate",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "unavailable_rate",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0.0,
+      "today_value": 0.0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "market_context_health.window.kraken_success",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "market_context_health.window.kraken_success",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "market_context",
+      "metric_name": "kraken_success",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.covered_major_pairs",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.covered_major_pairs",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "covered_major_pairs",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "ETH/USDT",
+        "ETH/USDC"
+      ],
+      "today_value": [
+        "ETH/USDT",
+        "ETH/USDC"
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.major_cli_summary.configured_but_disabled_major_pools",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.major_cli_summary.configured_but_disabled_major_pools",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "configured_but_disabled_major_pools",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        {
+          "index": 2,
+          "pair_label": "BTC/USDT",
+          "placeholder": false,
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+        },
+        {
+          "index": 3,
+          "pair_label": "BTC/USDC",
+          "placeholder": false,
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+        }
+      ],
+      "today_value": [
+        {
+          "index": 2,
+          "pair_label": "BTC/USDT",
+          "placeholder": false,
+          "pool_address": "0x9db9e0e53058c89e5b94e29621a205198648425b"
+        },
+        {
+          "index": 3,
+          "pair_label": "BTC/USDC",
+          "placeholder": false,
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416"
+        }
+      ]
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.missing_major_pairs",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.missing_major_pairs",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "object",
+      "interpretation": "结构化内容未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "missing_major_pairs",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": [
+        "BTC/USDT",
+        "BTC/USDC",
+        "SOL/USDT",
+        "SOL/USDC"
+      ],
+      "today_value": [
+        "BTC/USDT",
+        "BTC/USDC",
+        "SOL/USDT",
+        "SOL/USDC"
+      ]
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.missing_major_pairs.len",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.missing_major_pairs.len",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "missing_major_pairs_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": 0.0,
+      "previous_value": 4,
+      "today_value": 4
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.btc_signal_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.btc_signal_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "btc_signal_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": 0.0,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.sol_signal_count",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.sol_signal_count",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "count_only",
+      "interpretation": "与 previous 持平",
+      "metric_group": "majors_coverage",
+      "metric_name": "sol_signal_count",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": 0,
+      "today_value": 0
+    },
+    {
+      "abs_change": null,
+      "classification": "unchanged",
+      "data_source": {
+        "previous": {
+          "path": "majors_coverage_summary.current_sample_still_eth_only",
+          "report_type": "overnight_run"
+        },
+        "today": {
+          "path": "majors_coverage_summary.current_sample_still_eth_only",
+          "report_type": "afternoon_evening_state"
+        }
+      },
+      "direction": "lower_better",
+      "interpretation": "布尔状态未变化",
+      "metric_group": "majors_coverage",
+      "metric_name": "current_sample_still_eth_only",
+      "notes": [
+        "source_report_changed:overnight_run->afternoon_evening_state"
+      ],
+      "pct_change": null,
+      "previous_value": true,
+      "today_value": true
+    }
+  ]
+}

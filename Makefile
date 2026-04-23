@@ -36,7 +36,10 @@ TEST_SQLITE_COMPACT_MODULES := \
 TEST_REPORT_MODULES := \
 	$(APP).test_report_db_first_loader \
 	$(APP).test_report_archive_gzip_fallback \
-	$(APP).test_report_db_archive_mismatch
+	$(APP).test_report_db_archive_mismatch \
+	$(APP).test_daily_compare_report \
+	$(APP).test_daily_compare_source_selection \
+	$(APP).test_daily_compare_makefile
 
 TEST_OPPORTUNITY_MODULES := \
 	$(APP).test_trade_opportunity_scoring \
@@ -147,6 +150,8 @@ endef
 	archive-compress-date \
 	daily-close \
 	daily-close-strict \
+	daily-compare \
+	daily-compare-strict \
 	report-overnight \
 	report-state \
 	report-run \
@@ -227,12 +232,17 @@ help:
 	@printf '%s\n' "                                          Request gzip after dry-run; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
 	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
+	@printf '%s\n' "  make daily-compare [DATE=YYYY-MM-DD]    Generate today vs previous-available compare report."
+	@printf '%s\n' "  make daily-compare-strict [DATE=YYYY-MM-DD]"
+	@printf '%s\n' "                                          Strict compare; fail when primary summary coverage is incomplete."
 	@printf '%s\n' ""
 	@printf '%s\n' "Reports:"
 	@printf '%s\n' "  make report-overnight                   Generate overnight trade action analysis."
 	@printf '%s\n' "  make report-state                       Generate afternoon/evening state analysis."
 	@printf '%s\n' "  make report-run                         Generate overnight run analysis if the script exists."
 	@printf '%s\n' "  make report-all                         Generate all common reports."
+	@printf '%s\n' "  make daily-compare                      生成今天 vs 昨天/前一个可用日期的数据对比报告."
+	@printf '%s\n' "  make daily-compare-strict               严格模式生成 today vs previous compare."
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -424,6 +434,22 @@ daily-close-strict:
 		echo "Compression dry-run only. Use make daily-close-strict DATE=$(DATE) COMPRESS=YES CONFIRM=YES to gzip archive."; \
 	fi
 	$(RUN_PY) -m $(APP).sqlite_store --checkpoint
+
+daily-compare:
+	@mkdir -p $(REPORTS)/daily_compare
+	@if [ -n "$(DATE)" ]; then \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --date "$(DATE)"; \
+	else \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py; \
+	fi
+
+daily-compare-strict:
+	@mkdir -p $(REPORTS)/daily_compare
+	@if [ -n "$(DATE)" ]; then \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --strict --date "$(DATE)"; \
+	else \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --strict; \
+	fi
 
 report-overnight:
 	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py

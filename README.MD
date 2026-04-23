@@ -199,6 +199,48 @@ SQLite mirror / query layer：
   - `./venv/bin/python -m app.sqlite_store --prune --dry-run`
   - `./venv/bin/python -m app.sqlite_store --prune --execute`
 
+## 每日对比报告
+
+- 作用：
+  - `make daily-compare` 会比较“今天”和“前一个可用日期”的系统运行结果，重点看系统质量、噪音控制、候选/机会质量、outcome 完整性、market context 命中率和 majors 覆盖是否变好或变差
+  - `make daily-compare DATE=YYYY-MM-DD` 会把 `DATE` 视作 today，并自动寻找小于该日期的最近一个可用日期作为 previous
+  - compare 只基于真实结构化数据，不会编造 yesterday；如果前一个日期不存在，会明确写 `compare not available`
+- 命令：
+  - `make daily-compare`
+  - `make daily-compare DATE=YYYY-MM-DD`
+  - `make daily-compare-strict`
+  - `make daily-compare-strict DATE=YYYY-MM-DD`
+- 输入文件：
+  - 第一优先读取 `reports/overnight_trade_action_summary_latest_YYYY-MM-DD.json`
+  - 第一优先读取 `reports/afternoon_evening_state_summary_latest_YYYY-MM-DD.json`
+  - 第一优先读取 `reports/overnight_run_summary_latest_YYYY-MM-DD.json`
+  - 如果某个日期缺少 dated summary JSON，则会退回到与该逻辑日期匹配的 `*_summary_latest.json`
+  - compare 不会用 Markdown 正文做字符串 diff；如果字段不存在，会在报告里写 `字段缺失` 或 `schema drift / 字段不一致`
+- 输出目录：
+  - `reports/daily_compare/`
+- 输出文件：
+  - `reports/daily_compare/daily_compare_YYYY-MM-DD_vs_YYYY-MM-DD.md`
+  - `reports/daily_compare/daily_compare_YYYY-MM-DD_vs_YYYY-MM-DD.csv`
+  - `reports/daily_compare/daily_compare_YYYY-MM-DD_vs_YYYY-MM-DD.json`
+  - `reports/daily_compare/daily_compare_latest.md`
+  - `reports/daily_compare/daily_compare_latest.csv`
+  - `reports/daily_compare/daily_compare_latest.json`
+- 输出内容：
+  - Markdown：执行摘要、数据来源、compare basis、问题回答和关键限制
+  - CSV：逐指标的 `today_value / previous_value / abs_change / pct_change / interpretation`
+  - JSON：结构化 compare summary，包含 `compare_basis`、`source_files`、`improvement_flags`、`regression_flags`、`limitations`
+- 如何理解结果：
+  - Candidate 变多不一定更好；要同时看 `followthrough / adverse / completion`
+  - Blocked 变多不一定是退步；可能是市场更差，或者系统更会保护你
+  - Telegram 消息变少不一定代表漏信号；要同时看 suppression reason 和 `high_value_suppressed_count`
+  - Verified 变少不一定是坏事；如果 blocker saved rate 提升且 false block rate 没恶化，可能只是系统更保守
+  - `compare_basis=exact_previous_day` 表示和精确前一天比较；`compare_basis=previous_available_day` 表示前一天缺报告，使用最近一个可用日期
+- 重要提醒：
+  - compare 报告不是交易建议，不是自动下单建议
+  - 如果 yesterday / previous 数据缺失，报告不会编造
+  - 如果 `source_files` 缺失、字段缺失或发生 `schema drift`，报告会在 `limitations` 里明确写出
+  - compare 命令只负责比较，不会压缩 archive，也不会删除 archive/cache/db
+
 majors-first pool book 指引：
 - `LP_MAJOR_ASSETS / LP_MAJOR_QUOTES / LP_MAJOR_PRIORITY_SCORE` 控制 majors 覆盖与优先级
 - 当前第一优先级是补 Ethereum BTC majors：
