@@ -174,6 +174,57 @@ TABLE_RECOMMENDED_MODES = {
     "market_context_snapshots": "full",
 }
 
+PAYLOAD_METADATA_SPECS: dict[str, dict[str, Any]] = {
+    "raw_events": {
+        "json_column": "raw_json",
+        "time_column": "captured_at",
+        "archive_categories": ("raw_events",),
+        "identity_columns": ("event_id", "tx_hash", "block_number", "captured_at"),
+        "time_keys": ("captured_at", "ingest_ts", "timestamp", "ts", "archive_ts"),
+        "bucket_seconds": 60,
+    },
+    "parsed_events": {
+        "json_column": "parsed_json",
+        "time_column": "parsed_at",
+        "archive_categories": ("parsed_events",),
+        "identity_columns": ("event_id", "tx_hash", "parsed_kind", "parsed_at"),
+        "time_keys": ("parsed_at", "timestamp", "ts", "archive_ts"),
+        "bucket_seconds": 60,
+    },
+    "delivery_audit": {
+        "json_column": "audit_json",
+        "time_column": "archive_written_at",
+        "archive_categories": ("delivery_audit",),
+        "identity_columns": (
+            "audit_id",
+            "signal_id",
+            "event_id",
+            "delivery_decision",
+            "sent_to_telegram",
+            "timestamp",
+            "archive_written_at",
+        ),
+        "time_keys": ("timestamp", "archive_written_at", "notifier_sent_at", "ts", "created_at", "archive_ts"),
+        "bucket_seconds": 60,
+    },
+    "telegram_deliveries": {
+        "json_column": "message_json",
+        "time_column": "created_at",
+        "archive_categories": ("delivery_audit", "signals"),
+        "identity_columns": ("telegram_delivery_id", "signal_id", "headline", "sent_at", "created_at"),
+        "time_keys": ("sent_at", "created_at", "archive_written_at", "notifier_sent_at", "timestamp", "archive_ts"),
+        "bucket_seconds": 60,
+    },
+    "case_followups": {
+        "json_column": "followup_json",
+        "time_column": "archive_written_at",
+        "archive_categories": ("case_followups",),
+        "identity_columns": ("followup_id", "case_id", "signal_id", "asset", "stage", "archive_written_at", "created_at"),
+        "time_keys": ("archive_written_at", "created_at", "timestamp", "ts", "archive_ts"),
+        "bucket_seconds": 300,
+    },
+}
+
 TABLE_VALUE_FLAGS = {
     "signals": {
         "candidate_to_verified": True,
@@ -473,6 +524,33 @@ def _hash(value: Any, prefix: str = "") -> str:
     return f"{prefix}{digest}" if prefix else digest
 
 
+def stable_payload_hash(payload: Any) -> str | None:
+    try:
+        if isinstance(payload, str):
+            try:
+                normalized = json.dumps(
+                    json.loads(payload),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                normalized = payload
+        else:
+            normalized = json.dumps(
+                payload if payload is not None else {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    except (TypeError, ValueError):
+        try:
+            return hashlib.sha256(str(payload).encode("utf-8")).hexdigest()
+        except Exception:
+            return None
+
+
 def _unwrap(record: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(record, dict):
         return {}, {}
@@ -560,14 +638,7 @@ def _archive_ts(data: dict[str, Any], envelope: dict[str, Any]) -> float:
 def _payload_hash(value: Any) -> str | None:
     if not bool(SQLITE_ARCHIVE_PAYLOAD_HASH_ENABLE):
         return None
-    try:
-        if isinstance(value, str):
-            payload = value
-        else:
-            payload = json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
-    except (TypeError, ValueError):
-        return None
+    return stable_payload_hash(value)
 
 
 def _archive_date_from_ts(ts_value: Any) -> str | None:
@@ -3204,17 +3275,38 @@ def table_size_summary() -> dict[str, Any]:
     dbstat_sizes, dbstat_available = _dbstat_table_sizes(conn)
     tables: list[dict[str, Any]] = []
     counts = table_row_counts(tuple(table for table in REQUIRED_TABLES if _table_exists(conn, table)))
+    payload_hash_coverage_by_table: dict[str, Any] = {}
+    archive_path_coverage_by_table: dict[str, Any] = {}
+    compactable_rows_by_table: dict[str, int] = {}
+    backfill_needed_rows_by_table: dict[str, int] = {}
+    full_payload_rows_by_table: dict[str, int] = {}
+    legacy_full_payload_rows_by_table: dict[str, int] = {}
     for table in REQUIRED_TABLES:
         if not _table_exists(conn, table):
             continue
         row_count = max(int(counts.get(table) or 0), 0)
         payload_stats = _json_payload_stats_for_table(conn, table)
+        metadata_stats = _payload_metadata_stats_for_table(conn, table)
         size_bytes = int(dbstat_sizes.get(table) or 0)
         current_mode = _mode_for_table(table)
         recommended_mode = TABLE_RECOMMENDED_MODES.get(table, current_mode)
         value_flags = TABLE_VALUE_FLAGS.get(table, {})
-        estimated_savings = payload_stats["json_payload_size_bytes"] if recommended_mode in {"index_only", "slim"} else 0
-        can_compact = table in {"raw_events", "parsed_events", "delivery_audit", "telegram_deliveries", "case_followups"} and payload_stats["json_payload_size_bytes"] > 0
+        estimated_savings = int(metadata_stats.get("compactable_payload_bytes") or 0) if recommended_mode in {"index_only", "slim"} else 0
+        can_compact = bool(metadata_stats.get("compactable_rows"))
+        payload_hash_coverage_by_table[table] = {
+            "covered_rows": int(metadata_stats.get("payload_hash_covered_rows") or 0),
+            "full_payload_rows": int(metadata_stats.get("full_payload_rows") or 0),
+            "coverage": float(metadata_stats.get("payload_hash_coverage") or 0.0),
+        }
+        archive_path_coverage_by_table[table] = {
+            "covered_rows": int(metadata_stats.get("archive_path_covered_rows") or 0),
+            "full_payload_rows": int(metadata_stats.get("full_payload_rows") or 0),
+            "coverage": float(metadata_stats.get("archive_path_coverage") or 0.0),
+        }
+        compactable_rows_by_table[table] = int(metadata_stats.get("compactable_rows") or 0)
+        backfill_needed_rows_by_table[table] = int(metadata_stats.get("backfill_needed_rows") or 0)
+        full_payload_rows_by_table[table] = int(metadata_stats.get("full_payload_rows") or 0)
+        legacy_full_payload_rows_by_table[table] = int(metadata_stats.get("legacy_full_payload_rows") or 0)
         tables.append(
             {
                 "table": table,
@@ -3232,6 +3324,7 @@ def table_size_summary() -> dict[str, Any]:
                 "critical_for_opportunity_score": bool(value_flags.get("opportunity_score")),
                 "archive_only_ok": table in {"raw_events", "parsed_events"},
                 **payload_stats,
+                **metadata_stats,
                 **value_flags,
             }
         )
@@ -3252,6 +3345,19 @@ def table_size_summary() -> dict[str, Any]:
         "available": True,
         "dbstat_available": dbstat_available,
         "table_row_counts": {item["table"]: item["row_count"] for item in tables},
+        "payload_hash_coverage_by_table": payload_hash_coverage_by_table,
+        "archive_path_coverage_by_table": archive_path_coverage_by_table,
+        "compactable_rows_by_table": compactable_rows_by_table,
+        "backfill_needed_rows_by_table": backfill_needed_rows_by_table,
+        "full_payload_rows_by_table": full_payload_rows_by_table,
+        "legacy_full_payload_rows_by_table": legacy_full_payload_rows_by_table,
+        "estimated_savings_after_backfill_bytes": sum(
+            int(item.get("estimated_savings_after_backfill_bytes") or 0) for item in tables
+        ),
+        "estimated_savings_after_backfill_mb": round(
+            sum(int(item.get("estimated_savings_after_backfill_bytes") or 0) for item in tables) / (1024 * 1024),
+            4,
+        ),
         "tables": tables,
         "biggest_tables_by_rows": biggest_tables_by_rows,
         "biggest_tables_by_size": biggest_tables_by_size,
@@ -3322,10 +3428,11 @@ def sqlite_data_value_audit(*, write_reports: bool = False) -> dict[str, Any]:
     compact_candidates = [
         item["table"]
         for item in tables
-        if bool(item.get("can_compact"))
+        if bool(item.get("compactable_rows"))
     ]
     total_json_payload = sum(int(item.get("json_payload_size_bytes") or 0) for item in tables)
     estimated_compact_savings = sum(int(item.get("estimated_savings_bytes") or 0) for item in tables)
+    estimated_savings_after_backfill = sum(int(item.get("estimated_savings_after_backfill_bytes") or 0) for item in tables)
     payload = {
         **summary,
         "must_keep_full_tables": must_keep_full,
@@ -3340,6 +3447,10 @@ def sqlite_data_value_audit(*, write_reports: bool = False) -> dict[str, Any]:
         "total_json_payload_size_mb": round(total_json_payload / (1024 * 1024), 4) if total_json_payload else 0.0,
         "estimated_compact_savings_bytes": estimated_compact_savings,
         "estimated_compact_savings_mb": round(estimated_compact_savings / (1024 * 1024), 4) if estimated_compact_savings else 0.0,
+        "estimated_savings_after_backfill_bytes": estimated_savings_after_backfill,
+        "estimated_savings_after_backfill_mb": round(estimated_savings_after_backfill / (1024 * 1024), 4)
+        if estimated_savings_after_backfill
+        else 0.0,
         "answers": {
             "must_long_term_retain": must_keep_full,
             "should_keep_slim_or_index_only": long_term_slim + index_only,
@@ -3360,12 +3471,17 @@ def db_retention_recommendation() -> dict[str, Any]:
         "signals/outcomes/opportunities/states/quality 保持 full，作为长期分析主数据",
         "raw_events / parsed_events 默认切到 index_only，full payload 交给 .ndjson/.ndjson.gz archive",
         "delivery_audit / telegram_deliveries / market_context_attempts / case_followups 默认 slim，保留路由决策与关键诊断索引，不保留长期 full payload",
+        "如果 skipped_no_payload_hash / skipped_no_archive_path 很高，先跑 --backfill-payload-metadata 再 compact",
         "compact 前先确认 archive_path + payload_hash + archive 文件存在；没有备份不清 payload",
         "compact 后如需真正回收磁盘，再单独执行 vacuum",
     ]
     if audit.get("estimated_compact_savings_bytes"):
         actions.append(
             f"当前按推荐模式预计可释放约 {round(float(audit['estimated_compact_savings_bytes']) / (1024 * 1024), 2)} MB 的 JSON payload 空间"
+        )
+    if audit.get("estimated_savings_after_backfill_bytes"):
+        actions.append(
+            f"完成 legacy payload metadata backfill 后，预计可进一步释放约 {round(float(audit['estimated_savings_after_backfill_bytes']) / (1024 * 1024), 2)} MB"
         )
     return {
         "db_path": audit.get("db_path"),
@@ -3410,6 +3526,14 @@ def db_retention_recommendation() -> dict[str, Any]:
         "can_compact": audit.get("compact_candidate_tables") or [],
         "estimated_compact_savings_bytes": audit.get("estimated_compact_savings_bytes"),
         "estimated_compact_savings_mb": audit.get("estimated_compact_savings_mb"),
+        "payload_hash_coverage_by_table": audit.get("payload_hash_coverage_by_table") or {},
+        "archive_path_coverage_by_table": audit.get("archive_path_coverage_by_table") or {},
+        "compactable_rows_by_table": audit.get("compactable_rows_by_table") or {},
+        "backfill_needed_rows_by_table": audit.get("backfill_needed_rows_by_table") or {},
+        "full_payload_rows_by_table": audit.get("full_payload_rows_by_table") or {},
+        "legacy_full_payload_rows_by_table": audit.get("legacy_full_payload_rows_by_table") or {},
+        "estimated_savings_after_backfill_bytes": audit.get("estimated_savings_after_backfill_bytes"),
+        "estimated_savings_after_backfill_mb": audit.get("estimated_savings_after_backfill_mb"),
         "recommended_actions": actions,
     }
 
@@ -3420,6 +3544,11 @@ def _write_audit_csv(path: Path, tables: list[dict[str, Any]]) -> None:
         "row_count",
         "table_size_bytes",
         "json_payload_size_bytes",
+        "full_payload_rows",
+        "payload_hash_coverage",
+        "archive_path_coverage",
+        "compactable_rows",
+        "backfill_needed_rows",
         "data_value_class",
         "current_mode",
         "recommended_mode",
@@ -3446,6 +3575,7 @@ def _render_audit_markdown(payload: dict[str, Any]) -> str:
         f"- WAL size: `{payload.get('wal_size_mb')}` MB",
         f"- Total JSON payload: `{payload.get('total_json_payload_size_mb')}` MB",
         f"- Estimated compact savings: `{payload.get('estimated_compact_savings_mb')}` MB",
+        f"- Estimated savings after backfill: `{payload.get('estimated_savings_after_backfill_mb')}` MB",
         "",
         "## Long-term Full",
         "",
@@ -3465,14 +3595,19 @@ def _render_audit_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Table Audit",
         "",
-        "| table | rows | value_class | current_mode | recommended_mode | json_payload_mb | table_size_mb | can_compact |",
-        "| --- | ---: | --- | --- | --- | ---: | ---: | --- |",
+        "| table | rows | full_payload_rows | payload_hash_coverage | archive_path_coverage | compactable_rows | backfill_needed_rows | value_class | current_mode | recommended_mode | json_payload_mb | table_size_mb | can_compact |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | --- |",
     ]
     for item in payload.get("tables") or []:
         lines.append(
-            "| {table} | {row_count} | {data_value_class} | {current_mode} | {recommended_mode} | {json_payload_size_mb:.4f} | {table_size_mb:.4f} | {can_compact} |".format(
+            "| {table} | {row_count} | {full_payload_rows} | {payload_hash_coverage:.4f} | {archive_path_coverage:.4f} | {compactable_rows} | {backfill_needed_rows} | {data_value_class} | {current_mode} | {recommended_mode} | {json_payload_size_mb:.4f} | {table_size_mb:.4f} | {can_compact} |".format(
                 table=item.get("table"),
                 row_count=int(item.get("row_count") or 0),
+                full_payload_rows=int(item.get("full_payload_rows") or 0),
+                payload_hash_coverage=float(item.get("payload_hash_coverage") or 0.0),
+                archive_path_coverage=float(item.get("archive_path_coverage") or 0.0),
+                compactable_rows=int(item.get("compactable_rows") or 0),
+                backfill_needed_rows=int(item.get("backfill_needed_rows") or 0),
                 data_value_class=item.get("data_value_class"),
                 current_mode=item.get("current_mode"),
                 recommended_mode=item.get("recommended_mode"),
@@ -3492,6 +3627,9 @@ def _render_audit_markdown(payload: dict[str, Any]) -> str:
             f"- 可安全 compact/prune：{', '.join(payload.get('answers', {}).get('safe_to_prune_or_compact') or []) or '(none)'}",
             f"- 不应再导入数据库字段：{', '.join(payload.get('answers', {}).get('fields_not_for_future_import') or []) or '(none)'}",
             f"- 支持 verified/opportunity_score 必留字段：{', '.join(payload.get('answers', {}).get('fields_required_for_verified') or []) or '(none)'}",
+            f"- payload_hash 覆盖：{json.dumps(payload.get('payload_hash_coverage_by_table') or {}, ensure_ascii=False, sort_keys=True)}",
+            f"- archive_path 覆盖：{json.dumps(payload.get('archive_path_coverage_by_table') or {}, ensure_ascii=False, sort_keys=True)}",
+            f"- backfill 需求：{json.dumps(payload.get('backfill_needed_rows_by_table') or {}, ensure_ascii=False, sort_keys=True)}",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -3538,17 +3676,733 @@ def _archive_reference_exists(path_value: str | None) -> bool:
     return False
 
 
+def _resolve_archive_reference_existing_path(path_value: str | None) -> Path | None:
+    path = _resolve_archive_reference(path_value)
+    if path is None:
+        return None
+    if path.exists():
+        if str(path).endswith(".ndjson.gz"):
+            plain = Path(str(path)[: -len(".gz")])
+            if plain.exists():
+                return plain
+        return path
+    if str(path).endswith(".ndjson"):
+        gz = Path(f"{path}.gz")
+        if gz.exists():
+            return gz
+    if str(path).endswith(".ndjson.gz"):
+        plain = Path(str(path)[: -len(".gz")])
+        if plain.exists():
+            return plain
+    return None
+
+
+def _archive_category_from_path(path: Path | None) -> str:
+    if path is None:
+        return ""
+    return str(path.parent.name or "").strip()
+
+
+def _archive_date_from_path(path: Path | None) -> str:
+    if path is None:
+        return ""
+    return str(_archive_file_key(path) or "").strip()
+
+
+def _archive_date_bounds(date_value: str) -> tuple[float, float]:
+    bj = timezone(timedelta(hours=8))
+    start = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=bj)
+    end = start + timedelta(days=1)
+    return start.astimezone(timezone.utc).timestamp(), end.astimezone(timezone.utc).timestamp()
+
+
+def _row_or_payload_value(
+    row: dict[str, Any],
+    payload_data: dict[str, Any] | None,
+    *keys: str,
+    default: Any = None,
+) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, "", [], {}, ()):
+            return value
+    if isinstance(payload_data, dict):
+        return _first(payload_data, *keys, default=default)
+    return default
+
+
+def _row_payload_data(row: dict[str, Any], json_column: str) -> dict[str, Any] | None:
+    value = row.get(json_column)
+    parsed = _from_json(value, default=None)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _row_archive_ts(table: str, row: dict[str, Any], payload_data: dict[str, Any] | None) -> float | None:
+    spec = PAYLOAD_METADATA_SPECS.get(table) or {}
+    time_column = str(spec.get("time_column") or "")
+    time_keys = tuple(spec.get("time_keys") or ())
+    return _real(row.get(time_column)) or _real(_row_or_payload_value(row, payload_data, *time_keys))
+
+
+def _row_archive_date(table: str, row: dict[str, Any], payload_data: dict[str, Any] | None) -> str:
+    explicit = str(row.get("archive_date") or "").strip()
+    if explicit:
+        return explicit
+    ts_value = _row_archive_ts(table, row, payload_data)
+    return str(_archive_date_from_ts(ts_value) or "").strip()
+
+
+def _ts_bucket(value: Any, bucket_seconds: int) -> int | None:
+    ts_value = _real(value)
+    if ts_value is None:
+        return None
+    seconds = max(int(bucket_seconds or 0), 1)
+    return int(ts_value) // seconds
+
+
+def _archive_entry_payload(data: Any) -> dict[str, Any]:
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _build_archive_index_entry(
+    *,
+    category: str,
+    archive_date: str,
+    archive_path: Path,
+    archive_payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = _archive_entry_payload(archive_payload.get("data") if isinstance(archive_payload, dict) else archive_payload)
+    archive_ts = _real(archive_payload.get("archive_ts") if isinstance(archive_payload, dict) else None)
+    timestamp_value = (
+        _real(_first(data, "timestamp", "archive_written_at", "notifier_sent_at", "sent_at", "ts", "created_at"))
+        or archive_ts
+    )
+    event_id = str(_first(data, "event_id") or "").strip()
+    tx_hash = str(_first(data, "tx_hash") or "").strip()
+    block_number = _int(_first(data, "block_number", "block"))
+    parsed_kind = str(_first(data, "parsed_kind", "intent_type", "source_kind") or "").strip()
+    signal_id = str(_first(data, "signal_id", "signal_archive_key") or "").strip()
+    delivery_decision = str(_first(data, "delivery_decision", "delivery_reason", "delivery_class") or "").strip()
+    sent_to_telegram = _bool_int(_first(data, "sent_to_telegram", "delivered_notification", "delivered"))
+    telegram_delivery_id = str(_first(data, "telegram_delivery_id") or "").strip()
+    headline = str(_first(data, "headline", "final_trading_output_label", "headline_label", "market_state_label") or "").strip()
+    audit_id = str(_first(data, "audit_id", "delivery_audit_id") or "").strip()
+    case_id = str(_first(data, "case_id", "asset_case_id") or "").strip()
+    followup_id = str(_first(data, "followup_id") or "").strip()
+    bucket_60 = _ts_bucket(timestamp_value, 60)
+    bucket_300 = _ts_bucket(timestamp_value, 300)
+    return {
+        "archive_category": category,
+        "archive_date": archive_date,
+        "archive_path": str(archive_path.resolve()),
+        "archive_ts": archive_ts,
+        "payload_hash": stable_payload_hash(data),
+        "event_id": event_id,
+        "tx_hash": tx_hash,
+        "block_number": block_number,
+        "parsed_kind": parsed_kind,
+        "signal_id": signal_id,
+        "delivery_decision": delivery_decision,
+        "sent_to_telegram": sent_to_telegram,
+        "timestamp": timestamp_value,
+        "telegram_delivery_id": telegram_delivery_id,
+        "headline": headline,
+        "audit_id": audit_id,
+        "case_id": case_id,
+        "followup_id": followup_id,
+        "bucket_60": bucket_60,
+        "bucket_300": bucket_300,
+    }
+
+
+def _load_archive_payload_index(
+    category: str,
+    archive_date: str,
+    cache: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    key = (str(category), str(archive_date))
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    paths = _archive_payload_paths(category, date=archive_date)
+    if not paths:
+        payload = {
+            "exists": False,
+            "archive_category": str(category),
+            "archive_date": str(archive_date),
+            "archive_path": "",
+            "entries": [],
+            "by_event_id": {},
+            "by_tx_block": {},
+            "by_tx_kind": {},
+            "by_signal_delivery_bucket": {},
+            "by_signal_bucket": {},
+            "by_signal_headline_bucket": {},
+            "by_signal_id": {},
+            "by_audit_id": {},
+            "by_telegram_delivery_id": {},
+            "by_followup_id": {},
+            "by_signal_case_bucket": {},
+            "by_case_bucket": {},
+        }
+        cache[key] = payload
+        return payload
+    path = paths[0]
+    payload = {
+        "exists": True,
+        "archive_category": str(category),
+        "archive_date": str(archive_date),
+        "archive_path": str(path.resolve()),
+        "entries": [],
+        "by_event_id": {},
+        "by_tx_block": {},
+        "by_tx_kind": {},
+        "by_signal_delivery_bucket": {},
+        "by_signal_bucket": {},
+        "by_signal_headline_bucket": {},
+        "by_signal_id": {},
+        "by_audit_id": {},
+        "by_telegram_delivery_id": {},
+        "by_followup_id": {},
+        "by_signal_case_bucket": {},
+        "by_case_bucket": {},
+    }
+
+    def _add(index_name: str, index_key: Any, entry_id: int) -> None:
+        if index_key in (None, "", [], {}, ()):
+            return
+        bucket = payload[index_name].setdefault(index_key, [])
+        bucket.append(entry_id)
+
+    try:
+        with _open_archive_payload_path(path) as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    archive_payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                entry = _build_archive_index_entry(
+                    category=str(category),
+                    archive_date=str(archive_date),
+                    archive_path=path,
+                    archive_payload=archive_payload if isinstance(archive_payload, dict) else {},
+                )
+                entry_id = len(payload["entries"])
+                payload["entries"].append(entry)
+                _add("by_event_id", entry["event_id"], entry_id)
+                if entry["tx_hash"] and entry["block_number"] is not None:
+                    _add("by_tx_block", (entry["tx_hash"], int(entry["block_number"])), entry_id)
+                if entry["tx_hash"] and entry["parsed_kind"]:
+                    _add("by_tx_kind", (entry["tx_hash"], entry["parsed_kind"]), entry_id)
+                if entry["signal_id"] and entry["delivery_decision"] and entry["bucket_60"] is not None:
+                    _add(
+                        "by_signal_delivery_bucket",
+                        (entry["signal_id"], entry["delivery_decision"], int(entry["bucket_60"])),
+                        entry_id,
+                    )
+                if entry["signal_id"] and entry["bucket_60"] is not None:
+                    _add("by_signal_bucket", (entry["signal_id"], int(entry["bucket_60"])), entry_id)
+                if entry["signal_id"]:
+                    _add("by_signal_id", entry["signal_id"], entry_id)
+                if entry["signal_id"] and entry["headline"] and entry["bucket_60"] is not None:
+                    _add(
+                        "by_signal_headline_bucket",
+                        (entry["signal_id"], entry["headline"], int(entry["bucket_60"])),
+                        entry_id,
+                    )
+                _add("by_audit_id", entry["audit_id"], entry_id)
+                _add("by_telegram_delivery_id", entry["telegram_delivery_id"], entry_id)
+                _add("by_followup_id", entry["followup_id"], entry_id)
+                if entry["signal_id"] and entry["case_id"] and entry["bucket_300"] is not None:
+                    _add(
+                        "by_signal_case_bucket",
+                        (entry["signal_id"], entry["case_id"], int(entry["bucket_300"])),
+                        entry_id,
+                    )
+                if entry["case_id"] and entry["bucket_300"] is not None:
+                    _add("by_case_bucket", (entry["case_id"], int(entry["bucket_300"])), entry_id)
+    except OSError:
+        payload["exists"] = False
+        payload["archive_path"] = ""
+        payload["entries"] = []
+    cache[key] = payload
+    return payload
+
+
+def _dedupe_int_list(values: list[int]) -> list[int]:
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _candidate_entry_ids_for_table(
+    table: str,
+    row: dict[str, Any],
+    payload_data: dict[str, Any] | None,
+    archive_index: dict[str, Any],
+) -> list[int]:
+    candidates: list[int] = []
+    bucket_seconds = int((PAYLOAD_METADATA_SPECS.get(table) or {}).get("bucket_seconds") or 60)
+    match_bucket = _ts_bucket(_row_archive_ts(table, row, payload_data), bucket_seconds)
+    event_id = str(_row_or_payload_value(row, payload_data, "event_id") or "").strip()
+    tx_hash = str(_row_or_payload_value(row, payload_data, "tx_hash") or "").strip()
+    block_number = _int(_row_or_payload_value(row, payload_data, "block_number", "block"))
+    parsed_kind = str(_row_or_payload_value(row, payload_data, "parsed_kind", "intent_type", "source_kind") or "").strip()
+    signal_id = str(_row_or_payload_value(row, payload_data, "signal_id", "signal_archive_key") or "").strip()
+    delivery_decision = str(_row_or_payload_value(row, payload_data, "delivery_decision", "delivery_reason", "delivery_class") or "").strip()
+    headline = str(_row_or_payload_value(row, payload_data, "headline", "final_trading_output_label", "headline_label", "market_state_label") or "").strip()
+    audit_id = str(_row_or_payload_value(row, payload_data, "audit_id", "delivery_audit_id") or "").strip()
+    telegram_delivery_id = str(_row_or_payload_value(row, payload_data, "telegram_delivery_id") or "").strip()
+    case_id = str(_row_or_payload_value(row, payload_data, "case_id", "asset_case_id") or "").strip()
+    followup_id = str(_row_or_payload_value(row, payload_data, "followup_id") or "").strip()
+
+    if table == "raw_events":
+        if event_id:
+            candidates.extend(archive_index["by_event_id"].get(event_id, []))
+        if not candidates and tx_hash and block_number is not None:
+            candidates.extend(archive_index["by_tx_block"].get((tx_hash, int(block_number)), []))
+    elif table == "parsed_events":
+        if event_id:
+            candidates.extend(archive_index["by_event_id"].get(event_id, []))
+        if not candidates and tx_hash and parsed_kind:
+            candidates.extend(archive_index["by_tx_kind"].get((tx_hash, parsed_kind), []))
+    elif table == "delivery_audit":
+        if audit_id:
+            candidates.extend(archive_index["by_audit_id"].get(audit_id, []))
+        if not candidates and signal_id and delivery_decision and match_bucket is not None:
+            candidates.extend(
+                archive_index["by_signal_delivery_bucket"].get((signal_id, delivery_decision, int(match_bucket)), [])
+            )
+        if not candidates and signal_id and match_bucket is not None:
+            candidates.extend(archive_index["by_signal_bucket"].get((signal_id, int(match_bucket)), []))
+    elif table == "telegram_deliveries":
+        if telegram_delivery_id:
+            candidates.extend(archive_index["by_telegram_delivery_id"].get(telegram_delivery_id, []))
+        if not candidates and signal_id and headline and match_bucket is not None:
+            candidates.extend(
+                archive_index["by_signal_headline_bucket"].get((signal_id, headline, int(match_bucket)), [])
+            )
+        if not candidates and signal_id and match_bucket is not None:
+            candidates.extend(archive_index["by_signal_bucket"].get((signal_id, int(match_bucket)), []))
+    elif table == "case_followups":
+        if followup_id:
+            candidates.extend(archive_index["by_followup_id"].get(followup_id, []))
+        if not candidates and signal_id and case_id and match_bucket is not None:
+            candidates.extend(
+                archive_index["by_signal_case_bucket"].get((signal_id, case_id, int(match_bucket)), [])
+            )
+        if not candidates and case_id and match_bucket is not None:
+            candidates.extend(archive_index["by_case_bucket"].get((case_id, int(match_bucket)), []))
+    return _dedupe_int_list(candidates)
+
+
+def _candidate_archive_categories_for_row(
+    table: str,
+    payload_data: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    spec = PAYLOAD_METADATA_SPECS.get(table) or {}
+    categories = [str(item) for item in tuple(spec.get("archive_categories") or ())]
+    if table != "telegram_deliveries" or not isinstance(payload_data, dict):
+        return tuple(categories)
+    preferred = _telegram_archive_category(payload_data)
+    ordered: list[str] = []
+    if preferred in categories:
+        ordered.append(preferred)
+    ordered.extend(item for item in categories if item not in ordered)
+    return tuple(ordered)
+
+
+def _resolve_payload_archive_match(
+    table: str,
+    row: dict[str, Any],
+    *,
+    payload_data: dict[str, Any] | None,
+    archive_cache: dict[tuple[str, str], dict[str, Any]],
+    exact_archive_path: str | None = None,
+) -> dict[str, Any]:
+    spec = PAYLOAD_METADATA_SPECS.get(table) or {}
+    json_column = str(spec.get("json_column") or "")
+    payload_value = row.get(json_column)
+    payload_hash = stable_payload_hash(payload_data if payload_data is not None else payload_value)
+    stored_hash = str(row.get("payload_hash") or "").strip()
+    stored_archive_path = str(row.get("archive_path") or "").strip()
+    stored_archive_date = str(row.get("archive_date") or "").strip()
+    desired_mode = _mode_for_table(table)
+    result = {
+        "status": "unresolved",
+        "reason": "",
+        "payload_hash": payload_hash,
+        "archive_path": "",
+        "archive_date": "",
+        "archive_matched": False,
+    }
+    if payload_hash is None:
+        result["reason"] = "payload_hash_compute_failed"
+        return result
+
+    categories: tuple[str, ...]
+    archive_date = stored_archive_date or _row_archive_date(table, row, payload_data)
+    if exact_archive_path:
+        resolved_path = _resolve_archive_reference_existing_path(exact_archive_path)
+        if resolved_path is None:
+            result["status"] = "archive_missing"
+            result["reason"] = "archive_file_missing"
+            return result
+        category = _archive_category_from_path(resolved_path)
+        archive_date = _archive_date_from_path(resolved_path) or archive_date
+        if not category or not archive_date:
+            result["reason"] = "invalid_archive_reference"
+            return result
+        categories = (category,)
+    else:
+        categories = _candidate_archive_categories_for_row(table, payload_data)
+
+    if not archive_date:
+        result["reason"] = "missing_archive_date"
+        return result
+
+    matching_entries: list[dict[str, Any]] = []
+    candidate_entries: list[dict[str, Any]] = []
+    archive_exists = False
+    for category in categories:
+        archive_index = _load_archive_payload_index(category, archive_date, archive_cache)
+        if not archive_index.get("exists"):
+            continue
+        archive_exists = True
+        entry_ids = _candidate_entry_ids_for_table(table, row, payload_data, archive_index)
+        for entry_id in entry_ids:
+            entry = archive_index["entries"][entry_id]
+            candidate_entries.append(entry)
+            if entry.get("payload_hash") == payload_hash:
+                matching_entries.append(entry)
+    if not archive_exists:
+        result["status"] = "archive_missing"
+        result["reason"] = "archive_file_missing"
+        return result
+    if not candidate_entries:
+        result["reason"] = "no_identity_match"
+        return result
+
+    result["archive_matched"] = True
+    if stored_hash and stored_hash != payload_hash:
+        result["status"] = "hash_mismatch"
+        result["reason"] = "stored_payload_hash_mismatch"
+        return result
+    if not matching_entries:
+        result["status"] = "hash_mismatch"
+        result["reason"] = "archive_payload_hash_mismatch"
+        return result
+
+    distinct_matches: list[dict[str, Any]] = []
+    seen_matches: set[tuple[str, str, str]] = set()
+    for entry in matching_entries:
+        key = (
+            str(entry.get("archive_path") or ""),
+            str(entry.get("archive_date") or ""),
+            str(entry.get("payload_hash") or ""),
+        )
+        if key in seen_matches:
+            continue
+        seen_matches.add(key)
+        distinct_matches.append(entry)
+    if len(distinct_matches) != 1:
+        result["reason"] = "ambiguous_archive_match"
+        return result
+
+    match = distinct_matches[0]
+    resolved_archive_path = str(match.get("archive_path") or "")
+    resolved_archive_date = str(match.get("archive_date") or archive_date)
+    normalized_stored_archive_path = ""
+    if stored_archive_path:
+        normalized_stored_archive_path = str(
+            (
+                _resolve_archive_reference_existing_path(stored_archive_path)
+                or _resolve_archive_reference(stored_archive_path)
+                or Path(stored_archive_path)
+            ).resolve()
+        )
+    if stored_archive_path and normalized_stored_archive_path != resolved_archive_path:
+        result["reason"] = "conflicting_archive_path"
+        return result
+    if stored_archive_date and stored_archive_date != resolved_archive_date:
+        result["reason"] = "conflicting_archive_date"
+        return result
+
+    result.update(
+        {
+            "status": "matched",
+            "reason": "matched",
+            "archive_path": resolved_archive_path,
+            "archive_date": resolved_archive_date,
+            "payload_mode": desired_mode,
+        }
+    )
+    return result
+
+
+def _payload_row_query(table: str, *, date: str | None = None) -> tuple[str, tuple[Any, ...]]:
+    spec = PAYLOAD_METADATA_SPECS.get(table) or {}
+    json_column = str(spec.get("json_column") or "")
+    time_column = str(spec.get("time_column") or "")
+    selected_columns = [
+        "rowid",
+        json_column,
+        f"LENGTH({json_column}) AS payload_bytes",
+        "archive_path",
+        "archive_date",
+        "payload_hash",
+        "payload_mode",
+    ]
+    for column in tuple(spec.get("identity_columns") or ()):
+        if column not in selected_columns:
+            selected_columns.append(column)
+    where = [f"{json_column} IS NOT NULL", f"{json_column} != ''"]
+    params: list[Any] = []
+    if date and time_column:
+        start_ts, end_ts = _archive_date_bounds(date)
+        where.append(f"{time_column} >= ?")
+        where.append(f"{time_column} < ?")
+        params.extend([start_ts, end_ts])
+    sql = f"SELECT {', '.join(selected_columns)} FROM {table} WHERE {' AND '.join(where)}"
+    return sql, tuple(params)
+
+
+def _compactable_tables() -> tuple[str, ...]:
+    return tuple(PAYLOAD_METADATA_SPECS.keys())
+
+
+def _backfill_table(table: str, *, dry_run: bool = True, date: str | None = None) -> dict[str, Any]:
+    conn = get_connection()
+    if conn is None:
+        return {"ok": False, "reason": _INIT_FAILED_REASON or "not_initialized", "table": table}
+    if table not in PAYLOAD_METADATA_SPECS:
+        return {"ok": False, "reason": "table_not_supported", "table": table}
+    spec = PAYLOAD_METADATA_SPECS[table]
+    json_column = str(spec["json_column"])
+    total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    sql, params = _payload_row_query(table, date=date)
+    cursor = conn.execute(sql, params)
+    archive_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    updates: list[tuple[str, str, str, str, int]] = []
+    unresolved_reasons: Counter[str] = Counter()
+    result = {
+        "ok": True,
+        "table": table,
+        "dry_run": bool(dry_run),
+        "date": date,
+        "rows_total": total_rows,
+        "rows_examined": 0,
+        "rows_with_full_payload": 0,
+        "rows_missing_payload_hash": 0,
+        "rows_backfillable": 0,
+        "rows_backfilled": 0,
+        "rows_archive_matched": 0,
+        "rows_archive_missing": 0,
+        "rows_hash_mismatch": 0,
+        "rows_unresolved": 0,
+        "rows_already_compactable": 0,
+        "estimated_compactable_after_backfill": 0,
+        "estimated_bytes_freed_after_compact": 0,
+        "estimated_mb_freed_after_compact": 0.0,
+        "unresolved_reasons": {},
+    }
+    for raw_row in cursor:
+        row = dict(raw_row)
+        payload_value = row.get(json_column)
+        if payload_value in (None, ""):
+            continue
+        result["rows_examined"] += 1
+        result["rows_with_full_payload"] += 1
+        payload_bytes = int(row.get("payload_bytes") or 0)
+        payload_data = _row_payload_data(row, json_column)
+        stored_hash = str(row.get("payload_hash") or "").strip()
+        stored_archive_path = str(row.get("archive_path") or "").strip()
+        stored_archive_date = str(row.get("archive_date") or "").strip()
+        stored_payload_mode = str(row.get("payload_mode") or "").strip()
+        needs_backfill = not (stored_hash and stored_archive_path and stored_archive_date and stored_payload_mode)
+        if not stored_hash:
+            result["rows_missing_payload_hash"] += 1
+
+        match = _resolve_payload_archive_match(
+            table,
+            row,
+            payload_data=payload_data,
+            archive_cache=archive_cache,
+        )
+        if match.get("archive_matched"):
+            result["rows_archive_matched"] += 1
+        status = str(match.get("status") or "")
+        if status == "archive_missing":
+            result["rows_archive_missing"] += 1
+            unresolved_reasons[str(match.get("reason") or "archive_file_missing")] += 1
+            continue
+        if status == "hash_mismatch":
+            result["rows_hash_mismatch"] += 1
+            unresolved_reasons[str(match.get("reason") or "hash_mismatch")] += 1
+            continue
+        if status != "matched":
+            result["rows_unresolved"] += 1
+            unresolved_reasons[str(match.get("reason") or "unresolved")] += 1
+            continue
+
+        if not needs_backfill:
+            result["rows_already_compactable"] += 1
+            result["estimated_bytes_freed_after_compact"] += payload_bytes
+            continue
+
+        result["rows_backfillable"] += 1
+        result["estimated_bytes_freed_after_compact"] += payload_bytes
+        updates.append(
+            (
+                str(match.get("archive_path") or ""),
+                str(match.get("archive_date") or ""),
+                str(match.get("payload_hash") or ""),
+                str(match.get("payload_mode") or _mode_for_table(table)),
+                int(row["rowid"]),
+            )
+        )
+    if not dry_run and updates:
+        conn.executemany(
+            f"UPDATE {table} SET archive_path=?, archive_date=?, payload_hash=?, payload_mode=? WHERE rowid=?",
+            tuple(updates),
+        )
+        conn.commit()
+        result["rows_backfilled"] = len(updates)
+    result["estimated_compactable_after_backfill"] = result["rows_already_compactable"] + result["rows_backfillable"]
+    result["estimated_mb_freed_after_compact"] = round(
+        int(result["estimated_bytes_freed_after_compact"] or 0) / (1024 * 1024),
+        4,
+    )
+    result["unresolved_reasons"] = dict(sorted(unresolved_reasons.items()))
+    return result
+
+
+def backfill_payload_metadata(
+    *,
+    dry_run: bool = True,
+    table: str | None = None,
+    date: str | None = None,
+) -> dict[str, Any]:
+    target_tables = [table] if table else list(_compactable_tables())
+    summaries = [_backfill_table(name, dry_run=dry_run, date=date) for name in target_tables]
+    return {
+        "ok": all(bool(item.get("ok")) for item in summaries),
+        "dry_run": bool(dry_run),
+        "date": date,
+        "tables": {str(item.get("table")): item for item in summaries},
+        "rows_examined": sum(int(item.get("rows_examined") or 0) for item in summaries),
+        "rows_with_full_payload": sum(int(item.get("rows_with_full_payload") or 0) for item in summaries),
+        "rows_missing_payload_hash": sum(int(item.get("rows_missing_payload_hash") or 0) for item in summaries),
+        "rows_backfillable": sum(int(item.get("rows_backfillable") or 0) for item in summaries),
+        "rows_backfilled": sum(int(item.get("rows_backfilled") or 0) for item in summaries),
+        "rows_archive_matched": sum(int(item.get("rows_archive_matched") or 0) for item in summaries),
+        "rows_archive_missing": sum(int(item.get("rows_archive_missing") or 0) for item in summaries),
+        "rows_hash_mismatch": sum(int(item.get("rows_hash_mismatch") or 0) for item in summaries),
+        "rows_unresolved": sum(int(item.get("rows_unresolved") or 0) for item in summaries),
+        "estimated_compactable_after_backfill": sum(
+            int(item.get("estimated_compactable_after_backfill") or 0) for item in summaries
+        ),
+        "estimated_bytes_freed_after_compact": sum(
+            int(item.get("estimated_bytes_freed_after_compact") or 0) for item in summaries
+        ),
+        "estimated_mb_freed_after_compact": round(
+            sum(int(item.get("estimated_bytes_freed_after_compact") or 0) for item in summaries) / (1024 * 1024),
+            4,
+        ),
+    }
+
+
+def _payload_metadata_stats_for_table(conn: sqlite3.Connection, table: str) -> dict[str, Any]:
+    spec = PAYLOAD_METADATA_SPECS.get(table)
+    if spec is None:
+        return {
+            "full_payload_rows": 0,
+            "payload_hash_covered_rows": 0,
+            "archive_path_covered_rows": 0,
+            "archive_date_covered_rows": 0,
+            "payload_mode_covered_rows": 0,
+            "backfill_needed_rows": 0,
+            "legacy_full_payload_rows": 0,
+            "compactable_rows": 0,
+            "estimated_savings_after_backfill_bytes": 0,
+            "estimated_savings_after_backfill_mb": 0.0,
+        }
+    json_column = str(spec["json_column"])
+    try:
+        row = conn.execute(
+            f"""
+            SELECT
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' THEN 1 ELSE 0 END) AS full_payload_rows,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND payload_hash IS NOT NULL AND TRIM(payload_hash) != '' THEN 1 ELSE 0 END) AS payload_hash_covered_rows,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND archive_path IS NOT NULL AND TRIM(archive_path) != '' THEN 1 ELSE 0 END) AS archive_path_covered_rows,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND archive_date IS NOT NULL AND TRIM(archive_date) != '' THEN 1 ELSE 0 END) AS archive_date_covered_rows,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND payload_mode IS NOT NULL AND TRIM(payload_mode) != '' THEN 1 ELSE 0 END) AS payload_mode_covered_rows,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND (
+                    payload_hash IS NULL OR TRIM(payload_hash) = '' OR
+                    archive_path IS NULL OR TRIM(archive_path) = '' OR
+                    archive_date IS NULL OR TRIM(archive_date) = '' OR
+                    payload_mode IS NULL OR TRIM(payload_mode) = ''
+                ) THEN 1 ELSE 0 END) AS backfill_needed_rows,
+                COALESCE(SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND (
+                    payload_hash IS NULL OR TRIM(payload_hash) = '' OR
+                    archive_path IS NULL OR TRIM(archive_path) = ''
+                ) THEN LENGTH({json_column}) ELSE 0 END), 0) AS backfill_needed_payload_bytes,
+                COALESCE(SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND
+                    payload_hash IS NOT NULL AND TRIM(payload_hash) != '' AND
+                    archive_path IS NOT NULL AND TRIM(archive_path) != '' AND
+                    archive_date IS NOT NULL AND TRIM(archive_date) != ''
+                THEN LENGTH({json_column}) ELSE 0 END), 0) AS compactable_payload_bytes,
+                SUM(CASE WHEN {json_column} IS NOT NULL AND {json_column} != '' AND
+                    payload_hash IS NOT NULL AND TRIM(payload_hash) != '' AND
+                    archive_path IS NOT NULL AND TRIM(archive_path) != '' AND
+                    archive_date IS NOT NULL AND TRIM(archive_date) != ''
+                THEN 1 ELSE 0 END) AS compactable_rows
+            FROM {table}
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    full_payload_rows = int(row["full_payload_rows"] or 0) if row else 0
+    payload_hash_covered_rows = int(row["payload_hash_covered_rows"] or 0) if row else 0
+    archive_path_covered_rows = int(row["archive_path_covered_rows"] or 0) if row else 0
+    archive_date_covered_rows = int(row["archive_date_covered_rows"] or 0) if row else 0
+    payload_mode_covered_rows = int(row["payload_mode_covered_rows"] or 0) if row else 0
+    backfill_needed_rows = int(row["backfill_needed_rows"] or 0) if row else 0
+    compactable_rows = int(row["compactable_rows"] or 0) if row else 0
+    backfill_needed_bytes = int(row["backfill_needed_payload_bytes"] or 0) if row else 0
+    compactable_bytes = int(row["compactable_payload_bytes"] or 0) if row else 0
+    estimated_bytes = int(backfill_needed_bytes + compactable_bytes)
+    return {
+        "full_payload_rows": full_payload_rows,
+        "payload_hash_covered_rows": payload_hash_covered_rows,
+        "archive_path_covered_rows": archive_path_covered_rows,
+        "archive_date_covered_rows": archive_date_covered_rows,
+        "payload_mode_covered_rows": payload_mode_covered_rows,
+        "backfill_needed_rows": backfill_needed_rows,
+        "legacy_full_payload_rows": backfill_needed_rows,
+        "compactable_rows": compactable_rows,
+        "payload_hash_coverage": round(payload_hash_covered_rows / full_payload_rows, 4) if full_payload_rows else 1.0,
+        "archive_path_coverage": round(archive_path_covered_rows / full_payload_rows, 4) if full_payload_rows else 1.0,
+        "compactable_payload_bytes": compactable_bytes,
+        "backfill_needed_payload_bytes": backfill_needed_bytes,
+        "estimated_savings_after_backfill_bytes": estimated_bytes,
+        "estimated_savings_after_backfill_mb": round(estimated_bytes / (1024 * 1024), 4) if estimated_bytes else 0.0,
+    }
+
+
 def compact_table(table: str, *, dry_run: bool = True) -> dict[str, Any]:
     conn = get_connection()
     if conn is None:
         return {"ok": False, "reason": _INIT_FAILED_REASON or "not_initialized", "table": table}
-    specs = {
-        "raw_events": {"json_column": "raw_json", "archive_required": True},
-        "parsed_events": {"json_column": "parsed_json", "archive_required": True},
-        "delivery_audit": {"json_column": "audit_json", "archive_required": True},
-        "telegram_deliveries": {"json_column": "message_json", "archive_required": True},
-        "case_followups": {"json_column": "followup_json", "archive_required": True},
-    }
+    specs = PAYLOAD_METADATA_SPECS
     if table not in specs:
         return {"ok": False, "reason": "table_not_compactable", "table": table}
     spec = specs[table]
@@ -3556,42 +4410,80 @@ def compact_table(table: str, *, dry_run: bool = True) -> dict[str, Any]:
     json_column = str(spec["json_column"])
     if json_column not in columns:
         return {"ok": False, "reason": "json_column_missing", "table": table}
-    selected_columns = ["rowid", json_column]
-    if "archive_path" in columns:
-        selected_columns.append("archive_path")
-    if "payload_hash" in columns:
-        selected_columns.append("payload_hash")
+    total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    selected_columns = [
+        "rowid",
+        f"LENGTH({json_column}) AS payload_bytes",
+        "archive_path",
+        "archive_date",
+        "payload_hash",
+        "payload_mode",
+    ]
+    for column in tuple(spec.get("identity_columns") or ()):
+        if column not in selected_columns:
+            selected_columns.append(column)
     sql = f"SELECT {', '.join(selected_columns)} FROM {table} WHERE {json_column} IS NOT NULL AND {json_column} != ''"
-    rows = conn.execute(sql).fetchall()
+    params: tuple[Any, ...] = ()
+    cursor = conn.execute(sql, params)
     result = {
         "ok": True,
         "table": table,
         "dry_run": bool(dry_run),
-        "rows_examined": len(rows),
+        "rows_total": total_rows,
+        "rows_examined": 0,
         "rows_compacted": 0,
+        "skipped_no_archive_path": 0,
+        "skipped_archive_missing": 0,
         "skipped_missing_archive": 0,
         "skipped_no_payload_hash": 0,
+        "skipped_hash_mismatch": 0,
+        "skipped_unresolved": 0,
+        "skipped_payload_already_empty": 0,
         "estimated_bytes_freed": 0,
         "actual_bytes_freed_after_vacuum": None,
+        "backfillable_hint": "",
+        "estimated_after_backfill_compactable_rows": 0,
     }
-    if not rows:
-        return result
     updates: list[int] = []
-    archive_cache: dict[str, bool] = {}
-    for row in rows:
-        payload_hash = str(row["payload_hash"] or "").strip() if "payload_hash" in row.keys() else ""
-        archive_path = str(row["archive_path"] or "").strip() if "archive_path" in row.keys() else ""
-        payload = row[json_column]
-        payload_bytes = len(str(payload).encode("utf-8")) if payload not in (None, "") else 0
+    archive_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_row in cursor:
+        row = dict(raw_row)
+        result["rows_examined"] += 1
+        payload_hash = str(row.get("payload_hash") or "").strip()
+        archive_path = str(row.get("archive_path") or "").strip()
+        payload_bytes = int(row.get("payload_bytes") or 0)
         if not payload_hash:
             result["skipped_no_payload_hash"] += 1
             continue
-        archive_ok = archive_cache.get(archive_path)
-        if archive_ok is None:
-            archive_ok = _archive_reference_exists(archive_path)
-            archive_cache[archive_path] = archive_ok
-        if spec["archive_required"] and not archive_ok:
-            result["skipped_missing_archive"] += 1
+        if not archive_path:
+            result["skipped_no_archive_path"] += 1
+            continue
+        payload_row = conn.execute(
+            f"SELECT {json_column} FROM {table} WHERE rowid=?",
+            (int(row["rowid"]),),
+        ).fetchone()
+        payload = payload_row[json_column] if payload_row is not None else None
+        if payload in (None, ""):
+            result["skipped_unresolved"] += 1
+            continue
+        row[json_column] = payload
+        payload_data = _row_payload_data(row, json_column)
+        match = _resolve_payload_archive_match(
+            table,
+            row,
+            payload_data=payload_data,
+            archive_cache=archive_cache,
+            exact_archive_path=archive_path,
+        )
+        status = str(match.get("status") or "")
+        if status == "archive_missing":
+            result["skipped_archive_missing"] += 1
+            continue
+        if status == "hash_mismatch":
+            result["skipped_hash_mismatch"] += 1
+            continue
+        if status != "matched":
+            result["skipped_unresolved"] += 1
             continue
         result["estimated_bytes_freed"] += payload_bytes
         updates.append(int(row["rowid"]))
@@ -3602,16 +4494,27 @@ def compact_table(table: str, *, dry_run: bool = True) -> dict[str, Any]:
             tuple(updates),
         )
         conn.commit()
+    result["skipped_payload_already_empty"] = max(total_rows - int(result["rows_examined"] or 0), 0)
     result["rows_compacted"] = len(updates)
+    result["skipped_missing_archive"] = result["skipped_archive_missing"]
+    result["estimated_after_backfill_compactable_rows"] = int(result["rows_compacted"] or 0)
+    if dry_run and (result["skipped_no_payload_hash"] or result["skipped_no_archive_path"]):
+        metadata_stats = _payload_metadata_stats_for_table(conn, table)
+        result["estimated_after_backfill_compactable_rows"] = int(result["rows_compacted"] or 0) + int(
+            metadata_stats.get("backfill_needed_rows") or 0
+        )
+        if int(metadata_stats.get("backfill_needed_rows") or 0) > 0:
+            result["backfillable_hint"] = "Run --backfill-payload-metadata before compact."
     return result
 
 
 def compact(*, dry_run: bool = True, table: str | None = None) -> dict[str, Any]:
     if not bool(SQLITE_COMPACT_ENABLE):
         return {"ok": False, "reason": "sqlite_compact_disabled"}
-    target_tables = [table] if table else ["raw_events", "parsed_events", "delivery_audit", "telegram_deliveries", "case_followups"]
+    target_tables = [table] if table else list(_compactable_tables())
     summaries = [compact_table(name, dry_run=dry_run) for name in target_tables]
     tables_compacted = [str(item.get("table")) for item in summaries if int(item.get("rows_compacted") or 0) > 0]
+    backfill_recommended = any(str(item.get("backfillable_hint") or "").strip() for item in summaries)
     return {
         "ok": all(bool(item.get("ok")) for item in summaries),
         "dry_run": bool(dry_run),
@@ -3619,10 +4522,19 @@ def compact(*, dry_run: bool = True, table: str | None = None) -> dict[str, Any]
         "tables_compacted": tables_compacted,
         "rows_examined": sum(int(item.get("rows_examined") or 0) for item in summaries),
         "rows_compacted": sum(int(item.get("rows_compacted") or 0) for item in summaries),
-        "skipped_missing_archive": sum(int(item.get("skipped_missing_archive") or 0) for item in summaries),
+        "skipped_no_archive_path": sum(int(item.get("skipped_no_archive_path") or 0) for item in summaries),
+        "skipped_archive_missing": sum(int(item.get("skipped_archive_missing") or 0) for item in summaries),
+        "skipped_missing_archive": sum(int(item.get("skipped_archive_missing") or 0) for item in summaries),
         "skipped_no_payload_hash": sum(int(item.get("skipped_no_payload_hash") or 0) for item in summaries),
+        "skipped_hash_mismatch": sum(int(item.get("skipped_hash_mismatch") or 0) for item in summaries),
+        "skipped_unresolved": sum(int(item.get("skipped_unresolved") or 0) for item in summaries),
+        "skipped_payload_already_empty": sum(int(item.get("skipped_payload_already_empty") or 0) for item in summaries),
         "estimated_bytes_freed": sum(int(item.get("estimated_bytes_freed") or 0) for item in summaries),
         "estimated_mb_freed": round(sum(int(item.get("estimated_bytes_freed") or 0) for item in summaries) / (1024 * 1024), 4),
+        "backfillable_hint": "Run --backfill-payload-metadata before compact." if backfill_recommended else "",
+        "estimated_after_backfill_compactable_rows": sum(
+            int(item.get("estimated_after_backfill_compactable_rows") or 0) for item in summaries
+        ),
         "vacuum_recommended": True,
     }
 
@@ -3665,11 +4577,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--migrate-archive", action="store_true", help="mirror archive NDJSON into SQLite")
     parser.add_argument("--date", help="archive date YYYY-MM-DD for --migrate-archive")
     parser.add_argument("--all", action="store_true", help="migrate all archive dates")
+    parser.add_argument("--table", help="table filter for payload metadata backfill")
     parser.add_argument("--integrity-check", action="store_true", help="run schema/count/integrity checks")
     parser.add_argument("--checkpoint", action="store_true", help="run SQLite WAL checkpoint truncate")
     parser.add_argument("--prune", action="store_true", help="show or execute retention prune")
     parser.add_argument("--compact", action="store_true", help="dry-run or execute compact on compactable tables")
     parser.add_argument("--compact-table", help="dry-run or execute compact on one table")
+    parser.add_argument("--backfill-payload-metadata", action="store_true", help="backfill legacy archive_path/archive_date/payload_hash/payload_mode")
     parser.add_argument("--vacuum", action="store_true", help="run VACUUM only with CONFIRM=YES")
     parser.add_argument("--dry-run", action="store_true", help="dry-run retention prune")
     parser.add_argument("--execute", action="store_true", help="execute retention prune")
@@ -3719,6 +4633,14 @@ def main(argv: list[str] | None = None) -> int:
             dry_run = True
         _print_json(prune(dry_run=dry_run))
         return 0
+    if args.backfill_payload_metadata:
+        init_sqlite_store()
+        dry_run = not bool(args.execute)
+        if args.dry_run:
+            dry_run = True
+        payload = backfill_payload_metadata(dry_run=dry_run, table=args.table, date=args.date)
+        _print_json(payload)
+        return 0 if payload.get("ok") else 1
     if args.compact or args.compact_table:
         init_sqlite_store()
         dry_run = bool(SQLITE_COMPACT_DRY_RUN_DEFAULT)

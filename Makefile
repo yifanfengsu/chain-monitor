@@ -2,119 +2,320 @@ PY ?= ./venv/bin/python
 APP ?= app
 REPORTS ?= reports
 DATE ?=
+TABLE ?=
 CONFIRM ?= NO
 COMPRESS ?= NO
 ALLOW_TODAY ?= NO
-ENV_FILE ?= .env
+STRICT ?= NO
 DB_PATH ?= data/chain_monitor.sqlite
 
-.PHONY: help env-check compile run run-research health coverage quality-summary quality-csv db-init db-summary db-integrity db-report db-size db-value-audit db-retention db-compact-dry-run db-compact-execute db-vacuum db-maintenance db-migrate-all db-migrate-date sqlite-checkpoint archive-compress-date archive-compress-dry-run archive-status daily-close daily-close-strict db-prune-dry-run db-prune-execute report-overnight report-state report-run report-all smoke test-sqlite test-opportunity test-state test-action test-lp test-core test-all archive-check git-info preflight
+.DEFAULT_GOAL := help
+
+RUN_PY = SQLITE_DB_PATH="$(DB_PATH)" $(PY)
+REPORT_RUN_SCRIPT = $(REPORTS)/generate_overnight_run_analysis_latest.py
+ARCHIVE_DIR = $(APP)/data/archive
+
+TEST_SQLITE_MODULES := \
+	$(APP).test_sqlite_schema \
+	$(APP).test_sqlite_writers \
+	$(APP).test_sqlite_archive_mirror \
+	$(APP).test_sqlite_opportunity_persistence \
+	$(APP).test_sqlite_reports \
+	$(APP).test_sqlite_migration
+
+TEST_SQLITE_COMPACT_MODULES := \
+	$(APP).test_sqlite_data_value_audit \
+	$(APP).test_sqlite_compact_modes \
+	$(APP).test_sqlite_compact_safety \
+	$(APP).test_sqlite_retention_reports \
+	$(APP).test_sqlite_migration_modes \
+	$(APP).test_sqlite_payload_backfill \
+	$(APP).test_sqlite_payload_backfill_safety \
+	$(APP).test_sqlite_compact_after_backfill
+
+TEST_REPORT_MODULES := \
+	$(APP).test_report_db_first_loader \
+	$(APP).test_report_archive_gzip_fallback \
+	$(APP).test_report_db_archive_mismatch
+
+TEST_OPPORTUNITY_MODULES := \
+	$(APP).test_trade_opportunity_scoring \
+	$(APP).test_trade_opportunity_funnel \
+	$(APP).test_trade_opportunity_notifier \
+	$(APP).test_trade_opportunity_budget \
+	$(APP).test_trade_opportunity_reports \
+	$(APP).test_trade_opportunity_persistence \
+	$(APP).test_opportunity_exit_unified \
+	$(APP).test_opportunity_notifier_gate \
+	$(APP).test_opportunity_legacy_chase_downgrade \
+	$(APP).test_opportunity_report_gate
+
+TEST_STATE_MODULES := \
+	$(APP).test_asset_market_state \
+	$(APP).test_no_trade_lock \
+	$(APP).test_prealert_lifecycle \
+	$(APP).test_chase_candidate_validation \
+	$(APP).test_outcome_market_price_source \
+	$(APP).test_telegram_suppression \
+	$(APP).test_trade_state_reports
+
+TEST_ACTION_MODULES := \
+	$(APP).test_trade_action_inference \
+	$(APP).test_trade_action_conflict \
+	$(APP).test_trade_action_notifier \
+	$(APP).test_trade_action_reports
+
+TEST_LP_MODULES := \
+	$(APP).test_lp_major_prealert \
+	$(APP).test_major_pool_coverage \
+	$(APP).test_lp_latency_outcomes \
+	$(APP).test_quality_report_rates \
+	$(APP).test_raw_parsed_archive \
+	$(APP).test_lp_sweep_phase_mapping \
+	$(APP).test_lp_confirm_scope \
+	$(APP).test_lp_confirm_downgrade \
+	$(APP).test_lp_absorption_context
+
+TEST_CLMM_MODULES := \
+	$(APP).test_clmm_parser \
+	$(APP).test_clmm_operational_intent \
+	$(APP).test_clmm_replay_fixtures \
+	$(APP).test_clmm_decoder_replay
+
+TEST_CORE_MODULES := \
+	$(APP).test_operational_intent_notifier \
+	$(APP).test_exchange_entity_attribution \
+	$(APP).test_data_fallbacks
+
+define run_existing_tests
+mods=""; \
+for module in $(1); do \
+	file=$$(printf '%s' "$$module" | tr '.' '/').py; \
+	if [ -f "$$file" ]; then \
+		mods="$$mods $$module"; \
+	else \
+		printf '%s\n' "skip missing test module: $$module"; \
+	fi; \
+done; \
+if [ -z "$$(printf '%s' "$$mods" | tr -d '[:space:]')" ]; then \
+	printf '%s\n' "no matching test modules found"; \
+else \
+	set -- $$mods; \
+	printf '%s\n' "running unittest modules: $$*"; \
+	SQLITE_DB_PATH="$(DB_PATH)" $(PY) -m unittest "$$@"; \
+fi
+endef
+
+.PHONY: \
+	help \
+	env-check \
+	compile \
+	run \
+	run-research \
+	git-info \
+	health \
+	coverage \
+	quality-summary \
+	quality-csv \
+	report-source \
+	opportunity-db \
+	opportunity-calibration \
+	db-init \
+	db-summary \
+	db-integrity \
+	db-report \
+	db-migrate-all \
+	db-migrate-date \
+	sqlite-checkpoint \
+	db-size \
+	db-value-audit \
+	db-retention \
+	db-maintenance \
+	db-backfill-payload-dry-run \
+	db-backfill-payload-execute \
+	db-backfill-table-dry-run \
+	db-backfill-table-execute \
+	db-compact-dry-run \
+	db-compact-execute \
+	db-compact-table-dry-run \
+	db-compact-table-execute \
+	db-vacuum \
+	db-prune-dry-run \
+	db-prune-execute \
+	archive-status \
+	archive-compress-dry-run \
+	archive-compress-date \
+	daily-close \
+	daily-close-strict \
+	report-overnight \
+	report-state \
+	report-run \
+	report-all \
+	test-sqlite \
+	test-sqlite-compact \
+	test-reports \
+	test-opportunity \
+	test-state \
+	test-action \
+	test-lp \
+	test-clmm \
+	test-core \
+	test-all \
+	archive-check \
+	smoke \
+	preflight
 
 help:
 	@printf '%s\n' "chain-monitor common targets:"
-	@printf '%s\n' "  make help                Show this help."
-	@printf '%s\n' "  make env-check           Print safe, non-sensitive runtime config."
-	@printf '%s\n' "  make compile             Compile app/ and reports/ with $(PY)."
-	@printf '%s\n' "  make run                 Start the main listener."
-	@printf '%s\n' "  make run-research        Start with research tier and OKX/Kraken live context."
-	@printf '%s\n' "  make health              Show market context health."
-	@printf '%s\n' "  make coverage            Show major pool coverage."
-	@printf '%s\n' "  make quality-summary     Show LP quality summary."
-	@printf '%s\n' "  make quality-csv         Export quality rows to reports/quality_rows.csv."
-	@printf '%s\n' "  make db-init             Initialize SQLite schema."
-	@printf '%s\n' "  make db-summary          Show SQLite health summary."
-	@printf '%s\n' "  make db-integrity        Run SQLite integrity checks."
-	@printf '%s\n' "  make db-report           Run SQLite db-summary, db-integrity, opportunity summary."
-	@printf '%s\n' "  make db-size             Show SQLite DB/WAL/table/json payload size breakdown."
-	@printf '%s\n' "  make db-value-audit      Generate SQLite data-value audit reports."
-	@printf '%s\n' "  make db-retention        Show SQLite retention / compact recommendations."
-	@printf '%s\n' "  make db-compact-dry-run  Preview compact savings without modifying DB."
-	@printf '%s\n' "  make db-compact-execute  Run compact only with CONFIRM=YES."
-	@printf '%s\n' "  make db-vacuum           Run VACUUM only with CONFIRM=YES."
-	@printf '%s\n' "  make db-maintenance      Run db-size, db-value-audit, db-retention, db-compact-dry-run."
-	@printf '%s\n' "  make db-migrate-all      Mirror all archive NDJSON into SQLite."
-	@printf '%s\n' "  make db-migrate-date     Mirror one archive date. Usage: make db-migrate-date DATE=YYYY-MM-DD"
-	@printf '%s\n' "  make sqlite-checkpoint   Run SQLite WAL checkpoint truncate."
-	@printf '%s\n' "  make archive-status      Show archive file status. Usage: make archive-status DATE=YYYY-MM-DD"
-	@printf '%s\n' "  make archive-compress-dry-run  Preview gzip for one date. Usage: make archive-compress-dry-run DATE=YYYY-MM-DD"
-	@printf '%s\n' "  make archive-compress-date     Gzip one date only with CONFIRM=YES."
-	@printf '%s\n' "  make daily-close         Migrate archive, check DB, generate reports, dry-run compression, checkpoint."
-	@printf '%s\n' "  make daily-close-strict  Daily close with strict DB/archive mismatch failure."
-	@printf '%s\n' "  make db-prune-dry-run    Preview SQLite retention prune."
-	@printf '%s\n' "  make db-prune-execute    Execute SQLite prune only with CONFIRM=YES."
-	@printf '%s\n' "  make report-overnight    Generate overnight trade action report."
-	@printf '%s\n' "  make report-state        Generate afternoon/evening state report."
-	@printf '%s\n' "  make report-run          Generate overnight run report."
-	@printf '%s\n' "  make report-all          Generate all common reports."
-	@printf '%s\n' "  make smoke               Compile and run DB, health, coverage checks."
-	@printf '%s\n' "  make test-sqlite         Run SQLite tests."
-	@printf '%s\n' "  make test-opportunity    Run trade opportunity tests."
-	@printf '%s\n' "  make test-state          Run asset market state tests."
-	@printf '%s\n' "  make test-action         Run trade action tests."
-	@printf '%s\n' "  make test-lp             Run LP/report/archive tests."
-	@printf '%s\n' "  make test-core           Run operational intent and CLMM core tests."
-	@printf '%s\n' "  make test-all            Run all grouped tests."
-	@printf '%s\n' "  make archive-check       List latest archive directories."
-	@printf '%s\n' "  make git-info            Show git status and latest commit."
-	@printf '%s\n' "  make preflight           Run env-check, smoke, archive-check, git-info."
+	@printf '%s\n' ""
+	@printf '%s\n' "Startup / preflight:"
+	@printf '%s\n' "  make help                               Show this help."
+	@printf '%s\n' "  make env-check                          Print non-sensitive runtime config only."
+	@printf '%s\n' "  make compile                            Compile app/ and reports/ with $(PY)."
+	@printf '%s\n' "  make smoke                              Run compile + DB + market-context + coverage + report-source checks."
+	@printf '%s\n' "  make archive-check                      List archive directories under $(ARCHIVE_DIR)."
+	@printf '%s\n' "  make git-info                           Show git status and latest commit."
+	@printf '%s\n' "  make preflight                          Run env-check, smoke, archive-check, git-info."
+	@printf '%s\n' ""
+	@printf '%s\n' "Runtime:"
+	@printf '%s\n' "  make run                                Start the main program."
+	@printf '%s\n' "  make run-research                       Start with research tier and OKX/Kraken live context."
+	@printf '%s\n' ""
+	@printf '%s\n' "Health / quality / coverage:"
+	@printf '%s\n' "  make health                             Show market context health."
+	@printf '%s\n' "  make coverage                           Show ETH/BTC/SOL x USDT/USDC major pool coverage."
+	@printf '%s\n' "  make quality-summary                    Show quality summary."
+	@printf '%s\n' "  make quality-csv                        Export quality rows to reports/quality_rows.csv."
+	@printf '%s\n' "  make report-source                      Show whether reports read SQLite first or archive fallback."
+	@printf '%s\n' "  make opportunity-db                     Show opportunity / candidate / verified / blocked DB summary."
+	@printf '%s\n' "  make opportunity-calibration            Show opportunity score calibration summary."
+	@printf '%s\n' ""
+	@printf '%s\n' "SQLite basics:"
+	@printf '%s\n' "  make db-init                            Initialize SQLite schema."
+	@printf '%s\n' "  make db-summary                         Show SQLite summary."
+	@printf '%s\n' "  make db-integrity                       Run SQLite integrity checks."
+	@printf '%s\n' "  make db-report                          Run db-summary, db-integrity, opportunity-db-summary."
+	@printf '%s\n' "  make db-migrate-all                     Mirror all archive NDJSON into SQLite."
+	@printf '%s\n' "  make db-migrate-date DATE=YYYY-MM-DD    Mirror one archive date into SQLite."
+	@printf '%s\n' "  make sqlite-checkpoint                  Run SQLite WAL checkpoint truncate."
+	@printf '%s\n' ""
+	@printf '%s\n' "SQLite size / value / compact:"
+	@printf '%s\n' "  make db-size                            Show DB/WAL/table/JSON payload size breakdown."
+	@printf '%s\n' "  make db-value-audit                     Show core_learning/core_outcome/core_state value audit."
+	@printf '%s\n' "  make db-retention                       Show long-term retention / slim / archive-only recommendations."
+	@printf '%s\n' "  make db-maintenance                     Run db-size, db-value-audit, db-retention, db-compact-dry-run."
+	@printf '%s\n' "  make db-backfill-payload-dry-run        Preview legacy archive_path/payload_hash metadata backfill."
+	@printf '%s\n' "  make db-backfill-payload-execute        Execute payload metadata backfill only with CONFIRM=YES."
+	@printf '%s\n' "  make db-backfill-table-dry-run          Preview one-table backfill. Usage: make ... TABLE=raw_events"
+	@printf '%s\n' "  make db-backfill-table-execute          Execute one-table backfill only with TABLE=... CONFIRM=YES."
+	@printf '%s\n' "  make db-compact-dry-run                 Preview compact without modifying DB."
+	@printf '%s\n' "  make db-compact-execute                 Execute compact only with CONFIRM=YES."
+	@printf '%s\n' "  make db-compact-table-dry-run           Preview one-table compact. Usage: make ... TABLE=raw_events"
+	@printf '%s\n' "  make db-compact-table-execute           Execute one-table compact only with TABLE=... CONFIRM=YES."
+	@printf '%s\n' "  make db-vacuum                          Run VACUUM only with CONFIRM=YES."
+	@printf '%s\n' "  make db-prune-dry-run                   Preview retention prune without deleting rows."
+	@printf '%s\n' "  make db-prune-execute                   Execute retention prune only with CONFIRM=YES."
+	@printf '%s\n' ""
+	@printf '%s\n' "Archive / daily close:"
+	@printf '%s\n' "  make archive-status DATE=YYYY-MM-DD     Show archive status for one date."
+	@printf '%s\n' "  make archive-compress-dry-run DATE=YYYY-MM-DD"
+	@printf '%s\n' "                                          Preview gzip archive compression for one date."
+	@printf '%s\n' "  make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES [ALLOW_TODAY=YES]"
+	@printf '%s\n' "                                          Execute gzip compression for one date."
+	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD        Migrate, check DB, run reports, compress dry-run, checkpoint."
+	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
+	@printf '%s\n' "                                          Request gzip after dry-run; actual compression still needs CONFIRM=YES."
+	@printf '%s\n' "  make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
+	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
+	@printf '%s\n' ""
+	@printf '%s\n' "Reports:"
+	@printf '%s\n' "  make report-overnight                   Generate overnight trade action analysis."
+	@printf '%s\n' "  make report-state                       Generate afternoon/evening state analysis."
+	@printf '%s\n' "  make report-run                         Generate overnight run analysis if the script exists."
+	@printf '%s\n' "  make report-all                         Generate all common reports."
+	@printf '%s\n' ""
+	@printf '%s\n' "Tests:"
+	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
+	@printf '%s\n' "  make test-sqlite-compact                Run SQLite compact/backfill/value/retention tests."
+	@printf '%s\n' "  make test-reports                       Run DB-first report loader and archive fallback tests."
+	@printf '%s\n' "  make test-opportunity                   Run trade opportunity tests."
+	@printf '%s\n' "  make test-state                         Run asset state / no-trade / suppression tests."
+	@printf '%s\n' "  make test-action                        Run trade action inference / notifier / report tests."
+	@printf '%s\n' "  make test-lp                            Run LP majors / archive / latency / coverage tests."
+	@printf '%s\n' "  make test-clmm                          Run CLMM parser / replay tests."
+	@printf '%s\n' "  make test-core                          Run core notifier / attribution / fallback tests."
+	@printf '%s\n' "  make test-all                           Run every grouped test target."
 
 env-check:
-	@$(PY) -c 'import importlib, json; c = importlib.import_module("$(APP).config"); keys = ("DEFAULT_USER_TIER", "MARKET_CONTEXT_ADAPTER_MODE", "MARKET_CONTEXT_PRIMARY_VENUE", "MARKET_CONTEXT_SECONDARY_VENUE", "ARCHIVE_ENABLE_RAW_EVENTS", "ARCHIVE_ENABLE_PARSED_EVENTS", "ARCHIVE_ENABLE_SIGNALS", "SQLITE_ENABLE", "SQLITE_DB_PATH", "OPPORTUNITY_ENABLE"); print(json.dumps({key: getattr(c, key, None) for key in keys}, ensure_ascii=False, indent=2, sort_keys=True))'
+	@SQLITE_DB_PATH="$(DB_PATH)" $(PY) -c 'import importlib, json; c = importlib.import_module("$(APP).config"); keys = ("DEFAULT_USER_TIER", "MARKET_CONTEXT_ADAPTER_MODE", "MARKET_CONTEXT_PRIMARY_VENUE", "MARKET_CONTEXT_SECONDARY_VENUE", "ARCHIVE_ENABLE_RAW_EVENTS", "ARCHIVE_ENABLE_PARSED_EVENTS", "ARCHIVE_ENABLE_SIGNALS", "SQLITE_ENABLE", "SQLITE_DB_PATH", "SQLITE_REPORT_READ_PREFER_DB", "OPPORTUNITY_ENABLE", "ASSET_MARKET_STATE_ENABLE", "NO_TRADE_LOCK_ENABLE"); print(json.dumps({key: getattr(c, key, None) for key in keys}, ensure_ascii=False, indent=2, sort_keys=True))'
 
 compile:
 	$(PY) -m compileall $(APP) $(REPORTS)
 
 run:
-	$(PY) $(APP)/main.py
+	$(RUN_PY) $(APP)/main.py
 
 run-research:
-	DEFAULT_USER_TIER=research MARKET_CONTEXT_ADAPTER_MODE=live MARKET_CONTEXT_PRIMARY_VENUE=okx_perp MARKET_CONTEXT_SECONDARY_VENUE=kraken_futures $(PY) $(APP)/main.py
+	DEFAULT_USER_TIER=research MARKET_CONTEXT_ADAPTER_MODE=live MARKET_CONTEXT_PRIMARY_VENUE=okx_perp MARKET_CONTEXT_SECONDARY_VENUE=kraken_futures SQLITE_DB_PATH="$(DB_PATH)" $(PY) $(APP)/main.py
+
+git-info:
+	git status --short
+	git log -1 --oneline
 
 health:
-	$(PY) -m $(APP).quality_reports --market-context-health
+	$(RUN_PY) -m $(APP).quality_reports --market-context-health
 
 coverage:
-	$(PY) -m $(APP).quality_reports --major-pool-coverage
+	$(RUN_PY) -m $(APP).quality_reports --major-pool-coverage
 
 quality-summary:
-	$(PY) -m $(APP).quality_reports --summary
+	$(RUN_PY) -m $(APP).quality_reports --summary
 
 quality-csv:
-	mkdir -p $(REPORTS) && $(PY) -m $(APP).quality_reports --format csv > $(REPORTS)/quality_rows.csv
+	mkdir -p $(REPORTS)
+	$(RUN_PY) -m $(APP).quality_reports --format csv > $(REPORTS)/quality_rows.csv
+
+report-source:
+	$(RUN_PY) -m $(APP).quality_reports --report-source-summary
+
+opportunity-db:
+	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
+
+opportunity-calibration:
+	$(RUN_PY) -m $(APP).quality_reports --opportunity-calibration
 
 db-init:
-	$(PY) -m $(APP).sqlite_store --init
+	$(RUN_PY) -m $(APP).sqlite_store --init
 
 db-summary:
-	$(PY) -m $(APP).sqlite_store --summary
+	$(RUN_PY) -m $(APP).sqlite_store --summary
 
 db-integrity:
-	$(PY) -m $(APP).sqlite_store --integrity-check
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
 
 db-report:
-	$(PY) -m $(APP).quality_reports --db-summary
-	$(PY) -m $(APP).quality_reports --db-integrity
-	$(PY) -m $(APP).quality_reports --opportunity-db-summary
+	$(RUN_PY) -m $(APP).quality_reports --db-summary
+	$(RUN_PY) -m $(APP).quality_reports --db-integrity
+	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
+
+db-migrate-all:
+	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --all
+
+db-migrate-date:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make db-migrate-date DATE=YYYY-MM-DD"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+
+sqlite-checkpoint:
+	$(RUN_PY) -m $(APP).sqlite_store --checkpoint
 
 db-size:
-	$(PY) -m $(APP).quality_reports --db-size-breakdown
+	$(RUN_PY) -m $(APP).quality_reports --db-size-breakdown
 
 db-value-audit:
-	$(PY) -m $(APP).quality_reports --db-value-audit
+	$(RUN_PY) -m $(APP).quality_reports --db-value-audit
 
 db-retention:
-	$(PY) -m $(APP).quality_reports --db-retention-recommendation
-
-db-compact-dry-run:
-	$(PY) -m $(APP).sqlite_store --compact --dry-run
-
-db-compact-execute:
-	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compact. Use make db-compact-execute CONFIRM=YES"; exit 2; fi
-	$(PY) -m $(APP).sqlite_store --compact --execute
-
-db-vacuum:
-	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to vacuum. Use make db-vacuum CONFIRM=YES"; exit 2; fi
-	CONFIRM=YES $(PY) -m $(APP).sqlite_store --vacuum
+	$(RUN_PY) -m $(APP).quality_reports --db-retention-recommendation
 
 db-maintenance:
 	$(MAKE) db-size
@@ -122,79 +323,167 @@ db-maintenance:
 	$(MAKE) db-retention
 	$(MAKE) db-compact-dry-run
 
-db-migrate-all:
-	$(PY) -m $(APP).sqlite_store --migrate-archive --all
+db-backfill-payload-dry-run:
+	$(RUN_PY) -m $(APP).sqlite_store --backfill-payload-metadata --dry-run
 
-db-migrate-date:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make db-migrate-date DATE=YYYY-MM-DD"; exit 2; fi
-	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+db-backfill-payload-execute:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to backfill payload metadata. Use make db-backfill-payload-execute CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --backfill-payload-metadata --execute
 
-sqlite-checkpoint:
-	$(PY) -m $(APP).sqlite_store --checkpoint
+db-backfill-table-dry-run:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-backfill-table-dry-run TABLE=raw_events"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --backfill-payload-metadata --table "$(TABLE)" --dry-run
 
-archive-status:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-status DATE=YYYY-MM-DD"; exit 2; fi
-	$(PY) -m $(APP).archive_maintenance --status-date "$(DATE)"
+db-backfill-table-execute:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-backfill-table-execute TABLE=raw_events CONFIRM=YES"; exit 2; fi
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to backfill one table. Use make db-backfill-table-execute TABLE=$(TABLE) CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --backfill-payload-metadata --table "$(TABLE)" --execute
 
-archive-compress-dry-run:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-dry-run DATE=YYYY-MM-DD"; exit 2; fi
-	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+db-compact-dry-run:
+	$(RUN_PY) -m $(APP).sqlite_store --compact --dry-run
 
-archive-compress-date:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES"; exit 2; fi
-	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compress. Use make archive-compress-date DATE=$(DATE) CONFIRM=YES"; exit 2; fi
-	ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute
+db-compact-execute:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compact. Use make db-compact-execute CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --compact --execute
+
+db-compact-table-dry-run:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-compact-table-dry-run TABLE=raw_events"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --compact-table "$(TABLE)" --dry-run
+
+db-compact-table-execute:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-compact-table-execute TABLE=raw_events CONFIRM=YES"; exit 2; fi
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compact one table. Use make db-compact-table-execute TABLE=$(TABLE) CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --compact-table "$(TABLE)" --execute
+
+db-vacuum:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to vacuum. Use make db-vacuum CONFIRM=YES"; exit 2; fi
+	CONFIRM=YES SQLITE_DB_PATH="$(DB_PATH)" $(PY) -m $(APP).sqlite_store --vacuum
 
 db-prune-dry-run:
-	$(PY) -m $(APP).sqlite_store --prune --dry-run
+	$(RUN_PY) -m $(APP).sqlite_store --prune --dry-run
 
 db-prune-execute:
 	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to prune. Use make db-prune-execute CONFIRM=YES"; exit 2; fi
-	$(PY) -m $(APP).sqlite_store --prune --execute
+	$(RUN_PY) -m $(APP).sqlite_store --prune --execute
+
+archive-status:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-status DATE=YYYY-MM-DD"; exit 2; fi
+	$(RUN_PY) -m $(APP).archive_maintenance --status-date "$(DATE)"
+
+archive-compress-dry-run:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-dry-run DATE=YYYY-MM-DD"; exit 2; fi
+	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+
+archive-compress-date:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES"; exit 2; fi
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to compress archive. Use make archive-compress-date DATE=$(DATE) CONFIRM=YES"; exit 2; fi
+	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute
+
+daily-close:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close DATE=YYYY-MM-DD [COMPRESS=YES] [CONFIRM=YES]"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
+	$(RUN_PY) -m $(APP).quality_reports --db-summary
+	$(RUN_PY) -m $(APP).quality_reports --db-integrity
+	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
+	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
+	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
+	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+	@if [ "$(COMPRESS)" = "YES" ]; then \
+		if [ "$(CONFIRM)" != "YES" ]; then \
+			echo "Compression requested but skipped without CONFIRM=YES. Re-run make daily-close DATE=$(DATE) COMPRESS=YES CONFIRM=YES"; \
+		else \
+			ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; \
+		fi; \
+	else \
+		echo "Compression dry-run only. Use make daily-close DATE=$(DATE) COMPRESS=YES CONFIRM=YES to gzip archive."; \
+	fi
+	$(RUN_PY) -m $(APP).sqlite_store --checkpoint
+
+daily-close-strict:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close-strict DATE=YYYY-MM-DD [COMPRESS=YES] [CONFIRM=YES]"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
+	$(RUN_PY) -m $(APP).quality_reports --db-summary
+	$(RUN_PY) -m $(APP).quality_reports --db-integrity
+	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
+	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
+	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
+	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
+	@if [ "$(COMPRESS)" = "YES" ]; then \
+		if [ "$(CONFIRM)" != "YES" ]; then \
+			echo "Compression requested but skipped without CONFIRM=YES. Re-run make daily-close-strict DATE=$(DATE) COMPRESS=YES CONFIRM=YES"; \
+		else \
+			ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; \
+		fi; \
+	else \
+		echo "Compression dry-run only. Use make daily-close-strict DATE=$(DATE) COMPRESS=YES CONFIRM=YES to gzip archive."; \
+	fi
+	$(RUN_PY) -m $(APP).sqlite_store --checkpoint
 
 report-overnight:
-	$(PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
 
 report-state:
-	$(PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
 
 report-run:
-	$(PY) $(REPORTS)/generate_overnight_run_analysis_latest.py
+	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
 
 report-all:
 	$(MAKE) report-overnight
 	$(MAKE) report-state
 	$(MAKE) report-run
 
-daily-close:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close DATE=YYYY-MM-DD [COMPRESS=YES]"; exit 2; fi
-	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
-	$(PY) -m $(APP).sqlite_store --integrity-check
-	$(PY) -m $(APP).quality_reports --db-summary
-	$(PY) -m $(APP).quality_reports --db-integrity
-	$(PY) -m $(APP).quality_reports --opportunity-db-summary
-	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
-	$(PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
-	$(PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
-	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
-	@if [ "$(COMPRESS)" = "YES" ]; then ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; else echo "Compression dry-run only. Use make daily-close DATE=$(DATE) COMPRESS=YES to gzip archive."; fi
-	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
-	$(PY) -m $(APP).sqlite_store --checkpoint
+test-sqlite:
+	@$(call run_existing_tests,$(TEST_SQLITE_MODULES))
 
-daily-close-strict:
-	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close-strict DATE=YYYY-MM-DD [COMPRESS=YES]"; exit 2; fi
-	$(PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
-	$(PY) -m $(APP).sqlite_store --integrity-check
-	$(PY) -m $(APP).quality_reports --db-summary
-	$(PY) -m $(APP).quality_reports --db-integrity --fail-on-mismatch
-	$(PY) -m $(APP).quality_reports --opportunity-db-summary
-	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
-	$(PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
-	$(PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
-	$(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
-	@if [ "$(COMPRESS)" = "YES" ]; then ALLOW_TODAY="$(ALLOW_TODAY)" $(PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --execute; else echo "Compression dry-run only. Use make daily-close-strict DATE=$(DATE) COMPRESS=YES to gzip archive."; fi
-	$(PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
-	$(PY) -m $(APP).sqlite_store --checkpoint
+test-sqlite-compact:
+	@$(call run_existing_tests,$(TEST_SQLITE_COMPACT_MODULES))
+
+test-reports:
+	@$(call run_existing_tests,$(TEST_REPORT_MODULES))
+
+test-opportunity:
+	@$(call run_existing_tests,$(TEST_OPPORTUNITY_MODULES))
+
+test-state:
+	@$(call run_existing_tests,$(TEST_STATE_MODULES))
+
+test-action:
+	@$(call run_existing_tests,$(TEST_ACTION_MODULES))
+
+test-lp:
+	@$(call run_existing_tests,$(TEST_LP_MODULES))
+
+test-clmm:
+	@$(call run_existing_tests,$(TEST_CLMM_MODULES))
+
+test-core:
+	@$(call run_existing_tests,$(TEST_CORE_MODULES))
+
+test-all:
+	$(MAKE) test-sqlite
+	$(MAKE) test-sqlite-compact
+	$(MAKE) test-reports
+	$(MAKE) test-opportunity
+	$(MAKE) test-state
+	$(MAKE) test-action
+	$(MAKE) test-lp
+	$(MAKE) test-clmm
+	$(MAKE) test-core
+
+archive-check:
+	@ls -ld $(ARCHIVE_DIR)/raw_events || true
+	@ls -ld $(ARCHIVE_DIR)/parsed_events || true
+	@ls -ld $(ARCHIVE_DIR)/signals || true
+	@ls -ld $(ARCHIVE_DIR)/delivery_audit || true
+	@ls -ld $(ARCHIVE_DIR)/cases || true
+	@ls -ld $(ARCHIVE_DIR)/case_followups || true
 
 smoke:
 	$(MAKE) compile
@@ -202,74 +491,7 @@ smoke:
 	$(MAKE) health
 	$(MAKE) coverage
 	$(MAKE) db-report
-
-test-sqlite:
-	$(PY) -m unittest \
-	  $(APP).test_sqlite_schema \
-	  $(APP).test_sqlite_writers \
-	  $(APP).test_sqlite_archive_mirror \
-	  $(APP).test_sqlite_opportunity_persistence \
-	  $(APP).test_sqlite_reports \
-	  $(APP).test_sqlite_migration
-
-test-opportunity:
-	$(PY) -m unittest \
-	  $(APP).test_trade_opportunity_scoring \
-	  $(APP).test_trade_opportunity_funnel \
-	  $(APP).test_trade_opportunity_notifier \
-	  $(APP).test_trade_opportunity_budget \
-	  $(APP).test_trade_opportunity_reports \
-	  $(APP).test_trade_opportunity_persistence
-
-test-state:
-	$(PY) -m unittest \
-	  $(APP).test_asset_market_state \
-	  $(APP).test_no_trade_lock \
-	  $(APP).test_prealert_lifecycle \
-	  $(APP).test_chase_candidate_validation \
-	  $(APP).test_outcome_market_price_source \
-	  $(APP).test_telegram_suppression \
-	  $(APP).test_trade_state_reports
-
-test-action:
-	$(PY) -m unittest \
-	  $(APP).test_trade_action_inference \
-	  $(APP).test_trade_action_conflict \
-	  $(APP).test_trade_action_notifier \
-	  $(APP).test_trade_action_reports
-
-test-lp:
-	$(PY) -m unittest \
-	  $(APP).test_lp_major_prealert \
-	  $(APP).test_major_pool_coverage \
-	  $(APP).test_lp_latency_outcomes \
-	  $(APP).test_quality_report_rates \
-	  $(APP).test_raw_parsed_archive
-
-test-core:
-	$(PY) -m unittest \
-	  $(APP).test_operational_intent_notifier \
-	  $(APP).test_clmm_operational_intent
-
-test-all:
-	$(MAKE) test-sqlite
-	$(MAKE) test-opportunity
-	$(MAKE) test-state
-	$(MAKE) test-action
-	$(MAKE) test-lp
-	$(MAKE) test-core
-
-archive-check:
-	ls -lh $(APP)/data/archive/raw_events || true
-	ls -lh $(APP)/data/archive/parsed_events || true
-	ls -lh $(APP)/data/archive/signals || true
-	ls -lh $(APP)/data/archive/delivery_audit || true
-	ls -lh $(APP)/data/archive/cases || true
-	ls -lh $(APP)/data/archive/case_followups || true
-
-git-info:
-	git status --short
-	git log -1 --oneline
+	$(MAKE) report-source
 
 preflight:
 	$(MAKE) env-check

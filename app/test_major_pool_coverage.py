@@ -112,8 +112,38 @@ class MajorPoolCoverageTests(unittest.TestCase):
         self.assertIn("lp_pools.json", report["warnings"][0])
         self.assertIn("BTC/USDT", report["missing_major_pairs"])
 
-    def test_major_pool_coverage_flags_current_missing_btc_and_sol_assets(self) -> None:
-        report = build_major_pool_coverage_report(StubQualityManager())
+    def test_major_pool_coverage_flags_missing_btc_and_sol_assets_for_eth_only_fixture(self) -> None:
+        payload = [
+            _major_entry(
+                pool_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                pair_label="WETH/USDC",
+                base_symbol="WETH",
+                quote_symbol="USDC",
+                canonical_asset="ETH",
+                enabled=True,
+                protocol="unit_test",
+                pool_type="spot_lp",
+                fee_tier=0,
+            ),
+            _major_entry(
+                pool_address="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                pair_label="WETH/USDT",
+                base_symbol="WETH",
+                quote_symbol="USDT",
+                canonical_asset="ETH",
+                enabled=True,
+                protocol="unit_test",
+                pool_type="spot_lp",
+                fee_tier=0,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "lp_pools.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            report = build_major_pool_coverage_report(
+                StubQualityManager(),
+                pool_book_path=path,
+            )
 
         self.assertIn("BTC", report["missing_major_assets"])
         self.assertIn("SOL", report["missing_major_assets"])

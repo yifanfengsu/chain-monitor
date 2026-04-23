@@ -121,7 +121,7 @@ quality report / 导出入口：
 - `python -m app.quality_reports --format csv`
 
 SQLite mirror / query layer：
-- SQLite 是分析库，不是 full archive 的第二份完整副本；主监听、report fallback 和历史研究仍保留 JSON / NDJSON archive / cache
+- SQLite 是 mirror / query / analysis layer，不替代 NDJSON archive；主监听、report fallback 和历史研究仍保留 JSON / NDJSON archive / cache
 - 长期 full 保留的核心表是 `signals / signal_features / outcomes / trade_opportunities / opportunity_outcomes / quality_stats / asset_market_states / no_trade_locks / asset_cases / prealert_lifecycle / market_context_snapshots`
 - `raw_events / parsed_events` 默认按 `index_only` 导入；full raw/parsed payload 长期保留在 `.ndjson / .ndjson.gz` archive
 - `delivery_audit / telegram_deliveries / case_followups / market_context_attempts` 默认按 `slim` 或诊断型模式保留，不把 full payload 长期复制进 SQLite
@@ -159,18 +159,33 @@ SQLite mirror / query layer：
 - `raw_events / parsed_events / delivery_audit / telegram_deliveries` 新写入会补 `archive_path / archive_date / payload_hash / payload_mode`，用于后续安全 compact；`market_context_attempts` 至少保留 `payload_hash / payload_mode`
 - 迁移是可重复执行的；去重基于 `event_id / signal_id / signal_archive_key / trade_opportunity_id` 等主键，不会要求一次性迁完全部历史
 - 即使启用 SQLite，raw_events / parsed_events / signals / delivery_audit / case_followups 仍继续写 NDJSON archive；asset cases / asset market states / quality stats / trade opportunities 仍保留 JSON cache
-- 不建议删除旧 archive/cache：它们仍是兼容层、恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
+- 不要再跑前删除 archive/cache/db；旧数据是 `opportunity / verified / quality / outcome / blocker` 后验分析的基础，也是恢复路径和 report fallback 的来源；SQLite 初始化或写入失败时主流程会 warning 并继续走原 archive
 - compact / retention 建议流程：
-  - 先压缩 archive：保留 `.ndjson.gz`
+  - 先做 legacy payload metadata backfill，给旧 full payload rows 回填 `archive_path / archive_date / payload_hash / payload_mode`
   - 再做 `compact` 清理 DB 里的重复 full payload
   - 如需真正释放磁盘，再单独做 `VACUUM`
-- compact / vacuum 命令：
+- 如果 `compact` 输出里 `skipped_no_payload_hash` 或 `skipped_no_archive_path` 很高，先跑 backfill，不要绕过 hash/archive 校验直接清 payload
+- backfill / compact / vacuum 推荐顺序：
+  - `make db-backfill-payload-dry-run`
+  - `make db-backfill-payload-execute CONFIRM=YES`
+  - `make db-compact-dry-run`
+  - `make db-compact-execute CONFIRM=YES`
+  - `make db-vacuum CONFIRM=YES`
+- backfill / compact / vacuum 命令：
+  - `./venv/bin/python -m app.sqlite_store --backfill-payload-metadata --dry-run`
+  - `./venv/bin/python -m app.sqlite_store --backfill-payload-metadata --execute`
+  - `./venv/bin/python -m app.sqlite_store --backfill-payload-metadata --table raw_events --dry-run`
+  - `./venv/bin/python -m app.sqlite_store --backfill-payload-metadata --table parsed_events --execute`
+  - `./venv/bin/python -m app.sqlite_store --backfill-payload-metadata --date YYYY-MM-DD --dry-run`
   - `./venv/bin/python -m app.sqlite_store --compact --dry-run`
   - `./venv/bin/python -m app.sqlite_store --compact --execute`
   - `./venv/bin/python -m app.sqlite_store --compact-table raw_events --dry-run`
   - `CONFIRM=YES ./venv/bin/python -m app.sqlite_store --vacuum`
 - 安全约束：
-  - 没有 `archive_path / payload_hash` 或 archive 文件不存在时，compact 不会清 full payload
+  - backfill 只写 metadata，不清 payload，也不会触发 `VACUUM`
+  - 只有 `compact` 才会清理 DB 里的 full payload
+  - `compact` 清 payload 后，SQLite 文件不会立刻变小；真正回收磁盘要单独执行 `VACUUM`
+  - 没有 `archive_path / payload_hash`、archive 文件不存在、或 archive/hash 校验不一致时，compact 不会清 full payload
   - `VACUUM` 是单独命令，不会在 compact 后自动执行
 - 日终收尾：
   - `make daily-close DATE=YYYY-MM-DD`：迁移指定日期 archive 到 SQLite、检查 DB、生成报告、压缩 dry-run、执行 WAL checkpoint
@@ -240,30 +255,131 @@ majors-first pool book 指引：
 
 ## 常用 Make 命令
 
-- `make preflight`：启动前全套检查，包含安全配置、编译、SQLite、market context、coverage、archive 和 git 状态。
-- `make run`：启动主程序。
-- `make run-research`：强制 `research` + OKX/Kraken live context 启动。
-- `make health`：查看 market context 健康度。
-- `make coverage`：查看 major pool 覆盖。
-- `make db-init / db-summary / db-integrity / db-report`：初始化、摘要、完整性和 SQLite report 检查。
-- `make db-size / db-value-audit / db-retention`：查看 DB 体积、数据价值和 retention 建议。
-- `make db-compact-dry-run / db-compact-execute CONFIRM=YES / db-vacuum CONFIRM=YES`：预览 compact、执行 compact、执行 VACUUM。
-- `make db-maintenance`：串行执行 DB 体积、价值、retention 和 compact dry-run。
-- `make db-migrate-all / db-migrate-date DATE=YYYY-MM-DD`：把 NDJSON archive mirror 到 SQLite。
-- `make daily-close DATE=YYYY-MM-DD`：执行日终迁移、DB 检查、报告生成、压缩 dry-run 和 checkpoint。
-- `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`：日终流程并压缩指定日期 archive。
-- `make archive-compress-dry-run DATE=YYYY-MM-DD`：预览压缩。
-- `make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES`：明确确认后压缩指定日期 archive。
-- `make sqlite-checkpoint`：执行 SQLite WAL checkpoint。
-- `make report-overnight / report-state / report-all`：生成 overnight trade action、afternoon/evening state 或全量常用报告。
-- `make test-all`：运行分组后的 SQLite、opportunity、state、action、LP 和 core 测试。
-- `make archive-check`：列出 archive 最新目录，确认 raw/parsed/signals/audit/case 是否落盘。
+SQLite 角色先说明清楚：
+- SQLite 是 mirror / query / analysis layer，不替代 `app/data/archive/**/*.ndjson`、`*.ndjson.gz` 和本地 JSON cache。
+- reports 默认优先读 SQLite，但 DB 不存在、缺表、空表或读取失败时，仍可回退到 archive / cache。
+- 不要再跑前删除 `archive/cache/db`；旧数据是 `opportunity / verified / quality / outcome / blocker` 后验分析的基础。
 
-提醒：
-- 不要在启动前删除 archive/cache/db。
-- 不要把 `.sqlite / .sqlite-wal / .sqlite-shm` 提交到 Git。
-- 不要压缩当天正在写的 UTC 日期；如确实需要，必须显式 `ALLOW_TODAY=YES`。
-- SQLite 是分析库，不替代 archive。
-- compression 只把 `.ndjson` 替换为 `.ndjson.gz`，不等同于 prune；`make db-prune-execute` 才会删除过期 DB 数据。
-- `make db-prune-execute` 必须显式加 `CONFIRM=YES`。
-- 真实 DB 文件和运行数据不应提交 git。
+### 1. 启动前检查
+
+- `make preflight`
+- `make env-check`
+- `make health`
+- `make coverage`
+- `make db-integrity`
+- `make db-report`
+- `make report-source`
+
+`make env-check` 只打印非敏感配置：`DEFAULT_USER_TIER`、market context venue、archive 开关、SQLite 开关、`SQLITE_REPORT_READ_PREFER_DB`、`OPPORTUNITY_ENABLE`、`ASSET_MARKET_STATE_ENABLE`、`NO_TRADE_LOCK_ENABLE`。不会打印 Telegram token、RPC URL、API key、secret 或私钥。
+
+### 2. 运行
+
+- `make run`
+- `make run-research`
+
+`make run-research` 会强制使用 `DEFAULT_USER_TIER=research`、`MARKET_CONTEXT_ADAPTER_MODE=live`、`MARKET_CONTEXT_PRIMARY_VENUE=okx_perp`、`MARKET_CONTEXT_SECONDARY_VENUE=kraken_futures`。
+
+### 3. 报告
+
+- `make report-overnight`
+- `make report-state`
+- `make report-run`
+- `make report-all`
+
+`make report-run` 会在 `reports/generate_overnight_run_analysis_latest.py` 存在时执行；脚本不存在时只输出 `report-run script not found`，不会把整个 make 流程打断。
+
+### 4. SQLite 基础维护
+
+- `make db-init`
+- `make db-summary`
+- `make db-integrity`
+- `make db-report`
+- `make db-migrate-all`
+- `make db-migrate-date DATE=YYYY-MM-DD`
+- `make sqlite-checkpoint`
+
+`make db-report` 会串行执行 `--db-summary`、`--db-integrity`、`--opportunity-db-summary`，适合做 DB-first report 检查。`make report-source` 则专门检查当前 reports 是优先读 SQLite，还是走 archive fallback。
+
+### 5. SQLite 体积治理
+
+- `make db-size`
+- `make db-value-audit`
+- `make db-retention`
+- `make db-maintenance`
+- `make db-backfill-payload-dry-run`
+- `make db-backfill-payload-execute CONFIRM=YES`
+- `make db-backfill-table-dry-run TABLE=parsed_events`
+- `make db-backfill-table-execute TABLE=parsed_events CONFIRM=YES`
+- `make db-compact-dry-run`
+- `make db-compact-execute CONFIRM=YES`
+- `make db-compact-table-dry-run TABLE=raw_events`
+- `make db-compact-table-execute TABLE=raw_events CONFIRM=YES`
+- `make db-vacuum CONFIRM=YES`
+
+体积治理的区别和顺序：
+- backfill 是给旧数据补 `archive_path / archive_date / payload_hash / payload_mode`，只写 metadata，不清 payload。
+- compact 是清理 SQLite 里已经有 archive 备份的 full payload；它会让表变瘦，但 SQLite 文件不会立刻变小。
+- vacuum 才会真正重写 SQLite 文件并回收磁盘空间。
+- 如果 `db-compact-dry-run` 里 `skipped_no_payload_hash` 很高，先跑 backfill，不要跳过 hash/archive 校验。
+- 如果 `make db-vacuum` 输出 `confirm_required`，说明没有带 `CONFIRM=YES`。
+- 如果 DB 仍然很大，先看 `make db-size` 和 `make db-value-audit`，不要直接删 DB。
+
+推荐顺序：
+- `make db-backfill-payload-dry-run`
+- `make db-backfill-payload-execute CONFIRM=YES`
+- `make db-compact-dry-run`
+- `make db-compact-execute CONFIRM=YES`
+- `make db-vacuum CONFIRM=YES`
+- `make db-integrity`
+- `make db-summary`
+
+`compression`、`compact`、`vacuum`、`prune` 不是一回事：
+- compression 是把 archive 的 `.ndjson` 压成 `.ndjson.gz`，不删除记录。
+- compact 是清理 SQLite 里可由 archive 重建的 full payload。
+- vacuum 是缩小 SQLite 文件本身。
+- prune 是按 retention 删除行；它是单独维护动作，不在标准 daily-close 流程里。需要时先跑 `make db-prune-dry-run`，真正执行再用 `make db-prune-execute CONFIRM=YES`。
+
+### 6. Archive / 日终
+
+- `make archive-status DATE=YYYY-MM-DD`
+- `make archive-compress-dry-run DATE=YYYY-MM-DD`
+- `make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES`
+- `make daily-close DATE=YYYY-MM-DD`
+- `make daily-close DATE=YYYY-MM-DD COMPRESS=YES`
+- `make daily-close DATE=YYYY-MM-DD COMPRESS=YES CONFIRM=YES`
+- `make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES`
+- `make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES CONFIRM=YES`
+
+`daily-close` 会按顺序执行：`archive -> SQLite migrate`、`db-integrity`、`db-summary/db-report`、mirror-check、`report-overnight`、`report-state`、`report-run`、archive compression dry-run、SQLite checkpoint。
+
+Archive / 日终的安全约束：
+- compression 是 gzip archive，不是删除数据。
+- `COMPRESS=YES` 只表示进入压缩分支；这个 Makefile 里真正执行 gzip 仍需要显式 `CONFIRM=YES`。
+- 不要压缩当天仍在写入的 archive date；如确实需要，必须显式 `ALLOW_TODAY=YES`。
+- `daily-close` 和 `daily-close-strict` 都不会自动做 prune，也不会删除 DB / cache / archive。
+- `daily-close-strict` 会用 `mirror-check --strict`；如果 DB / archive mismatch，会直接失败。
+
+### 7. 测试
+
+- `make test-sqlite`
+- `make test-sqlite-compact`
+- `make test-reports`
+- `make test-opportunity`
+- `make test-state`
+- `make test-action`
+- `make test-lp`
+- `make test-clmm`
+- `make test-core`
+- `make test-all`
+
+这些 target 会自动过滤当前分支不存在的测试模块：存在就运行，不存在就打印 `skip missing test module: ...`，不会因为分支上暂缺某个测试文件而让整个 target 直接失败。
+
+### 8. 安全提醒
+
+- 不要跑前删除 `archive/cache/db`。旧数据是 `opportunity / verified / quality / outcome / blocker` 后验分析、report fallback 和 mirror 对账的基础。
+- DB 文件不会提交 git；仓库已忽略 `data/*.sqlite`、`data/*.sqlite-wal`、`data/*.sqlite-shm`、`data/*.db`。
+- `CONFIRM=YES` 是危险命令确认，当前用于 `db-backfill-*-execute`、`db-compact-*-execute`、`db-vacuum`、`archive-compress-date`、`db-prune-execute`，以及 `daily-close COMPRESS=YES` 的实际压缩执行。
+- `CANDIDATE` 不是交易信号，只表示候选，不代表“现在就该追”。
+- `VERIFIED` 也不是自动下单，不会触发下单、不会给你自动仓位、也不会替代止损止盈和风险管理。
+- `NO_TRADE` / `NO_TRADE_LOCK` / `DO_NOT_CHASE_LONG` / `DO_NOT_CHASE_SHORT` 必须按硬阻断对待，不是可忽略的小提示。
+- 系统是个人交易辅助和研究工具，不是自动交易系统。
