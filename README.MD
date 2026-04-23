@@ -202,20 +202,32 @@ SQLite mirror / query layer：
 ## 每日对比报告
 
 - 作用：
-  - `make daily-compare` 会比较“今天”和“前一个可用日期”的系统运行结果，重点看系统质量、噪音控制、候选/机会质量、outcome 完整性、market context 命中率和 majors 覆盖是否变好或变差
+  - `make daily-compare` 会比较“今天”和“前一个可用日期”的系统运行结果，重点看系统质量、Telegram 降噪、候选/机会质量、outcome 完整性、market context 命中率和 majors 覆盖是进步、持平还是退步
   - `make daily-compare DATE=YYYY-MM-DD` 会把 `DATE` 视作 today，并自动寻找小于该日期的最近一个可用日期作为 previous
-  - compare 只基于真实结构化数据，不会编造 yesterday；如果前一个日期不存在，会明确写 `compare not available`
+  - compare 只基于真实结构化 summary JSON，不会编造 yesterday；如果前一个日期不存在，会明确写 `compare not available`
 - 命令：
   - `make daily-compare`
   - `make daily-compare DATE=YYYY-MM-DD`
   - `make daily-compare-strict`
   - `make daily-compare-strict DATE=YYYY-MM-DD`
+  - `make daily-compare-rebuild`
+  - `make daily-compare-rebuild DATE=YYYY-MM-DD`
+- 模式区别：
+  - `daily-compare`：宽松模式；能出就出，缺字段或缺某类 summary 时写进 `limitations`
+  - `daily-compare-strict`：严格模式；会先尝试补 today/previous 的 dated summaries，若 compare 输入仍不完整则 fail-closed
+  - `daily-compare-rebuild`：显式优先补 today/previous 的 dated summaries，再按宽松模式输出 compare；适合日常补齐依赖后再看报告
 - 输入文件：
   - 第一优先读取 `reports/overnight_trade_action_summary_latest_YYYY-MM-DD.json`
   - 第一优先读取 `reports/afternoon_evening_state_summary_latest_YYYY-MM-DD.json`
   - 第一优先读取 `reports/overnight_run_summary_latest_YYYY-MM-DD.json`
   - 如果某个日期缺少 dated summary JSON，则会退回到与该逻辑日期匹配的 `*_summary_latest.json`
+  - `daily-compare-strict` / `daily-compare-rebuild` 会优先尝试按逻辑日期重建缺失的 dated summary；重建仍依赖真实 SQLite / archive / cache 数据，不会伪造历史
   - compare 不会用 Markdown 正文做字符串 diff；如果字段不存在，会在报告里写 `字段缺失` 或 `schema drift / 字段不一致`
+- `compare_basis`：
+  - `exact_previous_day`：today 与精确前一天比较
+  - `previous_available_day`：精确前一天缺 summary，改用更早的最近可用日期
+  - `not_available`：today 有数据，但没有 previous 可比日期
+  - `no_data`：`reports/` 下没有可用的主 summary JSON
 - 输出目录：
   - `reports/daily_compare/`
 - 输出文件：
@@ -228,13 +240,17 @@ SQLite mirror / query layer：
 - 输出内容：
   - Markdown：执行摘要、数据来源、compare basis、问题回答和关键限制
   - CSV：逐指标的 `today_value / previous_value / abs_change / pct_change / interpretation`
-  - JSON：结构化 compare summary，包含 `compare_basis`、`source_files`、`improvement_flags`、`regression_flags`、`limitations`
+  - JSON：结构化 compare summary，包含 `today_date`、`previous_date`、`compare_basis`、`source_files`、`data_source_summary`、`improvement_flags`、`regression_flags`、`limitations`
+- `source_files`：
+  - compare JSON 顶层会显式列出 `today` 和 `previous` 各自使用的三份 summary JSON：`afternoon_evening_state`、`overnight_trade_action`、`overnight_run`
+  - 每个 source entry 都会带 `path / source_kind / logical_date / warnings`
+  - 如果缺少某类 summary，不会编造，会在 `source_files` 和 Markdown “数据来源”章节里明确标成 missing
 - 如何理解结果：
   - Candidate 变多不一定更好；要同时看 `followthrough / adverse / completion`
   - Blocked 变多不一定是退步；可能是市场更差，或者系统更会保护你
   - Telegram 消息变少不一定代表漏信号；要同时看 suppression reason 和 `high_value_suppressed_count`
-  - Verified 变少不一定是坏事；如果 blocker saved rate 提升且 false block rate 没恶化，可能只是系统更保守
-  - `compare_basis=exact_previous_day` 表示和精确前一天比较；`compare_basis=previous_available_day` 表示前一天缺报告，使用最近一个可用日期
+  - Verified 为 `0` 不一定是坏事；如果 blocker saved rate 提升且 false block rate 没恶化，可能只是系统更保守
+  - `compare_basis=exact_previous_day` 说明是精确日对日；`compare_basis=previous_available_day` 说明中间有缺口，不是自然日连续对比
 - 重要提醒：
   - compare 报告不是交易建议，不是自动下单建议
   - 如果 yesterday / previous 数据缺失，报告不会编造

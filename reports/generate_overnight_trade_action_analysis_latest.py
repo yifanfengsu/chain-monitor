@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import statistics
@@ -283,13 +284,31 @@ def build_signal_segments(signal_rows: list[dict[str, Any]]) -> list[dict[str, A
 def choose_latest_overnight_window(
     signal_rows: list[dict[str, Any]],
     inventories: dict[str, list[FileInventory]],
+    *,
+    requested_date: str | None = None,
 ) -> dict[str, Any]:
     segments = build_signal_segments(signal_rows)
     if not segments:
         raise RuntimeError("signals archive is empty")
     overnight_candidates = [segment for segment in segments if segment["looks_like_bj_overnight"]]
+    candidate_pool = overnight_candidates or segments
+    if requested_date:
+        matching_candidates = [
+            segment
+            for segment in candidate_pool
+            if datetime.fromtimestamp(int(segment["end_ts"]), UTC).strftime("%Y-%m-%d") == requested_date
+        ]
+        if not matching_candidates:
+            matching_candidates = [
+                segment
+                for segment in segments
+                if datetime.fromtimestamp(int(segment["end_ts"]), UTC).strftime("%Y-%m-%d") == requested_date
+            ]
+        if not matching_candidates:
+            raise RuntimeError(f"no overnight trade-action segment found for requested date {requested_date}")
+        candidate_pool = matching_candidates
     chosen = sorted(
-        overnight_candidates or segments,
+        candidate_pool,
         key=lambda item: (
             -int(item["end_ts"]),
             -int(item["duration_sec"]),
@@ -1806,7 +1825,14 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate overnight trade action analysis latest report")
+    parser.add_argument("--date", help="Use the overnight segment whose UTC end date matches YYYY-MM-DD")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
@@ -1816,7 +1842,12 @@ def main() -> int:
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
     asset_case_cache, asset_case_inventory = load_asset_case_cache()
     trade_opportunity_cache, trade_opportunity_inventory = load_trade_opportunity_cache()
-    window = choose_latest_overnight_window(signal_rows, inventories)
+    window = choose_latest_overnight_window(signal_rows, inventories, requested_date=args.date)
+    selected_logical_date = datetime.fromtimestamp(int(window["analysis_window_end_ts"]), UTC).strftime("%Y-%m-%d")
+    if args.date and selected_logical_date != args.date:
+        raise RuntimeError(
+            f"requested logical date {args.date} resolved to overnight trade-action window ending on {selected_logical_date}"
+        )
 
     window_signal_rows, _, lp_rows = join_lp_rows(
         signal_rows,
@@ -2156,6 +2187,7 @@ def main() -> int:
         "trade_opportunity_cache_snapshot": trade_opportunity_cache,
     }
     JSON_PATH.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_date = args.date or selected_logical_date
     dated_outputs = write_dated_report_copies(
         {
             "markdown": MARKDOWN_PATH,
@@ -2163,6 +2195,7 @@ def main() -> int:
             "json": JSON_PATH,
         },
         tz=BJ_TZ,
+        report_date=report_date,
     )
 
     print(

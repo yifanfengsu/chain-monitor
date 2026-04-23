@@ -3,9 +3,10 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from reports.generate_daily_compare_report import generate_daily_compare
+from reports.generate_daily_compare_report import REPORT_ORDER, generate_daily_compare
 
 
 def _base_data_source_summary() -> dict:
@@ -413,6 +414,8 @@ class DailyCompareReportTests(unittest.TestCase):
         self.assertEqual("2026-04-22", payload["today_date"])
         self.assertIsNone(payload["previous_date"])
         self.assertIn("missing_previous_date", payload["limitations"])
+        self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["today"].keys()))
+        self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["previous"].keys()))
         self.assertNotIn("dated_json", written)
         self.assertTrue((self.output_dir / "daily_compare_latest.json").exists())
 
@@ -461,6 +464,103 @@ class DailyCompareReportTests(unittest.TestCase):
 
         latest_json = json.loads((self.output_dir / "daily_compare_latest.json").read_text(encoding="utf-8"))
         self.assertEqual("2026-04-22", latest_json["today_date"])
+
+    def test_compare_json_contains_explicit_source_files_structure(self) -> None:
+        _seed_day(self.reports_dir, "2026-04-21", _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2))
+        _seed_day(self.reports_dir, "2026-04-22", _sample_values(raw_events=125, candidate_count=3, candidate_ft=0.60, candidate_adv=0.10, candidate_completion=1.00, blocker_saved=0.70, blocker_false=0.10, outcome_rate=0.75, market_success=0.90, messages_after=1, high_value_suppressed=1))
+
+        exit_code, payload, _ = generate_daily_compare(
+            reports_dir=self.reports_dir,
+            output_dir=self.output_dir,
+            allow_generate=False,
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("source_files", payload)
+        self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["today"].keys()))
+        self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["previous"].keys()))
+        entry = payload["source_files"]["today"]["afternoon_evening_state"]
+        self.assertIn("path", entry)
+        self.assertIn("source_kind", entry)
+        self.assertIn("logical_date", entry)
+        self.assertIn("warnings", entry)
+
+        latest_json = json.loads((self.output_dir / "daily_compare_latest.json").read_text(encoding="utf-8"))
+        self.assertIn("source_files", latest_json)
+        self.assertEqual(set(REPORT_ORDER), set(latest_json["source_files"]["today"].keys()))
+
+    def test_normal_mode_keeps_missing_source_entry_and_limitations(self) -> None:
+        previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)
+        today = _sample_values(raw_events=125, candidate_count=3, candidate_ft=0.60, candidate_adv=0.10, candidate_completion=1.00, blocker_saved=0.70, blocker_false=0.10, outcome_rate=0.75, market_success=0.90, messages_after=1, high_value_suppressed=1)
+        _seed_day(self.reports_dir, "2026-04-21", previous)
+        _write_summary(self.reports_dir, "afternoon_evening_state_summary_latest_2026-04-22.json", _build_afternoon_summary("2026-04-22", today))
+        _write_summary(self.reports_dir, "overnight_trade_action_summary_latest_2026-04-22.json", _build_overnight_trade_action_summary("2026-04-22", today))
+
+        exit_code, payload, _ = generate_daily_compare(
+            reports_dir=self.reports_dir,
+            output_dir=self.output_dir,
+            allow_generate=False,
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["compare_available"])
+        missing_entry = payload["source_files"]["today"]["overnight_run"]
+        self.assertIsNone(missing_entry["path"])
+        self.assertIn("missing_summary:overnight_run:2026-04-22", missing_entry["warnings"])
+        self.assertIn("missing_summary:overnight_run:2026-04-22", payload["limitations"])
+
+    def test_strict_mode_attempts_rebuild_before_succeeding(self) -> None:
+        previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)
+        today = _sample_values(raw_events=125, candidate_count=3, candidate_ft=0.60, candidate_adv=0.10, candidate_completion=1.00, blocker_saved=0.70, blocker_false=0.10, outcome_rate=0.75, market_success=0.90, messages_after=1, high_value_suppressed=1)
+        _seed_day(self.reports_dir, "2026-04-21", previous)
+        _write_summary(self.reports_dir, "afternoon_evening_state_summary_latest_2026-04-22.json", _build_afternoon_summary("2026-04-22", today))
+        _write_summary(self.reports_dir, "overnight_trade_action_summary_latest_2026-04-22.json", _build_overnight_trade_action_summary("2026-04-22", today))
+
+        def _fake_refresh(*, logical_date: str, report_types: list[str] | None = None, **_: object) -> list[str]:
+            self.assertEqual("2026-04-22", logical_date)
+            self.assertEqual(["overnight_run"], report_types)
+            _write_summary(
+                self.reports_dir,
+                "overnight_run_summary_latest_2026-04-22.json",
+                _build_overnight_run_summary("2026-04-22", today),
+            )
+            return ["rebuild_attempted:overnight_run:2026-04-22"]
+
+        with mock.patch("reports.generate_daily_compare_report._refresh_dated_reports_for_date", side_effect=_fake_refresh) as refresh_mock:
+            exit_code, payload, written = generate_daily_compare(
+                reports_dir=self.reports_dir,
+                output_dir=self.output_dir,
+                strict=True,
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["compare_available"])
+        self.assertIn("rebuild_attempted:overnight_run:2026-04-22", payload["limitations"])
+        self.assertIn("dated_json", written)
+        refresh_mock.assert_called_once()
+
+    def test_strict_mode_fails_closed_when_rebuild_cannot_fill_missing_inputs(self) -> None:
+        previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)
+        today = _sample_values(raw_events=125, candidate_count=3, candidate_ft=0.60, candidate_adv=0.10, candidate_completion=1.00, blocker_saved=0.70, blocker_false=0.10, outcome_rate=0.75, market_success=0.90, messages_after=1, high_value_suppressed=1)
+        _seed_day(self.reports_dir, "2026-04-21", previous)
+        _write_summary(self.reports_dir, "afternoon_evening_state_summary_latest_2026-04-22.json", _build_afternoon_summary("2026-04-22", today))
+        _write_summary(self.reports_dir, "overnight_trade_action_summary_latest_2026-04-22.json", _build_overnight_trade_action_summary("2026-04-22", today))
+
+        with mock.patch(
+            "reports.generate_daily_compare_report._refresh_dated_reports_for_date",
+            return_value=["rebuild_failed:overnight_run:2026-04-22"],
+        ) as refresh_mock:
+            exit_code, payload, written = generate_daily_compare(
+                reports_dir=self.reports_dir,
+                output_dir=self.output_dir,
+                strict=True,
+            )
+
+        self.assertEqual(2, exit_code)
+        self.assertFalse(payload["compare_available"])
+        self.assertEqual({}, written)
+        self.assertIn("rebuild_failed:overnight_run:2026-04-22", payload["limitations"])
+        refresh_mock.assert_called_once()
 
     def test_latest_outputs_are_overwritten_by_newer_compare(self) -> None:
         _seed_day(self.reports_dir, "2026-04-21", _sample_values(raw_events=100, candidate_count=1, candidate_ft=0.4, candidate_adv=0.2, candidate_completion=1.0, blocker_saved=0.5, blocker_false=0.2, outcome_rate=0.5, market_success=0.6, messages_after=3, high_value_suppressed=1))

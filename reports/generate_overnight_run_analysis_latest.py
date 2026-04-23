@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import statistics
@@ -883,7 +884,11 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
     return rows, inventory
 
 
-def choose_window(signal_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def choose_window(
+    signal_rows: list[dict[str, Any]],
+    *,
+    requested_date: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     all_rows = sorted(signal_rows, key=lambda row: int(row["archive_ts"]))
     if not all_rows:
         raise RuntimeError("signals archive is empty")
@@ -921,8 +926,17 @@ def choose_window(signal_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], li
     for item in segments:
         item["duration_sec"] = int(item["end_ts"]) - int(item["start_ts"])
         item["duration_hours"] = round(item["duration_sec"] / 3600.0, 2)
+    candidate_segments = segments
+    if requested_date:
+        candidate_segments = [
+            item
+            for item in segments
+            if datetime.fromtimestamp(int(item["end_ts"]), UTC).strftime("%Y-%m-%d") == requested_date
+        ]
+        if not candidate_segments:
+            raise RuntimeError(f"no overnight run segment found for requested date {requested_date}")
     primary = sorted(
-        segments,
+        candidate_segments,
         key=lambda item: (
             -int(item["duration_sec"]),
             -int(item["end_ts"]),
@@ -930,10 +944,16 @@ def choose_window(signal_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], li
             -int(item["total_signal_rows"]),
         ),
     )[0]
-    primary["selection_reason"] = (
-        "latest segment with the longest continuous signal activity "
-        "after splitting on >=1h signal gaps; it also has the highest overnight LP row count."
-    )
+    if requested_date:
+        primary["selection_reason"] = (
+            f"requested logical date {requested_date}; selected the longest signal segment whose UTC end date matches it "
+            "after splitting on >=1h signal gaps."
+        )
+    else:
+        primary["selection_reason"] = (
+            "latest segment with the longest continuous signal activity "
+            "after splitting on >=1h signal gaps; it also has the highest overnight LP row count."
+        )
     return primary, segments
 
 
@@ -3398,13 +3418,25 @@ def build_markdown(
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate overnight run analysis latest report")
+    parser.add_argument("--date", help="Use the signal segment whose UTC end date matches YYYY-MM-DD")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
     sqlite_source = sqlite_report_source_summary()
     signal_rows, signal_inventory = load_signals()
-    primary_window, segments = choose_window(signal_rows)
+    primary_window, segments = choose_window(signal_rows, requested_date=args.date)
+    selected_logical_date = datetime.fromtimestamp(int(primary_window["end_ts"]), UTC).strftime("%Y-%m-%d")
+    if args.date and selected_logical_date != args.date:
+        raise RuntimeError(
+            f"requested logical date {args.date} resolved to overnight run window ending on {selected_logical_date}"
+        )
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
     asset_case_cache, asset_case_inventory = load_asset_case_cache()
 
@@ -3687,6 +3719,7 @@ def main() -> int:
         },
     }
     JSON_PATH.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_date = args.date or selected_logical_date
     dated_outputs = write_dated_report_copies(
         {
             "markdown": MARKDOWN_PATH,
@@ -3694,6 +3727,7 @@ def main() -> int:
             "json": JSON_PATH,
         },
         tz=BJ_TZ,
+        report_date=report_date,
     )
 
     print(

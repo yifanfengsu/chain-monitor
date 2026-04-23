@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import statistics
@@ -2186,13 +2187,25 @@ def build_markdown(
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate afternoon/evening state analysis latest report")
+    parser.add_argument("--date", help="Use archive date YYYY-MM-DD as the logical report date")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
     sqlite_source = sqlite_report_source_summary()
-    latest_date = latest_archive_date()
+    latest_date = args.date or latest_archive_date()
     window = choose_analysis_window(latest_date)
+    selected_logical_date = str(window["end_utc"])[:10]
+    if args.date and selected_logical_date != args.date:
+        raise RuntimeError(
+            f"requested logical date {args.date} resolved to afternoon/evening window ending on {selected_logical_date}"
+        )
 
     signal_rows, _ = load_signals()
     quality_rows, quality_by_signal, _ = load_quality_cache()
@@ -2472,6 +2485,7 @@ def main() -> int:
             "json": JSON_PATH,
         },
         tz=BJ_TZ,
+        report_date=args.date or selected_logical_date,
     )
     return 0
 

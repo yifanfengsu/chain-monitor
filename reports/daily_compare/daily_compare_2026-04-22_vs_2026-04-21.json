@@ -2328,11 +2328,21 @@
   ],
   "data_source_summary": {
     "previous": {
+      "afternoon_evening_state": {
+        "available": false,
+        "logical_date": "2026-04-21",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:afternoon_evening_state:2026-04-21"
+        ]
+      },
       "overnight_run": {
         "archive_fallback_used": false,
         "available": true,
         "data_source": "sqlite",
         "db_archive_mirror_match_rate": 0.9998,
+        "logical_date": "2026-04-21",
         "mismatch_warnings": [
           "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
           "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
@@ -2345,16 +2355,27 @@
           "delivery_audit": "sqlite",
           "signals": "sqlite"
         },
-        "source_kind": "latest_summary_json"
+        "source_kind": "latest_summary_json",
+        "warnings": []
+      },
+      "overnight_trade_action": {
+        "available": false,
+        "logical_date": "2026-04-21",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:overnight_trade_action:2026-04-21"
+        ]
       }
     },
-    "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON",
+    "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON -> rebuilt dated summary JSON",
     "today": {
       "afternoon_evening_state": {
         "archive_fallback_used": false,
         "available": true,
         "data_source": "sqlite",
         "db_archive_mirror_match_rate": 0.9998,
+        "logical_date": "2026-04-22",
         "mismatch_warnings": [
           "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
           "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
@@ -2367,13 +2388,24 @@
           "delivery_audit": "sqlite",
           "signals": "sqlite"
         },
-        "source_kind": "dated_summary_json"
+        "source_kind": "dated_summary_json",
+        "warnings": []
+      },
+      "overnight_run": {
+        "available": false,
+        "logical_date": "2026-04-22",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:overnight_run:2026-04-22"
+        ]
       },
       "overnight_trade_action": {
         "archive_fallback_used": false,
         "available": true,
         "data_source": "sqlite",
         "db_archive_mirror_match_rate": 0.9998,
+        "logical_date": "2026-04-22",
         "mismatch_warnings": [
           "db_archive_mismatch:delivery_audit:sqlite=156459:archive=156596",
           "db_archive_mirror_mismatch:parsed_events:sqlite=48752:archive=48751",
@@ -2386,7 +2418,8 @@
           "delivery_audit": "sqlite",
           "signals": "sqlite"
         },
-        "source_kind": "dated_summary_json"
+        "source_kind": "dated_summary_json",
+        "warnings": []
       }
     }
   },
@@ -2470,11 +2503,27 @@
   "regression_flags": [],
   "source_files": {
     "previous": {
+      "afternoon_evening_state": {
+        "logical_date": "2026-04-21",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:afternoon_evening_state:2026-04-21"
+        ]
+      },
       "overnight_run": {
         "logical_date": "2026-04-21",
         "path": "reports/overnight_run_summary_latest.json",
         "source_kind": "latest_summary_json",
         "warnings": []
+      },
+      "overnight_trade_action": {
+        "logical_date": "2026-04-21",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:overnight_trade_action:2026-04-21"
+        ]
       }
     },
     "today": {
@@ -2483,6 +2532,14 @@
         "path": "reports/afternoon_evening_state_summary_latest_2026-04-22.json",
         "source_kind": "dated_summary_json",
         "warnings": []
+      },
+      "overnight_run": {
+        "logical_date": "2026-04-22",
+        "path": null,
+        "source_kind": null,
+        "warnings": [
+          "missing_summary:overnight_run:2026-04-22"
+        ]
       },
       "overnight_trade_action": {
         "logical_date": "2026-04-22",

@@ -152,6 +152,7 @@ endef
 	daily-close-strict \
 	daily-compare \
 	daily-compare-strict \
+	daily-compare-rebuild \
 	report-overnight \
 	report-state \
 	report-run \
@@ -234,15 +235,18 @@ help:
 	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-compare [DATE=YYYY-MM-DD]    Generate today vs previous-available compare report."
 	@printf '%s\n' "  make daily-compare-strict [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Strict compare; fail when primary summary coverage is incomplete."
+	@printf '%s\n' "                                          Strict compare; rebuild missing dated summaries first, then fail if inputs stay incomplete."
+	@printf '%s\n' "  make daily-compare-rebuild [DATE=YYYY-MM-DD]"
+	@printf '%s\n' "                                          Rebuild today/previous dated summaries first, then generate compare in non-strict mode."
 	@printf '%s\n' ""
 	@printf '%s\n' "Reports:"
 	@printf '%s\n' "  make report-overnight                   Generate overnight trade action analysis."
 	@printf '%s\n' "  make report-state                       Generate afternoon/evening state analysis."
 	@printf '%s\n' "  make report-run                         Generate overnight run analysis if the script exists."
 	@printf '%s\n' "  make report-all                         Generate all common reports."
-	@printf '%s\n' "  make daily-compare                      生成今天 vs 昨天/前一个可用日期的数据对比报告."
-	@printf '%s\n' "  make daily-compare-strict               严格模式生成 today vs previous compare."
+	@printf '%s\n' "  make daily-compare                      宽松模式生成 today vs previous compare；缺口写 limitations。"
+	@printf '%s\n' "  make daily-compare-strict               严格模式：先补 compare 输入，仍不完整就失败。"
+	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous dated summaries，再输出 compare。"
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -449,6 +453,14 @@ daily-compare-strict:
 		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --strict --date "$(DATE)"; \
 	else \
 		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --strict; \
+	fi
+
+daily-compare-rebuild:
+	@mkdir -p $(REPORTS)/daily_compare
+	@if [ -n "$(DATE)" ]; then \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --rebuild --date "$(DATE)"; \
+	else \
+		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --rebuild; \
 	fi
 
 report-overnight:

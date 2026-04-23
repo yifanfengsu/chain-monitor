@@ -11,10 +11,10 @@
 - today:
   - afternoon_evening_state: reports/afternoon_evening_state_summary_latest_2026-04-22.json (dated_summary_json, logical_date=2026-04-22)
   - overnight_trade_action: reports/overnight_trade_action_summary_latest_2026-04-22.json (dated_summary_json, logical_date=2026-04-22)
-  - overnight_run: missing
+  - overnight_run: missing (logical_date=2026-04-22, source_kind=None; warnings=missing_summary:overnight_run:2026-04-22)
 - previous:
-  - afternoon_evening_state: missing
-  - overnight_trade_action: missing
+  - afternoon_evening_state: missing (logical_date=2026-04-21, source_kind=None; warnings=missing_summary:afternoon_evening_state:2026-04-21)
+  - overnight_trade_action: missing (logical_date=2026-04-21, source_kind=None; warnings=missing_summary:overnight_trade_action:2026-04-21)
   - overnight_run: reports/overnight_run_summary_latest.json (latest_summary_json, logical_date=2026-04-21)
 
 ## 核心指标对比表

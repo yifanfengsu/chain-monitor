@@ -84,6 +84,10 @@ REPORT_ORDER = (
     "overnight_run",
 )
 
+SOURCE_SELECTION_RULE = (
+    "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON -> rebuilt dated summary JSON"
+)
+
 PRIMARY_DIRECTIONAL_METRICS = {
     "blocker_saved_rate": 5,
     "blocker_false_block_rate": 5,
@@ -116,6 +120,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate daily compare report from structured summary JSON files")
     parser.add_argument("--date", help="Treat DATE as today_date and compare with the closest previous available date")
     parser.add_argument("--strict", action="store_true", help="Fail when today/previous compare inputs are incomplete")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Attempt to rebuild today/previous dated summaries before generating compare output",
+    )
     return parser
 
 
@@ -586,6 +595,108 @@ def _refresh_latest_reports(
     return warnings
 
 
+def _generator_supports_date(script_path: Path) -> bool:
+    try:
+        return "--date" in script_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _refresh_dated_reports_for_date(
+    *,
+    project_root: Path,
+    reports_dir: Path,
+    logical_date: str,
+    report_types: list[str] | None = None,
+) -> list[str]:
+    warnings: list[str] = []
+    selected_report_types = [report_type for report_type in (report_types or list(REPORT_ORDER)) if report_type in REPORT_SPECS]
+    for report_type in selected_report_types:
+        spec = REPORT_SPECS[report_type]
+        script_path = project_root / spec.generator_script
+        if not script_path.exists():
+            warnings.append(f"missing_generator_script:{report_type}:{logical_date}")
+            continue
+        if not _generator_supports_date(script_path):
+            warnings.append(f"generator_missing_date_support:{report_type}:{logical_date}")
+            continue
+        result = subprocess.run(
+            [sys.executable, str(script_path), "--date", logical_date],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            warnings.append(f"rebuild_failed:{report_type}:{logical_date}:exit={result.returncode}:{stderr[:180]}")
+            continue
+        expected_dated_json = reports_dir / f"{Path(spec.latest_filename).stem}_{logical_date}.json"
+        if not expected_dated_json.exists():
+            warnings.append(f"rebuild_missing_output:{report_type}:{logical_date}")
+            continue
+        try:
+            rebuilt_payload = json.loads(expected_dated_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warnings.append(f"rebuild_unreadable_output:{report_type}:{logical_date}")
+            continue
+        if not isinstance(rebuilt_payload, dict):
+            warnings.append(f"rebuild_invalid_output:{report_type}:{logical_date}")
+            continue
+        rebuilt_logical_date = _extract_date_from_payload(rebuilt_payload, expected_dated_json)
+        if rebuilt_logical_date != logical_date:
+            warnings.append(
+                f"rebuild_logical_date_mismatch:{report_type}:{logical_date}!={rebuilt_logical_date or 'unavailable'}"
+            )
+    return warnings
+
+
+def ensure_compare_inputs(
+    *,
+    inventory: dict[str, list[SummaryRecord]],
+    selection: dict[str, Any],
+    requested_date: str | None,
+    project_root: Path,
+    reports_dir: Path,
+    allow_generate: bool,
+    rebuild: bool,
+    strict: bool,
+) -> tuple[dict[str, list[SummaryRecord]], dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    if not allow_generate or not (strict or rebuild):
+        return inventory, selection, warnings
+
+    today_date = str(selection.get("today_date") or "") or None
+    candidate_dates: list[str] = []
+    for candidate in (requested_date, today_date, selection.get("previous_date")):
+        if candidate:
+            candidate_dates.append(str(candidate))
+    if today_date:
+        candidate_dates.append((datetime.fromisoformat(today_date) - timedelta(days=1)).date().isoformat())
+
+    seen_dates: set[str] = set()
+    for logical_date in candidate_dates:
+        if logical_date in seen_dates:
+            continue
+        seen_dates.add(logical_date)
+        bundle, _ = load_date_bundle(inventory, logical_date=logical_date)
+        missing_report_types = [report_type for report_type in REPORT_ORDER if report_type not in bundle]
+        if not missing_report_types:
+            continue
+        warnings.extend(
+            _refresh_dated_reports_for_date(
+                project_root=project_root,
+                reports_dir=reports_dir,
+                logical_date=logical_date,
+                report_types=missing_report_types,
+            )
+        )
+        inventory = discover_summary_inventory(reports_dir)
+
+    selection = select_compare_dates(inventory, requested_date=requested_date)
+    return inventory, selection, warnings
+
+
 def _compare_metric(spec: MetricSpec, today_bundle: dict[str, SummaryRecord], previous_bundle: dict[str, SummaryRecord]) -> dict[str, Any]:
     today_extracted = spec.extractor(today_bundle) if spec.extractor else _extract_value(today_bundle, spec.candidates)
     previous_extracted = spec.extractor(previous_bundle) if spec.extractor else _extract_value(previous_bundle, spec.candidates)
@@ -933,35 +1044,69 @@ def build_question_answers(rows: list[dict[str, Any]], *, today_date: str, previ
     }
 
 
-def _bundle_source_files(bundle: dict[str, SummaryRecord]) -> dict[str, dict[str, Any]]:
-    return {
-        report_type: {
-            "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
-            "source_kind": record.source_kind,
-            "logical_date": record.logical_date,
-            "warnings": list(record.warnings),
+def _source_entry(
+    record: SummaryRecord | None,
+    *,
+    report_type: str,
+    logical_date: str | None,
+) -> dict[str, Any]:
+    if record is None:
+        return {
+            "path": None,
+            "source_kind": None,
+            "logical_date": logical_date,
+            "warnings": [f"missing_summary:{report_type}:{logical_date or 'unavailable'}"],
         }
-        for report_type, record in bundle.items()
+    return {
+        "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
+        "source_kind": record.source_kind,
+        "logical_date": record.logical_date,
+        "warnings": sorted(set(record.warnings)),
     }
 
 
-def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord]) -> dict[str, Any]:
+def _bundle_source_files(bundle: dict[str, SummaryRecord], *, logical_date: str | None) -> dict[str, dict[str, Any]]:
+    return {
+        report_type: _source_entry(bundle.get(report_type), report_type=report_type, logical_date=logical_date)
+        for report_type in REPORT_ORDER
+    }
+
+
+def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord], *, logical_date: str | None) -> dict[str, Any]:
     payload: dict[str, Any] = {}
-    for report_type, record in bundle.items():
+    for report_type in REPORT_ORDER:
+        record = bundle.get(report_type)
+        if record is None:
+            payload[report_type] = {
+                "available": False,
+                "path": None,
+                "source_kind": None,
+                "logical_date": logical_date,
+                "warnings": [f"missing_summary:{report_type}:{logical_date or 'unavailable'}"],
+            }
+            continue
         summary = record.data.get("data_source_summary")
         if not isinstance(summary, dict):
-            payload[report_type] = {"available": False}
+            payload[report_type] = {
+                "available": False,
+                "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
+                "source_kind": record.source_kind,
+                "logical_date": record.logical_date,
+                "warnings": sorted(set(list(record.warnings) + ["missing_data_source_summary"])),
+            }
             continue
         payload[report_type] = {
             "available": True,
             "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
             "source_kind": record.source_kind,
+            "logical_date": record.logical_date,
             "report_data_source": summary.get("report_data_source"),
             "data_source": summary.get("data_source"),
             "source_components": summary.get("source_components"),
             "archive_fallback_used": summary.get("archive_fallback_used"),
             "db_archive_mirror_match_rate": summary.get("db_archive_mirror_match_rate"),
             "mismatch_warnings": summary.get("mismatch_warnings"),
+            "warnings": sorted(set(record.warnings)),
         }
     return payload
 
@@ -1122,8 +1267,15 @@ def _source_section(source_files: dict[str, dict[str, Any]], label: str) -> list
         if not item:
             lines.append(f"  - {report_type}: missing")
             continue
+        warnings = list(item.get("warnings") or [])
+        warning_text = f"; warnings={','.join(warnings[:3])}" if warnings else ""
+        if not item.get("path"):
+            lines.append(
+                f"  - {report_type}: missing (logical_date={item.get('logical_date')}, source_kind={item.get('source_kind')}{warning_text})"
+            )
+            continue
         lines.append(
-            f"  - {report_type}: {item['path']} ({item['source_kind']}, logical_date={item['logical_date']})"
+            f"  - {report_type}: {item['path']} ({item['source_kind']}, logical_date={item['logical_date']}{warning_text})"
         )
     return lines
 
@@ -1212,13 +1364,13 @@ def build_compare_payload(
             "previous_date": None,
             "compare_basis": compare_basis,
             "source_files": {
-                "today": _bundle_source_files(today_bundle),
-                "previous": {},
+                "today": _bundle_source_files(today_bundle, logical_date=today_date),
+                "previous": _bundle_source_files(previous_bundle, logical_date=None),
             },
             "data_source_summary": {
-                "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON",
-                "today": _aggregate_data_source_summary(today_bundle),
-                "previous": {},
+                "selection_rule": SOURCE_SELECTION_RULE,
+                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
+                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=None),
             },
             "core_metrics_compare": [],
             "improvement_flags": [],
@@ -1249,13 +1401,13 @@ def build_compare_payload(
         "previous_date": previous_date,
         "compare_basis": compare_basis,
         "source_files": {
-            "today": _bundle_source_files(today_bundle),
-            "previous": _bundle_source_files(previous_bundle),
+            "today": _bundle_source_files(today_bundle, logical_date=today_date),
+            "previous": _bundle_source_files(previous_bundle, logical_date=previous_date),
         },
         "data_source_summary": {
-            "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON",
-            "today": _aggregate_data_source_summary(today_bundle),
-            "previous": _aggregate_data_source_summary(previous_bundle),
+            "selection_rule": SOURCE_SELECTION_RULE,
+            "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
+            "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date),
         },
         "core_metrics_compare": rows,
         "improvement_flags": _flag_rows(rows, "improvement"),
@@ -1319,6 +1471,7 @@ def generate_daily_compare(
     *,
     requested_date: str | None = None,
     strict: bool = False,
+    rebuild: bool = False,
     reports_dir: Path = REPORTS_DIR,
     output_dir: Path = DAILY_COMPARE_DIR,
     project_root: Path = ROOT,
@@ -1332,6 +1485,18 @@ def generate_daily_compare(
         inventory = discover_summary_inventory(reports_dir)
         selection = select_compare_dates(inventory, requested_date=requested_date)
 
+    inventory, selection, rebuild_warnings = ensure_compare_inputs(
+        inventory=inventory,
+        selection=selection,
+        requested_date=requested_date,
+        project_root=project_root,
+        reports_dir=reports_dir,
+        allow_generate=allow_generate,
+        rebuild=rebuild,
+        strict=strict,
+    )
+    generation_warnings.extend(rebuild_warnings)
+
     today_date = selection.get("today_date")
     previous_date = selection.get("previous_date")
     compare_basis = selection.get("compare_basis")
@@ -1342,8 +1507,15 @@ def generate_daily_compare(
             "today_date": None,
             "previous_date": None,
             "compare_basis": "no_data",
-            "source_files": {"today": {}, "previous": {}},
-            "data_source_summary": {"selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON"},
+            "source_files": {
+                "today": _bundle_source_files({}, logical_date=None),
+                "previous": _bundle_source_files({}, logical_date=None),
+            },
+            "data_source_summary": {
+                "selection_rule": SOURCE_SELECTION_RULE,
+                "today": _aggregate_data_source_summary({}, logical_date=None),
+                "previous": _aggregate_data_source_summary({}, logical_date=None),
+            },
             "core_metrics_compare": [],
             "improvement_flags": [],
             "regression_flags": [],
@@ -1375,13 +1547,13 @@ def generate_daily_compare(
             "previous_date": previous_date,
             "compare_basis": compare_basis,
             "source_files": {
-                "today": _bundle_source_files(today_bundle),
-                "previous": _bundle_source_files(previous_bundle),
+                "today": _bundle_source_files(today_bundle, logical_date=today_date),
+                "previous": _bundle_source_files(previous_bundle, logical_date=previous_date),
             },
             "data_source_summary": {
-                "selection_rule": "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON",
-                "today": _aggregate_data_source_summary(today_bundle),
-                "previous": _aggregate_data_source_summary(previous_bundle),
+                "selection_rule": SOURCE_SELECTION_RULE,
+                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
+                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date),
             },
             "core_metrics_compare": [],
             "improvement_flags": [],
@@ -1414,7 +1586,11 @@ def generate_daily_compare(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    exit_code, payload, written = generate_daily_compare(requested_date=args.date, strict=args.strict)
+    exit_code, payload, written = generate_daily_compare(
+        requested_date=args.date,
+        strict=args.strict,
+        rebuild=args.rebuild,
+    )
     output = {
         "status": "ok" if exit_code == 0 else "error",
         "compare_available": payload.get("compare_available"),
