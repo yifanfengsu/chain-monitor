@@ -10,6 +10,7 @@ cases：系统“把这件事当成哪条持续故事在跟踪”
 - 公开仓库缺少这些文件时，会分别以空地址簿 `{}` 和空池子簿 `[]` 启动，基础 import / unittest 仍可运行
 - `entities.json` 用来本地注入实体归属（`entity_id/entity_label/entity_type/cluster_tags`）
 - `address_aliases.json` 用来本地覆盖地址别名、钱包职能和实体补丁（如 `wallet_function/entity_source/entity_confidence`）
+- `address_aliases.json` 只能增强已存在于 `addresses.json` 的地址；如果 `data/addresses.json` 缺失，系统会 fail-closed 为 `ADDRESS_BOOK={}`，不会由 alias-only 数据创建监控地址
 - `clmm_managers.json` 用来本地启用 Uniswap v3 / v4 PositionManager registry；缺失时 CLMM parser 会优雅降级为不识别 manager
 - 需要本地注入时，直接把对应 JSON 文件放到 `data/` 目录即可；公开仓库提供 `data/entities.example.json`、`data/address_aliases.example.json` 和 `data/clmm_managers.example.json` 作为最小 schema 参考
 - `data/lp_pools.json` 推荐本地 schema：
@@ -64,6 +65,7 @@ quality/outcome 本地结构说明：
 - `NO_TRADE_LOCK` 用来处理短时双向扫流动性 / 买卖压冲突，目的是降低冲突期刷屏和误交易
 - `LONG_CHASE_ALLOWED / SHORT_CHASE_ALLOWED` 仍保留在 `trade_action` 层做底层语义兼容，但默认 user-facing 状态机会先把它们降级为 `LONG_CANDIDATE / SHORT_CANDIDATE`，直到后验证明达标
 - `trade_opportunity` 是交易辅助提示，不是投资建议；即使 `VERIFIED`，也不是自动下单，更不会给仓位大小或止损止盈价格
+- `VERIFIED` 仍要看 `verified_maturity`：当 maturity=`immature` 时只能用于研究复盘，不应当作成熟交易信号；`CANDIDATE` 从来不是交易信号
 - `trade_opportunity` 默认只允许三类 Telegram 主消息：
   - 多头/空头候选
   - 多头/空头机会
@@ -118,6 +120,8 @@ quality report / 导出入口：
 - `python -m app.quality_reports --db-integrity`
 - `python -m app.quality_reports --opportunity-db-summary`
 - `python -m app.quality_reports --report-source-summary`
+- `python -m app.quality_reports --report-source-summary --fast`
+- `python -m app.quality_reports --report-source-fast`
 - `python -m app.quality_reports --format csv`
 
 SQLite mirror / query layer：
@@ -130,6 +134,10 @@ SQLite mirror / query layer：
 - report fallback 同时支持 `*.ndjson` 和 `*.ndjson.gz`；同一天两种文件都存在时优先未压缩 `*.ndjson`，避免重复计数
 - 查看当前 report source、DB/archive 行数、压缩 archive 检测和 mismatch warning：
   - `./venv/bin/python -m app.quality_reports --report-source-summary`
+- 快速健康检查用 fast mode，不统计 archive 行数，也不扫描 `.ndjson.gz`：
+  - `./venv/bin/python -m app.quality_reports --report-source-summary --fast`
+  - `./venv/bin/python -m app.quality_reports --report-source-fast`
+- heavy `--report-source-summary` 会扫描 archive / DB source mismatch；在大 archive 或大 SQLite 场景下可能较慢，只在完整检查时运行
 - 如果需要临时强制 archive-first，可设置：
   - `SQLITE_REPORT_READ_PREFER_DB=0`
   - `SQLITE_REPORT_FALLBACK_TO_ARCHIVE=1`
@@ -214,8 +222,8 @@ SQLite mirror / query layer：
   - `make daily-compare-rebuild DATE=YYYY-MM-DD`
 - 模式区别：
   - `daily-compare`：宽松模式；能出就出，缺字段或缺某类 summary 时写进 `limitations`
-  - `daily-compare-strict`：严格模式；会先尝试补 today/previous 的 dated summaries，若 compare 输入仍不完整则 fail-closed
-  - `daily-compare-rebuild`：显式优先补 today/previous 的 dated summaries，再按宽松模式输出 compare；适合日常补齐依赖后再看报告
+  - `daily-compare-strict`：严格模式；会先尝试补 today/previous 的 dated summaries，若 compare 输入仍不完整则 fail-closed，并在 JSON / Markdown 里写出 `strict_failure_reason`
+  - `daily-compare-rebuild`：显式优先补 today/previous 的 dated summaries，再按宽松模式输出 compare；适合日常补齐依赖后再看报告，并会输出 `rebuild_summary` / `rebuild_warnings`
 - 输入文件：
   - 第一优先读取 `reports/overnight_trade_action_summary_latest_YYYY-MM-DD.json`
   - 第一优先读取 `reports/afternoon_evening_state_summary_latest_YYYY-MM-DD.json`
@@ -238,13 +246,20 @@ SQLite mirror / query layer：
   - `reports/daily_compare/daily_compare_latest.csv`
   - `reports/daily_compare/daily_compare_latest.json`
 - 输出内容：
-  - Markdown：执行摘要、数据来源、compare basis、问题回答和关键限制
+  - Markdown：执行摘要、数据来源、compare basis、`重建尝试与严格模式结果`、问题回答和关键限制
   - CSV：逐指标的 `today_value / previous_value / abs_change / pct_change / interpretation`
-  - JSON：结构化 compare summary，包含 `today_date`、`previous_date`、`compare_basis`、`source_files`、`data_source_summary`、`improvement_flags`、`regression_flags`、`limitations`
+  - JSON：结构化 compare summary，包含 `today_date`、`previous_date`、`compare_basis`、`source_files`、`strict_failure_reason`、`rebuild_summary`、`rebuild_warnings`、`data_source_summary`、`improvement_flags`、`regression_flags`、`limitations`
 - `source_files`：
-  - compare JSON 顶层会显式列出 `today` 和 `previous` 各自使用的三份 summary JSON：`afternoon_evening_state`、`overnight_trade_action`、`overnight_run`
+  - compare JSON 顶层会显式列出 compare 实际使用的 `today` 和 `previous` 三份 summary JSON：`afternoon_evening_state`、`overnight_trade_action`、`overnight_run`
   - 每个 source entry 都会带 `path / source_kind / logical_date / warnings`
   - 如果缺少某类 summary，不会编造，会在 `source_files` 和 Markdown “数据来源”章节里明确标成 missing
+- `strict_failure_reason`：
+  - 只有 strict 模式最终失败时才会非空，用来解释为什么 fail-closed，例如 `no_previous_available`、`incomplete_today_bundle`、`rebuild_failed`
+  - strict 模式失败不会只给 exit code 2；JSON 和 Markdown 都会写明原因
+- `rebuild_summary` / `rebuild_warnings`：
+  - `rebuild_summary` 是给机器读的结构化结果，会写明是否启用了 strict / rebuild、选择了哪个 today / previous，以及 today/previous 各 report type 是否尝试补建、成功或失败
+  - `rebuild_warnings` 是给人看的字符串摘要；如果补建失败、输出缺失、logical date mismatch，都会列在这里
+  - rebuild 只会尝试补 today/previous 需要的 dated summaries，不会编造 yesterday；如果 `compare_basis=previous_available_day`，说明并不是精确昨天
 - 如何理解结果：
   - Candidate 变多不一定更好；要同时看 `followthrough / adverse / completion`
   - Blocked 变多不一定是退步；可能是市场更差，或者系统更会保护你
@@ -285,6 +300,7 @@ majors-first pool book 指引：
 - 本地启用流程：
   - 复制 `data/lp_pools.example.json` 中需要的 entry 到私有 `data/lp_pools.json`；可以复制整段 section，也可以只拷单个条目
   - 先启用 Ethereum BTC pools；`enabled=true` 前必须确认 `chain / dex / protocol / pool_type / base_symbol / quote_symbol / canonical_asset / fee_tier`
+  - BTC 如果出现在 `configured_but_disabled_major_pools`，表示本地已配置但还没有启用；确认真实 pool 元数据后再把 `enabled=true`
   - 运行 `./venv/bin/python -m app.quality_reports --major-pool-coverage`
   - 确认 validator 通过：`token0 / token1 / fee / factory` 没有落到 `configured_but_validation_failed`
   - 确认没有进入 `configured_but_unsupported_chain / malformed_major_pool_entries / placeholder_major_pool_entries`
@@ -293,9 +309,11 @@ majors-first pool book 指引：
 - Solana 原生池不是 Ethereum 池：
   - Orca / Raydium 的 `SOL/USDC` 需要 Solana listener/parser
   - 不要把 Solana base58 pool address 放进 Ethereum scanner
+  - 没有 Solana listener 时，SOL 应保持 missing/unsupported，不要用占位数据绕过 majors guard
 - Base `SOL/USDC` 是 EVM，但不是 Ethereum mainnet：
   - 需要 Base RPC/listener
   - 当前 Ethereum-only 运行态下只会显示 `configured_but_unsupported_chain`
+  - Base 池需要明确的 Base chain routing，不能当作 Ethereum 池
 - 如何确认 listener 扫到了对应池：
   - `major-pool-coverage` 中目标 pair 先进入 `enabled_major_pools`
   - 跑过一轮 research/live 采样后，目标 pair 应从 `no_recent_signal_major_pairs` 迁移到 `active_recent_major_pairs`
@@ -305,6 +323,13 @@ majors-first pool book 指引：
   - 当前 outcome / quality / market context 样本仍主要集中在 majors
   - 先把 majors 的 `prealert -> confirm`、confirm scope、reversal / exhaustion 统计做稳更有价值
 - 公开仓库不内置 unverifiable 私有 pool 地址；缺少本地 pool book 时 coverage report 会给 warning，但不会伪造数据
+
+Large module refactor roadmap：
+- 本轮不拆业务逻辑、不改变 import 和行为，只记录后续低风险拆分方向
+- `pipeline.py` 后续可按职责拆出 `pipeline_archiving.py`、`pipeline_market_context.py`、`pipeline_opportunity_delivery.py`
+- `sqlite_store.py` 后续可拆出 `sqlite_compaction.py`、`sqlite_migration.py`
+- `trade_opportunity.py` 后续可拆出 `opportunity_scoring.py`、`opportunity_reports.py`
+- 拆分前应先补 characterization tests，确保 LP / trade_action / asset_market_state / trade_opportunity 语义不变
 
 当前 patch 明确不做多频道真实分发：
 - 默认只跑 `research` 视图，研究期消息保留最完整字段
@@ -320,15 +345,22 @@ SQLite 角色先说明清楚：
 
 ### 1. 启动前检查
 
+- `make smoke-fast`
+- `make smoke`
+- `make smoke-full`
 - `make preflight`
+- `make preflight-full`
 - `make env-check`
 - `make health`
 - `make coverage`
 - `make db-integrity`
 - `make db-report`
 - `make report-source`
+- `make report-source-fast`
 
 `make env-check` 只打印非敏感配置：`DEFAULT_USER_TIER`、market context venue、archive 开关、SQLite 开关、`SQLITE_REPORT_READ_PREFER_DB`、`OPPORTUNITY_ENABLE`、`ASSET_MARKET_STATE_ENABLE`、`NO_TRADE_LOCK_ENABLE`。不会打印 Telegram token、RPC URL、API key、secret 或私钥。
+
+`make smoke` 是 `make smoke-fast` 的别名，只跑 compile、fast DB integrity、market-context health 和 majors coverage，适合日常快速检查。fast DB integrity 会跳过 archive mirror 行数统计和 full `PRAGMA integrity_check`；`make smoke-full` 和 `make preflight-full` 会额外运行 `db-report`、heavy `report-source`、`opportunity-db` 和 `archive-check`，需要完整 DB/archive 检查时再跑。
 
 ### 2. 运行
 
@@ -346,6 +378,8 @@ SQLite 角色先说明清楚：
 
 `make report-run` 会在 `reports/generate_overnight_run_analysis_latest.py` 存在时执行；脚本不存在时只输出 `report-run script not found`，不会把整个 make 流程打断。
 
+报告生成物默认不进 git：`reports/*latest*.md/csv/json`、`reports/daily_compare/*.md/csv/json`、`reports/generated/` 和 `reports/archive/` 已被忽略。需要分享某一天的报告时，用 `git add -f reports/...` 精确添加；不要用 `git add .` 提交海量生成报告。
+
 ### 4. SQLite 基础维护
 
 - `make db-init`
@@ -356,7 +390,7 @@ SQLite 角色先说明清楚：
 - `make db-migrate-date DATE=YYYY-MM-DD`
 - `make sqlite-checkpoint`
 
-`make db-report` 会串行执行 `--db-summary`、`--db-integrity`、`--opportunity-db-summary`，适合做 DB-first report 检查。`make report-source` 则专门检查当前 reports 是优先读 SQLite，还是走 archive fallback。
+`make db-integrity DB_INTEGRITY_FAST=YES` 会跳过 archive mirror counts 和 full `PRAGMA integrity_check`，只做 SQLite schema/table count 快速检查。`make db-report` 会串行执行 `--db-summary`、`--db-integrity`、`--opportunity-db-summary`，适合做 DB-first report 检查。`make report-source-fast` 只看 DB 是否存在、SQLite table row counts、report read preference 和 archive 目录是否存在；`make report-source` 会做完整 DB/archive source 检查，并可能扫描大 archive / `.ndjson.gz` 行数。
 
 ### 5. SQLite 体积治理
 

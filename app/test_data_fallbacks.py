@@ -1,4 +1,6 @@
+import io
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -45,6 +47,110 @@ class DataFallbackImportTests(unittest.TestCase):
         self.assertEqual(set(), module.WATCH_ADDRESSES)
         self.assertEqual({}, module.ENTITY_BOOK)
         self.assertEqual({}, module.ADDRESS_ALIASES)
+
+    def test_missing_addresses_json_with_aliases_still_falls_back_empty(self) -> None:
+        missing_addresses = APP_DIR.parent / "data" / "addresses.json"
+        aliases_path = APP_DIR.parent / "data" / "address_aliases.json"
+        original_open = Path.open
+
+        def _open(path_obj, *args, **kwargs):
+            path = Path(path_obj)
+            if path == missing_addresses:
+                raise FileNotFoundError(str(path))
+            if path == aliases_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xaliasonly",
+                                "label": "Alias only",
+                                "wallet_function": "mm_inventory",
+                            }
+                        ]
+                    )
+                )
+            return original_open(path_obj, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=_open):
+            module = self._load_module("filter_missing_addresses_with_aliases_test", FILTER_PATH)
+
+        self.assertEqual({}, module.ADDRESS_BOOK)
+        self.assertEqual(set(), module.ALL_WATCH_ADDRESSES)
+        self.assertEqual(set(), module.WATCH_ADDRESSES)
+        self.assertEqual({}, module.ADDRESS_ALIASES)
+
+    def test_address_aliases_enhance_loaded_address_book(self) -> None:
+        addresses_path = APP_DIR.parent / "data" / "addresses.json"
+        aliases_path = APP_DIR.parent / "data" / "address_aliases.json"
+        original_open = Path.open
+
+        def _open(path_obj, *args, **kwargs):
+            path = Path(path_obj)
+            if path == addresses_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xabc",
+                                "label": "Original",
+                                "category": "smart_money",
+                            }
+                        ]
+                    )
+                )
+            if path == aliases_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xAbC",
+                                "label": "Alias label",
+                                "wallet_function": "mm_inventory",
+                                "entity_source": "inferred_likely",
+                            }
+                        ]
+                    )
+                )
+            return original_open(path_obj, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=_open):
+            module = self._load_module("filter_aliases_enhance_test", FILTER_PATH)
+
+        self.assertEqual({"0xabc"}, module.ALL_WATCH_ADDRESSES)
+        self.assertEqual("Alias label", module.ADDRESS_LABELS["0xabc"])
+        meta = module.get_address_meta("0xabc")
+        self.assertEqual("mm_inventory", meta["wallet_function"])
+        self.assertEqual("inferred_likely", meta["entity_source"])
+
+    def test_missing_address_aliases_does_not_block_address_book(self) -> None:
+        addresses_path = APP_DIR.parent / "data" / "addresses.json"
+        missing_aliases = APP_DIR.parent / "data" / "address_aliases.json"
+        original_open = Path.open
+
+        def _open(path_obj, *args, **kwargs):
+            path = Path(path_obj)
+            if path == addresses_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xdef",
+                                "label": "Loaded",
+                                "category": "user_added",
+                            }
+                        ]
+                    )
+                )
+            if path == missing_aliases:
+                raise FileNotFoundError(str(path))
+            return original_open(path_obj, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=_open):
+            module = self._load_module("filter_missing_aliases_test", FILTER_PATH)
+
+        self.assertEqual({}, module.ADDRESS_ALIASES)
+        self.assertEqual({"0xdef"}, module.ALL_WATCH_ADDRESSES)
+        self.assertEqual("Loaded", module.ADDRESS_LABELS["0xdef"])
 
     def test_missing_optional_entity_books_fall_back_cleanly(self) -> None:
         missing_entities = APP_DIR.parent / "data" / "entities.json"

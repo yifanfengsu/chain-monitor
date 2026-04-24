@@ -16,6 +16,9 @@ class DailyCompareDocsAndMakefileTests(unittest.TestCase):
         self.assertIn("make daily-compare-rebuild DATE=YYYY-MM-DD", readme)
         self.assertIn("compare_basis", readme)
         self.assertIn("source_files", readme)
+        self.assertIn("strict_failure_reason", readme)
+        self.assertIn("rebuild_summary", readme)
+        self.assertIn("rebuild_warnings", readme)
         self.assertIn("reports/daily_compare/", readme)
         self.assertIn("compare 报告不是交易建议", readme)
 
@@ -31,6 +34,8 @@ class DailyCompareDocsAndMakefileTests(unittest.TestCase):
         self.assertIn("daily-compare", result.stdout)
         self.assertIn("daily-compare-strict", result.stdout)
         self.assertIn("daily-compare-rebuild", result.stdout)
+        self.assertIn("fail with strict_failure_reason", result.stdout)
+        self.assertIn("emit rebuild_summary/rebuild_warnings", result.stdout)
 
 
 if __name__ == "__main__":

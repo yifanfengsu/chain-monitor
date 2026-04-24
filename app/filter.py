@@ -43,20 +43,29 @@ VALID_ENTITY_ATTRIBUTION_STRENGTHS = {
 }
 
 
-def _load_json_book(path: Path, *, fallback):
+def _load_json_book_with_status(path: Path, *, fallback):
     try:
         with path.open(encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f), True, False
     except FileNotFoundError:
         print(f"Warning: {path.name} missing; using fallback.")
-        return fallback
+        return fallback, False, True
     except json.JSONDecodeError as exc:
         print(f"Warning: {path.name} invalid JSON; using fallback ({exc.msg}).")
-        return fallback
+        return fallback, False, False
+
+
+def _load_json_book(path: Path, *, fallback):
+    payload, _loaded, _missing = _load_json_book_with_status(path, fallback=fallback)
+    return payload
 
 
 def _load_address_book():
-    return _load_json_book(ADDRESS_BOOK_PATH, fallback={})
+    payload, loaded, missing = _load_json_book_with_status(ADDRESS_BOOK_PATH, fallback={})
+    return payload, {
+        "address_book_loaded": loaded,
+        "address_book_missing": missing,
+    }
 
 
 def _load_entity_book():
@@ -129,10 +138,12 @@ def _address_book_items(address_book):
     return []
 
 
-# 公开仓库允许缺失私有地址簿，缺失时回退为空结构。
-RAW_ADDRESS_BOOK = _load_address_book()
-ENTITY_BOOK = _load_entity_book()
-ADDRESS_ALIASES = _load_address_aliases()
+# 公开仓库允许缺失私有地址簿；缺主地址簿时 fail-closed，不让 alias/entity 补丁创建监控集。
+RAW_ADDRESS_BOOK, ADDRESS_BOOK_LOAD_STATE = _load_address_book()
+ADDRESS_BOOK_LOADED = bool(ADDRESS_BOOK_LOAD_STATE.get("address_book_loaded"))
+ADDRESS_BOOK_MISSING = bool(ADDRESS_BOOK_LOAD_STATE.get("address_book_missing"))
+ENTITY_BOOK = _load_entity_book() if ADDRESS_BOOK_LOADED else {}
+ADDRESS_ALIASES = _load_address_aliases() if ADDRESS_BOOK_LOADED else {}
 
 
 CATEGORY_LABELS = {
@@ -354,8 +365,12 @@ def _merge_address_aliases(address_book, address_aliases):
     if not alias_by_address:
         return address_book
 
+    address_items = _address_book_items(address_book)
+    if not address_items:
+        return address_book
+
     merged_items = []
-    for item in _address_book_items(address_book):
+    for item in address_items:
         if isinstance(item, dict) and item.get("address"):
             address = str(item.get("address") or "").lower()
             alias = alias_by_address.pop(address, {})
@@ -368,13 +383,6 @@ def _merge_address_aliases(address_book, address_aliases):
         else:
             merged_items.append(item)
 
-    for address, alias in alias_by_address.items():
-        payload = {"address": address}
-        for key, value in alias.items():
-            if key == "address":
-                continue
-            payload[key] = value
-        merged_items.append(payload)
     return merged_items
 
 

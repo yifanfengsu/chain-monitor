@@ -8,10 +8,12 @@ COMPRESS ?= NO
 ALLOW_TODAY ?= NO
 STRICT ?= NO
 DB_PATH ?= data/chain_monitor.sqlite
+DB_INTEGRITY_FAST ?= NO
 
 .DEFAULT_GOAL := help
 
 RUN_PY = SQLITE_DB_PATH="$(DB_PATH)" $(PY)
+DB_INTEGRITY_FLAGS = $(if $(filter YES yes TRUE true 1,$(DB_INTEGRITY_FAST)),--fast,)
 REPORT_RUN_SCRIPT = $(REPORTS)/generate_overnight_run_analysis_latest.py
 ARCHIVE_DIR = $(APP)/data/archive
 
@@ -121,6 +123,7 @@ endef
 	quality-summary \
 	quality-csv \
 	report-source \
+	report-source-fast \
 	opportunity-db \
 	opportunity-calibration \
 	db-init \
@@ -169,7 +172,10 @@ endef
 	test-all \
 	archive-check \
 	smoke \
-	preflight
+	smoke-fast \
+	smoke-full \
+	preflight \
+	preflight-full
 
 help:
 	@printf '%s\n' "chain-monitor common targets:"
@@ -178,10 +184,13 @@ help:
 	@printf '%s\n' "  make help                               Show this help."
 	@printf '%s\n' "  make env-check                          Print non-sensitive runtime config only."
 	@printf '%s\n' "  make compile                            Compile app/ and reports/ with $(PY)."
-	@printf '%s\n' "  make smoke                              Run compile + DB + market-context + coverage + report-source checks."
+	@printf '%s\n' "  make smoke                              Alias for smoke-fast; no archive/DB report-source scan."
+	@printf '%s\n' "  make smoke-fast                         Run compile + fast DB integrity + market-context + coverage checks."
+	@printf '%s\n' "  make smoke-full                         Run smoke-fast plus DB/report-source/opportunity/archive checks."
 	@printf '%s\n' "  make archive-check                      List archive directories under $(ARCHIVE_DIR)."
 	@printf '%s\n' "  make git-info                           Show git status and latest commit."
-	@printf '%s\n' "  make preflight                          Run env-check, smoke, archive-check, git-info."
+	@printf '%s\n' "  make preflight                          Run env-check, smoke-fast, archive-check, git-info."
+	@printf '%s\n' "  make preflight-full                     Run env-check, smoke-full, archive-check, git-info."
 	@printf '%s\n' ""
 	@printf '%s\n' "Runtime:"
 	@printf '%s\n' "  make run                                Start the main program."
@@ -193,13 +202,14 @@ help:
 	@printf '%s\n' "  make quality-summary                    Show quality summary."
 	@printf '%s\n' "  make quality-csv                        Export quality rows to reports/quality_rows.csv."
 	@printf '%s\n' "  make report-source                      Show whether reports read SQLite first or archive fallback."
+	@printf '%s\n' "  make report-source-fast                 Show report source health without scanning archive/gzip row counts."
 	@printf '%s\n' "  make opportunity-db                     Show opportunity / candidate / verified / blocked DB summary."
 	@printf '%s\n' "  make opportunity-calibration            Show opportunity score calibration summary."
 	@printf '%s\n' ""
 	@printf '%s\n' "SQLite basics:"
 	@printf '%s\n' "  make db-init                            Initialize SQLite schema."
 	@printf '%s\n' "  make db-summary                         Show SQLite summary."
-	@printf '%s\n' "  make db-integrity                       Run SQLite integrity checks."
+	@printf '%s\n' "  make db-integrity                       Run SQLite integrity checks; set DB_INTEGRITY_FAST=YES for schema/count fast mode."
 	@printf '%s\n' "  make db-report                          Run db-summary, db-integrity, opportunity-db-summary."
 	@printf '%s\n' "  make db-migrate-all                     Mirror all archive NDJSON into SQLite."
 	@printf '%s\n' "  make db-migrate-date DATE=YYYY-MM-DD    Mirror one archive date into SQLite."
@@ -235,9 +245,9 @@ help:
 	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-compare [DATE=YYYY-MM-DD]    Generate today vs previous-available compare report."
 	@printf '%s\n' "  make daily-compare-strict [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Strict compare; rebuild missing dated summaries first, then fail if inputs stay incomplete."
+	@printf '%s\n' "                                          Strict compare; rebuild missing today/previous dated summaries first, then fail with strict_failure_reason if inputs stay incomplete."
 	@printf '%s\n' "  make daily-compare-rebuild [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Rebuild today/previous dated summaries first, then generate compare in non-strict mode."
+	@printf '%s\n' "                                          Rebuild today/previous dated summaries first, then generate compare in non-strict mode and emit rebuild_summary/rebuild_warnings."
 	@printf '%s\n' ""
 	@printf '%s\n' "Reports:"
 	@printf '%s\n' "  make report-overnight                   Generate overnight trade action analysis."
@@ -245,8 +255,8 @@ help:
 	@printf '%s\n' "  make report-run                         Generate overnight run analysis if the script exists."
 	@printf '%s\n' "  make report-all                         Generate all common reports."
 	@printf '%s\n' "  make daily-compare                      宽松模式生成 today vs previous compare；缺口写 limitations。"
-	@printf '%s\n' "  make daily-compare-strict               严格模式：先补 compare 输入，仍不完整就失败。"
-	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous dated summaries，再输出 compare。"
+	@printf '%s\n' "  make daily-compare-strict               严格模式：先补 today/previous dated summaries；仍不完整就失败并写 strict_failure_reason。"
+	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous dated summaries，再按宽松模式输出 compare，并写 rebuild_summary。"
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -292,6 +302,9 @@ quality-csv:
 report-source:
 	$(RUN_PY) -m $(APP).quality_reports --report-source-summary
 
+report-source-fast:
+	$(RUN_PY) -m $(APP).quality_reports --report-source-summary --fast
+
 opportunity-db:
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 
@@ -305,7 +318,7 @@ db-summary:
 	$(RUN_PY) -m $(APP).sqlite_store --summary
 
 db-integrity:
-	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check $(DB_INTEGRITY_FLAGS)
 
 db-report:
 	$(RUN_PY) -m $(APP).quality_reports --db-summary
@@ -523,16 +536,29 @@ archive-check:
 	@ls -ld $(ARCHIVE_DIR)/cases || true
 	@ls -ld $(ARCHIVE_DIR)/case_followups || true
 
-smoke:
+smoke: smoke-fast
+
+smoke-fast:
 	$(MAKE) compile
-	$(MAKE) db-integrity
+	$(MAKE) db-integrity DB_INTEGRITY_FAST=YES
 	$(MAKE) health
 	$(MAKE) coverage
+
+smoke-full:
+	$(MAKE) smoke-fast
 	$(MAKE) db-report
 	$(MAKE) report-source
+	$(MAKE) opportunity-db
+	$(MAKE) archive-check
 
 preflight:
 	$(MAKE) env-check
-	$(MAKE) smoke
+	$(MAKE) smoke-fast
+	$(MAKE) archive-check
+	$(MAKE) git-info
+
+preflight-full:
+	$(MAKE) env-check
+	$(MAKE) smoke-full
 	$(MAKE) archive-check
 	$(MAKE) git-info

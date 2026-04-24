@@ -50,6 +50,9 @@ DB_TABLES = {
     "market_context_attempts": {"table": "market_context_attempts", "time_column": "created_at", "json_column": "", "archive": ""},
 }
 
+REPORT_SOURCE_ARCHIVE_CATEGORIES = ("raw_events", "parsed_events", "signals", "delivery_audit", "cases", "case_followups")
+REPORT_SOURCE_COMPONENTS = ("signals", "delivery_audit", "case_followups")
+
 
 def _db_path(db_path: str | Path | None = None) -> Path:
     path = Path(db_path or SQLITE_DB_PATH)
@@ -253,6 +256,38 @@ def _db_table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _fast_table_row_counts(db_path: str | Path | None = None) -> dict[str, int]:
+    conn = _connect(db_path)
+    if conn is None:
+        return {}
+    counts: dict[str, int] = {}
+    table_names = sorted({str(config.get("table") or "") for config in DB_TABLES.values() if config.get("table")})
+    try:
+        for table in table_names:
+            try:
+                if not _db_table_exists(conn, table):
+                    counts[table] = -1
+                    continue
+                counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except sqlite3.Error:
+                counts[table] = -1
+        return counts
+    finally:
+        conn.close()
+
+
+def _archive_directory_status(archive_base_dir: str | Path | None = None) -> dict[str, Any]:
+    root = Path(archive_base_dir or ARCHIVE_BASE_DIR)
+    return {
+        "archive_base_dir": str(root),
+        "archive_base_dir_exists": root.exists(),
+        "archive_dirs_by_category": {
+            category: (root / category).exists()
+            for category in REPORT_SOURCE_ARCHIVE_CATEGORIES
+        },
+    }
+
+
 def _load_db_rows(loader_key: str, *, window: Any = None, db_path: str | Path | None = None) -> tuple[list[dict[str, Any]], str]:
     config = DB_TABLES[loader_key]
     table = str(config["table"])
@@ -416,7 +451,22 @@ def load_market_context_attempts(window: Any = None, prefer_db: bool = True, **k
     return load_dataset("market_context_attempts", window=window, prefer_db=prefer_db, **kwargs)
 
 
-def sqlite_health(db_path: str | Path | None = None) -> dict[str, Any]:
+def sqlite_health(db_path: str | Path | None = None, *, fast: bool = False) -> dict[str, Any]:
+    if fast:
+        path = _db_path(db_path)
+        table_counts = _fast_table_row_counts(db_path)
+        return {
+            "enabled": bool(SQLITE_ENABLE),
+            "db_path": str(path),
+            "initialized": path.exists() and any(value >= 0 for value in table_counts.values()),
+            "warnings": [],
+            "table_row_counts": table_counts,
+            "archive_mirror": {
+                "db_archive_mirror_match_rate": None,
+                "per_category": {},
+                "skipped": "fast_mode",
+            },
+        }
     try:
         import sqlite_store
 
@@ -432,9 +482,76 @@ def sqlite_health(db_path: str | Path | None = None) -> dict[str, Any]:
         }
 
 
-def report_source_summary(*, window: Any = None, db_path: str | Path | None = None, archive_base_dir: str | Path | None = None) -> dict[str, Any]:
-    health = sqlite_health(db_path)
+def report_source_summary(
+    *,
+    window: Any = None,
+    db_path: str | Path | None = None,
+    archive_base_dir: str | Path | None = None,
+    fast: bool = False,
+) -> dict[str, Any]:
+    health = sqlite_health(db_path, fast=fast)
     sqlite_rows = dict(health.get("table_row_counts") or {})
+    archive_status = _archive_directory_status(archive_base_dir)
+    if fast:
+        sources: dict[str, str] = {}
+        loader_results: dict[str, dict[str, Any]] = {}
+        for key in REPORT_SOURCE_COMPONENTS:
+            config = DB_TABLES[key]
+            table = str(config.get("table") or key)
+            archive_category = str(config.get("archive") or key)
+            db_count = max(int(sqlite_rows.get(table) or 0), 0)
+            archive_dir_exists = bool((archive_status.get("archive_dirs_by_category") or {}).get(archive_category))
+            source = "sqlite" if bool(SQLITE_REPORT_READ_PREFER_DB) and db_count > 0 else "archive_unscanned" if archive_dir_exists else "unavailable"
+            sources[key] = source
+            loader_results[key] = {
+                "rows": [],
+                "source": source,
+                "row_count": db_count if source == "sqlite" else None,
+                "warnings": [],
+                "fallback_used": False,
+                "mismatch_info": {
+                    "loader": key,
+                    "sqlite_rows": db_count,
+                    "archive_rows": None,
+                    "match_rate": None,
+                    "mismatch": None,
+                    "compressed_archive_rows": None,
+                    "skipped": "fast_mode",
+                },
+                "compressed_archive_rows": None,
+            }
+        unique_sources = {source for source in sources.values() if source and source != "unavailable"}
+        data_source = "mixed" if len(unique_sources) > 1 else next(iter(unique_sources), "unavailable")
+        return {
+            "report_data_source": data_source,
+            "data_source": data_source,
+            "fast_mode": True,
+            "archive_row_counts_scanned": False,
+            "compressed_archive_row_counts_scanned": False,
+            "source_components": sources,
+            "current_report_read_preference": {
+                "SQLITE_REPORT_READ_PREFER_DB": bool(SQLITE_REPORT_READ_PREFER_DB),
+                "SQLITE_REPORT_FALLBACK_TO_ARCHIVE": bool(SQLITE_REPORT_FALLBACK_TO_ARCHIVE),
+                "REPORT_ARCHIVE_READ_GZIP": bool(REPORT_ARCHIVE_READ_GZIP),
+                "REPORT_DB_ARCHIVE_COMPARE": bool(REPORT_DB_ARCHIVE_COMPARE),
+                "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH": bool(REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH),
+            },
+            "db_path": str(_db_path(db_path)),
+            "db_exists": _db_path(db_path).exists(),
+            "sqlite_health": health,
+            "sqlite_rows_by_table": sqlite_rows,
+            "archive_rows_by_category": {},
+            "compressed_archive_rows": {},
+            "compressed_archive_detected": None,
+            "archive_fallback_used": False,
+            "fallback_mode": "archive_cache_enabled" if SQLITE_REPORT_FALLBACK_TO_ARCHIVE else "disabled",
+            "db_archive_mirror_match_rate": None,
+            "db_archive_mirror_detail": {},
+            "mismatch_warnings": [],
+            "loader_results": loader_results,
+            "warnings": list(health.get("warnings") or []),
+            **archive_status,
+        }
     archive_rows = archive_row_counts(archive_base_dir)
     compressed_rows = compressed_archive_row_counts(archive_base_dir)
     sources: dict[str, str] = {}
@@ -486,6 +603,9 @@ def report_source_summary(*, window: Any = None, db_path: str | Path | None = No
     return {
         "report_data_source": data_source,
         "data_source": data_source,
+        "fast_mode": False,
+        "archive_row_counts_scanned": True,
+        "compressed_archive_row_counts_scanned": True,
         "source_components": sources,
         "current_report_read_preference": {
             "SQLITE_REPORT_READ_PREFER_DB": bool(SQLITE_REPORT_READ_PREFER_DB),
@@ -508,4 +628,5 @@ def report_source_summary(*, window: Any = None, db_path: str | Path | None = No
         "mismatch_warnings": mismatch_warnings,
         "loader_results": loader_results,
         "warnings": list(health.get("warnings") or []) + mismatch_warnings,
+        **archive_status,
     }

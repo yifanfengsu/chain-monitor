@@ -416,6 +416,10 @@ class DailyCompareReportTests(unittest.TestCase):
         self.assertIn("missing_previous_date", payload["limitations"])
         self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["today"].keys()))
         self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["previous"].keys()))
+        self.assertIsNone(payload["strict_failure_reason"])
+        self.assertEqual([], payload["rebuild_warnings"])
+        self.assertIn("rebuild_summary", payload)
+        self.assertFalse(payload["rebuild_summary"]["attempted"])
         self.assertNotIn("dated_json", written)
         self.assertTrue((self.output_dir / "daily_compare_latest.json").exists())
 
@@ -427,6 +431,10 @@ class DailyCompareReportTests(unittest.TestCase):
         )
         self.assertEqual(2, strict_code)
         self.assertFalse(strict_payload["compare_available"])
+        self.assertEqual("no_previous_available", strict_payload["strict_failure_reason"])
+        self.assertFalse(strict_payload["rebuild_summary"]["attempted"])
+        self.assertIn("## 重建尝试与严格模式结果", strict_payload["markdown"])
+        self.assertIn("strict_failure_reason: `no_previous_available`", strict_payload["markdown"])
         self.assertEqual({}, strict_written)
 
     def test_csv_math_limitations_and_markdown_output(self) -> None:
@@ -477,6 +485,9 @@ class DailyCompareReportTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("source_files", payload)
+        self.assertIn("strict_failure_reason", payload)
+        self.assertIn("rebuild_summary", payload)
+        self.assertIn("rebuild_warnings", payload)
         self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["today"].keys()))
         self.assertEqual(set(REPORT_ORDER), set(payload["source_files"]["previous"].keys()))
         entry = payload["source_files"]["today"]["afternoon_evening_state"]
@@ -487,6 +498,9 @@ class DailyCompareReportTests(unittest.TestCase):
 
         latest_json = json.loads((self.output_dir / "daily_compare_latest.json").read_text(encoding="utf-8"))
         self.assertIn("source_files", latest_json)
+        self.assertIn("strict_failure_reason", latest_json)
+        self.assertIn("rebuild_summary", latest_json)
+        self.assertIn("rebuild_warnings", latest_json)
         self.assertEqual(set(REPORT_ORDER), set(latest_json["source_files"]["today"].keys()))
 
     def test_normal_mode_keeps_missing_source_entry_and_limitations(self) -> None:
@@ -508,6 +522,9 @@ class DailyCompareReportTests(unittest.TestCase):
         self.assertIsNone(missing_entry["path"])
         self.assertIn("missing_summary:overnight_run:2026-04-22", missing_entry["warnings"])
         self.assertIn("missing_summary:overnight_run:2026-04-22", payload["limitations"])
+        self.assertIsNone(payload["strict_failure_reason"])
+        self.assertFalse(payload["rebuild_summary"]["attempted"])
+        self.assertEqual([], payload["rebuild_warnings"])
 
     def test_strict_mode_attempts_rebuild_before_succeeding(self) -> None:
         previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)
@@ -516,7 +533,7 @@ class DailyCompareReportTests(unittest.TestCase):
         _write_summary(self.reports_dir, "afternoon_evening_state_summary_latest_2026-04-22.json", _build_afternoon_summary("2026-04-22", today))
         _write_summary(self.reports_dir, "overnight_trade_action_summary_latest_2026-04-22.json", _build_overnight_trade_action_summary("2026-04-22", today))
 
-        def _fake_refresh(*, logical_date: str, report_types: list[str] | None = None, **_: object) -> list[str]:
+        def _fake_refresh(*, logical_date: str, report_types: list[str] | None = None, **_: object) -> tuple[dict, list[str]]:
             self.assertEqual("2026-04-22", logical_date)
             self.assertEqual(["overnight_run"], report_types)
             _write_summary(
@@ -524,7 +541,20 @@ class DailyCompareReportTests(unittest.TestCase):
                 "overnight_run_summary_latest_2026-04-22.json",
                 _build_overnight_run_summary("2026-04-22", today),
             )
-            return ["rebuild_attempted:overnight_run:2026-04-22"]
+            return (
+                {
+                    "overnight_run": {
+                        "attempted": True,
+                        "success": True,
+                        "expected_logical_date": "2026-04-22",
+                        "actual_logical_date": "2026-04-22",
+                        "output_path": "reports/overnight_run_summary_latest_2026-04-22.json",
+                        "failure_reason": None,
+                        "warning": None,
+                    }
+                },
+                [],
+            )
 
         with mock.patch("reports.generate_daily_compare_report._refresh_dated_reports_for_date", side_effect=_fake_refresh) as refresh_mock:
             exit_code, payload, written = generate_daily_compare(
@@ -535,7 +565,16 @@ class DailyCompareReportTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertTrue(payload["compare_available"])
-        self.assertIn("rebuild_attempted:overnight_run:2026-04-22", payload["limitations"])
+        self.assertIsNone(payload["strict_failure_reason"])
+        self.assertTrue(payload["rebuild_summary"]["attempted"])
+        self.assertTrue(payload["rebuild_summary"]["strict_mode"])
+        self.assertFalse(payload["rebuild_summary"]["rebuild_mode"])
+        today_attempt = payload["rebuild_summary"]["attempted_report_types"]["today"]["overnight_run"]
+        self.assertTrue(today_attempt["attempted"])
+        self.assertTrue(today_attempt["success"])
+        self.assertEqual("2026-04-22", today_attempt["expected_logical_date"])
+        self.assertEqual("2026-04-22", today_attempt["actual_logical_date"])
+        self.assertEqual([], payload["rebuild_warnings"])
         self.assertIn("dated_json", written)
         refresh_mock.assert_called_once()
 
@@ -548,7 +587,20 @@ class DailyCompareReportTests(unittest.TestCase):
 
         with mock.patch(
             "reports.generate_daily_compare_report._refresh_dated_reports_for_date",
-            return_value=["rebuild_failed:overnight_run:2026-04-22"],
+            return_value=(
+                {
+                    "overnight_run": {
+                        "attempted": True,
+                        "success": False,
+                        "expected_logical_date": "2026-04-22",
+                        "actual_logical_date": None,
+                        "output_path": "reports/overnight_run_summary_latest_2026-04-22.json",
+                        "failure_reason": "generator_failed",
+                        "warning": "rebuild_failed:overnight_run:2026-04-22",
+                    }
+                },
+                ["rebuild_failed:overnight_run:2026-04-22"],
+            ),
         ) as refresh_mock:
             exit_code, payload, written = generate_daily_compare(
                 reports_dir=self.reports_dir,
@@ -558,9 +610,56 @@ class DailyCompareReportTests(unittest.TestCase):
 
         self.assertEqual(2, exit_code)
         self.assertFalse(payload["compare_available"])
+        self.assertEqual("rebuild_failed", payload["strict_failure_reason"])
         self.assertEqual({}, written)
-        self.assertIn("rebuild_failed:overnight_run:2026-04-22", payload["limitations"])
+        self.assertIn("rebuild_failed:overnight_run:2026-04-22", payload["rebuild_warnings"])
+        self.assertIn("## 重建尝试与严格模式结果", payload["markdown"])
+        self.assertIn("strict_failure_reason: `rebuild_failed`", payload["markdown"])
         refresh_mock.assert_called_once()
+
+    def test_rebuild_mode_sets_rebuild_summary_attempted_true(self) -> None:
+        previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)
+        today = _sample_values(raw_events=125, candidate_count=3, candidate_ft=0.60, candidate_adv=0.10, candidate_completion=1.00, blocker_saved=0.70, blocker_false=0.10, outcome_rate=0.75, market_success=0.90, messages_after=1, high_value_suppressed=1)
+        _seed_day(self.reports_dir, "2026-04-21", previous)
+        _write_summary(self.reports_dir, "afternoon_evening_state_summary_latest_2026-04-22.json", _build_afternoon_summary("2026-04-22", today))
+        _write_summary(self.reports_dir, "overnight_trade_action_summary_latest_2026-04-22.json", _build_overnight_trade_action_summary("2026-04-22", today))
+
+        def _fake_refresh(*, logical_date: str, report_types: list[str] | None = None, **_: object) -> tuple[dict, list[str]]:
+            self.assertEqual("2026-04-22", logical_date)
+            self.assertEqual(["overnight_run"], report_types)
+            _write_summary(
+                self.reports_dir,
+                "overnight_run_summary_latest_2026-04-22.json",
+                _build_overnight_run_summary("2026-04-22", today),
+            )
+            return (
+                {
+                    "overnight_run": {
+                        "attempted": True,
+                        "success": True,
+                        "expected_logical_date": "2026-04-22",
+                        "actual_logical_date": "2026-04-22",
+                        "output_path": "reports/overnight_run_summary_latest_2026-04-22.json",
+                        "failure_reason": None,
+                        "warning": None,
+                    }
+                },
+                [],
+            )
+
+        with mock.patch("reports.generate_daily_compare_report._refresh_dated_reports_for_date", side_effect=_fake_refresh):
+            exit_code, payload, _ = generate_daily_compare(
+                reports_dir=self.reports_dir,
+                output_dir=self.output_dir,
+                rebuild=True,
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["compare_available"])
+        self.assertTrue(payload["rebuild_summary"]["attempted"])
+        self.assertFalse(payload["rebuild_summary"]["strict_mode"])
+        self.assertTrue(payload["rebuild_summary"]["rebuild_mode"])
+        self.assertTrue(payload["rebuild_summary"]["attempted_report_types"]["today"]["overnight_run"]["success"])
 
     def test_latest_outputs_are_overwritten_by_newer_compare(self) -> None:
         _seed_day(self.reports_dir, "2026-04-21", _sample_values(raw_events=100, candidate_count=1, candidate_ft=0.4, candidate_adv=0.2, candidate_completion=1.0, blocker_saved=0.5, blocker_false=0.2, outcome_rate=0.5, market_success=0.6, messages_after=3, high_value_suppressed=1))

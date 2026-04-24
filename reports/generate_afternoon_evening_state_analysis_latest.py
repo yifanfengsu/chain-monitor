@@ -2064,6 +2064,7 @@ def build_markdown(
     lines.append("## 9A. trade_opportunity 分析")
     lines.append("")
     lines.append(f"- `opportunity_summary={opportunities['opportunity_summary']}`")
+    lines.append(f"- `verified_maturity={opportunities['verified_maturity']}` `verified_should_not_be_traded_reason={opportunities['verified_should_not_be_traded_reason']}`")
     lines.append(f"- `opportunity_score_median={opportunities['opportunity_score_median']}` `opportunity_score_p90={opportunities['opportunity_score_p90']}`")
     lines.append(f"- `raw_score_vs_calibrated_score={opportunities['raw_score_vs_calibrated_score']}`")
     lines.append(f"- `calibration_adjustment_distribution={opportunities['calibration_adjustment_distribution']}`")
@@ -2428,7 +2429,6 @@ def main(argv: list[str] | None = None) -> int:
         telegram,
         prealerts,
         candidate_tradeable,
-        final_outputs,
         opportunities,
         outcome_detail,
         market_context,
@@ -2458,6 +2458,7 @@ def main(argv: list[str] | None = None) -> int:
         no_trade_lock,
         prealerts,
         candidate_tradeable,
+        final_outputs,
         opportunities,
         outcome_detail,
         market_context,

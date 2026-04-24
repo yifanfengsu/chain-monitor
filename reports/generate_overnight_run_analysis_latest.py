@@ -2337,6 +2337,34 @@ def compute_trade_opportunities(
         for row in profile_rows
         if str(row.get("profile_key") or "")
     }
+    candidate_or_verified_rows = candidate_rows + verified_rows
+    opportunity_outcome_completion_rate = rate(
+        sum(1 for row in candidate_or_verified_rows if str(row.get("opportunity_outcome_60s") or "") == "completed"),
+        len(candidate_or_verified_rows),
+    )
+    max_profile_sample_count = max(
+        [
+            max_history_sample,
+            *[int(row.get("sample_count") or 0) for row in profile_rows],
+        ],
+        default=0,
+    )
+    maturity_reasons: list[str] = []
+    if opportunity_outcome_completion_rate < float(OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE):
+        maturity_reasons.append(f"outcome_completion_rate_below_{float(OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE):.2f}")
+    if max_profile_sample_count < int(OPPORTUNITY_MIN_HISTORY_SAMPLES):
+        maturity_reasons.append(f"profile_sample_count_below_{int(OPPORTUNITY_MIN_HISTORY_SAMPLES)}")
+    if verified_rows and maturity_reasons:
+        maturity_reasons.append("immature_verified_warning")
+    if maturity_reasons:
+        verified_maturity = "immature"
+    elif verified_rows:
+        verified_maturity = "mature"
+    else:
+        verified_maturity = "developing"
+    verified_should_not_be_traded_reason = (
+        "" if verified_maturity == "mature" else ";".join(maturity_reasons or ["verified_maturity_not_mature"])
+    )
     blocker_groups: dict[str, list[dict[str, Any]]] = {}
     for row in blocked_rows:
         blocker = str(row.get("trade_opportunity_primary_hard_blocker") or row.get("trade_opportunity_primary_blocker") or "")
@@ -2558,12 +2586,19 @@ def compute_trade_opportunities(
             "verified": len(verified_rows),
             "blocked": len(blocked_rows),
             "none": len(none_rows),
+            "verified_maturity": verified_maturity,
         },
         "opportunity_candidate_count": len(candidate_rows),
         "opportunity_verified_count": len(verified_rows),
         "opportunity_blocked_count": len(blocked_rows),
         "opportunity_none_count": len(none_rows),
         "opportunity_candidate_to_verified_rate": rate(len(verified_rows), len(candidate_rows)),
+        "verified_maturity": verified_maturity,
+        "maturity_reasons": maturity_reasons,
+        "immature_verified_warning": bool(verified_rows) and verified_maturity == "immature",
+        "verified_should_not_be_traded_reason": verified_should_not_be_traded_reason,
+        "opportunity_outcome_completion_rate": opportunity_outcome_completion_rate,
+        "max_profile_sample_count": max_profile_sample_count,
         "opportunity_score_distribution": {
             "median": median(score_values),
             "p90": sorted(score_values)[int((len(score_values) - 1) * 0.9)] if score_values else None,
@@ -3192,13 +3227,16 @@ def build_markdown(
         f"- final output 分布：`{final_outputs['final_trading_output_distribution']}`；verified=`{final_outputs['delivered_verified_count']}` candidate=`{final_outputs['delivered_candidate_count']}` blocked=`{final_outputs['delivered_blocked_count']}`。"
     )
     lines.append(
+        f"- opportunity maturity: verified_maturity=`{opportunities['verified_maturity']}` should_not_trade=`{opportunities['verified_should_not_be_traded_reason']}`。"
+    )
+    lines.append(
         f"- legacy chase 审计：downgraded=`{final_outputs['legacy_chase_downgraded_count']}` leaked=`{final_outputs['legacy_chase_leaked_count']}` chase_without_verified=`{final_outputs['trade_action_chase_without_opportunity_count']}` blocked_by_gate=`{final_outputs['messages_blocked_by_opportunity_gate']}`。"
     )
     lines.append(
         f"- 验证问题：all_opportunity_labels_verified=`{final_outputs['all_opportunity_labels_verified']}` all_candidate_labels_are_candidate=`{final_outputs['all_candidate_labels_are_candidate']}` blocked_covers_legacy_chase_risk=`{final_outputs['blocked_covers_legacy_chase_risk']}`。"
     )
     lines.append(
-        f"- majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。"
+        "- majors 覆盖保持透明：BTC 若出现在 configured_but_disabled，需要在本地 `data/lp_pools.json` 明确启用；SOL 原生池仍需要 Solana listener，Base 池需要 Base chain routing，不能误算作 Ethereum 池。"
     )
     lines.append("")
     lines.append("## 2. 数据源与完整性说明")

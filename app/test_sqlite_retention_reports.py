@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import quality_reports
 import sqlite_store
@@ -59,6 +60,19 @@ class SQLiteRetentionReportsTests(unittest.TestCase):
         self.assertTrue((reports_dir / "sqlite_data_value_audit_latest.json").exists())
         self.assertTrue((reports_dir / "sqlite_data_value_audit_latest.csv").exists())
         self.assertTrue((reports_dir / "sqlite_data_value_audit_latest.md").exists())
+
+    def test_fast_db_integrity_skips_archive_mirror_counts(self) -> None:
+        with mock.patch.object(sqlite_store, "archive_row_counts", side_effect=AssertionError("archive scan called")):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = quality_reports.main(["--db-integrity", "--fast"])
+
+        self.assertEqual(0, code)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual("skipped_fast_mode", payload["pragma_integrity_check"])
+        self.assertEqual([], payload["db_archive_mismatch"])
+        self.assertEqual("fast_mode", payload["archive_mirror"]["skipped"])
 
 
 if __name__ == "__main__":

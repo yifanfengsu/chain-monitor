@@ -54,6 +54,10 @@ class DailyCompareSourceSelectionTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertEqual("2026-04-23", payload["today_date"])
         self.assertEqual("2026-04-22", payload["previous_date"])
+        self.assertIn("strict_failure_reason", payload)
+        self.assertIn("rebuild_summary", payload)
+        self.assertIn("rebuild_warnings", payload)
+        self.assertFalse(payload["rebuild_summary"]["attempted"])
         today_sources = payload["source_files"]["today"]
         self.assertEqual("latest_summary_json", today_sources["afternoon_evening_state"]["source_kind"])
         self.assertEqual("latest_summary_json", today_sources["overnight_trade_action"]["source_kind"])

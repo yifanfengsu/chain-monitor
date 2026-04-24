@@ -183,6 +183,21 @@ def _parse_date(text: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def _display_path(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        if path.is_absolute() and path.is_relative_to(ROOT):
+            return str(path.relative_to(ROOT))
+    except OSError:
+        pass
+    return str(path)
+
+
+def _bool_text(value: bool) -> str:
+    return "true" if value else "false"
+
+
 def _get_in(payload: Any, path: tuple[str, ...]) -> Any:
     current = payload
     for part in path:
@@ -522,6 +537,188 @@ def select_compare_dates(
     }
 
 
+def _default_rebuild_attempt(*, expected_logical_date: str | None) -> dict[str, Any]:
+    return {
+        "attempted": False,
+        "success": False,
+        "expected_logical_date": expected_logical_date,
+        "actual_logical_date": None,
+        "output_path": None,
+        "failure_reason": None,
+        "warning": None,
+    }
+
+
+def _empty_rebuild_summary(
+    *,
+    strict_mode: bool,
+    rebuild_mode: bool,
+    requested_today: str | None,
+    selected_today: str | None,
+    selected_previous: str | None,
+    attempted: bool,
+) -> dict[str, Any]:
+    return {
+        "attempted": attempted,
+        "strict_mode": strict_mode,
+        "rebuild_mode": rebuild_mode,
+        "requested_today": requested_today,
+        "selected_today": selected_today,
+        "selected_previous": selected_previous,
+        "attempted_report_types": {
+            "today": {
+                report_type: _default_rebuild_attempt(expected_logical_date=selected_today)
+                for report_type in REPORT_ORDER
+            },
+            "previous": {
+                report_type: _default_rebuild_attempt(expected_logical_date=selected_previous)
+                for report_type in REPORT_ORDER
+            },
+        },
+    }
+
+
+def _warning_to_failure_reason(warning: str) -> str | None:
+    if warning.startswith("missing_generator_script:"):
+        return "missing_generator"
+    if warning.startswith("generator_missing_date_support:"):
+        return "generator_failed"
+    if warning.startswith("rebuild_failed:"):
+        return "generator_failed"
+    if warning.startswith("rebuild_missing_output:"):
+        return "output_missing"
+    if warning.startswith("rebuild_unreadable_output:") or warning.startswith("rebuild_invalid_output:"):
+        return "invalid_json"
+    if warning.startswith("rebuild_logical_date_mismatch:"):
+        return "logical_date_mismatch"
+    if warning.startswith("still_missing_after_rebuild:"):
+        return "still_missing_after_rebuild"
+    return None
+
+
+def _warning_report_type(warning: str) -> str | None:
+    for part in warning.split(":"):
+        if part in REPORT_SPECS:
+            return part
+    return None
+
+
+def _normalize_refresh_result(
+    refresh_result: Any,
+    *,
+    logical_date: str,
+    report_types: list[str],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    attempts = {
+        report_type: _default_rebuild_attempt(expected_logical_date=logical_date)
+        for report_type in report_types
+    }
+    if isinstance(refresh_result, tuple) and len(refresh_result) == 2:
+        raw_attempts, raw_warnings = refresh_result
+        if isinstance(raw_attempts, dict):
+            for report_type in report_types:
+                raw_attempt = raw_attempts.get(report_type)
+                if not isinstance(raw_attempt, dict):
+                    continue
+                attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
+                attempt.update(raw_attempt)
+                if raw_attempt:
+                    attempt["attempted"] = bool(raw_attempt.get("attempted", True))
+                attempt["expected_logical_date"] = raw_attempt.get("expected_logical_date", logical_date)
+                attempts[report_type] = attempt
+        warnings = [str(item) for item in list(raw_warnings or [])]
+        return attempts, warnings
+
+    warnings = [str(item) for item in list(refresh_result or [])]
+    for report_type in report_types:
+        attempts[report_type]["attempted"] = True
+    for warning in warnings:
+        report_type = _warning_report_type(warning)
+        if report_type not in attempts:
+            continue
+        attempts[report_type]["warning"] = warning
+        attempts[report_type]["failure_reason"] = _warning_to_failure_reason(warning)
+    return attempts, warnings
+
+
+def _build_rebuild_summary(
+    *,
+    strict_mode: bool,
+    rebuild_mode: bool,
+    requested_today: str | None,
+    selected_today: str | None,
+    selected_previous: str | None,
+    attempted: bool,
+    attempts_by_date: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    summary = _empty_rebuild_summary(
+        strict_mode=strict_mode,
+        rebuild_mode=rebuild_mode,
+        requested_today=requested_today,
+        selected_today=selected_today,
+        selected_previous=selected_previous,
+        attempted=attempted,
+    )
+    for label, logical_date in (("today", selected_today), ("previous", selected_previous)):
+        if logical_date is None:
+            continue
+        date_attempts = attempts_by_date.get(logical_date, {})
+        for report_type in REPORT_ORDER:
+            if isinstance(date_attempts.get(report_type), dict):
+                attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
+                attempt.update(date_attempts[report_type])
+                attempt["expected_logical_date"] = date_attempts[report_type].get("expected_logical_date", logical_date)
+                summary["attempted_report_types"][label][report_type] = attempt
+    return summary
+
+
+def _selected_rebuild_failure_reasons(rebuild_summary: dict[str, Any]) -> set[str]:
+    reasons: set[str] = set()
+    attempted_report_types = rebuild_summary.get("attempted_report_types")
+    if not isinstance(attempted_report_types, dict):
+        return reasons
+    for label in ("today", "previous"):
+        report_attempts = attempted_report_types.get(label)
+        if not isinstance(report_attempts, dict):
+            continue
+        for report_type in REPORT_ORDER:
+            attempt = report_attempts.get(report_type)
+            if not isinstance(attempt, dict):
+                continue
+            failure_reason = attempt.get("failure_reason")
+            if failure_reason:
+                reasons.add(str(failure_reason))
+    return reasons
+
+
+def _determine_strict_failure_reason(
+    *,
+    today_date: str | None,
+    previous_date: str | None,
+    missing_today_reports: list[str],
+    missing_previous_reports: list[str],
+    rebuild_summary: dict[str, Any],
+) -> str | None:
+    failure_reasons = _selected_rebuild_failure_reasons(rebuild_summary)
+    if not today_date:
+        return "no_data"
+    if not previous_date:
+        if "logical_date_mismatch" in failure_reasons:
+            return "rebuild_logical_date_mismatch"
+        if failure_reasons:
+            return "rebuild_failed"
+        return "no_previous_available"
+    if "logical_date_mismatch" in failure_reasons:
+        return "rebuild_logical_date_mismatch"
+    if failure_reasons and (missing_today_reports or missing_previous_reports):
+        return "rebuild_failed"
+    if missing_today_reports:
+        return "missing_today_bundle" if len(missing_today_reports) == len(REPORT_ORDER) else "incomplete_today_bundle"
+    if missing_previous_reports:
+        return "missing_previous_bundle" if len(missing_previous_reports) == len(REPORT_ORDER) else "incomplete_previous_bundle"
+    return None
+
+
 def _pick_best_record(records: list[SummaryRecord], logical_date: str) -> SummaryRecord | None:
     candidates = [record for record in records if record.logical_date == logical_date]
     if not candidates:
@@ -608,17 +805,28 @@ def _refresh_dated_reports_for_date(
     reports_dir: Path,
     logical_date: str,
     report_types: list[str] | None = None,
-) -> list[str]:
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    attempts: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
     selected_report_types = [report_type for report_type in (report_types or list(REPORT_ORDER)) if report_type in REPORT_SPECS]
     for report_type in selected_report_types:
+        attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
+        attempt["attempted"] = True
         spec = REPORT_SPECS[report_type]
         script_path = project_root / spec.generator_script
+        expected_dated_json = reports_dir / f"{Path(spec.latest_filename).stem}_{logical_date}.json"
+        attempt["output_path"] = _display_path(expected_dated_json)
         if not script_path.exists():
-            warnings.append(f"missing_generator_script:{report_type}:{logical_date}")
+            attempt["failure_reason"] = "missing_generator"
+            attempt["warning"] = f"missing_generator_script:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
         if not _generator_supports_date(script_path):
-            warnings.append(f"generator_missing_date_support:{report_type}:{logical_date}")
+            attempt["failure_reason"] = "generator_failed"
+            attempt["warning"] = f"generator_missing_date_support:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
         result = subprocess.run(
             [sys.executable, str(script_path), "--date", logical_date],
@@ -629,26 +837,44 @@ def _refresh_dated_reports_for_date(
         )
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
-            warnings.append(f"rebuild_failed:{report_type}:{logical_date}:exit={result.returncode}:{stderr[:180]}")
+            attempt["failure_reason"] = "generator_failed"
+            attempt["warning"] = f"rebuild_failed:{report_type}:{logical_date}:exit={result.returncode}:{stderr[:180]}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
-        expected_dated_json = reports_dir / f"{Path(spec.latest_filename).stem}_{logical_date}.json"
         if not expected_dated_json.exists():
-            warnings.append(f"rebuild_missing_output:{report_type}:{logical_date}")
+            attempt["failure_reason"] = "output_missing"
+            attempt["warning"] = f"rebuild_missing_output:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
         try:
             rebuilt_payload = json.loads(expected_dated_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            warnings.append(f"rebuild_unreadable_output:{report_type}:{logical_date}")
+            attempt["failure_reason"] = "invalid_json"
+            attempt["warning"] = f"rebuild_unreadable_output:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
         if not isinstance(rebuilt_payload, dict):
-            warnings.append(f"rebuild_invalid_output:{report_type}:{logical_date}")
+            attempt["failure_reason"] = "invalid_json"
+            attempt["warning"] = f"rebuild_invalid_output:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
             continue
         rebuilt_logical_date = _extract_date_from_payload(rebuilt_payload, expected_dated_json)
+        attempt["actual_logical_date"] = rebuilt_logical_date
         if rebuilt_logical_date != logical_date:
-            warnings.append(
+            attempt["failure_reason"] = "logical_date_mismatch"
+            attempt["warning"] = (
                 f"rebuild_logical_date_mismatch:{report_type}:{logical_date}!={rebuilt_logical_date or 'unavailable'}"
             )
-    return warnings
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
+            continue
+        attempt["success"] = True
+        attempts[report_type] = attempt
+    return attempts, warnings
 
 
 def ensure_compare_inputs(
@@ -661,10 +887,19 @@ def ensure_compare_inputs(
     allow_generate: bool,
     rebuild: bool,
     strict: bool,
-) -> tuple[dict[str, list[SummaryRecord]], dict[str, Any], list[str]]:
-    warnings: list[str] = []
+) -> tuple[dict[str, list[SummaryRecord]], dict[str, Any], dict[str, Any]]:
+    rebuild_state = {
+        "attempted": False,
+        "strict_mode": strict,
+        "rebuild_mode": rebuild,
+        "requested_today": requested_date,
+        "attempts_by_date": {},
+        "warnings": [],
+    }
     if not allow_generate or not (strict or rebuild):
-        return inventory, selection, warnings
+        return inventory, selection, rebuild_state
+
+    rebuild_state["attempted"] = True
 
     today_date = str(selection.get("today_date") or "") or None
     candidate_dates: list[str] = []
@@ -683,18 +918,42 @@ def ensure_compare_inputs(
         missing_report_types = [report_type for report_type in REPORT_ORDER if report_type not in bundle]
         if not missing_report_types:
             continue
-        warnings.extend(
-            _refresh_dated_reports_for_date(
-                project_root=project_root,
-                reports_dir=reports_dir,
-                logical_date=logical_date,
-                report_types=missing_report_types,
-            )
+        refresh_result = _refresh_dated_reports_for_date(
+            project_root=project_root,
+            reports_dir=reports_dir,
+            logical_date=logical_date,
+            report_types=missing_report_types,
         )
+        date_attempts, refresh_warnings = _normalize_refresh_result(
+            refresh_result,
+            logical_date=logical_date,
+            report_types=missing_report_types,
+        )
+        rebuild_state["warnings"].extend(refresh_warnings)
+        rebuild_state["attempts_by_date"].setdefault(logical_date, {})
+        for report_type in missing_report_types:
+            rebuild_state["attempts_by_date"][logical_date][report_type] = date_attempts.get(
+                report_type,
+                _default_rebuild_attempt(expected_logical_date=logical_date),
+            )
         inventory = discover_summary_inventory(reports_dir)
+        refreshed_bundle, _ = load_date_bundle(inventory, logical_date=logical_date)
+        for report_type in missing_report_types:
+            attempt = rebuild_state["attempts_by_date"][logical_date][report_type]
+            rebuilt_record = refreshed_bundle.get(report_type)
+            if rebuilt_record is not None:
+                attempt["success"] = True
+                attempt["actual_logical_date"] = rebuilt_record.logical_date
+                attempt["output_path"] = _display_path(rebuilt_record.path)
+                continue
+            if attempt.get("failure_reason") is None:
+                attempt["failure_reason"] = "still_missing_after_rebuild"
+                attempt["warning"] = f"still_missing_after_rebuild:{report_type}:{logical_date}"
+                rebuild_state["warnings"].append(attempt["warning"])
 
     selection = select_compare_dates(inventory, requested_date=requested_date)
-    return inventory, selection, warnings
+    rebuild_state["warnings"] = sorted(set(str(item) for item in rebuild_state["warnings"] if item))
+    return inventory, selection, rebuild_state
 
 
 def _compare_metric(spec: MetricSpec, today_bundle: dict[str, SummaryRecord], previous_bundle: dict[str, SummaryRecord]) -> dict[str, Any]:
@@ -1058,7 +1317,7 @@ def _source_entry(
             "warnings": [f"missing_summary:{report_type}:{logical_date or 'unavailable'}"],
         }
     return {
-        "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
+        "path": _display_path(record.path),
         "source_kind": record.source_kind,
         "logical_date": record.logical_date,
         "warnings": sorted(set(record.warnings)),
@@ -1089,7 +1348,7 @@ def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord], *, logical_
         if not isinstance(summary, dict):
             payload[report_type] = {
                 "available": False,
-                "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
+                "path": _display_path(record.path),
                 "source_kind": record.source_kind,
                 "logical_date": record.logical_date,
                 "warnings": sorted(set(list(record.warnings) + ["missing_data_source_summary"])),
@@ -1097,7 +1356,7 @@ def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord], *, logical_
             continue
         payload[report_type] = {
             "available": True,
-            "path": str(record.path.relative_to(ROOT) if record.path.is_absolute() and record.path.is_relative_to(ROOT) else record.path),
+            "path": _display_path(record.path),
             "source_kind": record.source_kind,
             "logical_date": record.logical_date,
             "report_data_source": summary.get("report_data_source"),
@@ -1109,6 +1368,53 @@ def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord], *, logical_
             "warnings": sorted(set(record.warnings)),
         }
     return payload
+
+
+def _normalize_source_entry(
+    entry: Any,
+    *,
+    report_type: str,
+    logical_date: str | None,
+) -> dict[str, Any]:
+    missing_warning = f"missing_summary:{report_type}:{logical_date or 'unavailable'}"
+    if not isinstance(entry, dict):
+        return {
+            "path": None,
+            "source_kind": None,
+            "logical_date": logical_date,
+            "warnings": [missing_warning],
+        }
+    warnings = [str(item) for item in list(entry.get("warnings") or []) if item]
+    path = entry.get("path")
+    source_kind = entry.get("source_kind")
+    normalized = {
+        "path": path,
+        "source_kind": source_kind,
+        "logical_date": entry.get("logical_date", logical_date),
+        "warnings": sorted(set(warnings)),
+    }
+    if normalized["path"] is None and missing_warning not in normalized["warnings"]:
+        normalized["warnings"].append(missing_warning)
+        normalized["warnings"] = sorted(set(normalized["warnings"]))
+    return normalized
+
+
+def _normalize_source_files(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_source_files = payload.get("source_files")
+    today_raw = raw_source_files.get("today", {}) if isinstance(raw_source_files, dict) else {}
+    previous_raw = raw_source_files.get("previous", {}) if isinstance(raw_source_files, dict) else {}
+    today_date = payload.get("today_date")
+    previous_date = payload.get("previous_date")
+    return {
+        "today": {
+            report_type: _normalize_source_entry(today_raw.get(report_type), report_type=report_type, logical_date=today_date)
+            for report_type in REPORT_ORDER
+        },
+        "previous": {
+            report_type: _normalize_source_entry(previous_raw.get(report_type), report_type=report_type, logical_date=previous_date)
+            for report_type in REPORT_ORDER
+        },
+    }
 
 
 def _build_limitations(
@@ -1280,21 +1586,65 @@ def _source_section(source_files: dict[str, dict[str, Any]], label: str) -> list
     return lines
 
 
+def _rebuild_result_text(rebuild_summary: dict[str, Any], label: str, *, success: bool) -> str:
+    attempted_report_types = rebuild_summary.get("attempted_report_types")
+    if not isinstance(attempted_report_types, dict):
+        return "none"
+    label_attempts = attempted_report_types.get(label)
+    if not isinstance(label_attempts, dict):
+        return "none"
+    values: list[str] = []
+    for report_type in REPORT_ORDER:
+        attempt = label_attempts.get(report_type)
+        if not isinstance(attempt, dict):
+            continue
+        if success and attempt.get("success"):
+            values.append(report_type)
+        if not success and attempt.get("attempted") and not attempt.get("success"):
+            failure_reason = attempt.get("failure_reason") or "unknown"
+            values.append(f"{report_type}({failure_reason})")
+    return ", ".join(values) if values else "none"
+
+
+def _finalize_payload(
+    payload: dict[str, Any],
+    *,
+    strict_failure_reason: str | None,
+    rebuild_summary: dict[str, Any] | None,
+    rebuild_warnings: list[str] | None,
+) -> dict[str, Any]:
+    payload["source_files"] = _normalize_source_files(payload)
+    payload["strict_failure_reason"] = strict_failure_reason
+    payload["rebuild_summary"] = rebuild_summary or _empty_rebuild_summary(
+        strict_mode=False,
+        rebuild_mode=False,
+        requested_today=None,
+        selected_today=payload.get("today_date"),
+        selected_previous=payload.get("previous_date"),
+        attempted=False,
+    )
+    payload["rebuild_warnings"] = sorted(set(str(item) for item in list(rebuild_warnings or []) if item))
+    return payload
+
+
 def build_markdown_report(payload: dict[str, Any]) -> str:
     compare_available = bool(payload.get("compare_available"))
     today_date = payload.get("today_date")
     previous_date = payload.get("previous_date")
     compare_basis = payload.get("compare_basis")
     source_files = payload.get("source_files") or {}
+    strict_failure_reason = payload.get("strict_failure_reason")
+    rebuild_summary = payload.get("rebuild_summary") or {}
+    rebuild_warnings = payload.get("rebuild_warnings") or []
     answers = payload.get("question_answers") or {}
     limitations = payload.get("limitations") or []
     lines: list[str] = []
     lines.append("# Daily Compare Report")
     lines.append("")
     lines.append("## 执行摘要")
-    lines.append(f"- today_date: `{today_date}`")
-    lines.append(f"- previous_date: `{previous_date}`")
-    lines.append(f"- compare_basis: `{compare_basis}`")
+    lines.append(f"- today_date: `{today_date or 'null'}`")
+    lines.append(f"- previous_date: `{previous_date or 'null'}`")
+    lines.append(f"- compare_basis: `{compare_basis or 'null'}`")
     if compare_available:
         lines.append(f"- 整体判断：{answers.get('1', '无法判断')}")
         lines.append(f"- 判断依据：{answers.get('2', '证据不足')}")
@@ -1305,6 +1655,22 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     lines.append("## 数据来源与 Compare Basis")
     lines.extend(_source_section(source_files.get("today", {}), "today"))
     lines.extend(_source_section(source_files.get("previous", {}), "previous"))
+    lines.append("")
+    lines.append("## 重建尝试与严格模式结果")
+    lines.append(f"- strict_mode: `{_bool_text(bool(rebuild_summary.get('strict_mode')))}`")
+    lines.append(f"- rebuild_mode: `{_bool_text(bool(rebuild_summary.get('rebuild_mode')))}`")
+    lines.append(f"- compare_basis: `{compare_basis}`")
+    lines.append(f"- selected_today: `{rebuild_summary.get('selected_today') or 'null'}`")
+    lines.append(f"- selected_previous: `{rebuild_summary.get('selected_previous') or 'null'}`")
+    lines.append(f"- strict_failure_reason: `{strict_failure_reason or 'null'}`")
+    lines.append(f"- rebuild_attempted: `{_bool_text(bool(rebuild_summary.get('attempted')))}`")
+    lines.append(f"- today rebuilt success: {_rebuild_result_text(rebuild_summary, 'today', success=True)}")
+    lines.append(f"- today rebuilt failed: {_rebuild_result_text(rebuild_summary, 'today', success=False)}")
+    lines.append(f"- previous rebuilt success: {_rebuild_result_text(rebuild_summary, 'previous', success=True)}")
+    lines.append(f"- previous rebuilt failed: {_rebuild_result_text(rebuild_summary, 'previous', success=False)}")
+    if rebuild_warnings:
+        lines.append(f"- rebuild_warnings: {' | '.join(str(item) for item in rebuild_warnings[:4])}")
+    lines.append("- 最终仍有 limitations 时，表示数据不足或输入不完整，不是脚本猜值。")
     lines.append("")
     lines.append("## 核心指标对比表")
     if compare_available:
@@ -1354,6 +1720,9 @@ def build_compare_payload(
     today_bundle: dict[str, SummaryRecord],
     previous_bundle: dict[str, SummaryRecord],
     base_limitations: list[str],
+    strict_failure_reason: str | None,
+    rebuild_summary: dict[str, Any],
+    rebuild_warnings: list[str],
 ) -> dict[str, Any]:
     if not previous_date:
         answers = {str(index): f"无法判断；{today_date} 之前缺少 previous_date 结构化 summary JSON。" for index in range(1, 14)}
@@ -1382,6 +1751,12 @@ def build_compare_payload(
             "limitations": sorted(set(base_limitations + ["missing_previous_date"])),
             "question_answers": answers,
         }
+        payload = _finalize_payload(
+            payload,
+            strict_failure_reason=strict_failure_reason,
+            rebuild_summary=rebuild_summary,
+            rebuild_warnings=rebuild_warnings,
+        )
         payload["markdown"] = build_markdown_report(payload)
         payload["csv"] = _status_csv(False, today_date, None, compare_basis, "missing_previous_date")
         return payload
@@ -1419,6 +1794,12 @@ def build_compare_payload(
         "limitations": limitations,
         "question_answers": answers,
     }
+    payload = _finalize_payload(
+        payload,
+        strict_failure_reason=strict_failure_reason,
+        rebuild_summary=rebuild_summary,
+        rebuild_warnings=rebuild_warnings,
+    )
     payload["markdown"] = build_markdown_report(payload)
     payload["csv"] = _rows_to_csv(rows)
     return payload
@@ -1485,7 +1866,7 @@ def generate_daily_compare(
         inventory = discover_summary_inventory(reports_dir)
         selection = select_compare_dates(inventory, requested_date=requested_date)
 
-    inventory, selection, rebuild_warnings = ensure_compare_inputs(
+    inventory, selection, rebuild_state = ensure_compare_inputs(
         inventory=inventory,
         selection=selection,
         requested_date=requested_date,
@@ -1495,6 +1876,16 @@ def generate_daily_compare(
         rebuild=rebuild,
         strict=strict,
     )
+    rebuild_summary = _build_rebuild_summary(
+        strict_mode=strict,
+        rebuild_mode=rebuild,
+        requested_today=requested_date,
+        selected_today=selection.get("today_date"),
+        selected_previous=selection.get("previous_date"),
+        attempted=bool(rebuild_state.get("attempted")),
+        attempts_by_date=rebuild_state.get("attempts_by_date", {}),
+    )
+    rebuild_warnings = list(rebuild_state.get("warnings", []))
     generation_warnings.extend(rebuild_warnings)
 
     today_date = selection.get("today_date")
@@ -1526,6 +1917,13 @@ def generate_daily_compare(
             "limitations": sorted(set(generation_warnings + ["no_available_dates"])),
             "question_answers": {str(index): "无法判断；reports/ 下没有可用的主 summary JSON。" for index in range(1, 14)},
         }
+        strict_failure_reason = "no_data" if strict else None
+        payload = _finalize_payload(
+            payload,
+            strict_failure_reason=strict_failure_reason,
+            rebuild_summary=rebuild_summary,
+            rebuild_warnings=rebuild_warnings,
+        )
         payload["markdown"] = build_markdown_report(payload)
         payload["csv"] = _status_csv(False, None, None, "no_data", "no_available_dates")
         if strict:
@@ -1540,6 +1938,13 @@ def generate_daily_compare(
     missing_today_reports = [report_type for report_type in REPORT_ORDER if report_type not in today_bundle]
     missing_previous_reports = [report_type for report_type in REPORT_ORDER if previous_date and report_type not in previous_bundle]
     if strict and (missing_today_reports or missing_previous_reports or not previous_date):
+        strict_failure_reason = _determine_strict_failure_reason(
+            today_date=today_date,
+            previous_date=previous_date,
+            missing_today_reports=missing_today_reports,
+            missing_previous_reports=missing_previous_reports,
+            rebuild_summary=rebuild_summary,
+        )
         payload = {
             "compare_available": False,
             "compare_window": f"{today_date} vs {previous_date or 'unavailable'}",
@@ -1565,6 +1970,12 @@ def generate_daily_compare(
             "limitations": sorted(set(base_limitations + [f"missing_today_reports={','.join(missing_today_reports)}", f"missing_previous_reports={','.join(missing_previous_reports)}"])),
             "question_answers": {str(index): "无法判断；strict 模式下 today/previous 的主 summary JSON 不完整。" for index in range(1, 14)},
         }
+        payload = _finalize_payload(
+            payload,
+            strict_failure_reason=strict_failure_reason,
+            rebuild_summary=rebuild_summary,
+            rebuild_warnings=rebuild_warnings,
+        )
         payload["markdown"] = build_markdown_report(payload)
         payload["csv"] = _status_csv(False, today_date, previous_date, compare_basis, "strict_incomplete_primary_summary")
         return 2, payload, {}
@@ -1576,6 +1987,9 @@ def generate_daily_compare(
         today_bundle=today_bundle,
         previous_bundle=previous_bundle,
         base_limitations=base_limitations,
+        strict_failure_reason=None,
+        rebuild_summary=rebuild_summary,
+        rebuild_warnings=rebuild_warnings,
     )
     if strict and not payload.get("compare_available"):
         return 2, payload, {}
@@ -1597,6 +2011,9 @@ def main(argv: list[str] | None = None) -> int:
         "today_date": payload.get("today_date"),
         "previous_date": payload.get("previous_date"),
         "compare_basis": payload.get("compare_basis"),
+        "strict_failure_reason": payload.get("strict_failure_reason"),
+        "rebuild_attempted": (payload.get("rebuild_summary") or {}).get("attempted"),
+        "rebuild_warnings": payload.get("rebuild_warnings", [])[:5],
         "outputs": written,
         "limitations": payload.get("limitations", [])[:10],
     }

@@ -2544,7 +2544,7 @@ def mirror_match_rate() -> dict[str, Any]:
     }
 
 
-def health_summary() -> dict[str, Any]:
+def health_summary(*, include_archive_mirror: bool = True) -> dict[str, Any]:
     conn = get_connection()
     size_info = db_file_sizes()
     missing_tables: list[str] = []
@@ -2586,7 +2586,37 @@ def health_summary() -> dict[str, Any]:
         "missing_tables": missing_tables,
         "write_error_count": int(_WRITE_ERROR_COUNT),
         "warnings": list(_WARNINGS[-10:]),
-        "archive_mirror": mirror_match_rate(),
+        "archive_mirror": mirror_match_rate() if include_archive_mirror else {
+            "db_archive_mirror_match_rate": None,
+            "per_category": {},
+            "skipped": "fast_mode",
+        },
+    }
+
+
+def _opportunity_verified_maturity(
+    *,
+    verified_count: int,
+    outcome_completion_rate: float,
+    max_profile_sample_count: int,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if float(outcome_completion_rate) < float(OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE):
+        reasons.append(f"outcome_completion_rate_below_{float(OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE):.2f}")
+    if int(max_profile_sample_count) < int(OPPORTUNITY_MIN_HISTORY_SAMPLES):
+        reasons.append(f"profile_sample_count_below_{int(OPPORTUNITY_MIN_HISTORY_SAMPLES)}")
+    if int(verified_count) > 0 and reasons:
+        reasons.append("immature_verified_warning")
+    if reasons:
+        maturity = "immature"
+    elif int(verified_count) > 0:
+        maturity = "mature"
+    else:
+        maturity = "developing"
+    return {
+        "verified_maturity": maturity,
+        "maturity_reasons": reasons,
+        "verified_should_not_be_traded_reason": "" if maturity == "mature" else ";".join(reasons or ["verified_maturity_not_mature"]),
     }
 
 
@@ -2632,6 +2662,13 @@ def opportunity_db_summary() -> dict[str, Any]:
         and float(row.get("adverse_60s_rate") if row.get("adverse_60s_rate") is not None else 1.0) <= float(OPPORTUNITY_MAX_60S_ADVERSE_RATE)
     ]
     calibration_summary = opportunity_calibration_summary()
+    outcome_completion_rate = round(completed_outcomes / total_outcomes, 4) if total_outcomes else 0.0
+    max_profile_sample_count = max((int(row.get("sample_count") or 0) for row in profiles), default=0)
+    maturity = _opportunity_verified_maturity(
+        verified_count=int(status_counts.get("VERIFIED", 0)),
+        outcome_completion_rate=outcome_completion_rate,
+        max_profile_sample_count=max_profile_sample_count,
+    )
     return {
         "available": True,
         "status_counts": status_counts,
@@ -2640,9 +2677,11 @@ def opportunity_db_summary() -> dict[str, Any]:
         "blocked_count": int(status_counts.get("BLOCKED", 0)),
         "none_count": int(status_counts.get("NONE", 0)),
         "blocker_counts": blocker_counts,
-        "outcome_completion_rate": round(completed_outcomes / total_outcomes, 4) if total_outcomes else 0.0,
+        "outcome_completion_rate": outcome_completion_rate,
         "market_context_attempt_success_rate": round(attempts_success / attempts_total, 4) if attempts_total else 0.0,
         "opportunity_profile_count": len(profiles),
+        "max_profile_sample_count": max_profile_sample_count,
+        **maturity,
         "profiles_ready_for_verified": [str(row.get("profile_key") or "") for row in sorted(ready_profiles, key=lambda item: (-int(item.get("sample_count") or 0), str(item.get("profile_key") or "")))[:10]],
         "top_profiles_by_sample": [
             {
@@ -2715,23 +2754,30 @@ def opportunity_calibration_summary() -> dict[str, Any]:
         return {"available": False, "reason": str(exc)}
 
 
-def integrity_check() -> dict[str, Any]:
+def integrity_check(
+    *,
+    include_archive_mirror: bool = True,
+    run_pragma_integrity: bool = True,
+) -> dict[str, Any]:
     conn = get_connection()
-    payload = health_summary()
+    payload = health_summary(include_archive_mirror=include_archive_mirror)
     if conn is None:
         payload["ok"] = False
         return payload
-    try:
-        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
-    except sqlite3.Error as exc:
-        result = str(exc)
+    if run_pragma_integrity:
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        except sqlite3.Error as exc:
+            result = str(exc)
+    else:
+        result = "skipped_fast_mode"
     payload["pragma_integrity_check"] = result
-    payload["ok"] = result == "ok" and not payload.get("missing_tables")
+    payload["ok"] = (result == "ok" or result == "skipped_fast_mode") and not payload.get("missing_tables")
     payload["db_archive_mismatch"] = [
         category
         for category, item in (payload.get("archive_mirror", {}).get("per_category") or {}).items()
         if item.get("mismatch")
-    ]
+    ] if include_archive_mirror else []
     payload["opportunity_summary"] = opportunity_db_summary()
     return payload
 
@@ -4579,6 +4625,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all", action="store_true", help="migrate all archive dates")
     parser.add_argument("--table", help="table filter for payload metadata backfill")
     parser.add_argument("--integrity-check", action="store_true", help="run schema/count/integrity checks")
+    parser.add_argument("--fast", action="store_true", help="skip archive mirror row counts for lightweight integrity checks")
     parser.add_argument("--checkpoint", action="store_true", help="run SQLite WAL checkpoint truncate")
     parser.add_argument("--prune", action="store_true", help="show or execute retention prune")
     parser.add_argument("--compact", action="store_true", help="dry-run or execute compact on compactable tables")
@@ -4611,7 +4658,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.integrity_check:
         init_sqlite_store()
-        payload = integrity_check()
+        payload = integrity_check(
+            include_archive_mirror=not bool(args.fast),
+            run_pragma_integrity=not bool(args.fast),
+        )
         _print_json(payload)
         return 0 if payload.get("ok") else 1
     if args.checkpoint:

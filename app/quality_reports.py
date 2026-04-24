@@ -36,6 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/profile/outcome/blocker posterior 摘要")
     parser.add_argument("--opportunity-calibration", action="store_true", help="输出 SQLite opportunity score calibration 摘要")
     parser.add_argument("--report-source-summary", action="store_true", help="输出 report DB/archive/cache source 摘要")
+    parser.add_argument("--report-source-fast", action="store_true", help="输出轻量 report source 摘要，不扫描 archive 行数")
+    parser.add_argument("--fast", action="store_true", help="与 --report-source-summary 搭配使用，跳过 archive/gzip 全量行数扫描")
     parser.add_argument("--fail-on-mismatch", action="store_true", help="DB/archive mirror mismatch 时返回非零")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
@@ -678,7 +680,10 @@ def main(argv: list[str] | None = None) -> int:
         import sqlite_store
 
         sqlite_store.init_sqlite_store()
-        payload = sqlite_store.integrity_check()
+        payload = sqlite_store.integrity_check(
+            include_archive_mirror=not bool(args.fast),
+            run_pragma_integrity=not bool(args.fast),
+        )
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         if args.fail_on_mismatch and payload.get("db_archive_mismatch"):
@@ -730,10 +735,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
 
-    if args.report_source_summary:
+    if args.report_source_summary or args.report_source_fast:
         import report_data_loader
 
-        payload = report_data_loader.report_source_summary()
+        payload = report_data_loader.report_source_summary(fast=bool(args.fast or args.report_source_fast))
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

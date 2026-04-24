@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import quality_reports
 import report_data_loader
@@ -90,6 +91,36 @@ class ReportDbArchiveMismatchTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertIn("current_report_read_preference", payload)
         self.assertIn("fallback_mode", payload)
+
+    def test_report_source_fast_summary_skips_archive_row_scans(self) -> None:
+        with (
+            mock.patch.object(report_data_loader, "archive_row_counts", side_effect=AssertionError("heavy scan called")),
+            mock.patch.object(report_data_loader, "compressed_archive_row_counts", side_effect=AssertionError("gzip scan called")),
+        ):
+            payload = report_data_loader.report_source_summary(
+                db_path=self.db_path,
+                archive_base_dir=self.archive_dir,
+                fast=True,
+            )
+
+        self.assertTrue(payload["fast_mode"])
+        self.assertFalse(payload["archive_row_counts_scanned"])
+        self.assertFalse(payload["compressed_archive_row_counts_scanned"])
+        self.assertIn("db_exists", payload)
+        self.assertIn("sqlite_rows_by_table", payload)
+        self.assertIn("current_report_read_preference", payload)
+        self.assertIn("archive_base_dir_exists", payload)
+        self.assertIn("archive_dirs_by_category", payload)
+
+    def test_quality_reports_report_source_fast_cli_runs(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = quality_reports.main(["--report-source-summary", "--fast"])
+
+        self.assertEqual(0, code)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["fast_mode"])
+        self.assertFalse(payload["archive_row_counts_scanned"])
 
 
 if __name__ == "__main__":
