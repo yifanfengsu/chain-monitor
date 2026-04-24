@@ -1,6 +1,7 @@
 import io
 import importlib.util
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -121,6 +122,51 @@ class DataFallbackImportTests(unittest.TestCase):
         meta = module.get_address_meta("0xabc")
         self.assertEqual("mm_inventory", meta["wallet_function"])
         self.assertEqual("inferred_likely", meta["entity_source"])
+
+    def test_alias_only_entry_does_not_create_watch_address_by_default(self) -> None:
+        addresses_path = APP_DIR.parent / "data" / "addresses.json"
+        aliases_path = APP_DIR.parent / "data" / "address_aliases.json"
+        original_open = Path.open
+
+        def _open(path_obj, *args, **kwargs):
+            path = Path(path_obj)
+            if path == addresses_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xabc",
+                                "label": "Original",
+                                "category": "smart_money",
+                            }
+                        ]
+                    )
+                )
+            if path == aliases_path:
+                return io.StringIO(
+                    json.dumps(
+                        [
+                            {
+                                "address": "0xnew",
+                                "label": "Alias only",
+                                "wallet_function": "mm_inventory",
+                            }
+                        ]
+                    )
+                )
+            return original_open(path_obj, *args, **kwargs)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("pathlib.Path.open", new=_open),
+        ):
+            module = self._load_module("filter_alias_only_default_false_test", FILTER_PATH)
+
+        self.assertFalse(module.ALLOW_ALIAS_ONLY_ADDRESS_BOOK)
+        self.assertEqual({"0xabc"}, module.ALL_WATCH_ADDRESSES)
+        self.assertEqual({"0xabc"}, module.WATCH_ADDRESSES)
+        self.assertNotIn("0xnew", module.ADDRESS_LABELS)
+        self.assertNotIn("0xnew", module.ADDRESS_META)
 
     def test_missing_address_aliases_does_not_block_address_book(self) -> None:
         addresses_path = APP_DIR.parent / "data" / "addresses.json"

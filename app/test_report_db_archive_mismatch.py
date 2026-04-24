@@ -112,6 +112,43 @@ class ReportDbArchiveMismatchTests(unittest.TestCase):
         self.assertIn("archive_base_dir_exists", payload)
         self.assertIn("archive_dirs_by_category", payload)
 
+    def test_report_source_heavy_summary_calls_archive_row_scans(self) -> None:
+        archive_counts = {
+            "signals": 2,
+            "delivery_audit": 0,
+            "case_followups": 0,
+        }
+        compressed_counts = {
+            "signals": 1,
+            "delivery_audit": 0,
+            "case_followups": 0,
+        }
+        with (
+            mock.patch.object(
+                report_data_loader,
+                "archive_row_counts",
+                return_value=archive_counts,
+            ) as archive_scan,
+            mock.patch.object(
+                report_data_loader,
+                "compressed_archive_row_counts",
+                return_value=compressed_counts,
+            ) as gzip_scan,
+        ):
+            payload = report_data_loader.report_source_summary(
+                db_path=self.db_path,
+                archive_base_dir=self.archive_dir,
+                fast=False,
+            )
+
+        archive_scan.assert_called_once_with(self.archive_dir)
+        gzip_scan.assert_called_once_with(self.archive_dir)
+        self.assertFalse(payload["fast_mode"])
+        self.assertTrue(payload["archive_row_counts_scanned"])
+        self.assertTrue(payload["compressed_archive_row_counts_scanned"])
+        self.assertEqual(archive_counts, payload["archive_rows_by_category"])
+        self.assertEqual(compressed_counts, payload["compressed_archive_rows"])
+
     def test_quality_reports_report_source_fast_cli_runs(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):

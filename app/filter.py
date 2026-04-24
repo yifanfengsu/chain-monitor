@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from lp_registry import get_lp_pool_meta, is_lp_pool
@@ -8,6 +9,15 @@ from state_manager import is_runtime_adjacent_watch_active, maybe_get_runtime_ad
 ADDRESS_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "addresses.json"
 ENTITY_BOOK_PATH = Path(__file__).resolve().parent.parent / "data" / "entities.json"
 ADDRESS_ALIASES_PATH = Path(__file__).resolve().parent.parent / "data" / "address_aliases.json"
+ALLOW_ALIAS_ONLY_ADDRESS_BOOK = str(
+    os.getenv("ALLOW_ALIAS_ONLY_ADDRESS_BOOK", "false")
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
 
 VALID_ENTITY_TYPES = {
     "exchange",
@@ -366,7 +376,7 @@ def _merge_address_aliases(address_book, address_aliases):
         return address_book
 
     address_items = _address_book_items(address_book)
-    if not address_items:
+    if not address_items and not ALLOW_ALIAS_ONLY_ADDRESS_BOOK:
         return address_book
 
     merged_items = []
@@ -382,6 +392,12 @@ def _merge_address_aliases(address_book, address_aliases):
             merged_items.append(payload)
         else:
             merged_items.append(item)
+
+    if ALLOW_ALIAS_ONLY_ADDRESS_BOOK:
+        for address, alias in alias_by_address.items():
+            payload = dict(alias)
+            payload["address"] = address
+            merged_items.append(payload)
 
     return merged_items
 
@@ -695,7 +711,11 @@ def extract_watch_addresses(address_book, active_only=False):
 
 
 # 全量地址（包含禁用地址，用于兜底查 meta）。
-ADDRESS_BOOK = _merge_address_aliases(RAW_ADDRESS_BOOK, ADDRESS_ALIASES)
+ADDRESS_BOOK = (
+    _merge_address_aliases(RAW_ADDRESS_BOOK, ADDRESS_ALIASES)
+    if ADDRESS_BOOK_LOADED
+    else {}
+)
 ALL_WATCH_ADDRESSES = extract_watch_addresses(ADDRESS_BOOK, active_only=False)
 # 实际参与监控的地址（只含 is_active=true）。
 WATCH_ADDRESSES = extract_watch_addresses(ADDRESS_BOOK, active_only=True)
