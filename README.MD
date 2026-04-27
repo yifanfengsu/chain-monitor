@@ -209,8 +209,9 @@ SQLite mirror / query layer：
 
 ## 每日 canonical report
 
-- 日常只看一份 canonical daily report，不再把 `afternoon_evening_state`、`overnight_trade_action`、`overnight_run` 三套主报告当成日常入口。
-- 旧三件套已退役；如果脚本仍保留，只在 `reports/legacy/` 下作为 legacy/debug 兼容入口，日常报告不依赖它们。
+- canonical daily report 是日常唯一主报告；日常只看一份 canonical daily report，不再把 `afternoon_evening_state`、`overnight_trade_action`、`overnight_run` 三套主报告当成日常入口。
+- 旧三件套已退役；`reports/legacy/` 仅作为 legacy/debug 兼容入口，日常报告不依赖它们。
+- `reports/` 根目录旧三件套脚本不再使用，也不应新增或从 Makefile / README / tests 作为日常入口调用。
 - canonical daily report 默认按北京时间 UTC+8 / `Asia/Shanghai` 自然日生成。比如 `--date 2026-04-24` 的逻辑窗口是北京时间 `2026-04-24 00:00:00 -> 2026-04-24 23:59:59`，对应 UTC `2026-04-23 16:00:00 -> 2026-04-24 15:59:59`。
 - 日报不会跨大 gap 伪装连续运行。窗口内超过阈值的 gap 会拆成多个 segment，并同时输出 `wall_clock_duration_hours` 和 `active_duration_hours`。
 - `wall_clock_duration_hours` 是完整逻辑日窗口长度；`active_duration_hours` 是实际有数据的 active segments 时长合计。`segment_count > 1` 时，报告不会声称“连续运行 X 小时”。
@@ -226,7 +227,10 @@ SQLite mirror / query layer：
 - 清理旧生成报告：
   - `make report-clean-dry-run`
   - `make report-clean-generated CONFIRM=YES`
-- 清理命令只处理 generated reports，不删除 `archive/cache/db`，也不删除 `reports/*.py`、templates、examples、README 或 `.gitkeep`。如果历史报告已被 git 跟踪，需要另行用 `git rm --cached` 清索引。
+- 清理命令只处理 generated reports，不删除 `archive/cache/db`，也不删除 `reports/*.py`、templates、examples、README 或 `.gitkeep`。generated reports 默认不进 Git；如果历史 generated reports 已被 Git 跟踪，需要用户手动另行用 `git rm --cached` 清索引。
+- 建议先预览 Git 索引里的历史生成物，再只清索引、不删本地文件：
+  - `git ls-files 'reports/*.md' 'reports/*.csv' 'reports/*.json' 'reports/daily/*.md' 'reports/daily/*.csv' 'reports/daily/*.json' 'reports/daily_compare/*.md' 'reports/daily_compare/*.csv' 'reports/daily_compare/*.json'`
+  - `git rm --cached --ignore-unmatch -- reports/*.md reports/*.csv reports/*.json reports/daily/*.md reports/daily/*.csv reports/daily/*.json reports/daily_compare/*.md reports/daily_compare/*.csv reports/daily_compare/*.json`
 - 重建历史每日报告：
   - `make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD`
 - daily compare 现在默认只比较 canonical daily reports；旧三件套只有显式启用 legacy fallback 时才会作为兼容输入。
@@ -411,9 +415,9 @@ SQLite 角色先说明清楚：
   - `make report-state`
   - `make report-run`
 
-`make report-all` 现在只跑 canonical daily report 和 daily compare，不再默认生成旧三件套。`make report-state` / `make report-overnight` / `make report-run` 是 legacy/debug 入口；`make report-run` 会在 `reports/legacy/generate_overnight_run_analysis_latest.py` 存在时执行，脚本不存在时只输出 `report-run script not found`。如果旧脚本已移除，`make report-legacy-all` 会友好提示 `Legacy report generators removed.`。
+`make report-all` 现在只跑 canonical daily report 和 daily compare，不再默认生成旧三件套。`reports/` 根目录旧三件套脚本不再使用；`make report-state` / `make report-overnight` / `make report-run` 是 legacy/debug 入口，只调用 `reports/legacy/`。`make report-run` 会在 `reports/legacy/generate_overnight_run_analysis_latest.py` 存在时执行，脚本不存在时只输出 `report-run script not found`。如果旧脚本已移除，`make report-legacy-all` 会友好提示 `Legacy report generators removed.`。
 
-报告生成物默认不进 git：`reports/daily/*.md/csv/json`、`reports/*latest*.md/csv/json`、`reports/daily_compare/*.md/csv/json`、`reports/generated/` 和 `reports/archive/` 已被忽略。需要分享某一天的报告时，用 `git add -f reports/...` 精确添加；不要用 `git add .` 提交海量生成报告。
+报告生成物默认不进 git：`reports/daily/*.md/csv/json`、`reports/*latest*.md/csv/json`、`reports/daily_compare/*.md/csv/json`、`reports/generated/` 和 `reports/archive/` 已被忽略。历史 generated reports 如果已经被 Git 跟踪，需要用户手动用 `git rm --cached --ignore-unmatch -- reports/...` 清索引；这不会删除本地文件。需要分享某一天的报告时，用 `git add -f reports/...` 精确添加；不要用 `git add .` 提交海量生成报告。
 
 ### 4. SQLite 基础维护
 
