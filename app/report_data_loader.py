@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 import gzip
 import json
 from pathlib import Path
@@ -79,6 +80,20 @@ def _window_bounds(window: Any = None) -> tuple[int | None, int | None]:
     if isinstance(window, (list, tuple)) and len(window) >= 2:
         return _to_int(window[0]), _to_int(window[1])
     return None, None
+
+
+def _archive_date_keys_for_window(window: Any = None) -> set[str] | None:
+    start_ts, end_ts = _window_bounds(window)
+    if start_ts is None or end_ts is None:
+        return None
+    start_day = datetime.fromtimestamp(int(start_ts), timezone.utc).date()
+    end_day = datetime.fromtimestamp(int(end_ts), timezone.utc).date()
+    keys: set[str] = set()
+    current = start_day
+    while current <= end_day:
+        keys.add(current.isoformat())
+        current += timedelta(days=1)
+    return keys
 
 
 def _to_int(value: Any) -> int | None:
@@ -171,8 +186,11 @@ def iter_archive_payloads(
     read_gzip: bool | None = None,
 ) -> list[dict[str, Any]]:
     start_ts, end_ts = _window_bounds(window)
+    archive_date_keys = _archive_date_keys_for_window(window)
     rows: list[dict[str, Any]] = []
     for path in archive_paths(category, base_dir=base_dir, read_gzip=read_gzip):
+        if archive_date_keys and _archive_key(path) not in archive_date_keys:
+            continue
         try:
             with _open_archive_text(path) as handle:
                 for raw_line in handle:
@@ -363,6 +381,7 @@ def load_dataset(
     *,
     window: Any = None,
     prefer_db: bool = True,
+    compare_archive: bool | None = None,
     db_path: str | Path | None = None,
     archive_base_dir: str | Path | None = None,
 ) -> LoadResult:
@@ -379,7 +398,7 @@ def load_dataset(
     fallback_source = "unavailable"
     compressed_rows = 0
     need_fallback = not db_rows
-    compare_enabled = bool(REPORT_DB_ARCHIVE_COMPARE)
+    compare_enabled = bool(REPORT_DB_ARCHIVE_COMPARE) if compare_archive is None else bool(compare_archive)
     if bool(SQLITE_REPORT_FALLBACK_TO_ARCHIVE) and (need_fallback or compare_enabled):
         fallback_rows, fallback_source, compressed_rows = _archive_or_cache_rows(
             loader_key,

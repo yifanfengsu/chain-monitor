@@ -14,7 +14,10 @@ DB_INTEGRITY_FAST ?= NO
 
 RUN_PY = SQLITE_DB_PATH="$(DB_PATH)" $(PY)
 DB_INTEGRITY_FLAGS = $(if $(filter YES yes TRUE true 1,$(DB_INTEGRITY_FAST)),--fast,)
-REPORT_RUN_SCRIPT = $(REPORTS)/generate_overnight_run_analysis_latest.py
+REPORT_LEGACY_STATE_SCRIPT = $(REPORTS)/legacy/generate_afternoon_evening_state_analysis_latest.py
+REPORT_LEGACY_ACTION_SCRIPT = $(REPORTS)/legacy/generate_overnight_trade_action_analysis_latest.py
+REPORT_RUN_SCRIPT = $(REPORTS)/legacy/generate_overnight_run_analysis_latest.py
+REPORT_DAILY_SCRIPT = $(REPORTS)/generate_daily_report_latest.py
 ARCHIVE_DIR = $(APP)/data/archive
 
 TEST_SQLITE_MODULES := \
@@ -41,7 +44,14 @@ TEST_REPORT_MODULES := \
 	$(APP).test_report_db_archive_mismatch \
 	$(APP).test_daily_compare_report \
 	$(APP).test_daily_compare_source_selection \
-	$(APP).test_daily_compare_makefile
+	$(APP).test_daily_compare_makefile \
+	$(APP).test_daily_canonical_report \
+	$(APP).test_daily_report_window_selection \
+	$(APP).test_daily_compare_uses_daily_report \
+	$(APP).test_report_pipeline_cleanup \
+	$(APP).test_makefile_report_targets \
+	$(APP).test_daily_close_uses_daily_report \
+	$(APP).test_report_clean_commands
 
 TEST_OPPORTUNITY_MODULES := \
 	$(APP).test_trade_opportunity_scoring \
@@ -156,10 +166,16 @@ endef
 	daily-compare \
 	daily-compare-strict \
 	daily-compare-rebuild \
+	report-daily \
+	report-daily-date \
+	report-daily-range \
 	report-overnight \
 	report-state \
 	report-run \
+	report-legacy-all \
 	report-all \
+	report-clean-dry-run \
+	report-clean-generated \
 	test-sqlite \
 	test-sqlite-compact \
 	test-reports \
@@ -238,25 +254,32 @@ help:
 	@printf '%s\n' "                                          Preview gzip archive compression for one date."
 	@printf '%s\n' "  make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES [ALLOW_TODAY=YES]"
 	@printf '%s\n' "                                          Execute gzip compression for one date."
-	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD        Migrate, check DB, run reports, compress dry-run, checkpoint."
+	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD        Migrate, check DB, run canonical daily report, compare, compress dry-run, checkpoint."
 	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
 	@printf '%s\n' "                                          Request gzip after dry-run; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
 	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-compare [DATE=YYYY-MM-DD]    Generate today vs previous-available compare report."
 	@printf '%s\n' "  make daily-compare-strict [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Strict compare; rebuild missing today/previous dated summaries first, then fail with strict_failure_reason if inputs stay incomplete."
+	@printf '%s\n' "                                          Strict compare; require canonical daily reports first, then fail with strict_failure_reason if inputs stay incomplete."
 	@printf '%s\n' "  make daily-compare-rebuild [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Rebuild today/previous dated summaries first, then generate compare in non-strict mode and emit rebuild_summary/rebuild_warnings."
+	@printf '%s\n' "                                          Rebuild today/previous canonical daily reports first, then generate compare in non-strict mode and emit rebuild_summary/rebuild_warnings."
 	@printf '%s\n' ""
 	@printf '%s\n' "Reports:"
-	@printf '%s\n' "  make report-overnight                   Generate overnight trade action analysis."
-	@printf '%s\n' "  make report-state                       Generate afternoon/evening state analysis."
-	@printf '%s\n' "  make report-run                         Generate overnight run analysis if the script exists."
-	@printf '%s\n' "  make report-all                         Generate all common reports."
-	@printf '%s\n' "  make daily-compare                      宽松模式生成 today vs previous compare；缺口写 limitations。"
-	@printf '%s\n' "  make daily-compare-strict               严格模式：先补 today/previous dated summaries；仍不完整就失败并写 strict_failure_reason。"
-	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous dated summaries，再按宽松模式输出 compare，并写 rebuild_summary。"
+	@printf '%s\n' "  make report-daily                       Generate latest canonical daily report."
+	@printf '%s\n' "  make report-daily-date DATE=YYYY-MM-DD  Generate canonical daily report for one Beijing logical date."
+	@printf '%s\n' "  make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD"
+	@printf '%s\n' "                                          Rebuild canonical daily reports for an inclusive date range."
+	@printf '%s\n' "  make report-overnight                   Legacy/debug only: generate overnight trade action analysis."
+	@printf '%s\n' "  make report-state                       Legacy/debug only: generate afternoon/evening state analysis."
+	@printf '%s\n' "  make report-run                         Legacy/debug only: generate overnight run analysis if the script exists."
+	@printf '%s\n' "  make report-legacy-all                  Legacy/debug only; not part of daily workflow."
+	@printf '%s\n' "  make report-all                         Generate canonical daily report, then daily compare."
+	@printf '%s\n' "  make report-clean-dry-run               List generated report files that can be cleaned; deletes nothing."
+	@printf '%s\n' "  make report-clean-generated CONFIRM=YES Delete generated report files only; never archive/cache/db."
+	@printf '%s\n' "  make daily-compare                      宽松模式生成 canonical daily today vs previous compare；缺口写 limitations。"
+	@printf '%s\n' "  make daily-compare-strict               严格模式：要求 canonical daily reports 已存在；缺失就 fail-closed。"
+	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous canonical daily reports，再按宽松模式输出 compare。"
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -321,8 +344,8 @@ db-integrity:
 	$(RUN_PY) -m $(APP).sqlite_store --integrity-check $(DB_INTEGRITY_FLAGS)
 
 db-report:
-	$(RUN_PY) -m $(APP).quality_reports --db-summary
-	$(RUN_PY) -m $(APP).quality_reports --db-integrity
+	$(RUN_PY) -m $(APP).quality_reports --db-summary --fast
+	$(RUN_PY) -m $(APP).quality_reports --db-integrity --fast
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 
 db-migrate-all:
@@ -409,14 +432,13 @@ archive-compress-date:
 daily-close:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close DATE=YYYY-MM-DD [COMPRESS=YES] [CONFIRM=YES]"; exit 2; fi
 	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
-	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
-	$(RUN_PY) -m $(APP).quality_reports --db-summary
-	$(RUN_PY) -m $(APP).quality_reports --db-integrity
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check $(DB_INTEGRITY_FLAGS)
+	$(RUN_PY) -m $(APP).quality_reports --db-summary --fast
+	$(RUN_PY) -m $(APP).quality_reports --db-integrity --fast
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
-	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
-	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
-	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
+	$(MAKE) report-daily-date DATE="$(DATE)"
+	$(MAKE) daily-compare DATE="$(DATE)"
 	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
 	@if [ "$(COMPRESS)" = "YES" ]; then \
 		if [ "$(CONFIRM)" != "YES" ]; then \
@@ -432,14 +454,13 @@ daily-close:
 daily-close-strict:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make daily-close-strict DATE=YYYY-MM-DD [COMPRESS=YES] [CONFIRM=YES]"; exit 2; fi
 	$(RUN_PY) -m $(APP).sqlite_store --migrate-archive --date "$(DATE)"
-	$(RUN_PY) -m $(APP).sqlite_store --integrity-check
+	$(RUN_PY) -m $(APP).sqlite_store --integrity-check $(DB_INTEGRITY_FLAGS)
 	$(RUN_PY) -m $(APP).quality_reports --db-summary
 	$(RUN_PY) -m $(APP).quality_reports --db-integrity
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
-	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
-	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
-	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
+	$(MAKE) report-daily-date DATE="$(DATE)"
+	$(MAKE) daily-compare DATE="$(DATE)"
 	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
 	@if [ "$(COMPRESS)" = "YES" ]; then \
 		if [ "$(CONFIRM)" != "YES" ]; then \
@@ -476,19 +497,70 @@ daily-compare-rebuild:
 		$(RUN_PY) $(REPORTS)/generate_daily_compare_report.py --rebuild; \
 	fi
 
+report-daily:
+	$(RUN_PY) $(REPORT_DAILY_SCRIPT)
+
+report-daily-date:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make report-daily-date DATE=YYYY-MM-DD"; exit 2; fi
+	$(RUN_PY) $(REPORT_DAILY_SCRIPT) --date "$(DATE)"
+
+report-daily-range:
+	@if [ -z "$(START_DATE)" ] || [ -z "$(END_DATE)" ]; then echo "Usage: make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD"; exit 2; fi
+	$(RUN_PY) $(REPORT_DAILY_SCRIPT) --start-date "$(START_DATE)" --end-date "$(END_DATE)"
+
 report-overnight:
-	$(RUN_PY) $(REPORTS)/generate_overnight_trade_action_analysis_latest.py
+	@if [ -f "$(REPORT_LEGACY_ACTION_SCRIPT)" ]; then \
+		$(RUN_PY) $(REPORT_LEGACY_ACTION_SCRIPT); \
+	else \
+		echo "Legacy report generators removed."; \
+	fi
 
 report-state:
-	$(RUN_PY) $(REPORTS)/generate_afternoon_evening_state_analysis_latest.py
+	@echo "report-state is legacy/debug; daily workflow uses make report-daily."
+	@if [ -f "$(REPORT_LEGACY_STATE_SCRIPT)" ]; then \
+		$(RUN_PY) $(REPORT_LEGACY_STATE_SCRIPT); \
+	else \
+		echo "Legacy report generators removed."; \
+	fi
 
 report-run:
-	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then $(RUN_PY) $(REPORT_RUN_SCRIPT); else echo "report-run script not found"; fi
+	@if [ -f "$(REPORT_RUN_SCRIPT)" ]; then \
+		if [ -n "$(DATE)" ]; then \
+			$(RUN_PY) $(REPORT_RUN_SCRIPT) --date "$(DATE)" || { echo "report-run failed; check $(REPORT_RUN_SCRIPT)"; exit 1; }; \
+		else \
+			$(RUN_PY) $(REPORT_RUN_SCRIPT) || { echo "report-run failed; check $(REPORT_RUN_SCRIPT)"; exit 1; }; \
+		fi; \
+	else \
+		echo "report-run script not found"; \
+	fi
+
+report-legacy-all:
+	@if [ -f "$(REPORT_LEGACY_ACTION_SCRIPT)" ] && [ -f "$(REPORT_LEGACY_STATE_SCRIPT)" ] && [ -f "$(REPORT_RUN_SCRIPT)" ]; then \
+		$(MAKE) report-overnight; \
+		$(MAKE) report-state; \
+		$(MAKE) report-run; \
+	else \
+		echo "Legacy report generators removed."; \
+	fi
 
 report-all:
-	$(MAKE) report-overnight
-	$(MAKE) report-state
-	$(MAKE) report-run
+	$(MAKE) report-daily
+	$(MAKE) daily-compare
+
+report-clean-dry-run:
+	@printf '%s\n' "Generated report files that would be cleaned:"
+	@find $(REPORTS) -maxdepth 1 -type f \( -name '*latest*.md' -o -name '*latest*.csv' -o -name '*latest*.json' -o -name 'overnight_*_latest*.md' -o -name 'overnight_*_latest*.csv' -o -name 'overnight_*_latest*.json' -o -name 'afternoon_evening_*_latest*.md' -o -name 'afternoon_evening_*_latest*.csv' -o -name 'afternoon_evening_*_latest*.json' \) -print 2>/dev/null || true
+	@if [ -d "$(REPORTS)/daily_compare" ]; then find $(REPORTS)/daily_compare -maxdepth 1 -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -print; fi
+	@if [ -d "$(REPORTS)/daily" ]; then find $(REPORTS)/daily -maxdepth 1 -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -print; fi
+	@printf '%s\n' "Dry run only. archive/cache/db are not touched. Tracked generated files may need git rm --cached separately."
+
+report-clean-generated:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to delete generated reports. Use make report-clean-generated CONFIRM=YES"; exit 2; fi
+	$(MAKE) --no-print-directory report-clean-dry-run
+	@find $(REPORTS) -maxdepth 1 -type f \( -name '*latest*.md' -o -name '*latest*.csv' -o -name '*latest*.json' -o -name 'overnight_*_latest*.md' -o -name 'overnight_*_latest*.csv' -o -name 'overnight_*_latest*.json' -o -name 'afternoon_evening_*_latest*.md' -o -name 'afternoon_evening_*_latest*.csv' -o -name 'afternoon_evening_*_latest*.json' \) -delete 2>/dev/null || true
+	@if [ -d "$(REPORTS)/daily_compare" ]; then find $(REPORTS)/daily_compare -maxdepth 1 -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -delete; fi
+	@if [ -d "$(REPORTS)/daily" ]; then find $(REPORTS)/daily -maxdepth 1 -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -delete; fi
+	@printf '%s\n' "Generated reports cleaned. archive/cache/db were not touched."
 
 test-sqlite:
 	@$(call run_existing_tests,$(TEST_SQLITE_MODULES))

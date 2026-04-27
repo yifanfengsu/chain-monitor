@@ -49,6 +49,7 @@ class DailyCompareSourceSelectionTests(unittest.TestCase):
             reports_dir=self.reports_dir,
             output_dir=self.output_dir,
             allow_generate=False,
+            legacy_fallback=True,
         )
 
         self.assertEqual(0, exit_code)

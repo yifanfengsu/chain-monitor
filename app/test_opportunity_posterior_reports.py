@@ -1,6 +1,6 @@
 import unittest
 
-from reports.generate_overnight_run_analysis_latest import compute_trade_opportunities
+from reports.legacy.generate_overnight_run_analysis_latest import compute_trade_opportunities
 
 
 class OpportunityPosteriorReportTests(unittest.TestCase):

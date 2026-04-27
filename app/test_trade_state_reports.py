@@ -1,6 +1,6 @@
 import unittest
 
-from reports.generate_overnight_run_analysis_latest import (
+from reports.legacy.generate_overnight_run_analysis_latest import (
     compute_asset_market_states,
     compute_candidate_tradeable_summary,
     compute_no_trade_lock_summary,

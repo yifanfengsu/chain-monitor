@@ -671,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
         import sqlite_store
 
         sqlite_store.init_sqlite_store()
-        payload = sqlite_store.health_summary()
+        payload = sqlite_store.health_summary(include_archive_mirror=not bool(args.fast))
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Deprecated legacy report generator.
+# Daily workflow uses reports/generate_daily_report_latest.py.
+# This script is kept only for manual/debug compatibility.
+
 import argparse
 import csv
 import json
@@ -59,6 +63,8 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
 
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
+if str(REPORTS_DIR) not in sys.path:
+    sys.path.insert(0, str(REPORTS_DIR))
 
 from report_data_loader import (  # noqa: E402
     archive_date_key,

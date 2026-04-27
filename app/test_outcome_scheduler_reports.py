@@ -7,11 +7,12 @@ import sqlite_store
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = ROOT / "reports"
-if str(REPORTS_DIR) not in sys.path:
-    sys.path.insert(0, str(REPORTS_DIR))
+LEGACY_REPORTS_DIR = REPORTS_DIR / "legacy"
+if str(LEGACY_REPORTS_DIR) not in sys.path:
+    sys.path.insert(0, str(LEGACY_REPORTS_DIR))
 
-from generate_afternoon_evening_state_analysis_latest import compute_outcome_detail  # noqa: E402
-from generate_overnight_run_analysis_latest import merge_sqlite_outcomes_into_rows  # noqa: E402
+from reports.legacy.generate_afternoon_evening_state_analysis_latest import compute_outcome_detail  # noqa: E402
+from reports.legacy.generate_overnight_run_analysis_latest import merge_sqlite_outcomes_into_rows  # noqa: E402
 
 
 class OutcomeSchedulerReportTests(unittest.TestCase):

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Deprecated legacy report generator.
+# Daily workflow uses reports/generate_daily_report_latest.py.
+# This script is kept only for manual/debug compatibility.
+
 import argparse
 import csv
 import json
@@ -15,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 THIS_DIR = Path(__file__).resolve().parent
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
 ARCHIVE_DIR = APP_DIR / "data" / "archive"
 DATA_DIR = ROOT / "data"
@@ -24,6 +28,8 @@ ENV_PATH = ROOT / ".env"
 
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
+if str(REPORTS_DIR) not in sys.path:
+    sys.path.insert(0, str(REPORTS_DIR))
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 

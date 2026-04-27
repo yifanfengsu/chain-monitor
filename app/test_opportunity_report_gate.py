@@ -4,7 +4,7 @@ import unittest
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123456:unit-test-token")
 os.environ.setdefault("CHAT_ID", "0")
 
-from reports.generate_overnight_run_analysis_latest import compute_final_trading_output_summary
+from reports.legacy.generate_overnight_run_analysis_latest import compute_final_trading_output_summary
 from trade_opportunity import TradeOpportunityManager
 from trade_opportunity_test_helpers import StubStateManager, make_event, make_outcome_row, make_signal
 

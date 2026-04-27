@@ -8,10 +8,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = ROOT / "reports"
-if str(REPORTS_DIR) not in sys.path:
-    sys.path.insert(0, str(REPORTS_DIR))
+LEGACY_REPORTS_DIR = REPORTS_DIR / "legacy"
+if str(LEGACY_REPORTS_DIR) not in sys.path:
+    sys.path.insert(0, str(LEGACY_REPORTS_DIR))
 
-import generate_afternoon_evening_state_analysis_latest as report  # noqa: E402
+from reports.legacy import generate_afternoon_evening_state_analysis_latest as report  # noqa: E402
 
 
 class AfternoonEveningStateReportTests(unittest.TestCase):
@@ -130,6 +131,7 @@ class AfternoonEveningStateReportTests(unittest.TestCase):
                 result = report.main([])
 
             self.assertEqual(0, result)
+            normalized_opportunities = report.normalize_opportunity_summary(opportunities)
             self.assertEqual(
                 (
                     window,
@@ -140,7 +142,7 @@ class AfternoonEveningStateReportTests(unittest.TestCase):
                     telegram,
                     prealerts,
                     candidate_tradeable,
-                    opportunities,
+                    normalized_opportunities,
                     outcome_detail,
                     market_context,
                     trade_actions,
@@ -164,7 +166,7 @@ class AfternoonEveningStateReportTests(unittest.TestCase):
                     prealerts,
                     candidate_tradeable,
                     final_outputs,
-                    opportunities,
+                    normalized_opportunities,
                     outcome_detail,
                     market_context,
                     trade_actions,

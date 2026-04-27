@@ -1,6 +1,6 @@
 import unittest
 
-from reports.generate_overnight_run_analysis_latest import compute_trade_actions
+from reports.legacy.generate_overnight_run_analysis_latest import compute_trade_actions
 
 
 class TradeActionReportTests(unittest.TestCase):

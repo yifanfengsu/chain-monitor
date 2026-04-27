@@ -64,28 +64,40 @@ REPORT_SPECS: dict[str, ReportSpec] = {
     "afternoon_evening_state": ReportSpec(
         key="afternoon_evening_state",
         latest_filename="afternoon_evening_state_summary_latest.json",
-        generator_script="reports/generate_afternoon_evening_state_analysis_latest.py",
+        generator_script="reports/legacy/generate_afternoon_evening_state_analysis_latest.py",
     ),
     "overnight_trade_action": ReportSpec(
         key="overnight_trade_action",
         latest_filename="overnight_trade_action_summary_latest.json",
-        generator_script="reports/generate_overnight_trade_action_analysis_latest.py",
+        generator_script="reports/legacy/generate_overnight_trade_action_analysis_latest.py",
     ),
     "overnight_run": ReportSpec(
         key="overnight_run",
         latest_filename="overnight_run_summary_latest.json",
-        generator_script="reports/generate_overnight_run_analysis_latest.py",
+        generator_script="reports/legacy/generate_overnight_run_analysis_latest.py",
     ),
 }
+
+DAILY_REPORT_KEY = "daily_report"
+DAILY_REPORT_SPEC = ReportSpec(
+    key=DAILY_REPORT_KEY,
+    latest_filename="daily/daily_report_latest.json",
+    generator_script="reports/generate_daily_report_latest.py",
+)
 
 REPORT_ORDER = (
     "afternoon_evening_state",
     "overnight_trade_action",
     "overnight_run",
 )
+REBUILD_REPORT_ORDER = (DAILY_REPORT_KEY,)
+
+LEGACY_SOURCE_MODE = "legacy_three_report_bundle"
+CANONICAL_SOURCE_MODE = "canonical_daily_report"
+MIXED_SOURCE_MODE = "mixed_daily_legacy"
 
 SOURCE_SELECTION_RULE = (
-    "dated summary JSON -> matching latest summary JSON -> refreshed latest summary JSON -> rebuilt dated summary JSON"
+    "daily_report dated JSON -> matching daily_report latest JSON; legacy three-report bundle only with --legacy-fallback"
 )
 
 PRIMARY_DIRECTIONAL_METRICS = {
@@ -124,6 +136,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--rebuild",
         action="store_true",
         help="Attempt to rebuild today/previous dated summaries before generating compare output",
+    )
+    parser.add_argument(
+        "--legacy-fallback",
+        action="store_true",
+        help="Allow compatibility fallback to retired afternoon/evening, overnight trade action, and overnight run summaries",
     )
     return parser
 
@@ -194,6 +211,23 @@ def _display_path(path: Path | None) -> str | None:
     return str(path)
 
 
+def _report_spec(report_type: str) -> ReportSpec:
+    if report_type == DAILY_REPORT_KEY:
+        return DAILY_REPORT_SPEC
+    return REPORT_SPECS[report_type]
+
+
+def _latest_path_for_report(reports_dir: Path, report_type: str) -> Path:
+    return reports_dir / _report_spec(report_type).latest_filename
+
+
+def _dated_path_for_report(reports_dir: Path, report_type: str, logical_date: str) -> Path:
+    if report_type == DAILY_REPORT_KEY:
+        return reports_dir / "daily" / f"daily_report_{logical_date}.json"
+    latest_path = _latest_path_for_report(reports_dir, report_type)
+    return reports_dir / f"{latest_path.stem}_{logical_date}.json"
+
+
 def _bool_text(value: bool) -> str:
     return "true" if value else "false"
 
@@ -208,7 +242,11 @@ def _get_in(payload: Any, path: tuple[str, ...]) -> Any:
 
 
 def _extract_date_from_payload(data: dict[str, Any], path: Path) -> str | None:
+    direct = _parse_date(data.get("logical_date"))
+    if direct:
+        return direct
     candidate_paths = (
+        ("analysis_window", "logical_date"),
         ("analysis_window", "end_utc"),
         ("analysis_window", "cutoff_utc"),
         ("analysis_window", "end_beijing"),
@@ -223,6 +261,23 @@ def _extract_date_from_payload(data: dict[str, Any], path: Path) -> str | None:
 
 
 def _compact_data_source_summary(bundle: dict[str, SummaryRecord]) -> ExtractedValue | None:
+    if DAILY_REPORT_KEY in bundle:
+        record = bundle[DAILY_REPORT_KEY]
+        summary = record.data.get("data_source_summary")
+        if isinstance(summary, dict):
+            compact = {
+                "report_data_source": summary.get("report_data_source"),
+                "data_source": summary.get("data_source"),
+                "source_components": summary.get("source_components"),
+                "archive_fallback_used": summary.get("archive_fallback_used"),
+                "db_archive_mirror_match_rate": summary.get("db_archive_mirror_match_rate"),
+                "mismatch_warnings": summary.get("mismatch_warnings") or summary.get("db_archive_mismatch_warnings"),
+            }
+            return ExtractedValue(
+                value=compact,
+                source=DAILY_REPORT_KEY,
+                source_path="data_source_summary",
+            )
     for report_type in REPORT_ORDER:
         record = bundle.get(report_type)
         if record is None:
@@ -250,12 +305,14 @@ def _extract_value(bundle: dict[str, SummaryRecord], candidates: tuple[Candidate
     for candidate in candidates:
         record = bundle.get(candidate.report_type)
         if record is None:
+            record = bundle.get(DAILY_REPORT_KEY)
+        if record is None:
             continue
         value = _get_in(record.data, candidate.path)
         if _present(value):
             return ExtractedValue(
                 value=value,
-                source=candidate.report_type,
+                source=record.report_type,
                 source_path=".".join(candidate.path),
             )
     return None
@@ -271,6 +328,8 @@ def _extract_ratio_from_paths(
 ) -> ExtractedValue | None:
     record = bundle.get(report_type)
     if record is None:
+        record = bundle.get(DAILY_REPORT_KEY)
+    if record is None:
         return None
     numerator = _get_in(record.data, numerator_path)
     denominator = _get_in(record.data, denominator_path)
@@ -278,7 +337,7 @@ def _extract_ratio_from_paths(
         return None
     return ExtractedValue(
         value=round(float(numerator) / float(denominator), 4),
-        source=report_type,
+        source=record.report_type,
         source_path=source_path,
     )
 
@@ -503,6 +562,59 @@ def discover_summary_inventory(reports_dir: Path) -> dict[str, list[SummaryRecor
     return inventory
 
 
+def discover_daily_report_inventory(reports_dir: Path) -> list[SummaryRecord]:
+    latest_path = _latest_path_for_report(reports_dir, DAILY_REPORT_KEY)
+    candidate_paths: list[Path] = []
+    if latest_path.exists():
+        candidate_paths.append(latest_path)
+    candidate_paths.extend(sorted((reports_dir / "daily").glob("daily_report_*.json")))
+    seen: set[Path] = set()
+    records: list[SummaryRecord] = []
+    for path in candidate_paths:
+        if path.name == "daily_report_latest.json" and path != latest_path:
+            continue
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("report_type") not in {None, "daily_canonical"}:
+            continue
+        filename_date = _parse_date(path.name)
+        logical_date = _extract_date_from_payload(data, path)
+        source_kind = "latest_daily_report_json" if path.name == latest_path.name else "dated_daily_report_json"
+        warnings: list[str] = []
+        if filename_date and logical_date and filename_date != logical_date:
+            warnings.append(f"filename_date_mismatch:{filename_date}!={logical_date}")
+        records.append(
+            SummaryRecord(
+                report_type=DAILY_REPORT_KEY,
+                path=path,
+                logical_date=logical_date,
+                data=data,
+                source_kind=source_kind,
+                filename_date=filename_date,
+                warnings=warnings,
+            )
+        )
+    return records
+
+
+def discover_compare_inventory(reports_dir: Path) -> dict[str, list[SummaryRecord]]:
+    inventory = discover_summary_inventory(reports_dir)
+    inventory[DAILY_REPORT_KEY] = discover_daily_report_inventory(reports_dir)
+    return inventory
+
+
+def _default_compare_inventory(inventory: dict[str, list[SummaryRecord]]) -> dict[str, list[SummaryRecord]]:
+    return {DAILY_REPORT_KEY: list(inventory.get(DAILY_REPORT_KEY, []))}
+
+
 def _all_available_dates(inventory: dict[str, list[SummaryRecord]]) -> list[str]:
     dates = {
         record.logical_date
@@ -571,11 +683,11 @@ def _empty_rebuild_summary(
         "attempted_report_types": {
             "today": {
                 report_type: _default_rebuild_attempt(expected_logical_date=selected_today)
-                for report_type in REPORT_ORDER
+                for report_type in REBUILD_REPORT_ORDER
             },
             "previous": {
                 report_type: _default_rebuild_attempt(expected_logical_date=selected_previous)
-                for report_type in REPORT_ORDER
+                for report_type in REBUILD_REPORT_ORDER
             },
         },
     }
@@ -601,7 +713,7 @@ def _warning_to_failure_reason(warning: str) -> str | None:
 
 def _warning_report_type(warning: str) -> str | None:
     for part in warning.split(":"):
-        if part in REPORT_SPECS:
+        if part == DAILY_REPORT_KEY or part in REPORT_SPECS:
             return part
     return None
 
@@ -666,7 +778,7 @@ def _build_rebuild_summary(
         if logical_date is None:
             continue
         date_attempts = attempts_by_date.get(logical_date, {})
-        for report_type in REPORT_ORDER:
+        for report_type in REBUILD_REPORT_ORDER:
             if isinstance(date_attempts.get(report_type), dict):
                 attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
                 attempt.update(date_attempts[report_type])
@@ -684,7 +796,7 @@ def _selected_rebuild_failure_reasons(rebuild_summary: dict[str, Any]) -> set[st
         report_attempts = attempted_report_types.get(label)
         if not isinstance(report_attempts, dict):
             continue
-        for report_type in REPORT_ORDER:
+        for report_type in REBUILD_REPORT_ORDER:
             attempt = report_attempts.get(report_type)
             if not isinstance(attempt, dict):
                 continue
@@ -715,6 +827,8 @@ def _determine_strict_failure_reason(
         return "rebuild_logical_date_mismatch"
     if failure_reasons and (missing_today_reports or missing_previous_reports):
         return "rebuild_failed"
+    if DAILY_REPORT_KEY in missing_today_reports or DAILY_REPORT_KEY in missing_previous_reports:
+        return "missing_canonical_daily_report"
     if missing_today_reports:
         return "missing_today_bundle" if len(missing_today_reports) == len(REPORT_ORDER) else "incomplete_today_bundle"
     if missing_previous_reports:
@@ -729,11 +843,11 @@ def _pick_best_record(records: list[SummaryRecord], logical_date: str) -> Summar
 
     def _priority(record: SummaryRecord) -> tuple[int, float, str]:
         filename_matches = record.filename_date == logical_date
-        if record.source_kind == "dated_summary_json" and filename_matches:
+        if record.source_kind in {"dated_summary_json", "dated_daily_report_json"} and filename_matches:
             rank = 0
-        elif record.source_kind == "latest_summary_json":
+        elif record.source_kind in {"latest_summary_json", "latest_daily_report_json"}:
             rank = 1
-        elif record.source_kind == "dated_summary_json":
+        elif record.source_kind in {"dated_summary_json", "dated_daily_report_json"}:
             rank = 2
         else:
             rank = 3
@@ -766,16 +880,36 @@ def load_date_bundle(
     return bundle, limitations
 
 
+def load_compare_date_bundle(
+    inventory: dict[str, list[SummaryRecord]],
+    *,
+    logical_date: str | None,
+    legacy_fallback: bool = False,
+) -> tuple[dict[str, SummaryRecord], list[str], str]:
+    if not logical_date:
+        return {}, ["date_selection_failed:no_logical_date"], "no_data"
+    daily_record = _pick_best_record(inventory.get(DAILY_REPORT_KEY, []), logical_date)
+    if daily_record is not None:
+        limitations = list(daily_record.warnings)
+        return {DAILY_REPORT_KEY: daily_record}, limitations, CANONICAL_SOURCE_MODE
+    if not legacy_fallback:
+        return {}, [f"missing_summary:{DAILY_REPORT_KEY}:{logical_date}"], "missing"
+    legacy_bundle, legacy_limitations = load_date_bundle(inventory, logical_date=logical_date)
+    if legacy_bundle:
+        return legacy_bundle, sorted(set(legacy_limitations + ["legacy_source_used"])), LEGACY_SOURCE_MODE
+    return {}, sorted(set(legacy_limitations + [f"missing_summary:{DAILY_REPORT_KEY}:{logical_date}"])), "missing"
+
+
 def _refresh_latest_reports(
     *,
     project_root: Path,
     reports_dir: Path,
-    report_types: tuple[str, ...] = REPORT_ORDER,
+    report_types: tuple[str, ...] = (DAILY_REPORT_KEY,),
 ) -> list[str]:
     warnings: list[str] = []
     for report_type in report_types:
-        spec = REPORT_SPECS[report_type]
-        latest_path = reports_dir / spec.latest_filename
+        spec = _report_spec(report_type)
+        latest_path = _latest_path_for_report(reports_dir, report_type)
         if latest_path.exists():
             continue
         script_path = project_root / spec.generator_script
@@ -811,13 +945,17 @@ def _refresh_dated_reports_for_date(
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     attempts: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
-    selected_report_types = [report_type for report_type in (report_types or list(REPORT_ORDER)) if report_type in REPORT_SPECS]
+    selected_report_types = [
+        report_type
+        for report_type in (report_types or [DAILY_REPORT_KEY])
+        if report_type == DAILY_REPORT_KEY or report_type in REPORT_SPECS
+    ]
     for report_type in selected_report_types:
         attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
         attempt["attempted"] = True
-        spec = REPORT_SPECS[report_type]
+        spec = _report_spec(report_type)
         script_path = project_root / spec.generator_script
-        expected_dated_json = reports_dir / f"{Path(spec.latest_filename).stem}_{logical_date}.json"
+        expected_dated_json = _dated_path_for_report(reports_dir, report_type, logical_date)
         attempt["output_path"] = _display_path(expected_dated_json)
         if not script_path.exists():
             attempt["failure_reason"] = "missing_generator"
@@ -890,6 +1028,7 @@ def ensure_compare_inputs(
     allow_generate: bool,
     rebuild: bool,
     strict: bool,
+    legacy_fallback: bool = False,
 ) -> tuple[dict[str, list[SummaryRecord]], dict[str, Any], dict[str, Any]]:
     rebuild_state = {
         "attempted": False,
@@ -899,7 +1038,7 @@ def ensure_compare_inputs(
         "attempts_by_date": {},
         "warnings": [],
     }
-    if not allow_generate or not (strict or rebuild):
+    if not allow_generate or not rebuild:
         return inventory, selection, rebuild_state
 
     rebuild_state["attempted"] = True
@@ -917,9 +1056,13 @@ def ensure_compare_inputs(
         if logical_date in seen_dates:
             continue
         seen_dates.add(logical_date)
-        bundle, _ = load_date_bundle(inventory, logical_date=logical_date)
-        missing_report_types = [report_type for report_type in REPORT_ORDER if report_type not in bundle]
-        if not missing_report_types:
+        daily_bundle, _, source_mode = load_compare_date_bundle(
+            inventory,
+            logical_date=logical_date,
+            legacy_fallback=legacy_fallback,
+        )
+        missing_report_types = [DAILY_REPORT_KEY] if DAILY_REPORT_KEY not in daily_bundle else []
+        if not missing_report_types and source_mode == CANONICAL_SOURCE_MODE:
             continue
         refresh_result = _refresh_dated_reports_for_date(
             project_root=project_root,
@@ -939,8 +1082,12 @@ def ensure_compare_inputs(
                 report_type,
                 _default_rebuild_attempt(expected_logical_date=logical_date),
             )
-        inventory = discover_summary_inventory(reports_dir)
-        refreshed_bundle, _ = load_date_bundle(inventory, logical_date=logical_date)
+        inventory = discover_compare_inventory(reports_dir)
+        refreshed_bundle, _, _ = load_compare_date_bundle(
+            inventory,
+            logical_date=logical_date,
+            legacy_fallback=legacy_fallback,
+        )
         for report_type in missing_report_types:
             attempt = rebuild_state["attempts_by_date"][logical_date][report_type]
             rebuilt_record = refreshed_bundle.get(report_type)
@@ -1327,16 +1474,31 @@ def _source_entry(
     }
 
 
-def _bundle_source_files(bundle: dict[str, SummaryRecord], *, logical_date: str | None) -> dict[str, dict[str, Any]]:
+def _bundle_source_files(
+    bundle: dict[str, SummaryRecord],
+    *,
+    logical_date: str | None,
+    prefer_legacy: bool = False,
+) -> dict[str, dict[str, Any]]:
+    if DAILY_REPORT_KEY in bundle or (not bundle and not prefer_legacy):
+        return {
+            DAILY_REPORT_KEY: _source_entry(bundle.get(DAILY_REPORT_KEY), report_type=DAILY_REPORT_KEY, logical_date=logical_date)
+        }
     return {
         report_type: _source_entry(bundle.get(report_type), report_type=report_type, logical_date=logical_date)
         for report_type in REPORT_ORDER
     }
 
 
-def _aggregate_data_source_summary(bundle: dict[str, SummaryRecord], *, logical_date: str | None) -> dict[str, Any]:
+def _aggregate_data_source_summary(
+    bundle: dict[str, SummaryRecord],
+    *,
+    logical_date: str | None,
+    prefer_legacy: bool = False,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {}
-    for report_type in REPORT_ORDER:
+    report_order = (DAILY_REPORT_KEY,) if DAILY_REPORT_KEY in bundle or (not bundle and not prefer_legacy) else REPORT_ORDER
+    for report_type in report_order:
         record = bundle.get(report_type)
         if record is None:
             payload[report_type] = {
@@ -1408,21 +1570,23 @@ def _normalize_source_files(payload: dict[str, Any]) -> dict[str, dict[str, Any]
     previous_raw = raw_source_files.get("previous", {}) if isinstance(raw_source_files, dict) else {}
     today_date = payload.get("today_date")
     previous_date = payload.get("previous_date")
+    today_order = (DAILY_REPORT_KEY,) if DAILY_REPORT_KEY in today_raw else REPORT_ORDER
+    previous_order = (DAILY_REPORT_KEY,) if DAILY_REPORT_KEY in previous_raw else REPORT_ORDER
     return {
         "today": {
             report_type: _normalize_source_entry(today_raw.get(report_type), report_type=report_type, logical_date=today_date)
-            for report_type in REPORT_ORDER
+            for report_type in today_order
         },
         "previous": {
             report_type: _normalize_source_entry(previous_raw.get(report_type), report_type=report_type, logical_date=previous_date)
-            for report_type in REPORT_ORDER
+            for report_type in previous_order
         },
     }
 
 
 def _opportunity_maturity_schema_limitations(bundle_name: str, bundle: dict[str, SummaryRecord]) -> list[str]:
     limitations: list[str] = []
-    for report_type in ("afternoon_evening_state", "overnight_trade_action", "overnight_run"):
+    for report_type in (DAILY_REPORT_KEY, "afternoon_evening_state", "overnight_trade_action", "overnight_run"):
         record = bundle.get(report_type)
         if record is None:
             continue
@@ -1589,7 +1753,8 @@ def _core_markdown_table(rows: list[dict[str, Any]]) -> str:
 
 def _source_section(source_files: dict[str, dict[str, Any]], label: str) -> list[str]:
     lines = [f"- {label}:"]
-    for report_type in REPORT_ORDER:
+    report_types = list(source_files.keys()) if source_files else list(REPORT_ORDER)
+    for report_type in report_types:
         item = source_files.get(report_type)
         if not item:
             lines.append(f"  - {report_type}: missing")
@@ -1615,7 +1780,7 @@ def _rebuild_result_text(rebuild_summary: dict[str, Any], label: str, *, success
     if not isinstance(label_attempts, dict):
         return "none"
     values: list[str] = []
-    for report_type in REPORT_ORDER:
+    for report_type in REBUILD_REPORT_ORDER:
         attempt = label_attempts.get(report_type)
         if not isinstance(attempt, dict):
             continue
@@ -1653,6 +1818,7 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     today_date = payload.get("today_date")
     previous_date = payload.get("previous_date")
     compare_basis = payload.get("compare_basis")
+    source_mode = payload.get("source_mode")
     source_files = payload.get("source_files") or {}
     strict_failure_reason = payload.get("strict_failure_reason")
     rebuild_summary = payload.get("rebuild_summary") or {}
@@ -1666,6 +1832,7 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     lines.append(f"- today_date: `{today_date or 'null'}`")
     lines.append(f"- previous_date: `{previous_date or 'null'}`")
     lines.append(f"- compare_basis: `{compare_basis or 'null'}`")
+    lines.append(f"- source_mode: `{source_mode or 'null'}`")
     if compare_available:
         lines.append(f"- 整体判断：{answers.get('1', '无法判断')}")
         lines.append(f"- 判断依据：{answers.get('2', '证据不足')}")
@@ -1744,7 +1911,14 @@ def build_compare_payload(
     strict_failure_reason: str | None,
     rebuild_summary: dict[str, Any],
     rebuild_warnings: list[str],
+    source_mode: str | None = None,
 ) -> dict[str, Any]:
+    effective_source_mode = source_mode or (
+        CANONICAL_SOURCE_MODE
+        if DAILY_REPORT_KEY in today_bundle and (not previous_date or DAILY_REPORT_KEY in previous_bundle)
+        else LEGACY_SOURCE_MODE
+    )
+    prefer_legacy_sources = effective_source_mode == LEGACY_SOURCE_MODE
     if not previous_date:
         answers = {str(index): f"无法判断；{today_date} 之前缺少 previous_date 结构化 summary JSON。" for index in range(1, 14)}
         payload = {
@@ -1753,14 +1927,16 @@ def build_compare_payload(
             "today_date": today_date,
             "previous_date": None,
             "compare_basis": compare_basis,
+            "source_mode": effective_source_mode,
+            "legacy_fallback_used": effective_source_mode != CANONICAL_SOURCE_MODE,
             "source_files": {
-                "today": _bundle_source_files(today_bundle, logical_date=today_date),
-                "previous": _bundle_source_files(previous_bundle, logical_date=None),
+                "today": _bundle_source_files(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+                "previous": _bundle_source_files(previous_bundle, logical_date=None, prefer_legacy=prefer_legacy_sources),
             },
             "data_source_summary": {
                 "selection_rule": SOURCE_SELECTION_RULE,
-                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
-                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=None),
+                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=None, prefer_legacy=prefer_legacy_sources),
             },
             "core_metrics_compare": [],
             "improvement_flags": [],
@@ -1769,7 +1945,7 @@ def build_compare_payload(
             "key_findings": ["compare not available: no previous available date"],
             "key_risks": ["无法进行 day-over-day 比较，不应编造 yesterday 值"],
             "next_actions": ["至少保留两个逻辑日期的主 summary JSON 后再运行 compare"],
-            "limitations": sorted(set(base_limitations + ["missing_previous_date"])),
+            "limitations": sorted(set(base_limitations + ["missing_previous_date"] + (["legacy_source_used"] if effective_source_mode != CANONICAL_SOURCE_MODE else []))),
             "question_answers": answers,
         }
         payload = _finalize_payload(
@@ -1796,14 +1972,16 @@ def build_compare_payload(
         "today_date": today_date,
         "previous_date": previous_date,
         "compare_basis": compare_basis,
+        "source_mode": effective_source_mode,
+        "legacy_fallback_used": effective_source_mode != CANONICAL_SOURCE_MODE,
         "source_files": {
-            "today": _bundle_source_files(today_bundle, logical_date=today_date),
-            "previous": _bundle_source_files(previous_bundle, logical_date=previous_date),
+            "today": _bundle_source_files(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+            "previous": _bundle_source_files(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
         },
         "data_source_summary": {
             "selection_rule": SOURCE_SELECTION_RULE,
-            "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
-            "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date),
+            "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+            "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
         },
         "core_metrics_compare": rows,
         "improvement_flags": _flag_rows(rows, "improvement"),
@@ -1812,7 +1990,7 @@ def build_compare_payload(
         "key_findings": _build_key_findings(rows, answers),
         "key_risks": _build_key_risks(rows, answers),
         "next_actions": _build_next_actions(rows, answers),
-        "limitations": limitations,
+        "limitations": sorted(set(limitations + (["legacy_source_used"] if effective_source_mode != CANONICAL_SOURCE_MODE else []))),
         "question_answers": answers,
     }
     payload = _finalize_payload(
@@ -1878,13 +2056,21 @@ def generate_daily_compare(
     output_dir: Path = DAILY_COMPARE_DIR,
     project_root: Path = ROOT,
     allow_generate: bool = True,
+    legacy_fallback: bool = False,
 ) -> tuple[int, dict[str, Any], dict[str, str]]:
-    inventory = discover_summary_inventory(reports_dir)
+    discovered_inventory = discover_compare_inventory(reports_dir)
+    inventory = discovered_inventory if legacy_fallback else _default_compare_inventory(discovered_inventory)
     selection = select_compare_dates(inventory, requested_date=requested_date)
     generation_warnings: list[str] = []
-    if allow_generate and (not selection["available_dates"] or (requested_date and requested_date not in selection["available_dates"])):
+    if (
+        allow_generate
+        and rebuild
+        and not requested_date
+        and (not selection["available_dates"])
+    ):
         generation_warnings = _refresh_latest_reports(project_root=project_root, reports_dir=reports_dir)
-        inventory = discover_summary_inventory(reports_dir)
+        discovered_inventory = discover_compare_inventory(reports_dir)
+        inventory = discovered_inventory if legacy_fallback else _default_compare_inventory(discovered_inventory)
         selection = select_compare_dates(inventory, requested_date=requested_date)
 
     inventory, selection, rebuild_state = ensure_compare_inputs(
@@ -1896,7 +2082,11 @@ def generate_daily_compare(
         allow_generate=allow_generate,
         rebuild=rebuild,
         strict=strict,
+        legacy_fallback=legacy_fallback,
     )
+    if not legacy_fallback:
+        inventory = _default_compare_inventory(inventory)
+        selection = select_compare_dates(inventory, requested_date=requested_date)
     rebuild_summary = _build_rebuild_summary(
         strict_mode=strict,
         rebuild_mode=rebuild,
@@ -1919,6 +2109,8 @@ def generate_daily_compare(
             "today_date": None,
             "previous_date": None,
             "compare_basis": "no_data",
+            "source_mode": "no_data",
+            "legacy_fallback_used": False,
             "source_files": {
                 "today": _bundle_source_files({}, logical_date=None),
                 "previous": _bundle_source_files({}, logical_date=None),
@@ -1941,7 +2133,7 @@ def generate_daily_compare(
         strict_failure_reason = "no_data" if strict else None
         payload = _finalize_payload(
             payload,
-            strict_failure_reason=strict_failure_reason,
+            strict_failure_reason=strict_failure_reason if strict else None,
             rebuild_summary=rebuild_summary,
             rebuild_warnings=rebuild_warnings,
         )
@@ -1952,13 +2144,45 @@ def generate_daily_compare(
         written = write_compare_artifacts(payload, output_dir=output_dir)
         return 0, payload, written
 
-    today_bundle, today_limitations = load_date_bundle(inventory, logical_date=today_date)
-    previous_bundle, previous_limitations = load_date_bundle(inventory, logical_date=previous_date) if previous_date else ({}, [])
+    today_bundle, today_limitations, today_source_mode = load_compare_date_bundle(
+        inventory,
+        logical_date=today_date,
+        legacy_fallback=legacy_fallback,
+    )
+    if previous_date:
+        previous_bundle, previous_limitations, previous_source_mode = load_compare_date_bundle(
+            inventory,
+            logical_date=previous_date,
+            legacy_fallback=legacy_fallback,
+        )
+    else:
+        previous_bundle, previous_limitations, previous_source_mode = {}, [], "missing"
     base_limitations = generation_warnings + today_limitations + previous_limitations
+    legacy_fallback_used = today_source_mode == LEGACY_SOURCE_MODE or previous_source_mode == LEGACY_SOURCE_MODE
+    source_mode = (
+        LEGACY_SOURCE_MODE
+        if legacy_fallback_used
+        else CANONICAL_SOURCE_MODE
+        if DAILY_REPORT_KEY in today_bundle or DAILY_REPORT_KEY in previous_bundle or not legacy_fallback
+        else MIXED_SOURCE_MODE
+    )
+    prefer_legacy_sources = source_mode == LEGACY_SOURCE_MODE
 
-    missing_today_reports = [report_type for report_type in REPORT_ORDER if report_type not in today_bundle]
-    missing_previous_reports = [report_type for report_type in REPORT_ORDER if previous_date and report_type not in previous_bundle]
-    if strict and (missing_today_reports or missing_previous_reports or not previous_date):
+    if strict:
+        missing_today_reports = [] if DAILY_REPORT_KEY in today_bundle else [DAILY_REPORT_KEY]
+        missing_previous_reports = [] if not previous_date or DAILY_REPORT_KEY in previous_bundle else [DAILY_REPORT_KEY]
+    else:
+        if legacy_fallback:
+            missing_today_reports = [report_type for report_type in REPORT_ORDER if DAILY_REPORT_KEY not in today_bundle and report_type not in today_bundle]
+            missing_previous_reports = [
+                report_type
+                for report_type in REPORT_ORDER
+                if previous_date and DAILY_REPORT_KEY not in previous_bundle and report_type not in previous_bundle
+            ]
+        else:
+            missing_today_reports = [] if DAILY_REPORT_KEY in today_bundle else [DAILY_REPORT_KEY]
+            missing_previous_reports = [] if not previous_date or DAILY_REPORT_KEY in previous_bundle else [DAILY_REPORT_KEY]
+    if missing_today_reports or missing_previous_reports or (strict and not previous_date):
         strict_failure_reason = _determine_strict_failure_reason(
             today_date=today_date,
             previous_date=previous_date,
@@ -1972,34 +2196,39 @@ def generate_daily_compare(
             "today_date": today_date,
             "previous_date": previous_date,
             "compare_basis": compare_basis,
+            "source_mode": source_mode,
+            "legacy_fallback_used": legacy_fallback_used,
             "source_files": {
-                "today": _bundle_source_files(today_bundle, logical_date=today_date),
-                "previous": _bundle_source_files(previous_bundle, logical_date=previous_date),
+                "today": _bundle_source_files(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+                "previous": _bundle_source_files(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
             },
             "data_source_summary": {
                 "selection_rule": SOURCE_SELECTION_RULE,
-                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date),
-                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date),
+                "today": _aggregate_data_source_summary(today_bundle, logical_date=today_date, prefer_legacy=prefer_legacy_sources),
+                "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
             },
             "core_metrics_compare": [],
             "improvement_flags": [],
             "regression_flags": [],
             "unchanged_flags": [],
-            "key_findings": ["strict compare failed: selected dates do not have complete primary summary coverage"],
-            "key_risks": ["strict mode refuses to fabricate or partially infer missing today/previous data"],
-            "next_actions": ["先补齐 today/previous 的三份主 summary JSON，再运行 daily-compare-strict"],
+            "key_findings": ["compare failed: selected dates do not have complete canonical daily report coverage"],
+            "key_risks": ["daily compare refuses to fabricate or partially infer missing today/previous data"],
+            "next_actions": ["先补齐 today/previous 的 canonical daily report JSON，再运行 daily-compare"],
             "limitations": sorted(set(base_limitations + [f"missing_today_reports={','.join(missing_today_reports)}", f"missing_previous_reports={','.join(missing_previous_reports)}"])),
-            "question_answers": {str(index): "无法判断；strict 模式下 today/previous 的主 summary JSON 不完整。" for index in range(1, 14)},
+            "question_answers": {str(index): "无法判断；today/previous 的 canonical daily report JSON 不完整。" for index in range(1, 14)},
         }
         payload = _finalize_payload(
             payload,
-            strict_failure_reason=strict_failure_reason,
+            strict_failure_reason=strict_failure_reason if strict else None,
             rebuild_summary=rebuild_summary,
             rebuild_warnings=rebuild_warnings,
         )
         payload["markdown"] = build_markdown_report(payload)
-        payload["csv"] = _status_csv(False, today_date, previous_date, compare_basis, "strict_incomplete_primary_summary")
-        return 2, payload, {}
+        payload["csv"] = _status_csv(False, today_date, previous_date, compare_basis, "incomplete_canonical_daily_report")
+        if strict:
+            return 2, payload, {}
+        written = write_compare_artifacts(payload, output_dir=output_dir)
+        return 0, payload, written
 
     payload = build_compare_payload(
         today_date=today_date,
@@ -2011,6 +2240,7 @@ def generate_daily_compare(
         strict_failure_reason=None,
         rebuild_summary=rebuild_summary,
         rebuild_warnings=rebuild_warnings,
+        source_mode=source_mode,
     )
     if strict and not payload.get("compare_available"):
         return 2, payload, {}
@@ -2025,6 +2255,7 @@ def main(argv: list[str] | None = None) -> int:
         requested_date=args.date,
         strict=args.strict,
         rebuild=args.rebuild,
+        legacy_fallback=args.legacy_fallback,
     )
     output = {
         "status": "ok" if exit_code == 0 else "error",
@@ -2032,6 +2263,8 @@ def main(argv: list[str] | None = None) -> int:
         "today_date": payload.get("today_date"),
         "previous_date": payload.get("previous_date"),
         "compare_basis": payload.get("compare_basis"),
+        "source_mode": payload.get("source_mode"),
+        "legacy_fallback_used": payload.get("legacy_fallback_used"),
         "strict_failure_reason": payload.get("strict_failure_reason"),
         "rebuild_attempted": (payload.get("rebuild_summary") or {}).get("attempted"),
         "rebuild_warnings": payload.get("rebuild_warnings", [])[:5],

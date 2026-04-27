@@ -7,7 +7,7 @@ from pathlib import Path
 
 import quality_reports
 import sqlite_store
-from reports.generate_overnight_run_analysis_latest import compute_trade_opportunities
+from reports.legacy.generate_overnight_run_analysis_latest import compute_trade_opportunities
 
 
 class OpportunityCalibrationReportTests(unittest.TestCase):

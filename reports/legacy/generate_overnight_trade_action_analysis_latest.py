@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Deprecated legacy report generator.
+# Daily workflow uses reports/generate_daily_report_latest.py.
+# This script is kept only for manual/debug compatibility.
+
 import argparse
 import csv
 import json
@@ -70,6 +74,10 @@ from generate_overnight_run_analysis_latest import (
     to_float,
     to_int,
 )
+
+if str(REPORTS_DIR) not in sys.path:
+    sys.path.insert(0, str(REPORTS_DIR))
+
 from report_output_utils import write_dated_report_copies
 
 MARKDOWN_PATH = REPORTS_DIR / "overnight_trade_action_analysis_latest.md"

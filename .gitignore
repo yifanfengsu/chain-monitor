@@ -20,6 +20,9 @@ data/*.db
 reports/*latest*.md
 reports/*latest*.csv
 reports/*latest*.json
+reports/daily/*.md
+reports/daily/*.csv
+reports/daily/*.json
 reports/daily_compare/*.md
 reports/daily_compare/*.csv
 reports/daily_compare/*.json
@@ -28,11 +31,14 @@ reports/archive/
 reports/**/*.tmp
 !reports/*.py
 !reports/report_output_utils.py
+!reports/legacy/
+!reports/legacy/*.py
 !reports/templates/
 !reports/templates/**
 !reports/examples/
 !reports/examples/**
 !reports/README*
+!reports/daily/.gitkeep
 !reports/daily_compare/.gitkeep
 .idea/
 .vscode/
