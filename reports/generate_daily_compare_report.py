@@ -405,6 +405,9 @@ METRIC_SPECS: tuple[MetricSpec, ...] = (
     MetricSpec("trade_action_opportunity", "opportunity_score_p90", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "opportunity_score_p90"), _path("overnight_trade_action", "trade_opportunity_summary", "opportunity_score_p90"))),
     MetricSpec("trade_action_opportunity", "why_no_verified", direction="object", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "why_no_verified"), _path("overnight_trade_action", "trade_opportunity_summary", "why_no_verified"))),
     MetricSpec("trade_action_opportunity", "why_no_opportunities", direction="object", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "why_no_opportunities"), _path("overnight_trade_action", "trade_opportunity_summary", "why_no_opportunities"))),
+    MetricSpec("trade_action_opportunity", "verified_maturity", direction="object", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "verified_maturity"), _path("overnight_trade_action", "trade_opportunity_summary", "verified_maturity"), _path("overnight_run", "trade_opportunity_summary", "verified_maturity"), _path("overnight_run", "verified_maturity"))),
+    MetricSpec("trade_action_opportunity", "verified_should_not_be_traded_reason", direction="object", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "verified_should_not_be_traded_reason"), _path("overnight_trade_action", "trade_opportunity_summary", "verified_should_not_be_traded_reason"), _path("overnight_run", "trade_opportunity_summary", "verified_should_not_be_traded_reason"), _path("overnight_run", "verified_should_not_be_traded_reason"))),
+    MetricSpec("trade_action_opportunity", "maturity_reasons", direction="object", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "maturity_reasons"), _path("overnight_trade_action", "trade_opportunity_summary", "maturity_reasons"), _path("overnight_run", "trade_opportunity_summary", "maturity_reasons"), _path("overnight_run", "maturity_reasons"))),
     MetricSpec("candidate_verified_posterior", "candidate_30s_followthrough_rate", direction="higher_better", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "candidate_outcome_30s", "followthrough_rate"), _path("overnight_trade_action", "trade_opportunity_summary", "candidate_outcome_30s", "followthrough_rate"))),
     MetricSpec("candidate_verified_posterior", "candidate_60s_followthrough_rate", direction="higher_better", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "candidate_outcome_60s", "followthrough_rate"), _path("overnight_trade_action", "trade_opportunity_summary", "candidate_outcome_60s", "followthrough_rate"))),
     MetricSpec("candidate_verified_posterior", "candidate_300s_followthrough_rate", direction="higher_better", candidates=(_path("afternoon_evening_state", "trade_opportunity_summary", "candidate_outcome_300s", "followthrough_rate"), _path("overnight_trade_action", "trade_opportunity_summary", "candidate_outcome_300s", "followthrough_rate"))),
@@ -1417,6 +1420,22 @@ def _normalize_source_files(payload: dict[str, Any]) -> dict[str, dict[str, Any]
     }
 
 
+def _opportunity_maturity_schema_limitations(bundle_name: str, bundle: dict[str, SummaryRecord]) -> list[str]:
+    limitations: list[str] = []
+    for report_type in ("afternoon_evening_state", "overnight_trade_action", "overnight_run"):
+        record = bundle.get(report_type)
+        if record is None:
+            continue
+        summary = record.data.get("trade_opportunity_summary")
+        if not isinstance(summary, dict):
+            limitations.append(f"schema_missing:{bundle_name}:{report_type}:trade_opportunity_summary")
+            continue
+        for field in ("verified_maturity", "verified_should_not_be_traded_reason", "maturity_reasons"):
+            if field not in summary:
+                limitations.append(f"schema_missing:{bundle_name}:{report_type}:trade_opportunity_summary.{field}")
+    return limitations
+
+
 def _build_limitations(
     rows: list[dict[str, Any]],
     *,
@@ -1431,6 +1450,8 @@ def _build_limitations(
         limitations.append(f"missing_metrics={','.join(sorted(missing_metrics)[:20])}")
     if schema_drift_metrics:
         limitations.append(f"schema_drift_metrics={','.join(sorted(schema_drift_metrics)[:20])}")
+    limitations.extend(_opportunity_maturity_schema_limitations("today", today_bundle))
+    limitations.extend(_opportunity_maturity_schema_limitations("previous", previous_bundle))
     for bundle_name, bundle in (("today", today_bundle), ("previous", previous_bundle)):
         for report_type, record in bundle.items():
             source_limitations = record.data.get("limitations")

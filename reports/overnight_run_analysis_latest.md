@@ -2,70 +2,47 @@
 
 ## 1. 执行摘要
 
-- 主窗口为 `2026-04-20 15:03:53 UTC` 到 `2026-04-21 05:53:12 UTC`，持续 `14.82h`。
-- 主窗口共 `526` 条 signals，其中 LP stage rows `136`、已送达 LP 消息 `7`、asset cases `44`、case followups `7`。
-- OKX live context 在主窗口 `live_public=136/136`；`kraken_futures` attempts=`0`。
-- prealert 在主窗口为 `1`，候选 funnel 为 `candidates=136` `gate_passed=136` `delivered=0`。
-- `sweep_building` 样本 `35` 条，显示层残留 `climax/高潮` 为 `0`。
-- trade action 分布：`{'CONFLICT_NO_TRADE': 8, 'DO_NOT_CHASE_LONG': 31, 'DO_NOT_CHASE_SHORT': 33, 'LONG_BIAS_OBSERVE': 38, 'SHORT_BIAS_OBSERVE': 24, 'SHORT_CHASE_ALLOWED': 1, 'WAIT_CONFIRMATION': 1}`；可追类总数 `long=0` `short=1`。
-- asset state 分布：`{'DO_NOT_CHASE_LONG': 30, 'DO_NOT_CHASE_SHORT': 29, 'NO_TRADE_CHOP': 3, 'NO_TRADE_LOCK': 13, 'OBSERVE_LONG': 37, 'OBSERVE_SHORT': 22, 'SHORT_CANDIDATE': 1, 'WAIT_CONFIRMATION': 1}`；state change sent=`0` risk blockers=`7` candidates=`0`。
-- no-trade lock: entered=`4` suppressed=`0` released=`123`。
-- candidate vs tradeable: candidate=`1` tradeable=`0` 60s_source=`{'okx_mark': 544}`。
-- final output 分布：`{'missing': 136}`；verified=`0` candidate=`0` blocked=`0`。
-- legacy chase 审计：downgraded=`0` leaked=`0` chase_without_verified=`1` blocked_by_gate=`0`。
+- 主窗口为 `2026-04-23 16:42:06 UTC` 到 `2026-04-24 15:51:50 UTC`，持续 `23.16h`。
+- 主窗口共 `914` 条 signals，其中 LP stage rows `197`、已送达 LP 消息 `67`、asset cases `62`、case followups `67`。
+- OKX live context 在主窗口 `live_public=197/197`；`kraken_futures` attempts=`0`。
+- prealert 在主窗口为 `0`，候选 funnel 为 `candidates=197` `gate_passed=197` `delivered=0`。
+- `sweep_building` 样本 `36` 条，显示层残留 `climax/高潮` 为 `0`。
+- trade action 分布：`{'CONFLICT_NO_TRADE': 17, 'DO_NOT_CHASE_LONG': 45, 'DO_NOT_CHASE_SHORT': 48, 'LONG_BIAS_OBSERVE': 44, 'SHORT_BIAS_OBSERVE': 41, 'WAIT_CONFIRMATION': 2}`；可追类总数 `long=0` `short=0`。
+- asset state 分布：`{'DO_NOT_CHASE_LONG': 44, 'DO_NOT_CHASE_SHORT': 47, 'NO_TRADE_CHOP': 2, 'NO_TRADE_LOCK': 18, 'OBSERVE_LONG': 44, 'OBSERVE_SHORT': 40, 'WAIT_CONFIRMATION': 2}`；state change sent=`21` risk blockers=`46` candidates=`0`。
+- no-trade lock: entered=`7` suppressed=`0` released=`179`。
+- candidate vs tradeable: candidate=`0` tradeable=`0` 60s_source=`{'okx_mark': 788}`。
+- final output 分布：`{'asset_market_state': 84, 'trade_action_legacy': 99, 'trade_opportunity': 14}`；verified=`0` candidate=`0` blocked=`4`。
+- opportunity maturity: verified_maturity=`immature` should_not_trade=`outcome_completion_rate_below_0.70` maturity_reasons=`['outcome_completion_rate_below_0.70']`。
+- legacy chase 审计：downgraded=`0` leaked=`0` chase_without_verified=`0` blocked_by_gate=`53`。
 - 验证问题：all_opportunity_labels_verified=`True` all_candidate_labels_are_candidate=`True` blocked_covers_legacy_chase_risk=`True`。
-- majors 覆盖仍只在 `ETH/USDT` 与 `ETH/USDC`；BTC/SOL 仍缺 pool book 覆盖，无法代表更广 majors。
+- majors 覆盖保持透明：BTC 若出现在 configured_but_disabled，需要在本地 `data/lp_pools.json` 明确启用；SOL 原生池仍需要 Solana listener，Base 池需要 Base chain routing，不能误算作 Ethereum 池。
 
 ## 2. 数据源与完整性说明
 
-- `app/data/archive/raw_events/2026-04-20.ndjson.gz`: exists=`True` records=`4171` range=`2026-04-20 15:03:51 UTC -> 2026-04-20 15:59:52 UTC` note=`raw events archive`
-- `app/data/archive/raw_events/2026-04-21.ndjson.gz`: exists=`True` records=`43792` range=`2026-04-20 16:00:05 UTC -> 2026-04-21 05:56:14 UTC` note=`raw events archive`
-- `app/data/archive/raw_events/2026-04-22.ndjson`: exists=`True` records=`49504` range=`2026-04-21 16:04:52 UTC -> 2026-04-22 05:21:54 UTC` note=`raw events archive`
-- `app/data/archive/raw_events/2026-04-23.ndjson`: exists=`True` records=`39649` range=`2026-04-22 16:05:04 UTC -> 2026-04-23 05:16:15 UTC` note=`raw events archive`
-- `app/data/archive/parsed_events/2026-04-20.ndjson.gz`: exists=`True` records=`1921` range=`2026-04-20 15:03:51 UTC -> 2026-04-20 15:59:50 UTC` note=`parsed events archive`
-- `app/data/archive/parsed_events/2026-04-21.ndjson.gz`: exists=`True` records=`23985` range=`2026-04-20 16:00:05 UTC -> 2026-04-21 05:56:14 UTC` note=`parsed events archive`
-- `app/data/archive/parsed_events/2026-04-22.ndjson`: exists=`True` records=`22845` range=`2026-04-21 16:04:52 UTC -> 2026-04-22 05:21:54 UTC` note=`parsed events archive`
-- `app/data/archive/parsed_events/2026-04-23.ndjson`: exists=`True` records=`19055` range=`2026-04-22 16:05:04 UTC -> 2026-04-23 05:16:15 UTC` note=`parsed events archive`
-- `data/chain_monitor.sqlite`: exists=`True` records=`2142` range=`2024-03-09 16:00:00 UTC -> 2026-04-23 05:13:15 UTC` note=`sqlite signals mirror via report_data_loader`
-- `app/data/archive/cases/2026-04-18.ndjson`: exists=`True` records=`40383` range=`2026-04-18 05:26:16 UTC -> 2026-04-18 15:59:55 UTC` note=`case archive`
-- `app/data/archive/cases/2026-04-19.ndjson`: exists=`True` records=`1309` range=`2026-04-19 15:38:27 UTC -> 2026-04-19 15:59:51 UTC` note=`case archive`
-- `app/data/archive/cases/2026-04-20.ndjson.gz`: exists=`True` records=`2378` range=`2026-04-20 15:03:51 UTC -> 2026-04-20 15:59:50 UTC` note=`case archive`
-- `app/data/archive/cases/2026-04-21.ndjson.gz`: exists=`True` records=`34950` range=`2026-04-20 16:00:05 UTC -> 2026-04-21 05:56:14 UTC` note=`case archive`
-- `app/data/archive/cases/2026-04-22.ndjson`: exists=`True` records=`32878` range=`2026-04-21 16:04:52 UTC -> 2026-04-22 05:21:54 UTC` note=`case archive`
-- `app/data/archive/cases/2026-04-23.ndjson`: exists=`True` records=`27318` range=`2026-04-22 16:05:04 UTC -> 2026-04-23 05:16:15 UTC` note=`case archive`
-- `app/data/archive/case_followups/2026-04-18.ndjson`: exists=`True` records=`33` range=`2026-04-18 05:32:17 UTC -> 2026-04-18 14:53:00 UTC` note=`case followups archive`
-- `app/data/archive/case_followups/2026-04-19.ndjson`: exists=`True` records=`2` range=`2026-04-19 15:41:15 UTC -> 2026-04-19 15:54:32 UTC` note=`case followups archive`
-- `app/data/archive/case_followups/2026-04-20.ndjson.gz`: exists=`True` records=`5` range=`2026-04-20 15:21:28 UTC -> 2026-04-20 15:39:05 UTC` note=`case followups archive`
-- `app/data/archive/case_followups/2026-04-21.ndjson.gz`: exists=`True` records=`67` range=`2026-04-20 16:05:52 UTC -> 2026-04-21 05:27:41 UTC` note=`case followups archive`
-- `app/data/archive/case_followups/2026-04-22.ndjson`: exists=`True` records=`44` range=`2026-04-21 16:06:52 UTC -> 2026-04-22 03:24:03 UTC` note=`case followups archive`
-- `app/data/archive/case_followups/2026-04-23.ndjson`: exists=`True` records=`45` range=`2026-04-22 18:36:04 UTC -> 2026-04-23 05:02:06 UTC` note=`case followups archive`
-- `app/data/archive/delivery_audit/2026-04-18.ndjson`: exists=`True` records=`54936` range=`2026-04-18 05:26:16 UTC -> 2026-04-18 15:59:56 UTC` note=`delivery audit archive`
-- `app/data/archive/delivery_audit/2026-04-19.ndjson`: exists=`True` records=`2056` range=`2026-04-19 15:38:27 UTC -> 2026-04-19 15:59:52 UTC` note=`delivery audit archive`
-- `app/data/archive/delivery_audit/2026-04-20.ndjson.gz`: exists=`True` records=`4260` range=`2026-04-20 15:03:51 UTC -> 2026-04-20 15:59:52 UTC` note=`delivery audit archive`
-- `app/data/archive/delivery_audit/2026-04-21.ndjson.gz`: exists=`True` records=`44724` range=`2026-04-20 16:00:05 UTC -> 2026-04-21 05:56:14 UTC` note=`delivery audit archive`
-- `app/data/archive/delivery_audit/2026-04-22.ndjson`: exists=`True` records=`50620` range=`2026-04-21 16:04:52 UTC -> 2026-04-22 05:21:54 UTC` note=`delivery audit archive`
-- `app/data/archive/delivery_audit/2026-04-23.ndjson`: exists=`True` records=`40820` range=`2026-04-22 16:05:04 UTC -> 2026-04-23 05:16:15 UTC` note=`delivery audit archive`
-- `data/asset_cases.cache.json`: exists=`True` records=`1` range=`2026-04-23 05:01:15 UTC -> 2026-04-23 05:02:25 UTC` note=`asset case snapshot cache`
-- `data/lp_quality_stats.cache.json`: exists=`True` records=`800` range=`2026-04-19 13:06:51 UTC -> 2026-04-23 05:07:28 UTC` note=`quality stats cache`
-- `data/chain_monitor.sqlite`: exists=`True` records=`605437` range=`n/a -> n/a` note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 137116, 'parsed_events': 67807, 'signals': 2142, 'signal_features': 9696, 'market_context_snapshots': 2142, 'market_context_attempts': 3203, 'outcomes': 3468, 'asset_cases': 9999, 'asset_market_states': 582, 'no_trade_locks': 502, 'trade_opportunities': 675, 'opportunity_outcomes': 2025, 'quality_stats': 1270, 'telegram_deliveries': 164840, 'prealert_lifecycle': 2494, 'delivery_audit': 197279, 'case_followups': 196} archive_rows_by_category={'raw_events': 137116, 'parsed_events': 67806, 'signals': 2141, 'delivery_audit': 197416, 'cases': 139216, 'case_followups': 196} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:signals:sqlite=2142:archive=2141', 'db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416', 'db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806', 'db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141', 'db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416']`
-- raw/parsed archive presence: `raw_events=True` `parsed_events=True`。
-- outcome windows: `{'30s': {'completed': 62, 'expired': 74}, '60s': {'expired': 80, 'completed': 56}, '300s': {'expired': 136}}`。
-- telegram suppression: `{'no_trade_opportunity': 121, 'same_blocker_repeat': 6}`。
+- `data/chain_monitor.sqlite`: exists=`True` records=`85477` range=`2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC` note=`raw events archive; sqlite window-scoped inventory for raw_events`
+- `data/chain_monitor.sqlite`: exists=`True` records=`45164` range=`2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC` note=`parsed events archive; sqlite window-scoped inventory for parsed_events`
+- `data/chain_monitor.sqlite`: exists=`True` records=`1207` range=`2026-04-23 00:00:27 UTC -> 2026-04-24 15:51:50 UTC` note=`sqlite signals mirror via report_data_loader`
+- `data/chain_monitor.sqlite`: exists=`True` records=`914` range=`2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC` note=`sqlite signals-derived case linkage window`
+- `data/chain_monitor.sqlite`: exists=`True` records=`101` range=`2026-04-23 16:54:16 UTC -> 2026-04-24 15:42:40 UTC` note=`sqlite case_followups window`
+- `data/chain_monitor.sqlite`: exists=`True` records=`87935` range=`2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC` note=`sqlite delivery_audit window`
+- `data/asset_cases.cache.json`: exists=`True` records=`1` range=`2026-04-24 15:42:38 UTC -> 2026-04-24 15:45:01 UTC` note=`asset case snapshot cache`
+- `data/lp_quality_stats.cache.json`: exists=`True` records=`800` range=`2026-04-20 06:33:25 UTC -> 2026-04-24 15:49:57 UTC` note=`quality stats cache`
+- `data/trade_opportunities.cache.json`: exists=`True` records=`682` range=`2026-04-20 15:03:51 UTC -> 2026-04-24 15:45:51 UTC` note=`trade opportunity cache`
+- `data/chain_monitor.sqlite`: exists=`True` records=`1002626` range=`n/a -> n/a` note=`sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'asset_cases': 19549, 'asset_market_states': 780, 'case_followups': 297, 'delivery_audit': 285345, 'market_context_attempts': 4385, 'outcomes': 4059, 'parsed_events': 113046, 'quality_stats': 1511, 'raw_events': 222724, 'signals': 3056, 'telegram_deliveries': 347002, 'trade_opportunities': 872} archive_rows_by_category={} db_archive_mirror_match_rate=None archive_fallback_used=False mismatch_warnings=[]`
+- raw/parsed archive presence: `raw_events=False` `parsed_events=False`。
+- outcome windows: `{'30s': {'completed': 197}, '60s': {'completed': 197}, '300s': {'completed': 197}}`。
+- telegram suppression: `{'blocked_output_requires_blocked_or_risk_state': 2, 'no_trade_opportunity': 99, 'same_blocker_repeat': 2}`。
 
 ## 3. overnight 分析窗口
 
-- 主窗口 UTC: `2026-04-20 15:03:53 UTC -> 2026-04-21 05:53:12 UTC`
-- 服务器本地: `2026-04-20 15:03:53 UTC -> 2026-04-21 05:53:12 UTC`
-- 北京时间: `2026-04-20 23:03:53 UTC+08:00 -> 2026-04-21 13:53:12 UTC+08:00`
-- 东京时间: `2026-04-21 00:03:53 UTC+09:00 -> 2026-04-21 14:53:12 UTC+09:00`
-- 选择原因: latest segment with the longest continuous signal activity after splitting on >=1h signal gaps; it also has the highest overnight LP row count.
+- 主窗口 UTC: `2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC`
+- 服务器本地: `2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC`
+- 北京时间: `2026-04-24 00:42:06 UTC+08:00 -> 2026-04-24 23:51:50 UTC+08:00`
+- 东京时间: `2026-04-24 01:42:06 UTC+09:00 -> 2026-04-25 00:51:50 UTC+09:00`
+- 选择原因: requested logical date 2026-04-24; selected the longest signal segment whose UTC end date matches it after splitting on >=1h signal gaps.
 - 其他段作为附录：
-- 附录段: `2024-03-09 16:00:00 UTC -> 2024-03-09 16:00:00 UTC` `duration=0.0h` `signals=1` `lp=0`
-- 附录段: `2026-04-18 05:26:52 UTC -> 2026-04-18 15:57:32 UTC` `duration=10.51h` `signals=424` `lp=74`
-- 附录段: `2026-04-19 15:39:05 UTC -> 2026-04-19 15:59:27 UTC` `duration=0.34h` `signals=22` `lp=2`
-- 主窗口: `2026-04-20 15:03:53 UTC -> 2026-04-21 05:53:12 UTC` `duration=14.82h` `signals=526` `lp=136`
-- 附录段: `2026-04-21 16:06:03 UTC -> 2026-04-22 05:21:54 UTC` `duration=13.26h` `signals=661` `lp=196`
-- 附录段: `2026-04-22 18:30:40 UTC -> 2026-04-23 05:13:15 UTC` `duration=10.71h` `signals=508` `lp=153`
+- 附录段: `2026-04-23 00:00:27 UTC -> 2026-04-23 05:13:15 UTC` `duration=5.21h` `signals=293` `lp=106`
+- 主窗口: `2026-04-23 16:42:06 UTC -> 2026-04-24 15:51:50 UTC` `duration=23.16h` `signals=914` `lp=197`
 
 ## 4. 非敏感运行配置摘要
 
@@ -96,82 +73,82 @@
 
 ## 5. LP stage 总览
 
-- `analysis_window_start` = `2026-04-20 15:03:53 UTC`
-- `analysis_window_end` = `2026-04-21 05:53:12 UTC`
-- `duration_hours` = `14.82`
-- `total_signal_rows` = `526`
-- `lp_signal_rows` = `136`
-- `delivered_lp_signals` = `7`
-- `asset_case_count` = `44`
-- `case_followup_count` = `7`
-- `compression_ratio` = `3.0909`
-- `avg_signals_per_case` = `3.0909`
-- `stage_distribution_pct` = `{'prealert': 0.74, 'confirm': 55.88, 'climax': 27.94, 'exhaustion_risk': 15.44}`
-- 覆盖资产 = `{'ETH': 136}`
-- 覆盖 pairs = `{'ETH/USDC': 69, 'ETH/USDT': 67}`
+- `analysis_window_start` = `2026-04-23 16:42:06 UTC`
+- `analysis_window_end` = `2026-04-24 15:51:50 UTC`
+- `duration_hours` = `23.16`
+- `total_signal_rows` = `914`
+- `lp_signal_rows` = `197`
+- `delivered_lp_signals` = `67`
+- `asset_case_count` = `62`
+- `case_followup_count` = `67`
+- `compression_ratio` = `3.1774`
+- `avg_signals_per_case` = `3.1774`
+- `stage_distribution_pct` = `{'prealert': 0.0, 'confirm': 46.7, 'climax': 33.5, 'exhaustion_risk': 19.8}`
+- 覆盖资产 = `{'ETH': 197}`
+- 覆盖 pairs = `{'ETH/USDC': 96, 'ETH/USDT': 101}`
 
 ## 6. OKX/Kraken live market context 验证
 
-- 主窗口 `live_public_count=136` `unavailable_count=0`。
-- 主窗口 `okx_attempts=741` `okx_success=740` `okx_failure=1`。
+- 主窗口 `live_public_count=197` `unavailable_count=0`。
+- 主窗口 `okx_attempts=1184` `okx_success=1182` `okx_failure=2`。
 - 主窗口 `kraken_attempts=0` `kraken_success=0` `kraken_failure=0`。
 - 主窗口 `binance_attempts=0` `bybit_attempts=0`。
-- 主窗口 requested->resolved = `{'ETHUSDC->ETH-USDT-SWAP': 69, 'ETHUSDT->ETH-USDT-SWAP': 67}`
-- CLI full archive live_public_hit_rate = `0.262`
-- CLI full archive per_venue = `[{'attempt_failure': 1, 'attempt_failure_rate': 0.0003, 'attempt_hit_rate': 0.9997, 'attempt_status_cache_hit': 33, 'attempt_status_failure': 1, 'attempt_status_success': 3167, 'attempt_success': 3167, 'attempt_total': 3168, 'cache_hit_rate': 0.0588, 'cache_hit_total': 33, 'context_request_hit_rate': 1.0, 'signal_hit_rate': 1.0, 'signal_success': 561, 'signal_total': 561, 'timeout_count': 1, 'venue': 'okx_perp', 'venue_attempt_success_rate': 0.9997}]`
+- 主窗口 requested->resolved = `{'ETHUSDC->ETH-USDT-SWAP': 96, 'ETHUSDT->ETH-USDT-SWAP': 101}`
+- CLI full archive live_public_hit_rate = `skipped`
+- CLI full archive per_venue = `{}`
 - 判断：OKX 主路径已在真实 overnight 样本中生效；Kraken fallback 未被触发，所以只能确认配置已切到二级位，不能确认其夜间实战成功率。
 
 ## 7. prealert 真实表现
 
-- `prealert_count=1` `major_prealert_count=1` `non_major_prealert_count=0`
-- `prealert_to_confirm_30s=0.0`
-- `prealert_to_confirm_60s=1.0`
-- `prealert_to_confirm_90s=1.0`
+- `prealert_count=0` `major_prealert_count=0` `non_major_prealert_count=0`
+- `prealert_to_confirm_30s=None`
+- `prealert_to_confirm_60s=None`
+- `prealert_to_confirm_90s=None`
 - 判断：主窗口没有 prealert，所以 non-major guard 只能以“没有漏出 non-major prealert”来确认，无法证明 majors prealert 已恢复。
 
 ## 8. confirm local/broader/late/chase 分析
 
-- `confirm_count` = `76`
+- `confirm_count` = `92`
 - `clean_confirm_count` = `2`
-- `local_confirm_count` = `37`
-- `broader_confirm_count` = `4`
-- `late_confirm_count` = `16`
+- `local_confirm_count` = `48`
+- `broader_confirm_count` = `8`
+- `late_confirm_count` = `27`
 - `chase_risk_count` = `0`
-- `unconfirmed_confirm_count` = `23`
-- `blank_confirm_quality_count` = `35`
-- `broader_alignment_confirmed_count` = `11`
-- `predict_warning_text_count` = `22`
-- `confirm_move_before_30s_median` = `-0.000179`
-- `confirm_move_after_60s_median` = `0.000194`
-- `confirm_move_after_300s_median` = `None`
+- `unconfirmed_confirm_count` = `27`
+- `blank_confirm_quality_count` = `36`
+- `broader_alignment_confirmed_count` = `20`
+- `predict_warning_text_count` = `25`
+- `confirm_move_before_30s_median` = `-0.000227`
+- `confirm_move_after_60s_median` = `-3.6e-05`
+- `confirm_move_after_300s_median` = `0.000116`
 - 判断：confirm 现在明显更诚实。夜间样本里 `23` 条被写成 `local_confirm`，`0` 条被写成 `broader_confirm`，说明系统没有把局部池子压力硬写成更广确认。
 - 但仍有 `14` 条 confirm 属于 sweep 语义，因此不会落在标准 confirm_quality/scope 分类里；这部分需要与 sweep 段一起看。
 
 ## 9. sweep_building / sweep_confirmed / exhaustion 分析
 
-- `sweep_building_count` = `35`
-- `sweep_confirmed_count` = `38`
-- `sweep_exhaustion_risk_count` = `21`
+- `sweep_building_count` = `36`
+- `sweep_confirmed_count` = `66`
+- `sweep_exhaustion_risk_count` = `39`
 - `sweep_building_display_climax_residual_count` = `0`
-- `sweep_building_to_sweep_confirmed_rate` = `0.3429`
-- `sweep_building_to_continue_rate` = `0.6571`
-- `sweep_reversal_60s` = `{'resolved_count': 19, 'adverse_count': 8, 'adverse_rate': 0.4211}`
-- `sweep_reversal_300s` = `{'resolved_count': 0, 'adverse_count': 0, 'adverse_rate': None}`
-- `sweep_exhaustion_outcome_300s` = `{'resolved_count': 0, 'adverse_count': 0, 'adverse_rate': None}`
-- `direction_performance` = `{'buy_pressure': {'count': 58, 'move_after_60s_median': 0.001843, 'move_after_300s_median': None, 'adverse_60s_rate': 0.2083, 'adverse_300s_rate': None}, 'sell_pressure': {'count': 36, 'move_after_60s_median': -0.000316, 'move_after_300s_median': None, 'adverse_60s_rate': 0.625, 'adverse_300s_rate': None}}`
+- `sweep_building_to_sweep_confirmed_rate` = `0.1944`
+- `sweep_building_to_continue_rate` = `0.5833`
+- `sweep_reversal_60s` = `{'resolved_count': 66, 'adverse_count': 24, 'adverse_rate': 0.3636}`
+- `sweep_reversal_300s` = `{'resolved_count': 66, 'adverse_count': 28, 'adverse_rate': 0.4242}`
+- `sweep_exhaustion_outcome_300s` = `{'resolved_count': 39, 'adverse_count': 21, 'adverse_rate': 0.5385}`
+- `direction_performance` = `{'buy_pressure': {'count': 64, 'move_after_60s_median': 0.000307, 'move_after_300s_median': 0.000185, 'adverse_60s_rate': 0.4062, 'adverse_300s_rate': 0.4375}, 'sell_pressure': {'count': 77, 'move_after_60s_median': 1.7e-05, 'move_after_300s_median': -0.0004, 'adverse_60s_rate': 0.4805, 'adverse_300s_rate': 0.5844}}`
 - 判断：`sweep_building` 在显示层彻底不再冒充高潮。`sweep_confirmed` 的主窗口 300s 已解析样本里没有出现反向；`sweep_exhaustion_risk` 300s 解析样本里出现了部分反向，但样本很少。
 
 ## 10. trade_action 层评估
 
-- `trade_action_distribution={'CONFLICT_NO_TRADE': 8, 'DO_NOT_CHASE_LONG': 31, 'DO_NOT_CHASE_SHORT': 33, 'LONG_BIAS_OBSERVE': 38, 'SHORT_BIAS_OBSERVE': 24, 'SHORT_CHASE_ALLOWED': 1, 'WAIT_CONFIRMATION': 1}`
-- `long_chase_allowed_count=0` `short_chase_allowed_count=1`
-- `no_trade_count=0` `wait_confirmation_count=1`
-- `do_not_chase_long_count=31` `do_not_chase_short_count=33`
-- `conflict_no_trade_count=8` `data_gap_no_trade_count=0`
-- `chase_allowed_success_rate=None` `chase_allowed_adverse_rate=None`
-- `generic_confirm_success_rate_300s=None` `generic_confirm_adverse_rate_300s=None`
-- `no_trade_would_have_saved_rate=None`
-- `conflict_after_message_reversal_rate=0.0`
+- `trade_action_distribution={'CONFLICT_NO_TRADE': 17, 'DO_NOT_CHASE_LONG': 45, 'DO_NOT_CHASE_SHORT': 48, 'LONG_BIAS_OBSERVE': 44, 'SHORT_BIAS_OBSERVE': 41, 'WAIT_CONFIRMATION': 2}`
+- `long_chase_allowed_count=0` `short_chase_allowed_count=0`
+- `no_trade_count=0` `wait_confirmation_count=2`
+- `do_not_chase_long_count=45` `do_not_chase_short_count=48`
+- `conflict_no_trade_count=17` `data_gap_no_trade_count=0`
+- `chase_allowed_success_rate=0.0` `chase_allowed_adverse_rate=None`
+- `generic_confirm_success_rate_300s=0.5` `generic_confirm_adverse_rate_300s=0.5`
+- `no_trade_would_have_saved_rate=0.7059`
+- `conflict_after_message_reversal_rate=0.7059`
 - 判断 1：`LONG/SHORT_CHASE_ALLOWED` 必须始终是少数样本；计数过高说明动作层仍过于宽松。
 - 判断 2：如果 `chase_allowed_success_rate` 明显高于 generic confirm，说明严格 chase gate 确实带来了后验提升。
 - 判断 3：`do_not_chase_*` 与 `no_trade_would_have_saved_rate` 可以用来估算系统是否减少了不利追单。
@@ -180,23 +157,28 @@
 
 ## 11. “卖压后涨 / 买压后跌”反例专项
 
-- `sell_confirm_count=39` `buy_confirm_count=37`
-- `sell_after_30s_rise_ratio=0.3158`
-- `sell_after_60s={'resolved_count': 18, 'against_count': 6, 'against_rate': 0.3333}`
-- `sell_after_300s={'resolved_count': 0, 'against_count': 0, 'against_rate': None}`
-- `buy_after_30s_fall_ratio=0.0833`
-- `buy_after_60s={'resolved_count': 10, 'against_count': 1, 'against_rate': 0.1}`
-- `buy_after_300s={'resolved_count': 0, 'against_count': 0, 'against_rate': None}`
-- `reason_distribution={}`
-- 主窗口没有找到可落为“可能代码误判”的 confirm 反例。
+- `sell_confirm_count=50` `buy_confirm_count=42`
+- `sell_after_30s_rise_ratio=0.46`
+- `sell_after_60s={'resolved_count': 50, 'against_count': 25, 'against_rate': 0.5}`
+- `sell_after_300s={'resolved_count': 50, 'against_count': 30, 'against_rate': 0.6}`
+- `buy_after_30s_fall_ratio=0.4286`
+- `buy_after_60s={'resolved_count': 42, 'against_count': 23, 'against_rate': 0.5476}`
+- `buy_after_300s={'resolved_count': 42, 'against_count': 21, 'against_rate': 0.5}`
+- `reason_distribution={'late_or_chase': 4, 'single_pool_or_low_resonance': 1, 'local_sell_pressure_absorption': 1}`
+- 典型反例：
+- `{'signal_id': 'sig_d86544e1bcdda46d', 'asset_case_id': 'asset_case:ETH:87f44ac761', 'pair': 'ETH/USDC', 'stage': 'confirm', 'confirm_quality': 'late_confirm', 'absorption_context': 'broader_sell_pressure_confirmed', 'market_context_source': 'live_public', 'move_before': -0.002046, 'move_after': 0.000398, 'judgement_reason': 'late_confirm'}`
+- `{'signal_id': 'sig_7abd1cf9bb23160f', 'asset_case_id': 'asset_case:ETH:87f44ac761', 'pair': 'ETH/USDT', 'stage': 'confirm', 'confirm_quality': 'late_confirm', 'absorption_context': 'broader_sell_pressure_confirmed', 'market_context_source': 'live_public', 'move_before': -0.000915, 'move_after': 0.001416, 'judgement_reason': 'late_confirm'}`
+- `{'signal_id': 'sig_c6bd0f6d0783445a', 'asset_case_id': 'asset_case:ETH:87f44ac761', 'pair': 'ETH/USDT', 'stage': 'confirm', 'confirm_quality': 'late_confirm', 'absorption_context': 'broader_sell_pressure_confirmed', 'market_context_source': 'live_public', 'move_before': -0.001546, 'move_after': 0.000415, 'judgement_reason': 'late_confirm'}`
+- `{'signal_id': 'sig_0449a1fe477ee095', 'asset_case_id': 'asset_case:ETH:5d2db9d4d5', 'pair': 'ETH/USDC', 'stage': 'confirm', 'confirm_quality': '(blank)', 'absorption_context': 'local_sell_pressure_absorption', 'market_context_source': 'live_public', 'move_before': -0.006545, 'move_after': 0.003764, 'judgement_reason': 'single_pool_or_low_resonance, local_sell_pressure_absorption'}`
+- `{'signal_id': 'sig_00b0c1d64a1af4d9', 'asset_case_id': 'asset_case:ETH:39b45b2b3f', 'pair': 'ETH/USDT', 'stage': 'confirm', 'confirm_quality': 'late_confirm', 'absorption_context': 'broader_buy_pressure_confirmed', 'market_context_source': 'live_public', 'move_before': 0.000625, 'move_after': -5.6e-05, 'judgement_reason': 'late_confirm'}`
 - 限制：主窗口没有可靠的 `30s` 数值回写，`60s` 数值也几乎为空，所以本专题只能对 `300s` 做定量结论。
 
 ## 12. majors 覆盖与样本代表性
 
 - `covered_major_pairs=['ETH/USDT', 'ETH/USDC']`
 - `missing_major_pairs=['BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC']`
-- `eth_signal_count=136` `btc_signal_count=0` `sol_signal_count=0`
-- `major_cli_summary={'active_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDC 池，默认启用。', 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 419, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'ETH/USDT', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDT 池，默认启用。', 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 381, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x004375dff511095cc5a197a54140a24efef3a416', 'pool_type': 'spot_lp', 'priority': 2, 'protocol': 'uniswap_v2', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35', 'pool_type': 'clmm', 'priority': 1, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 500, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16', 'pool_type': 'clmm', 'priority': 3, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDT', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。', 'pair_label': 'WBTC/USDT', 'pool_address': '0x9Db9e0e53058C89e5B94e29621a205198648425B', 'pool_type': 'clmm', 'priority': 2, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}], 'active_recent_major_pairs': ['ETH/USDC', 'ETH/USDT'], 'configured_but_disabled_major_pools': [], 'configured_but_unsupported_chain': [{'chain': 'solana', 'configured_pair_label': 'SOL/USDC', 'dex': 'Orca', 'enabled': True, 'example_section': '', 'index': 7, 'pair_label': 'SOL/USDC', 'pool_address': 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE', 'pool_type': 'clmm', 'priority': 10, 'protocol': 'orca_whirlpool', 'quote_canonical': 'USDC', 'reason': 'unsupported_chain', 'source_note': 'GeckoTerminal + Solscan'}, {'chain': 'solana', 'configured_pair_label': 'SOL/USDC', 'dex': 'Raydium', 'enabled': True, 'example_section': '', 'index': 8, 'pair_label': 'SOL/USDC', 'pool_address': '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2', 'pool_type': 'clmm', 'priority': 11, 'protocol': 'raydium', 'quote_canonical': 'USDC', 'reason': 'unsupported_chain', 'source_note': 'GeckoTerminal'}, {'chain': 'base', 'configured_pair_label': 'SOL/USDC', 'dex': 'Uniswap', 'enabled': True, 'example_section': '', 'index': 9, 'pair_label': 'SOL/USDC', 'pool_address': '0x1cca8388e671e83010843a1a0535b04f2d7e946b', 'pool_type': 'clmm', 'priority': 12, 'protocol': 'uniswap_v3', 'quote_canonical': 'USDC', 'reason': 'unsupported_chain', 'source_note': 'GeckoTerminal'}], 'configured_but_validation_failed': [{'chain': 'ethereum', 'configured_pair_label': 'CBBTC/USDC', 'dex': 'Uniswap', 'example_section': '', 'fee_tier': 3000, 'index': 6, 'pair_label': 'BTC/USDC', 'pool_address': '0x4548280AC92507C9092a511C7396Cbea78FA9E49', 'pool_type': 'clmm', 'priority': 4, 'protocol': 'uniswap_v3', 'source_note': 'Etherscan', 'validation_reasons': ['missing_expected_base_contract'], 'validation_status': 'failed'}], 'configured_enabled_no_recent_signal_major_pairs': ['BTC/USDC', 'BTC/USDT'], 'configured_major_assets': ['ETH', 'BTC', 'SOL'], 'configured_major_quotes': ['USDT', 'USDC'], 'covered_expected_pairs': ['BTC/USDC', 'BTC/USDT', 'ETH/USDC', 'ETH/USDT'], 'covered_major_pairs': ['BTC/USDC', 'BTC/USDT', 'ETH/USDC', 'ETH/USDT'], 'covered_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDC 池，默认启用。', 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 419, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'ETH/USDT', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDT 池，默认启用。', 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 381, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x004375dff511095cc5a197a54140a24efef3a416', 'pool_type': 'spot_lp', 'priority': 2, 'protocol': 'uniswap_v2', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35', 'pool_type': 'clmm', 'priority': 1, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 500, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16', 'pool_type': 'clmm', 'priority': 3, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDT', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。', 'pair_label': 'WBTC/USDT', 'pool_address': '0x9Db9e0e53058C89e5B94e29621a205198648425B', 'pool_type': 'clmm', 'priority': 2, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}], 'duplicate_pool_warnings': [], 'enabled_major_pools': [{'canonical_pair_label': 'ETH/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDC 池，默认启用。', 'pair_label': 'ETH/USDC', 'pool_address': '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 419, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'ETH/USDT', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '主流 ETH/USDT 池，默认启用。', 'pair_label': 'ETH/USDT', 'pool_address': '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852', 'pool_type': 'spot_lp', 'priority': 1, 'protocol': 'uniswap_v2', 'sample_size': 381, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap V2', 'fee_tier': None, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': '预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x004375dff511095cc5a197a54140a24efef3a416', 'pool_type': 'spot_lp', 'priority': 2, 'protocol': 'uniswap_v2', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'not_required'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35', 'pool_type': 'clmm', 'priority': 1, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDC', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 500, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。', 'pair_label': 'WBTC/USDC', 'pool_address': '0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16', 'pool_type': 'clmm', 'priority': 3, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}, {'canonical_pair_label': 'BTC/USDT', 'chain': 'ethereum', 'dex': 'Uniswap', 'fee_tier': 3000, 'is_primary_trend_pool': True, 'major_match_mode': 'major_family_match', 'major_priority_score': 1.25, 'notes': 'Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。', 'pair_label': 'WBTC/USDT', 'pool_address': '0x9Db9e0e53058C89e5B94e29621a205198648425B', 'pool_type': 'clmm', 'priority': 2, 'protocol': 'uniswap_v3', 'sample_size': 0, 'trend_pool_match_mode': '', 'validation_reasons': [], 'validation_status': 'passed'}], 'expected_major_pairs': ['BTC/USDC', 'BTC/USDT', 'ETH/USDC', 'ETH/USDT', 'SOL/USDC', 'SOL/USDT'], 'major_pair_quality': [{'actionable': False, 'climax_reversal_score': 0.45, 'covered': True, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDC', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': True, 'market_context_alignment_score': 0.5, 'pair_label': 'BTC/USDT', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': True, 'climax_reversal_score': 0.3155, 'covered': True, 'market_context_alignment_score': 0.9571, 'pair_label': 'ETH/USDC', 'quality_score': 0.6255, 'sample_size': 419}, {'actionable': True, 'climax_reversal_score': 0.2513, 'covered': True, 'market_context_alignment_score': 0.9602, 'pair_label': 'ETH/USDT', 'quality_score': 0.6021, 'sample_size': 381}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDC', 'quality_score': 0.5864, 'sample_size': 0}, {'actionable': False, 'climax_reversal_score': 0.45, 'covered': False, 'market_context_alignment_score': 0.5, 'pair_label': 'SOL/USDT', 'quality_score': 0.5864, 'sample_size': 0}], 'malformed_major_pool_entries': [], 'missing_expected_pairs': ['SOL/USDT'], 'missing_major_assets': ['SOL'], 'missing_major_pairs': ['SOL/USDT'], 'next_round_priority': [{'pair_label': 'SOL/USDT', 'reason': 'missing'}, {'pair_label': 'SOL/USDC', 'reason': 'configured_but_unsupported_chain'}, {'pair_label': 'BTC/USDC', 'reason': 'validation_failed'}, {'pair_label': 'BTC/USDC', 'reason': 'enabled_no_recent_signal'}, {'pair_label': 'BTC/USDT', 'reason': 'enabled_no_recent_signal'}], 'no_recent_signal_major_pairs': ['BTC/USDC', 'BTC/USDT'], 'placeholder_major_pool_entries': [], 'pool_book_exists': True, 'pool_book_path': '/run-project/chain-monitor/data/lp_pools.json', 'quality_converging_major_pairs': [{'actionable': True, 'climax_reversal_score': 0.3155, 'covered': True, 'market_context_alignment_score': 0.9571, 'pair_label': 'ETH/USDC', 'quality_score': 0.6255, 'sample_size': 419}, {'actionable': True, 'climax_reversal_score': 0.2513, 'covered': True, 'market_context_alignment_score': 0.9602, 'pair_label': 'ETH/USDT', 'quality_score': 0.6021, 'sample_size': 381}], 'recommended_local_config_actions': ['补齐本地 data/lp_pools.json：优先补 SOL/USDT', 'Base/Solana pools 需要对应链 listener/RPC；未支持前不会进入 Ethereum active scan', 'enabled 的 Uniswap v3 major pools 需先通过 token0/token1/fee/factory 校验，再进入 majors 覆盖', '已启用但无最近信号：BTC/USDC, BTC/USDT；先确认 listener 已扫描到这些池'], 'recommended_next_round_pairs': ['SOL/USDT', 'SOL/USDC', 'BTC/USDC', 'BTC/USDT'], 'suggestions': ['优先补齐：SOL/USDT', '当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池', '样本稀少的 majors pairs：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT', '确认 listener 是否扫描到对应 pool，并检查链、DEX、pool_type、enabled 配置是否正确', '补齐本地 data/lp_pools.json：优先补 SOL/USDT', 'Base/Solana pools 需要对应链 listener/RPC；未支持前不会进入 Ethereum active scan', 'enabled 的 Uniswap v3 major pools 需先通过 token0/token1/fee/factory 校验，再进入 majors 覆盖'], 'under_sampled_major_assets': [{'asset_symbol': 'BTC', 'sample_size': 0}, {'asset_symbol': 'SOL', 'sample_size': 0}], 'under_sampled_major_pairs': [{'pair_label': 'BTC/USDC', 'sample_size': 0}, {'pair_label': 'BTC/USDT', 'sample_size': 0}, {'pair_label': 'SOL/USDC', 'sample_size': 0}, {'pair_label': 'SOL/USDT', 'sample_size': 0}], 'warnings': ['majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail', '缺少 major 资产覆盖：SOL', '存在 enabled 但最近无信号的 major pairs：BTC/USDC, BTC/USDT', '存在 configured but unsupported 的 major pools；这些条目不会进入当前 Ethereum active scan', '存在 enabled 但未通过 validator 的 major pools；这些条目不会计入 covered majors']}`
+- `eth_signal_count=197` `btc_signal_count=0` `sol_signal_count=0`
+- `major_cli_summary={'available': False, 'reason': 'skipped_for_date_scoped_report', 'expected_major_pairs': ['ETH/USDT', 'ETH/USDC', 'BTC/USDT', 'BTC/USDC', 'SOL/USDT', 'SOL/USDC'], 'missing_expected_pairs': []}`
 - 判断：主窗口仍然只来自 ETH 双主池。CLI 同时确认 `BTC/USDT`、`BTC/USDC`、`SOL/USDT`、`SOL/USDC` 属于 pool book 覆盖缺口，而不是夜里单纯无事件。
 
 ## 13. signal archive 对账完整性
@@ -211,39 +193,39 @@
 - `outcome_tracking_key_complete_rate` = `1.0`
 - `mixed_flat_nested_rows` = `0`
 - `flat_nested_stage_mismatch_rows` = `0`
-- `signal_ids` = `136`
-- `delivered_signal_ids` = `7`
+- `signal_ids` = `197`
+- `delivered_signal_ids` = `67`
 - 判断：`signals -> delivery_audit -> cases.signal_attached -> case_followups` 在已送达 LP 子集上都是 1:1。flat/new 与 nested/old 格式并存，但 stage 字段未发现冲突。
 
 ## 14. quality/outcome 与 fastlane ROI
 
 - `fastlane_promoted_count_window=0`
 - `fastlane_promoted_delivered_count_window=0`
-- `resolved_move_after_60s_count_window=56`
-- `resolved_move_after_300s_count_window=0`
-- `full_summary_cli.overall={'actionable': True, 'climax_count': 210, 'climax_reversal_count': 38, 'climax_reversal_score': 0.2794, 'confirm_conversion_score': 0.2908, 'confirm_count': 493, 'dimension': 'overall', 'fastlane_positive_followthrough': 0, 'fastlane_promotions': 0, 'fastlane_roi_score': 0.55, 'key': 'all', 'label': 'all', 'last_updated_at': 1776920536, 'market_context_alignment_positive_count': 796, 'market_context_alignment_score': 0.9603, 'market_context_available_count': 800, 'prealert_confirmed_count': 1, 'prealert_count': 2, 'prealert_false_count': 0, 'prealert_precision_score': 0.685, 'quality_hint': '历史一般', 'quality_score': 0.6287, 'resolved_climaxes': 145, 'resolved_confirms': 357, 'resolved_fastlanes': 0, 'resolved_prealerts': 1, 'sample_size': 800, 'tuning_hint': '保持当前阈值'}`
+- `resolved_move_after_60s_count_window=197`
+- `resolved_move_after_300s_count_window=197`
+- `full_summary_cli.overall={}`
 - 判断：quality/outcome ledger 已能支撑对账和 pair-level 对比，但夜间 fastlane 与 60s outcome 样本仍偏薄。
 
 ## 15. 噪音与误判风险评估
 
-- `delivered_ratio` = `0.0515`
-- `local_confirm_share` = `0.4868`
-- `unresolved_300s_share` = `1.0`
-- `exhaustion_risk_count` = `21`
-- `reverse_case_count` = `0`
+- `delivered_ratio` = `0.3401`
+- `local_confirm_share` = `0.5217`
+- `unresolved_300s_share` = `0.0`
+- `exhaustion_risk_count` = `39`
+- `reverse_case_count` = `5`
 - 判断：噪音的主要来源已不再是 market context unavailable，而是 `ETH-only sample + no prealert + sparse 60s/300s resolved outcomes`。
 
 ## 16. 最终评分
 
-- `research_sampling_readiness` = `5.4/10`
+- `research_sampling_readiness` = `3.8/10`
 - `live_market_context_readiness` = `9.4/10`
-- `prealert_effectiveness` = `3.5/10`
+- `prealert_effectiveness` = `0.8/10`
 - `confirm_honesty_non_misleading_quality` = `7.0/10`
 - `sweep_quality` = `8.0/10`
 - `majors_coverage` = `3.2/10`
 - `signal_archive_integrity` = `9.2/10`
 - `noise_control` = `6.2/10`
-- `overall_self_use_score` = `6.5/10`
+- `overall_self_use_score` = `6.0/10`
 
 ## 16. 下一轮建议
 
@@ -255,5 +237,5 @@
 ## 17. 限制与不确定性
 
 - 本报告严格使用主窗口数据；主窗口之外的白天/下午样本只用于附录和 CLI 对照。
-- `raw_events`/`parsed_events` availability = `raw:True` `parsed:True`；若缺失，就无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。
-- outcome window status = `{'30s': {'completed': 62, 'expired': 74}, '60s': {'expired': 80, 'completed': 56}, '300s': {'expired': 136}}`；若 `30s/60s` completed 仍少，相关结论必须保守。
+- `raw_events`/`parsed_events` availability = `raw:False` `parsed:False`；若缺失，就无法把 BTC/SOL 无样本彻底拆成“没有事件”还是“扫描未命中”。
+- outcome window status = `{'30s': {'completed': 197}, '60s': {'completed': 197}, '300s': {'completed': 197}}`；若 `30s/60s` completed 仍少，相关结论必须保守。

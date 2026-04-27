@@ -31,6 +31,7 @@ from generate_overnight_run_analysis_latest import (
     FileInventory,
     adverse_move,
     aligned_move,
+    archive_dates_for_window,
     compute_absorption,
     compute_asset_market_states,
     compute_archive_integrity,
@@ -57,9 +58,11 @@ from generate_overnight_run_analysis_latest import (
     load_quality_cache,
     load_signals,
     median,
+    normalize_opportunity_summary,
     pct,
     rate,
     run_cli,
+    signal_prefetch_window_for_date,
     sqlite_report_source_summary,
     stream_case_followups,
     stream_cases,
@@ -221,14 +224,19 @@ def load_runtime_config() -> dict[str, dict[str, Any]]:
     return payload
 
 
-def file_inventory_by_category() -> dict[str, list[FileInventory]]:
+def file_inventory_by_category(
+    *,
+    window: dict[str, Any] | None = None,
+    archive_dates: set[str] | None = None,
+    include_cases: bool = True,
+) -> dict[str, list[FileInventory]]:
     return {
-        "raw_events": inventory_category("raw_events", "raw events archive"),
-        "parsed_events": inventory_category("parsed_events", "parsed events archive"),
-        "signals": inventory_category("signals", "signals archive"),
-        "cases": inventory_category("cases", "case archive"),
-        "case_followups": inventory_category("case_followups", "case followups archive"),
-        "delivery_audit": inventory_category("delivery_audit", "delivery audit archive"),
+        "raw_events": inventory_category("raw_events", "raw events archive", window=window, archive_dates=archive_dates),
+        "parsed_events": inventory_category("parsed_events", "parsed events archive", window=window, archive_dates=archive_dates),
+        "signals": inventory_category("signals", "signals archive", window=window, archive_dates=archive_dates),
+        "cases": inventory_category("cases", "case archive", window=window, archive_dates=archive_dates) if include_cases else [],
+        "case_followups": inventory_category("case_followups", "case followups archive", window=window, archive_dates=archive_dates),
+        "delivery_audit": inventory_category("delivery_audit", "delivery audit archive", window=window, archive_dates=archive_dates),
     }
 
 
@@ -1479,6 +1487,7 @@ def build_markdown(
     lines.append("## 5A. trade_opportunity 总览")
     lines.append("")
     lines.append(f"- opportunity_summary=`{md_json(opportunity_summary.get('opportunity_summary') or {})}`")
+    lines.append(f"- verified_maturity=`{opportunity_summary.get('verified_maturity', 'unknown')}` should_not_trade=`{opportunity_summary.get('verified_should_not_be_traded_reason', '')}` maturity_reasons=`{md_json(opportunity_summary.get('maturity_reasons') or [])}`")
     lines.append(f"- opportunity_score_distribution=`{md_json(opportunity_summary.get('opportunity_score_distribution') or {})}`")
     lines.append(f"- raw_score_vs_calibrated_score=`{md_json(opportunity_summary.get('raw_score_vs_calibrated_score') or {})}`")
     lines.append(f"- calibration_adjustment_distribution=`{md_json(opportunity_summary.get('calibration_adjustment_distribution') or {})}`")
@@ -1835,19 +1844,32 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    signal_prefetch_window = signal_prefetch_window_for_date(args.date)
+    signal_prefetch_dates = archive_dates_for_window(signal_prefetch_window)
     runtime_config = load_runtime_config()
-    sqlite_source = sqlite_report_source_summary()
-    inventories = file_inventory_by_category()
-    signal_rows, signal_inventory = load_signals()
+    sqlite_source = sqlite_report_source_summary(fast=bool(args.date))
+    signal_rows, signal_inventory = load_signals(
+        window=signal_prefetch_window,
+        archive_dates=signal_prefetch_dates,
+    )
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
     asset_case_cache, asset_case_inventory = load_asset_case_cache()
     trade_opportunity_cache, trade_opportunity_inventory = load_trade_opportunity_cache()
-    window = choose_latest_overnight_window(signal_rows, inventories, requested_date=args.date)
+    choose_inventories = {
+        "raw_events": [],
+        "parsed_events": [],
+        "signals": signal_inventory,
+        "cases": [],
+        "case_followups": [],
+        "delivery_audit": [],
+    }
+    window = choose_latest_overnight_window(signal_rows, choose_inventories, requested_date=args.date)
     selected_logical_date = datetime.fromtimestamp(int(window["analysis_window_end_ts"]), UTC).strftime("%Y-%m-%d")
     if args.date and selected_logical_date != args.date:
         raise RuntimeError(
             f"requested logical date {args.date} resolved to overnight trade-action window ending on {selected_logical_date}"
         )
+    selected_archive_dates = archive_dates_for_window(window)
 
     window_signal_rows, _, lp_rows = join_lp_rows(
         signal_rows,
@@ -1862,28 +1884,64 @@ def main(argv: list[str] | None = None) -> int:
         for row in lp_rows
         if row.get("signal_id") and (row.get("sent_to_telegram") or row.get("notifier_sent_at"))
     }
-    _, delivery_summary = stream_delivery_audit(
+    delivery_inventory, delivery_summary = stream_delivery_audit(
         int(window["analysis_window_start_ts"]),
         int(window["analysis_window_end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
-    _, cases_summary = stream_cases(
+    cases_inventory, cases_summary = stream_cases(
         int(window["analysis_window_start_ts"]),
         int(window["analysis_window_end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
-    _, followup_summary = stream_case_followups(
+    followup_inventory, followup_summary = stream_case_followups(
         int(window["analysis_window_start_ts"]),
         int(window["analysis_window_end_ts"]),
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
 
-    cli_market_context = run_cli(["--market-context-health"], expect_json=True)
-    cli_major_pool_coverage = run_cli(["--major-pool-coverage"], expect_json=True)
-    cli_summary = run_cli(["--summary"], expect_json=True)
-    cli_csv = run_cli(["--format", "csv"], expect_json=False)
+    inventories = file_inventory_by_category(
+        window=window,
+        archive_dates=selected_archive_dates,
+        include_cases=False,
+    )
+    inventories["signals"] = signal_inventory
+    inventories["cases"] = cases_inventory
+    inventories["case_followups"] = followup_inventory
+    inventories["delivery_audit"] = delivery_inventory
+
+    if args.date:
+        cli_market_context = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "detail": "window market_context metrics are computed from date-scoped signal rows",
+        }
+        cli_major_pool_coverage = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "expected_major_pairs": [
+                f"{asset}/{quote}"
+                for asset in ("ETH", "BTC", "SOL")
+                for quote in ("USDT", "USDC")
+            ],
+            "missing_expected_pairs": [],
+        }
+        cli_summary = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "overall": {},
+        }
+        cli_csv = ""
+    else:
+        cli_market_context = run_cli(["--market-context-health"], expect_json=True)
+        cli_major_pool_coverage = run_cli(["--major-pool-coverage"], expect_json=True)
+        cli_summary = run_cli(["--summary"], expect_json=True)
+        cli_csv = run_cli(["--format", "csv"], expect_json=False)
 
     major_pairs = major_pairs_from_cli(cli_major_pool_coverage)
     stage_summary = stage_distribution(lp_rows)
@@ -1903,7 +1961,7 @@ def main(argv: list[str] | None = None) -> int:
     final_output_summary = compute_final_trading_output_summary(lp_rows)
     outcome_price_source_summary = compute_outcome_price_sources(lp_rows)
     telegram_suppression_summary = compute_telegram_suppression(lp_rows)
-    opportunity_summary = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
+    opportunity_summary = normalize_opportunity_summary(compute_trade_opportunities(trade_opportunity_cache, lp_rows))
     noise_reduction_summary = compute_noise_reduction(lp_rows)
     reversal_summary = reversal_special_cases(lp_rows)
     adverse_summary = adverse_direction_summary(lp_rows)

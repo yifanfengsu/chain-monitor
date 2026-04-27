@@ -26,6 +26,7 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     UTC,
     FileInventory,
     adverse_move,
+    archive_dates_for_window,
     canonical_asset,
     compute_archive_integrity,
     compute_final_trading_output_summary,
@@ -35,6 +36,7 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     compute_trade_actions,
     first_value,
     fmt_ts,
+    inventory_category,
     inventory_ndjson,
     join_lp_rows,
     load_asset_case_cache,
@@ -42,6 +44,7 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     load_quality_cache,
     load_signals,
     median,
+    normalize_opportunity_summary,
     rate,
     run_cli,
     sqlite_report_source_summary,
@@ -50,6 +53,8 @@ from generate_overnight_run_analysis_latest import (  # noqa: E402
     stream_delivery_audit,
     to_float,
     to_int,
+    _sqlite_connect,
+    _sqlite_table_exists,
 )
 
 if str(APP_DIR) not in sys.path:
@@ -358,6 +363,52 @@ def load_union_entries(paths_by_category: dict[str, Path], *, start_ts: int, end
     return entries
 
 
+def sqlite_heartbeat_stats(start_ts: int, end_ts: int | None = None) -> dict[str, Any] | None:
+    conn = _sqlite_connect()
+    if conn is None:
+        return None
+    table_map = {
+        "raw_events": ("raw_events", "captured_at"),
+        "parsed_events": ("parsed_events", "parsed_at"),
+    }
+    try:
+        source_after_cutoff: dict[str, dict[str, Any]] = {}
+        entries: list[tuple[int, str]] = []
+        for category, (table, time_column) in table_map.items():
+            if not _sqlite_table_exists(conn, table):
+                return None
+            clauses = [f"{time_column} >= ?"]
+            params: list[Any] = [int(start_ts)]
+            if end_ts is not None:
+                clauses.append(f"{time_column} <= ?")
+                params.append(int(end_ts))
+            where = " AND ".join(clauses)
+            stat_row = conn.execute(
+                f"SELECT COUNT(*) AS count, MIN({time_column}) AS start_ts, MAX({time_column}) AS end_ts "
+                f"FROM {table} WHERE {where}",
+                tuple(params),
+            ).fetchone()
+            source_after_cutoff[category] = {
+                "count": int(stat_row["count"] or 0) if stat_row else 0,
+                "start_ts": to_int(stat_row["start_ts"]) if stat_row else None,
+                "end_ts": to_int(stat_row["end_ts"]) if stat_row else None,
+            }
+            for row in conn.execute(
+                f"SELECT {time_column} AS ts FROM {table} WHERE {where} ORDER BY {time_column}",
+                tuple(params),
+            ):
+                ts = to_int(row["ts"])
+                if ts is not None:
+                    entries.append((ts, category))
+        entries.sort(key=lambda item: item[0])
+        return {
+            "entries": entries,
+            "source_after_cutoff": source_after_cutoff,
+        }
+    finally:
+        conn.close()
+
+
 def fast_inventory_ndjson(path: Path, notes: str) -> FileInventory:
     if not path.exists():
         return FileInventory(str(path.relative_to(ROOT)), False, 0, None, None, notes)
@@ -434,7 +485,7 @@ def gap_summary(entries: list[tuple[int, str]], thresholds: tuple[int, ...] = (3
     return gap_payload
 
 
-def choose_analysis_window(latest_date: str) -> dict[str, Any]:
+def choose_analysis_window(latest_date: str, *, prefer_sqlite: bool = False) -> dict[str, Any]:
     cutoff_bj = datetime.strptime(latest_date, "%Y-%m-%d").replace(tzinfo=BJ_TZ, hour=13, minute=0, second=0)
     cutoff_ts = int(cutoff_bj.timestamp())
     paths_by_category = {
@@ -442,16 +493,21 @@ def choose_analysis_window(latest_date: str) -> dict[str, Any]:
         for category in ALL_ARCHIVE_CATEGORIES
         if (path := archive_file_for_date(category, latest_date)) is not None
     }
-    missing_required = [category for category in REQUIRED_CATEGORIES if category not in paths_by_category]
-    if missing_required:
-        raise RuntimeError(f"required latest-day archives missing: {missing_required}")
 
     heartbeat_categories = ("raw_events", "parsed_events")
-    source_after_cutoff: dict[str, dict[str, Any]] = {
-        category: ndjson_stats(paths_by_category[category], start_ts=cutoff_ts)
-        for category in heartbeat_categories
-    }
-    heartbeat_entries = load_union_entries({category: paths_by_category[category] for category in heartbeat_categories}, start_ts=cutoff_ts)
+    sqlite_heartbeat = sqlite_heartbeat_stats(cutoff_ts) if prefer_sqlite else None
+    if sqlite_heartbeat is not None:
+        source_after_cutoff = sqlite_heartbeat["source_after_cutoff"]
+        heartbeat_entries = sqlite_heartbeat["entries"]
+    else:
+        missing_required = [category for category in REQUIRED_CATEGORIES if category not in paths_by_category]
+        if missing_required:
+            raise RuntimeError(f"required latest-day archives missing: {missing_required}")
+        source_after_cutoff = {
+            category: ndjson_stats(paths_by_category[category], start_ts=cutoff_ts)
+            for category in heartbeat_categories
+        }
+        heartbeat_entries = load_union_entries({category: paths_by_category[category] for category in heartbeat_categories}, start_ts=cutoff_ts)
     segments = build_union_segments(heartbeat_entries, gap_threshold_sec=300)
 
     candidates: list[dict[str, Any]] = []
@@ -504,15 +560,26 @@ def choose_analysis_window(latest_date: str) -> dict[str, Any]:
         ),
     )[0]
 
-    window_entries = load_union_entries(
-        {category: paths_by_category[category] for category in heartbeat_categories},
-        start_ts=int(chosen["overlap_start_ts"]),
-        end_ts=int(chosen["overlap_end_ts"]),
-    )
+    if sqlite_heartbeat is not None:
+        window_heartbeat = sqlite_heartbeat_stats(
+            int(chosen["overlap_start_ts"]),
+            int(chosen["overlap_end_ts"]),
+        )
+        window_entries = list((window_heartbeat or {}).get("entries") or [])
+    else:
+        window_entries = load_union_entries(
+            {category: paths_by_category[category] for category in heartbeat_categories},
+            start_ts=int(chosen["overlap_start_ts"]),
+            end_ts=int(chosen["overlap_end_ts"]),
+        )
     partial_lead_counts = {}
     for category in heartbeat_categories:
-        path = paths_by_category[category]
-        partial = ndjson_stats(path, start_ts=cutoff_ts, end_ts=int(chosen["overlap_start_ts"]) - 1)
+        if sqlite_heartbeat is not None:
+            partial_payload = sqlite_heartbeat_stats(cutoff_ts, int(chosen["overlap_start_ts"]) - 1)
+            partial = (partial_payload or {}).get("source_after_cutoff", {}).get(category, {"count": 0})
+        else:
+            path = paths_by_category[category]
+            partial = ndjson_stats(path, start_ts=cutoff_ts, end_ts=int(chosen["overlap_start_ts"]) - 1)
         partial_lead_counts[category] = partial["count"]
 
     return {
@@ -541,6 +608,7 @@ def choose_analysis_window(latest_date: str) -> dict[str, Any]:
         "required_gap_summary": gap_summary(window_entries),
         "required_union_row_count": len(window_entries),
         "paths_by_category": {key: str(path.relative_to(ROOT)) for key, path in paths_by_category.items()},
+        "heartbeat_source": "sqlite" if sqlite_heartbeat is not None else "archive",
     }
 
 
@@ -609,6 +677,53 @@ def build_data_source_inventory(latest_date: str, window: dict[str, Any]) -> tup
     return inventories, sorted(set(missing))
 
 
+def inventory_item_dict(info: FileInventory, *, window_record_count: Any = "", after_cutoff_count: Any = "") -> dict[str, Any]:
+    return {
+        "path": info.path,
+        "exists": info.exists,
+        "record_count": info.record_count,
+        "start_utc": fmt_ts(info.start_ts, UTC),
+        "end_utc": fmt_ts(info.end_ts, UTC),
+        "start_beijing": fmt_ts(info.start_ts, BJ_TZ),
+        "end_beijing": fmt_ts(info.end_ts, BJ_TZ),
+        "window_record_count": window_record_count,
+        "after_cutoff_count": after_cutoff_count,
+        "notes": info.notes,
+    }
+
+
+def build_date_scoped_data_source_inventory(
+    window: dict[str, Any],
+    signal_inventory: list[FileInventory],
+    delivery_inventory: list[FileInventory],
+    cases_inventory: list[FileInventory],
+    followup_inventory: list[FileInventory],
+    quality_inventory: FileInventory,
+    asset_case_inventory: FileInventory,
+    asset_state_inventory: FileInventory,
+    trade_opportunity_inventory: FileInventory,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    selected_archive_dates = archive_dates_for_window(window)
+    archive_inventories = [
+        *inventory_category("raw_events", "raw events archive", window=window, archive_dates=selected_archive_dates),
+        *inventory_category("parsed_events", "parsed events archive", window=window, archive_dates=selected_archive_dates),
+        *signal_inventory,
+        *delivery_inventory,
+        *cases_inventory,
+        *followup_inventory,
+    ]
+    cache_inventories = [
+        quality_inventory,
+        asset_case_inventory,
+        asset_state_inventory,
+        trade_opportunity_inventory,
+    ]
+    inventories = [inventory_item_dict(info, window_record_count=info.record_count) for info in archive_inventories]
+    inventories.extend(inventory_item_dict(info) for info in cache_inventories)
+    missing = [info.path for info in archive_inventories + cache_inventories if not info.exists]
+    return inventories, sorted(set(missing))
+
+
 def load_asset_market_state_cache() -> tuple[list[dict[str, Any]], FileInventory]:
     path = DATA_DIR / "asset_market_states.cache.json"
     if not path.exists():
@@ -643,7 +758,38 @@ def load_asset_market_state_cache() -> tuple[list[dict[str, Any]], FileInventory
     return records, inventory
 
 
-def source_window_counts(window: dict[str, Any], latest_date: str) -> dict[str, int]:
+def source_window_counts(window: dict[str, Any], latest_date: str, *, prefer_sqlite: bool = False) -> dict[str, int]:
+    if prefer_sqlite:
+        conn = _sqlite_connect()
+        if conn is not None:
+            table_map = {
+                "raw_events": ("raw_events", "captured_at"),
+                "parsed_events": ("parsed_events", "parsed_at"),
+                "signals": ("signals", "archive_written_at"),
+                "delivery_audit": ("delivery_audit", "archive_written_at"),
+                "case_followups": ("case_followups", "archive_written_at"),
+            }
+            try:
+                payload = {category: 0 for category in ALL_ARCHIVE_CATEGORIES}
+                for category, (table, time_column) in table_map.items():
+                    if not _sqlite_table_exists(conn, table):
+                        continue
+                    row = conn.execute(
+                        f"SELECT COUNT(*) AS count FROM {table} WHERE {time_column} >= ? AND {time_column} <= ?",
+                        (int(window["start_ts"]), int(window["end_ts"])),
+                    ).fetchone()
+                    payload[category] = int(row["count"] or 0) if row else 0
+                if _sqlite_table_exists(conn, "signals"):
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS count FROM signals "
+                        "WHERE archive_written_at >= ? AND archive_written_at <= ? "
+                        "AND asset_case_id IS NOT NULL AND TRIM(asset_case_id) != ''",
+                        (int(window["start_ts"]), int(window["end_ts"])),
+                    ).fetchone()
+                    payload["cases"] = int(row["count"] or 0) if row else 0
+                return payload
+            finally:
+                conn.close()
     payload: dict[str, int] = {}
     for category in ALL_ARCHIVE_CATEGORIES:
         path = archive_file_for_date(category, latest_date)
@@ -713,8 +859,10 @@ def compute_run_overview(
     lp_rows: list[dict[str, Any]],
     asset_case_count: int,
     case_followup_count: int,
+    *,
+    prefer_sqlite: bool = False,
 ) -> dict[str, Any]:
-    counts = source_window_counts(window, latest_date)
+    counts = source_window_counts(window, latest_date, prefer_sqlite=prefer_sqlite)
     delivered_lp = sum(1 for row in lp_rows if row.get("sent_to_telegram") or row.get("notifier_sent_at"))
     suppressed_lp = sum(
         1
@@ -1476,6 +1624,8 @@ def compute_archive_detail(
     followup_summary: dict[str, Any],
     latest_date: str,
     window: dict[str, Any],
+    *,
+    prefer_sqlite: bool = False,
 ) -> dict[str, Any]:
     base = compute_archive_integrity(lp_rows, delivery_summary, cases_summary, followup_summary)
     raw_path = archive_file_for_date("raw_events", latest_date)
@@ -1483,7 +1633,33 @@ def compute_archive_detail(
     signal_path = archive_file_for_date("signals", latest_date)
 
     parsed_event_ids: set[str] = set()
-    if parsed_path is not None:
+    raw_exists = raw_path is not None
+    parsed_exists = parsed_path is not None
+    if prefer_sqlite:
+        conn = _sqlite_connect()
+        if conn is not None:
+            try:
+                if _sqlite_table_exists(conn, "raw_events"):
+                    raw_exists = bool(
+                        conn.execute(
+                            "SELECT 1 FROM raw_events WHERE captured_at >= ? AND captured_at <= ? LIMIT 1",
+                            (int(window["start_ts"]), int(window["end_ts"])),
+                        ).fetchone()
+                    )
+                if _sqlite_table_exists(conn, "parsed_events"):
+                    parsed_rows = conn.execute(
+                        "SELECT event_id FROM parsed_events WHERE parsed_at >= ? AND parsed_at <= ?",
+                        (int(window["start_ts"]), int(window["end_ts"])),
+                    ).fetchall()
+                    parsed_event_ids = {
+                        str(row["event_id"] or "")
+                        for row in parsed_rows
+                        if str(row["event_id"] or "").strip()
+                    }
+                    parsed_exists = bool(parsed_event_ids)
+            finally:
+                conn.close()
+    elif parsed_path is not None:
         with report_open_archive_text(parsed_path) as handle:
             for raw_line in handle:
                 line = raw_line.strip()
@@ -1511,8 +1687,8 @@ def compute_archive_detail(
 
     base.update(
         {
-            "raw_archive_exists": raw_path is not None,
-            "parsed_archive_exists": parsed_path is not None,
+            "raw_archive_exists": raw_exists,
+            "parsed_archive_exists": parsed_exists,
             "signals_archive_exists": signal_path is not None,
             "signal_event_in_parsed_rate": rate(len(signal_event_ids & parsed_event_ids), len(signal_event_ids)),
             "suppressed_signal_archive_count": len(suppressed_ids),
@@ -1969,6 +2145,7 @@ def build_markdown(
     top_recommendations: list[str],
     limitations: list[str],
 ) -> str:
+    opportunities = normalize_opportunity_summary(opportunities)
     lines: list[str] = []
     lines.append("# Afternoon / Evening State Analysis")
     lines.append("")
@@ -2063,42 +2240,42 @@ def build_markdown(
     lines.append("")
     lines.append("## 9A. trade_opportunity 分析")
     lines.append("")
-    lines.append(f"- `opportunity_summary={opportunities['opportunity_summary']}`")
-    lines.append(f"- `verified_maturity={opportunities['verified_maturity']}` `verified_should_not_be_traded_reason={opportunities['verified_should_not_be_traded_reason']}`")
-    lines.append(f"- `opportunity_score_median={opportunities['opportunity_score_median']}` `opportunity_score_p90={opportunities['opportunity_score_p90']}`")
-    lines.append(f"- `raw_score_vs_calibrated_score={opportunities['raw_score_vs_calibrated_score']}`")
-    lines.append(f"- `calibration_adjustment_distribution={opportunities['calibration_adjustment_distribution']}`")
-    lines.append(f"- `candidate_outcome_60s={opportunities['candidate_outcome_60s']}`")
-    lines.append(f"- `verified_outcome_60s={opportunities['verified_outcome_60s']}`")
-    lines.append(f"- `opportunity_profile_count={opportunities['opportunity_profile_count']}`")
-    lines.append(f"- `top_profiles_by_sample={opportunities['top_profiles_by_sample']}`")
-    lines.append(f"- `top_profiles_by_followthrough={opportunities['top_profiles_by_followthrough']}`")
-    lines.append(f"- `top_profiles_by_adverse={opportunities['top_profiles_by_adverse']}`")
-    lines.append(f"- `profiles_ready_for_verified={opportunities['profiles_ready_for_verified']}`")
-    lines.append(f"- `estimated_samples_needed_for_verified_by_profile={opportunities['estimated_samples_needed_for_verified_by_profile']}`")
+    lines.append(f"- `opportunity_summary={opportunities.get('opportunity_summary') or dict()}`")
+    lines.append(f"- `verified_maturity={opportunities.get('verified_maturity', 'unknown')}` `verified_should_not_be_traded_reason={opportunities.get('verified_should_not_be_traded_reason', '')}` `maturity_reasons={opportunities.get('maturity_reasons') or []}`")
+    lines.append(f"- `opportunity_score_median={opportunities.get('opportunity_score_median')}` `opportunity_score_p90={opportunities.get('opportunity_score_p90')}`")
+    lines.append(f"- `raw_score_vs_calibrated_score={opportunities.get('raw_score_vs_calibrated_score') or dict()}`")
+    lines.append(f"- `calibration_adjustment_distribution={opportunities.get('calibration_adjustment_distribution') or dict()}`")
+    lines.append(f"- `candidate_outcome_60s={opportunities.get('candidate_outcome_60s') or dict()}`")
+    lines.append(f"- `verified_outcome_60s={opportunities.get('verified_outcome_60s') or dict()}`")
+    lines.append(f"- `opportunity_profile_count={opportunities.get('opportunity_profile_count')}`")
+    lines.append(f"- `top_profiles_by_sample={opportunities.get('top_profiles_by_sample') or []}`")
+    lines.append(f"- `top_profiles_by_followthrough={opportunities.get('top_profiles_by_followthrough') or []}`")
+    lines.append(f"- `top_profiles_by_adverse={opportunities.get('top_profiles_by_adverse') or []}`")
+    lines.append(f"- `profiles_ready_for_verified={opportunities.get('profiles_ready_for_verified') or []}`")
+    lines.append(f"- `estimated_samples_needed_for_verified_by_profile={opportunities.get('estimated_samples_needed_for_verified_by_profile') or dict()}`")
     lines.append(f"- `final_trading_output_distribution={final_outputs['final_trading_output_distribution']}`")
     lines.append(f"- `legacy_chase_downgraded_count={final_outputs['legacy_chase_downgraded_count']}` `legacy_chase_leaked_count={final_outputs['legacy_chase_leaked_count']}` `messages_blocked_by_opportunity_gate={final_outputs['messages_blocked_by_opportunity_gate']}`")
     lines.append(f"- `all_opportunity_labels_verified={final_outputs['all_opportunity_labels_verified']}` `all_candidate_labels_are_candidate={final_outputs['all_candidate_labels_are_candidate']}` `blocked_covers_legacy_chase_risk={final_outputs['blocked_covers_legacy_chase_risk']}`")
-    lines.append(f"- `blocker_effectiveness={opportunities['blocker_effectiveness']}`")
-    lines.append(f"- `hard_blocker_distribution={opportunities['hard_blocker_distribution']}`")
-    lines.append(f"- `verification_blocker_distribution={opportunities['verification_blocker_distribution']}`")
-    lines.append(f"- `non_lp_evidence_summary={opportunities['non_lp_evidence_summary']}`")
-    lines.append(f"- `opportunity_non_lp_support_count={opportunities['opportunity_non_lp_support_count']}` `opportunity_non_lp_risk_count={opportunities['opportunity_non_lp_risk_count']}`")
-    lines.append(f"- `top_non_lp_supporting_evidence={opportunities['top_non_lp_supporting_evidence']}`")
-    lines.append(f"- `top_non_lp_blockers={opportunities['top_non_lp_blockers']}`")
-    lines.append(f"- `opportunities_upgraded_by_non_lp={opportunities['opportunities_upgraded_by_non_lp']}` `opportunities_blocked_by_non_lp={opportunities['opportunities_blocked_by_non_lp']}`")
-    lines.append(f"- `opportunities_upgraded_by_calibration={opportunities['opportunities_upgraded_by_calibration']}` `opportunities_downgraded_by_calibration={opportunities['opportunities_downgraded_by_calibration']}`")
-    lines.append(f"- `candidates_blocked_by_calibration={opportunities['candidates_blocked_by_calibration']}` `verified_allowed_by_calibration={opportunities['verified_allowed_by_calibration']}`")
-    lines.append(f"- `top_positive_adjustments={opportunities['top_positive_adjustments']}`")
-    lines.append(f"- `top_negative_adjustments={opportunities['top_negative_adjustments']}`")
-    lines.append(f"- `calibration_reason_distribution={opportunities['calibration_reason_distribution']}`")
-    lines.append(f"- `calibration_source_distribution={opportunities['calibration_source_distribution']}`")
-    lines.append(f"- `calibration_confidence_distribution={opportunities['calibration_confidence_distribution']}`")
-    lines.append(f"- `non_lp_conflict_cases={opportunities['non_lp_conflict_cases']}`")
-    lines.append(f"- `opportunity_budget_suppressed_count={opportunities['opportunity_budget_suppressed_count']}` `opportunity_cooldown_suppressed_count={opportunities['opportunity_cooldown_suppressed_count']}`")
-    lines.append(f"- `why_no_opportunities={opportunities['why_no_opportunities']}`")
-    lines.append(f"- `top_blockers={opportunities['top_blockers']}`")
-    lines.append(f"- `next_threshold_suggestions={opportunities['next_threshold_suggestions']}`")
+    lines.append(f"- `blocker_effectiveness={opportunities.get('blocker_effectiveness') or dict()}`")
+    lines.append(f"- `hard_blocker_distribution={opportunities.get('hard_blocker_distribution') or dict()}`")
+    lines.append(f"- `verification_blocker_distribution={opportunities.get('verification_blocker_distribution') or dict()}`")
+    lines.append(f"- `non_lp_evidence_summary={opportunities.get('non_lp_evidence_summary') or dict()}`")
+    lines.append(f"- `opportunity_non_lp_support_count={opportunities.get('opportunity_non_lp_support_count')}` `opportunity_non_lp_risk_count={opportunities.get('opportunity_non_lp_risk_count')}`")
+    lines.append(f"- `top_non_lp_supporting_evidence={opportunities.get('top_non_lp_supporting_evidence') or []}`")
+    lines.append(f"- `top_non_lp_blockers={opportunities.get('top_non_lp_blockers') or []}`")
+    lines.append(f"- `opportunities_upgraded_by_non_lp={opportunities.get('opportunities_upgraded_by_non_lp')}` `opportunities_blocked_by_non_lp={opportunities.get('opportunities_blocked_by_non_lp')}`")
+    lines.append(f"- `opportunities_upgraded_by_calibration={opportunities.get('opportunities_upgraded_by_calibration')}` `opportunities_downgraded_by_calibration={opportunities.get('opportunities_downgraded_by_calibration')}`")
+    lines.append(f"- `candidates_blocked_by_calibration={opportunities.get('candidates_blocked_by_calibration')}` `verified_allowed_by_calibration={opportunities.get('verified_allowed_by_calibration')}`")
+    lines.append(f"- `top_positive_adjustments={opportunities.get('top_positive_adjustments') or []}`")
+    lines.append(f"- `top_negative_adjustments={opportunities.get('top_negative_adjustments') or []}`")
+    lines.append(f"- `calibration_reason_distribution={opportunities.get('calibration_reason_distribution') or dict()}`")
+    lines.append(f"- `calibration_source_distribution={opportunities.get('calibration_source_distribution') or dict()}`")
+    lines.append(f"- `calibration_confidence_distribution={opportunities.get('calibration_confidence_distribution') or dict()}`")
+    lines.append(f"- `non_lp_conflict_cases={opportunities.get('non_lp_conflict_cases') or []}`")
+    lines.append(f"- `opportunity_budget_suppressed_count={opportunities.get('opportunity_budget_suppressed_count')}` `opportunity_cooldown_suppressed_count={opportunities.get('opportunity_cooldown_suppressed_count')}`")
+    lines.append(f"- `why_no_opportunities={opportunities.get('why_no_opportunities') or []}`")
+    lines.append(f"- `top_blockers={opportunities.get('top_blockers') or dict()}`")
+    lines.append(f"- `next_threshold_suggestions={opportunities.get('next_threshold_suggestions') or []}`")
     lines.append("")
     lines.append("## 10. outcome price source 与 30s/60s/300s 分析")
     lines.append("")
@@ -2199,20 +2376,21 @@ def main(argv: list[str] | None = None) -> int:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     runtime_config = load_runtime_config()
-    sqlite_source = sqlite_report_source_summary()
+    sqlite_source = sqlite_report_source_summary(fast=bool(args.date))
     latest_date = args.date or latest_archive_date()
-    window = choose_analysis_window(latest_date)
+    window = choose_analysis_window(latest_date, prefer_sqlite=bool(args.date))
     selected_logical_date = str(window["end_utc"])[:10]
     if args.date and selected_logical_date != args.date:
         raise RuntimeError(
             f"requested logical date {args.date} resolved to afternoon/evening window ending on {selected_logical_date}"
         )
+    selected_archive_dates = archive_dates_for_window(window)
 
-    signal_rows, _ = load_signals()
-    quality_rows, quality_by_signal, _ = load_quality_cache()
-    asset_case_payload, _ = load_asset_case_cache()
-    asset_state_records, _ = load_asset_market_state_cache()
-    trade_opportunity_cache, _ = load_trade_opportunity_cache()
+    signal_rows, signal_inventory = load_signals(window=window, archive_dates=selected_archive_dates)
+    quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
+    asset_case_payload, asset_case_inventory = load_asset_case_cache()
+    asset_state_records, asset_state_inventory = load_asset_market_state_cache()
+    trade_opportunity_cache, trade_opportunity_inventory = load_trade_opportunity_cache()
 
     window_signal_rows, _, lp_rows = join_lp_rows(
         signal_rows,
@@ -2232,28 +2410,68 @@ def main(argv: list[str] | None = None) -> int:
         int(window["end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
     cases_inventory, cases_summary = stream_cases(
         int(window["start_ts"]),
         int(window["end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
     followup_inventory, followup_summary = stream_case_followups(
         int(window["start_ts"]),
         int(window["end_ts"]),
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
 
     _ = delivery_inventory, cases_inventory, followup_inventory
 
-    cli_market_context = run_cli(["--market-context-health"], expect_json=True)
-    cli_major = run_cli(["--major-pool-coverage"], expect_json=True)
-    cli_summary = run_cli(["--summary"], expect_json=True)
-    cli_summary_csv = run_cli(["--summary", "--format", "csv"], expect_json=False)
+    if args.date:
+        cli_market_context = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "detail": "window market_context metrics are computed from date-scoped signal rows",
+        }
+        cli_major = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "expected_major_pairs": [
+                f"{asset}/{quote}"
+                for asset in ("ETH", "BTC", "SOL")
+                for quote in ("USDT", "USDC")
+            ],
+            "covered_major_pairs": [],
+            "missing_expected_pairs": [],
+        }
+        cli_summary = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "overall": {},
+        }
+        cli_summary_csv = ""
+    else:
+        cli_market_context = run_cli(["--market-context-health"], expect_json=True)
+        cli_major = run_cli(["--major-pool-coverage"], expect_json=True)
+        cli_summary = run_cli(["--summary"], expect_json=True)
+        cli_summary_csv = run_cli(["--summary", "--format", "csv"], expect_json=False)
 
     previous_report = baseline_previous_report()
-    data_sources, missing_sources = build_data_source_inventory(latest_date, window)
+    if args.date:
+        data_sources, missing_sources = build_date_scoped_data_source_inventory(
+            window,
+            signal_inventory,
+            delivery_inventory,
+            cases_inventory,
+            followup_inventory,
+            quality_inventory,
+            asset_case_inventory,
+            asset_state_inventory,
+            trade_opportunity_inventory,
+        )
+    else:
+        data_sources, missing_sources = build_data_source_inventory(latest_date, window)
     data_sources.append(
         {
             "path": "data/chain_monitor.sqlite",
@@ -2292,6 +2510,7 @@ def main(argv: list[str] | None = None) -> int:
         lp_rows,
         len(asset_case_ids),
         int(followup_summary.get("followup_rows") or 0),
+        prefer_sqlite=bool(args.date),
     )
     stage_summary = compute_stage_summary(lp_rows)
     asset_market_states = compute_asset_market_state_detail(lp_rows, int(window["end_ts"]), asset_state_records)
@@ -2299,7 +2518,7 @@ def main(argv: list[str] | None = None) -> int:
     telegram = compute_telegram_detail(lp_rows, previous_report)
     prealerts = compute_prealert_lifecycle_detail(lp_rows, asset_case_payload)
     candidate_tradeable = compute_candidate_tradeable_detail(lp_rows, runtime_config)
-    opportunities = compute_trade_opportunities(trade_opportunity_cache, lp_rows)
+    opportunities = normalize_opportunity_summary(compute_trade_opportunities(trade_opportunity_cache, lp_rows))
     final_outputs = compute_final_trading_output_summary(lp_rows)
     outcome_detail = compute_outcome_detail(lp_rows, previous_report)
     market_context = compute_market_context(lp_rows)
@@ -2312,6 +2531,7 @@ def main(argv: list[str] | None = None) -> int:
         followup_summary,
         latest_date,
         window,
+        prefer_sqlite=bool(args.date),
     )
     majors = compute_majors(lp_rows, cli_major, runtime_config)
     noise = compute_noise_assessment(lp_rows, telegram, trade_actions, asset_market_states)

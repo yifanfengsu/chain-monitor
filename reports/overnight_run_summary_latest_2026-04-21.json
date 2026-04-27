@@ -1,0 +1,3538 @@
+{
+  "absorption_summary": {
+    "broader_buy_pressure_confirmed_count": 12,
+    "broader_sell_pressure_confirmed_count": 10,
+    "distribution": {
+      "broader_buy_pressure_confirmed": 12,
+      "broader_sell_pressure_confirmed": 10,
+      "local_buy_pressure_absorption": 16,
+      "local_sell_pressure_absorption": 21,
+      "pool_only_unconfirmed_pressure": 77
+    },
+    "local_buy_pressure_absorption_count": 16,
+    "local_sell_pressure_absorption_count": 21,
+    "pool_only_unconfirmed_pressure_count": 77
+  },
+  "analysis_window": {
+    "duration_hours": 14.82,
+    "end_bj": "2026-04-21 13:53:12 UTC+08:00",
+    "end_server_local": "2026-04-21 05:53:12 UTC",
+    "end_tokyo": "2026-04-21 14:53:12 UTC+09:00",
+    "end_ts": 1776750792,
+    "end_utc": "2026-04-21 05:53:12 UTC",
+    "other_segments": [
+      {
+        "duration_hours": 0.0,
+        "duration_sec": 0,
+        "end_ts": 1710000000,
+        "lp_signal_rows": 0,
+        "start_ts": 1710000000,
+        "total_signal_rows": 1
+      },
+      {
+        "duration_hours": 10.51,
+        "duration_sec": 37840,
+        "end_ts": 1776527852,
+        "lp_signal_rows": 74,
+        "start_ts": 1776490012,
+        "total_signal_rows": 424
+      },
+      {
+        "duration_hours": 0.34,
+        "duration_sec": 1222,
+        "end_ts": 1776614367,
+        "lp_signal_rows": 2,
+        "start_ts": 1776613145,
+        "total_signal_rows": 22
+      },
+      {
+        "duration_hours": 14.82,
+        "duration_sec": 53359,
+        "end_ts": 1776750792,
+        "lp_signal_rows": 136,
+        "selection_reason": "latest segment with the longest continuous signal activity after splitting on >=1h signal gaps; it also has the highest overnight LP row count.",
+        "start_ts": 1776697433,
+        "total_signal_rows": 526
+      },
+      {
+        "duration_hours": 13.26,
+        "duration_sec": 47751,
+        "end_ts": 1776835314,
+        "lp_signal_rows": 196,
+        "start_ts": 1776787563,
+        "total_signal_rows": 661
+      },
+      {
+        "duration_hours": 10.71,
+        "duration_sec": 38555,
+        "end_ts": 1776921195,
+        "lp_signal_rows": 153,
+        "start_ts": 1776882640,
+        "total_signal_rows": 508
+      }
+    ],
+    "selection_reason": "latest segment with the longest continuous signal activity after splitting on >=1h signal gaps; it also has the highest overnight LP row count.",
+    "start_bj": "2026-04-20 23:03:53 UTC+08:00",
+    "start_server_local": "2026-04-20 15:03:53 UTC",
+    "start_tokyo": "2026-04-21 00:03:53 UTC+09:00",
+    "start_ts": 1776697433,
+    "start_utc": "2026-04-20 15:03:53 UTC"
+  },
+  "archive_fallback_used": false,
+  "archive_integrity_summary": {
+    "asset_case_id_complete_rate": 1.0,
+    "delivered_signal_ids": 7,
+    "delivered_signal_notifier_sent_at_rate": 1.0,
+    "flat_nested_stage_mismatch_rows": 0,
+    "mixed_flat_nested_rows": 0,
+    "outcome_tracking_key_complete_rate": 1.0,
+    "signal_case_attached_match_rate": 1.0,
+    "signal_case_followup_match_rate": 1.0,
+    "signal_delivery_audit_match_rate": 1.0,
+    "signal_id_complete_rate": 1.0,
+    "signal_ids": 136,
+    "signals_archive_exists": true
+  },
+  "archive_rows_by_category": {
+    "case_followups": 196,
+    "cases": 139216,
+    "delivery_audit": 197416,
+    "parsed_events": 67806,
+    "raw_events": 137116,
+    "signals": 2141
+  },
+  "asset_market_state_summary": {
+    "current_final_state_per_asset": {
+      "ETH": {
+        "state_key": "OBSERVE_LONG",
+        "state_label": "偏多观察",
+        "telegram_should_send": false,
+        "telegram_update_kind": "suppressed",
+        "updated_at": 1776748136
+      }
+    },
+    "state_change_count": 63,
+    "state_distribution": {
+      "DO_NOT_CHASE_LONG": 30,
+      "DO_NOT_CHASE_SHORT": 29,
+      "NO_TRADE_CHOP": 3,
+      "NO_TRADE_LOCK": 13,
+      "OBSERVE_LONG": 37,
+      "OBSERVE_SHORT": 22,
+      "SHORT_CANDIDATE": 1,
+      "WAIT_CONFIRMATION": 1
+    },
+    "state_transitions": {
+      "DO_NOT_CHASE_LONG->DO_NOT_CHASE_SHORT": 4,
+      "DO_NOT_CHASE_LONG->NO_TRADE_CHOP": 2,
+      "DO_NOT_CHASE_LONG->NO_TRADE_LOCK": 1,
+      "DO_NOT_CHASE_LONG->OBSERVE_LONG": 10,
+      "DO_NOT_CHASE_SHORT->DO_NOT_CHASE_LONG": 6,
+      "DO_NOT_CHASE_SHORT->NO_TRADE_CHOP": 1,
+      "DO_NOT_CHASE_SHORT->NO_TRADE_LOCK": 1,
+      "DO_NOT_CHASE_SHORT->OBSERVE_LONG": 1,
+      "DO_NOT_CHASE_SHORT->OBSERVE_SHORT": 6,
+      "NO_TRADE_CHOP->DO_NOT_CHASE_SHORT": 1,
+      "NO_TRADE_CHOP->OBSERVE_SHORT": 2,
+      "NO_TRADE_LOCK->DO_NOT_CHASE_LONG": 1,
+      "NO_TRADE_LOCK->DO_NOT_CHASE_SHORT": 1,
+      "NO_TRADE_LOCK->OBSERVE_LONG": 1,
+      "NO_TRADE_LOCK->SHORT_CANDIDATE": 1,
+      "OBSERVE_LONG->DO_NOT_CHASE_LONG": 8,
+      "OBSERVE_LONG->DO_NOT_CHASE_SHORT": 4,
+      "OBSERVE_LONG->OBSERVE_SHORT": 1,
+      "OBSERVE_SHORT->DO_NOT_CHASE_LONG": 2,
+      "OBSERVE_SHORT->DO_NOT_CHASE_SHORT": 5,
+      "OBSERVE_SHORT->NO_TRADE_LOCK": 1,
+      "OBSERVE_SHORT->WAIT_CONFIRMATION": 1,
+      "SHORT_CANDIDATE->NO_TRADE_LOCK": 1,
+      "WAIT_CONFIRMATION->OBSERVE_LONG": 1
+    }
+  },
+  "candidate_tradeable_summary": {
+    "candidate_count": 1,
+    "candidate_distribution": {
+      "SHORT_CANDIDATE": 1
+    },
+    "candidate_outcome_60s": {
+      "adverse_count": 1,
+      "adverse_rate": 1.0,
+      "followthrough_count": 0,
+      "followthrough_rate": 0.0,
+      "resolved_count": 1
+    },
+    "tradeable_count": 0,
+    "tradeable_distribution": {},
+    "tradeable_outcome_60s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "followthrough_count": 0,
+      "followthrough_rate": null,
+      "resolved_count": 0
+    }
+  },
+  "cli_output_capture": {
+    "major_pool_coverage_missing_pairs": [
+      "SOL/USDT"
+    ],
+    "market_context_health_signal_rows": 2141,
+    "quality_reports_csv_rows": 9,
+    "summary_overall": {
+      "actionable": true,
+      "climax_count": 210,
+      "climax_reversal_count": 38,
+      "climax_reversal_score": 0.2794,
+      "confirm_conversion_score": 0.2908,
+      "confirm_count": 493,
+      "dimension": "overall",
+      "fastlane_positive_followthrough": 0,
+      "fastlane_promotions": 0,
+      "fastlane_roi_score": 0.55,
+      "key": "all",
+      "label": "all",
+      "last_updated_at": 1776920536,
+      "market_context_alignment_positive_count": 796,
+      "market_context_alignment_score": 0.9603,
+      "market_context_available_count": 800,
+      "prealert_confirmed_count": 1,
+      "prealert_count": 2,
+      "prealert_false_count": 0,
+      "prealert_precision_score": 0.685,
+      "quality_hint": "历史一般",
+      "quality_score": 0.6287,
+      "resolved_climaxes": 145,
+      "resolved_confirms": 357,
+      "resolved_fastlanes": 0,
+      "resolved_prealerts": 1,
+      "sample_size": 800,
+      "tuning_hint": "保持当前阈值"
+    }
+  },
+  "compressed_archive_rows": {
+    "case_followups": 72,
+    "cases": 37328,
+    "delivery_audit": 48984,
+    "parsed_events": 25906,
+    "raw_events": 47963,
+    "signals": 526
+  },
+  "confirm_summary": {
+    "blank_confirm_quality_count": 35,
+    "broader_alignment_confirmed_count": 11,
+    "broader_confirm_count": 4,
+    "chase_risk_count": 0,
+    "clean_confirm_count": 2,
+    "confirm_count": 76,
+    "confirm_move_after_300s_median": null,
+    "confirm_move_after_60s_median": 0.000194,
+    "confirm_move_before_30s_median": -0.000179,
+    "late_confirm_count": 16,
+    "local_confirm_count": 37,
+    "predict_warning_text_count": 22,
+    "unconfirmed_confirm_count": 23
+  },
+  "data_source": "sqlite",
+  "data_source_summary": {
+    "archive_fallback_used": false,
+    "archive_rows_by_category": {
+      "case_followups": 196,
+      "cases": 139216,
+      "delivery_audit": 197416,
+      "parsed_events": 67806,
+      "raw_events": 137116,
+      "signals": 2141
+    },
+    "compressed_archive_detected": true,
+    "compressed_archive_rows": {
+      "case_followups": 72,
+      "cases": 37328,
+      "delivery_audit": 48984,
+      "parsed_events": 25906,
+      "raw_events": 47963,
+      "signals": 526
+    },
+    "current_report_read_preference": {
+      "REPORT_ARCHIVE_READ_GZIP": true,
+      "REPORT_DB_ARCHIVE_COMPARE": true,
+      "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH": false,
+      "SQLITE_REPORT_FALLBACK_TO_ARCHIVE": true,
+      "SQLITE_REPORT_READ_PREFER_DB": true
+    },
+    "data_source": "sqlite",
+    "db_archive_mirror_detail": {
+      "case_followups": {
+        "archive_rows": 196,
+        "match_rate": 1.0,
+        "mismatch": false,
+        "sqlite_rows": 196
+      },
+      "delivery_audit": {
+        "archive_rows": 197416,
+        "match_rate": 0.9993,
+        "mismatch": true,
+        "sqlite_rows": 197279
+      },
+      "parsed_events": {
+        "archive_rows": 67806,
+        "match_rate": 1.0,
+        "mismatch": true,
+        "sqlite_rows": 67807
+      },
+      "raw_events": {
+        "archive_rows": 137116,
+        "match_rate": 1.0,
+        "mismatch": false,
+        "sqlite_rows": 137116
+      },
+      "signals": {
+        "archive_rows": 2141,
+        "match_rate": 0.9995,
+        "mismatch": true,
+        "sqlite_rows": 2142
+      }
+    },
+    "db_archive_mirror_match_rate": 0.9998,
+    "db_exists": true,
+    "db_path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
+    "fallback_mode": "archive_cache_enabled",
+    "loader_results": {
+      "case_followups": {
+        "compressed_archive_rows": 72,
+        "fallback_used": false,
+        "mismatch_info": {
+          "archive_rows": 196,
+          "compressed_archive_rows": 72,
+          "loader": "case_followups",
+          "match_rate": 1.0,
+          "mismatch": false,
+          "sqlite_rows": 196
+        },
+        "row_count": 196,
+        "rows": [],
+        "source": "sqlite",
+        "warnings": []
+      },
+      "delivery_audit": {
+        "compressed_archive_rows": 48984,
+        "fallback_used": false,
+        "mismatch_info": {
+          "archive_rows": 197416,
+          "compressed_archive_rows": 48984,
+          "loader": "delivery_audit",
+          "match_rate": 0.9993,
+          "mismatch": true,
+          "sqlite_rows": 197279
+        },
+        "row_count": 197279,
+        "rows": [],
+        "source": "sqlite",
+        "warnings": [
+          "db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416"
+        ]
+      },
+      "signals": {
+        "compressed_archive_rows": 526,
+        "fallback_used": false,
+        "mismatch_info": {
+          "archive_rows": 2141,
+          "compressed_archive_rows": 526,
+          "loader": "signals",
+          "match_rate": 0.9995,
+          "mismatch": true,
+          "sqlite_rows": 2142
+        },
+        "row_count": 2142,
+        "rows": [],
+        "source": "sqlite",
+        "warnings": [
+          "db_archive_mismatch:signals:sqlite=2142:archive=2141"
+        ]
+      }
+    },
+    "mismatch_warnings": [
+      "db_archive_mismatch:signals:sqlite=2142:archive=2141",
+      "db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416",
+      "db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806",
+      "db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141",
+      "db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416"
+    ],
+    "report_data_source": "sqlite",
+    "source_components": {
+      "case_followups": "sqlite",
+      "delivery_audit": "sqlite",
+      "signals": "sqlite"
+    },
+    "sqlite_health": {
+      "archive_mirror": {
+        "db_archive_mirror_match_rate": 0.9998,
+        "per_category": {
+          "case_followups": {
+            "archive_rows": 196,
+            "match_rate": 1.0,
+            "mismatch": false,
+            "sqlite_rows": 196
+          },
+          "delivery_audit": {
+            "archive_rows": 197416,
+            "match_rate": 0.9993,
+            "mismatch": true,
+            "sqlite_rows": 197279
+          },
+          "parsed_events": {
+            "archive_rows": 67806,
+            "match_rate": 1.0,
+            "mismatch": true,
+            "sqlite_rows": 67807
+          },
+          "raw_events": {
+            "archive_rows": 137116,
+            "match_rate": 1.0,
+            "mismatch": false,
+            "sqlite_rows": 137116
+          },
+          "signals": {
+            "archive_rows": 2141,
+            "match_rate": 0.9995,
+            "mismatch": true,
+            "sqlite_rows": 2142
+          }
+        }
+      },
+      "db_exists": true,
+      "db_path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
+      "db_size_bytes": 3690512384,
+      "db_size_mb": 3519.5469,
+      "enabled": true,
+      "init_failed_reason": "",
+      "initialized": true,
+      "last_updated": {
+        "asset_cases": 1776920536.0,
+        "asset_market_states": 1776920536.0,
+        "case_followups": 1776959653.6934445,
+        "delivery_audit": 1776959653.669546,
+        "market_context_attempts": 1776920542.0,
+        "market_context_snapshots": 1776959548.325351,
+        "no_trade_locks": 1776959653.7042084,
+        "opportunity_outcomes": 1776920536.0,
+        "outcomes": 1776959655.5802755,
+        "parsed_events": 1776959532.0961132,
+        "prealert_lifecycle": 1776959548.332898,
+        "quality_stats": 1776920850.0,
+        "raw_events": 1776959403.9534562,
+        "runs": null,
+        "schema_meta": 1776961127.8430533,
+        "signal_features": null,
+        "signals": 1776959548.3205395,
+        "telegram_deliveries": 1776959653.6678283,
+        "trade_opportunities": 1776959654.8644927
+      },
+      "missing_tables": [],
+      "schema_version": "sqlite_schema_v1",
+      "shm_exists": true,
+      "shm_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-shm",
+      "shm_size_bytes": 32768,
+      "shm_size_mb": 0.0312,
+      "table_row_counts": {
+        "asset_cases": 9999,
+        "asset_market_states": 582,
+        "case_followups": 196,
+        "delivery_audit": 197279,
+        "market_context_attempts": 3203,
+        "market_context_snapshots": 2142,
+        "no_trade_locks": 502,
+        "opportunity_outcomes": 2025,
+        "outcomes": 3468,
+        "parsed_events": 67807,
+        "prealert_lifecycle": 2494,
+        "quality_stats": 1270,
+        "raw_events": 137116,
+        "runs": 0,
+        "schema_meta": 1,
+        "signal_features": 9696,
+        "signals": 2142,
+        "telegram_deliveries": 164840,
+        "trade_opportunities": 675
+      },
+      "total_size_bytes": 3690549304,
+      "total_size_mb": 3519.5821,
+      "wal_exists": true,
+      "wal_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-wal",
+      "wal_size_bytes": 4152,
+      "wal_size_mb": 0.004,
+      "warnings": [],
+      "write_error_count": 0
+    },
+    "sqlite_rows_by_table": {
+      "asset_cases": 9999,
+      "asset_market_states": 582,
+      "case_followups": 196,
+      "delivery_audit": 197279,
+      "market_context_attempts": 3203,
+      "market_context_snapshots": 2142,
+      "no_trade_locks": 502,
+      "opportunity_outcomes": 2025,
+      "outcomes": 3468,
+      "parsed_events": 67807,
+      "prealert_lifecycle": 2494,
+      "quality_stats": 1270,
+      "raw_events": 137116,
+      "runs": 0,
+      "schema_meta": 1,
+      "signal_features": 9696,
+      "signals": 2142,
+      "telegram_deliveries": 164840,
+      "trade_opportunities": 675
+    },
+    "warnings": [
+      "db_archive_mismatch:signals:sqlite=2142:archive=2141",
+      "db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416",
+      "db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806",
+      "db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141",
+      "db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416"
+    ]
+  },
+  "data_sources": [
+    {
+      "end_ts": 1776700792,
+      "exists": true,
+      "notes": "raw events archive",
+      "path": "app/data/archive/raw_events/2026-04-20.ndjson.gz",
+      "record_count": 4171,
+      "start_ts": 1776697431
+    },
+    {
+      "end_ts": 1776750974,
+      "exists": true,
+      "notes": "raw events archive",
+      "path": "app/data/archive/raw_events/2026-04-21.ndjson.gz",
+      "record_count": 43792,
+      "start_ts": 1776700805
+    },
+    {
+      "end_ts": 1776835314,
+      "exists": true,
+      "notes": "raw events archive",
+      "path": "app/data/archive/raw_events/2026-04-22.ndjson",
+      "record_count": 49504,
+      "start_ts": 1776787492
+    },
+    {
+      "end_ts": 1776921375,
+      "exists": true,
+      "notes": "raw events archive",
+      "path": "app/data/archive/raw_events/2026-04-23.ndjson",
+      "record_count": 39649,
+      "start_ts": 1776873904
+    },
+    {
+      "end_ts": 1776700790,
+      "exists": true,
+      "notes": "parsed events archive",
+      "path": "app/data/archive/parsed_events/2026-04-20.ndjson.gz",
+      "record_count": 1921,
+      "start_ts": 1776697431
+    },
+    {
+      "end_ts": 1776750974,
+      "exists": true,
+      "notes": "parsed events archive",
+      "path": "app/data/archive/parsed_events/2026-04-21.ndjson.gz",
+      "record_count": 23985,
+      "start_ts": 1776700805
+    },
+    {
+      "end_ts": 1776835314,
+      "exists": true,
+      "notes": "parsed events archive",
+      "path": "app/data/archive/parsed_events/2026-04-22.ndjson",
+      "record_count": 22845,
+      "start_ts": 1776787492
+    },
+    {
+      "end_ts": 1776921375,
+      "exists": true,
+      "notes": "parsed events archive",
+      "path": "app/data/archive/parsed_events/2026-04-23.ndjson",
+      "record_count": 19055,
+      "start_ts": 1776873904
+    },
+    {
+      "end_ts": 1776921195,
+      "exists": true,
+      "notes": "sqlite signals mirror via report_data_loader",
+      "path": "data/chain_monitor.sqlite",
+      "record_count": 2142,
+      "start_ts": 1710000000
+    },
+    {
+      "end_ts": 1776527995,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-18.ndjson",
+      "record_count": 40383,
+      "start_ts": 1776489976
+    },
+    {
+      "end_ts": 1776614391,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-19.ndjson",
+      "record_count": 1309,
+      "start_ts": 1776613107
+    },
+    {
+      "end_ts": 1776700790,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-20.ndjson.gz",
+      "record_count": 2378,
+      "start_ts": 1776697431
+    },
+    {
+      "end_ts": 1776750974,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-21.ndjson.gz",
+      "record_count": 34950,
+      "start_ts": 1776700805
+    },
+    {
+      "end_ts": 1776835314,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-22.ndjson",
+      "record_count": 32878,
+      "start_ts": 1776787492
+    },
+    {
+      "end_ts": 1776921375,
+      "exists": true,
+      "notes": "case archive",
+      "path": "app/data/archive/cases/2026-04-23.ndjson",
+      "record_count": 27318,
+      "start_ts": 1776873904
+    },
+    {
+      "end_ts": 1776523980,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-18.ndjson",
+      "record_count": 33,
+      "start_ts": 1776490337
+    },
+    {
+      "end_ts": 1776614072,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-19.ndjson",
+      "record_count": 2,
+      "start_ts": 1776613275
+    },
+    {
+      "end_ts": 1776699545,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-20.ndjson.gz",
+      "record_count": 5,
+      "start_ts": 1776698488
+    },
+    {
+      "end_ts": 1776749261,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-21.ndjson.gz",
+      "record_count": 67,
+      "start_ts": 1776701152
+    },
+    {
+      "end_ts": 1776828243,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-22.ndjson",
+      "record_count": 44,
+      "start_ts": 1776787612
+    },
+    {
+      "end_ts": 1776920526,
+      "exists": true,
+      "notes": "case followups archive",
+      "path": "app/data/archive/case_followups/2026-04-23.ndjson",
+      "record_count": 45,
+      "start_ts": 1776882964
+    },
+    {
+      "end_ts": 1776527996,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-18.ndjson",
+      "record_count": 54936,
+      "start_ts": 1776489976
+    },
+    {
+      "end_ts": 1776614392,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-19.ndjson",
+      "record_count": 2056,
+      "start_ts": 1776613107
+    },
+    {
+      "end_ts": 1776700792,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-20.ndjson.gz",
+      "record_count": 4260,
+      "start_ts": 1776697431
+    },
+    {
+      "end_ts": 1776750974,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-21.ndjson.gz",
+      "record_count": 44724,
+      "start_ts": 1776700805
+    },
+    {
+      "end_ts": 1776835314,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-22.ndjson",
+      "record_count": 50620,
+      "start_ts": 1776787492
+    },
+    {
+      "end_ts": 1776921375,
+      "exists": true,
+      "notes": "delivery audit archive",
+      "path": "app/data/archive/delivery_audit/2026-04-23.ndjson",
+      "record_count": 40820,
+      "start_ts": 1776873904
+    },
+    {
+      "end_ts": 1776920545,
+      "exists": true,
+      "notes": "asset case snapshot cache",
+      "path": "data/asset_cases.cache.json",
+      "record_count": 1,
+      "start_ts": 1776920475
+    },
+    {
+      "end_ts": 1776920848,
+      "exists": true,
+      "notes": "quality stats cache",
+      "path": "data/lp_quality_stats.cache.json",
+      "record_count": 800,
+      "start_ts": 1776604011
+    },
+    {
+      "end_ts": null,
+      "exists": true,
+      "notes": "sqlite mirror/query layer report_data_source=sqlite sqlite_rows_by_table={'schema_meta': 1, 'runs': 0, 'raw_events': 137116, 'parsed_events': 67807, 'signals': 2142, 'signal_features': 9696, 'market_context_snapshots': 2142, 'market_context_attempts': 3203, 'outcomes': 3468, 'asset_cases': 9999, 'asset_market_states': 582, 'no_trade_locks': 502, 'trade_opportunities': 675, 'opportunity_outcomes': 2025, 'quality_stats': 1270, 'telegram_deliveries': 164840, 'prealert_lifecycle': 2494, 'delivery_audit': 197279, 'case_followups': 196} archive_rows_by_category={'raw_events': 137116, 'parsed_events': 67806, 'signals': 2141, 'delivery_audit': 197416, 'cases': 139216, 'case_followups': 196} db_archive_mirror_match_rate=0.9998 archive_fallback_used=False mismatch_warnings=['db_archive_mismatch:signals:sqlite=2142:archive=2141', 'db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416', 'db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806', 'db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141', 'db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416']",
+      "path": "data/chain_monitor.sqlite",
+      "record_count": 605437,
+      "start_ts": null
+    }
+  ],
+  "db_archive_mirror_detail": {
+    "case_followups": {
+      "archive_rows": 196,
+      "match_rate": 1.0,
+      "mismatch": false,
+      "sqlite_rows": 196
+    },
+    "delivery_audit": {
+      "archive_rows": 197416,
+      "match_rate": 0.9993,
+      "mismatch": true,
+      "sqlite_rows": 197279
+    },
+    "parsed_events": {
+      "archive_rows": 67806,
+      "match_rate": 1.0,
+      "mismatch": true,
+      "sqlite_rows": 67807
+    },
+    "raw_events": {
+      "archive_rows": 137116,
+      "match_rate": 1.0,
+      "mismatch": false,
+      "sqlite_rows": 137116
+    },
+    "signals": {
+      "archive_rows": 2141,
+      "match_rate": 0.9995,
+      "mismatch": true,
+      "sqlite_rows": 2142
+    }
+  },
+  "db_archive_mirror_match_rate": 0.9998,
+  "db_archive_mismatch_warnings": [
+    "db_archive_mismatch:signals:sqlite=2142:archive=2141",
+    "db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416",
+    "db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806",
+    "db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141",
+    "db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416"
+  ],
+  "final_trading_output_summary": {
+    "all_candidate_labels_are_candidate": true,
+    "all_opportunity_labels_verified": true,
+    "blocked_covers_legacy_chase_risk": true,
+    "blocked_legacy_chase_count": 1,
+    "candidate_label_without_candidate_count": 0,
+    "delivered_blocked_count": 0,
+    "delivered_candidate_count": 0,
+    "delivered_legacy_chase_count": 0,
+    "delivered_verified_count": 0,
+    "final_trading_output_audited_row_count": 136,
+    "final_trading_output_distribution": {
+      "missing": 136
+    },
+    "final_trading_output_unaudited_row_count": 0,
+    "legacy_chase_downgraded_count": 0,
+    "legacy_chase_leaked_count": 0,
+    "messages_blocked_by_opportunity_gate": 0,
+    "opportunity_gate_failures": {},
+    "opportunity_label_without_verified_count": 0,
+    "trade_action_chase_without_opportunity_count": 1
+  },
+  "limitations": [
+    "raw_events and parsed_events archives are missing.",
+    "Exact 30s move_after fields are not persisted in a way that supports overnight ratio calculation.",
+    "Window-level 60s move_after coverage is near zero, so only 300s reversal analysis is robust."
+  ],
+  "lp_stage_summary": {
+    "analysis_window_end": "2026-04-21 05:53:12 UTC",
+    "analysis_window_start": "2026-04-20 15:03:53 UTC",
+    "asset_case_count": 44,
+    "avg_signals_per_case": 3.0909,
+    "case_followup_count": 7,
+    "climax_count": 38,
+    "compression_ratio": 3.0909,
+    "confirm_count": 76,
+    "delivered_lp_signals": 7,
+    "duration_hours": 14.82,
+    "exhaustion_risk_count": 21,
+    "lp_signal_rows": 136,
+    "prealert_count": 1,
+    "stage_distribution_pct": {
+      "climax": 27.94,
+      "confirm": 55.88,
+      "exhaustion_risk": 15.44,
+      "prealert": 0.74
+    },
+    "total_signal_rows": 526
+  },
+  "majors_coverage_summary": {
+    "asset_distribution": {
+      "ETH": 136
+    },
+    "btc_signal_count": 0,
+    "btc_sol_missing_reason": "pool_book_missing",
+    "configured_major_assets": [
+      "ETH",
+      "WETH",
+      "BTC",
+      "WBTC",
+      "CBBTC",
+      "SOL",
+      "WSOL"
+    ],
+    "configured_major_quotes": [
+      "USDT",
+      "USDC",
+      "USDC.E"
+    ],
+    "covered_major_pairs": [
+      "ETH/USDT",
+      "ETH/USDC"
+    ],
+    "current_sample_still_eth_only": true,
+    "eth_signal_count": 136,
+    "major_cli_summary": {
+      "active_major_pools": [
+        {
+          "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
+          "pair_label": "ETH/USDC",
+          "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 419,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
+          "pair_label": "ETH/USDT",
+          "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 381,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35",
+          "pool_type": "clmm",
+          "priority": 1,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 500,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16",
+          "pool_type": "clmm",
+          "priority": 3,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。",
+          "pair_label": "WBTC/USDT",
+          "pool_address": "0x9Db9e0e53058C89e5B94e29621a205198648425B",
+          "pool_type": "clmm",
+          "priority": 2,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        }
+      ],
+      "active_recent_major_pairs": [
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
+      "configured_but_disabled_major_pools": [],
+      "configured_but_unsupported_chain": [
+        {
+          "chain": "solana",
+          "configured_pair_label": "SOL/USDC",
+          "dex": "Orca",
+          "enabled": true,
+          "example_section": "",
+          "index": 7,
+          "pair_label": "SOL/USDC",
+          "pool_address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+          "pool_type": "clmm",
+          "priority": 10,
+          "protocol": "orca_whirlpool",
+          "quote_canonical": "USDC",
+          "reason": "unsupported_chain",
+          "source_note": "GeckoTerminal + Solscan"
+        },
+        {
+          "chain": "solana",
+          "configured_pair_label": "SOL/USDC",
+          "dex": "Raydium",
+          "enabled": true,
+          "example_section": "",
+          "index": 8,
+          "pair_label": "SOL/USDC",
+          "pool_address": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+          "pool_type": "clmm",
+          "priority": 11,
+          "protocol": "raydium",
+          "quote_canonical": "USDC",
+          "reason": "unsupported_chain",
+          "source_note": "GeckoTerminal"
+        },
+        {
+          "chain": "base",
+          "configured_pair_label": "SOL/USDC",
+          "dex": "Uniswap",
+          "enabled": true,
+          "example_section": "",
+          "index": 9,
+          "pair_label": "SOL/USDC",
+          "pool_address": "0x1cca8388e671e83010843a1a0535b04f2d7e946b",
+          "pool_type": "clmm",
+          "priority": 12,
+          "protocol": "uniswap_v3",
+          "quote_canonical": "USDC",
+          "reason": "unsupported_chain",
+          "source_note": "GeckoTerminal"
+        }
+      ],
+      "configured_but_validation_failed": [
+        {
+          "chain": "ethereum",
+          "configured_pair_label": "CBBTC/USDC",
+          "dex": "Uniswap",
+          "example_section": "",
+          "fee_tier": 3000,
+          "index": 6,
+          "pair_label": "BTC/USDC",
+          "pool_address": "0x4548280AC92507C9092a511C7396Cbea78FA9E49",
+          "pool_type": "clmm",
+          "priority": 4,
+          "protocol": "uniswap_v3",
+          "source_note": "Etherscan",
+          "validation_reasons": [
+            "missing_expected_base_contract"
+          ],
+          "validation_status": "failed"
+        }
+      ],
+      "configured_enabled_no_recent_signal_major_pairs": [
+        "BTC/USDC",
+        "BTC/USDT"
+      ],
+      "configured_major_assets": [
+        "ETH",
+        "BTC",
+        "SOL"
+      ],
+      "configured_major_quotes": [
+        "USDT",
+        "USDC"
+      ],
+      "covered_expected_pairs": [
+        "BTC/USDC",
+        "BTC/USDT",
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
+      "covered_major_pairs": [
+        "BTC/USDC",
+        "BTC/USDT",
+        "ETH/USDC",
+        "ETH/USDT"
+      ],
+      "covered_major_pools": [
+        {
+          "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
+          "pair_label": "ETH/USDC",
+          "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 419,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
+          "pair_label": "ETH/USDT",
+          "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 381,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35",
+          "pool_type": "clmm",
+          "priority": 1,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 500,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16",
+          "pool_type": "clmm",
+          "priority": 3,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。",
+          "pair_label": "WBTC/USDT",
+          "pool_address": "0x9Db9e0e53058C89e5B94e29621a205198648425B",
+          "pool_type": "clmm",
+          "priority": 2,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        }
+      ],
+      "duplicate_pool_warnings": [],
+      "enabled_major_pools": [
+        {
+          "canonical_pair_label": "ETH/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDC 池，默认启用。",
+          "pair_label": "ETH/USDC",
+          "pool_address": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 419,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "ETH/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "主流 ETH/USDT 池，默认启用。",
+          "pair_label": "ETH/USDT",
+          "pool_address": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "pool_type": "spot_lp",
+          "priority": 1,
+          "protocol": "uniswap_v2",
+          "sample_size": 381,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap V2",
+          "fee_tier": null,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "预留 WBTC/USDC 池条目，建议上线前校验地址后再启用。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x004375dff511095cc5a197a54140a24efef3a416",
+          "pool_type": "spot_lp",
+          "priority": 2,
+          "protocol": "uniswap_v2",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "not_required"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDC。复制到本地 data/lp_pools.json 后，先跑 validator；通过前保持 enabled=false。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35",
+          "pool_type": "clmm",
+          "priority": 1,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDC",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 500,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.05% WBTC/USDC。低费率池，启用前确认 token0/token1/fee/factory。",
+          "pair_label": "WBTC/USDC",
+          "pool_address": "0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16",
+          "pool_type": "clmm",
+          "priority": 3,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        },
+        {
+          "canonical_pair_label": "BTC/USDT",
+          "chain": "ethereum",
+          "dex": "Uniswap",
+          "fee_tier": 3000,
+          "is_primary_trend_pool": true,
+          "major_match_mode": "major_family_match",
+          "major_priority_score": 1.25,
+          "notes": "Ethereum mainnet Uniswap v3 0.3% WBTC/USDT。用于补齐 BTC/USDT majors 覆盖。",
+          "pair_label": "WBTC/USDT",
+          "pool_address": "0x9Db9e0e53058C89e5B94e29621a205198648425B",
+          "pool_type": "clmm",
+          "priority": 2,
+          "protocol": "uniswap_v3",
+          "sample_size": 0,
+          "trend_pool_match_mode": "",
+          "validation_reasons": [],
+          "validation_status": "passed"
+        }
+      ],
+      "expected_major_pairs": [
+        "BTC/USDC",
+        "BTC/USDT",
+        "ETH/USDC",
+        "ETH/USDT",
+        "SOL/USDC",
+        "SOL/USDT"
+      ],
+      "major_pair_quality": [
+        {
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": true,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "BTC/USDC",
+          "quality_score": 0.5864,
+          "sample_size": 0
+        },
+        {
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": true,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "BTC/USDT",
+          "quality_score": 0.5864,
+          "sample_size": 0
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.3155,
+          "covered": true,
+          "market_context_alignment_score": 0.9571,
+          "pair_label": "ETH/USDC",
+          "quality_score": 0.6255,
+          "sample_size": 419
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.2513,
+          "covered": true,
+          "market_context_alignment_score": 0.9602,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6021,
+          "sample_size": 381
+        },
+        {
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": false,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "SOL/USDC",
+          "quality_score": 0.5864,
+          "sample_size": 0
+        },
+        {
+          "actionable": false,
+          "climax_reversal_score": 0.45,
+          "covered": false,
+          "market_context_alignment_score": 0.5,
+          "pair_label": "SOL/USDT",
+          "quality_score": 0.5864,
+          "sample_size": 0
+        }
+      ],
+      "malformed_major_pool_entries": [],
+      "missing_expected_pairs": [
+        "SOL/USDT"
+      ],
+      "missing_major_assets": [
+        "SOL"
+      ],
+      "missing_major_pairs": [
+        "SOL/USDT"
+      ],
+      "next_round_priority": [
+        {
+          "pair_label": "SOL/USDT",
+          "reason": "missing"
+        },
+        {
+          "pair_label": "SOL/USDC",
+          "reason": "configured_but_unsupported_chain"
+        },
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "validation_failed"
+        },
+        {
+          "pair_label": "BTC/USDC",
+          "reason": "enabled_no_recent_signal"
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "reason": "enabled_no_recent_signal"
+        }
+      ],
+      "no_recent_signal_major_pairs": [
+        "BTC/USDC",
+        "BTC/USDT"
+      ],
+      "placeholder_major_pool_entries": [],
+      "pool_book_exists": true,
+      "pool_book_path": "/run-project/chain-monitor/data/lp_pools.json",
+      "quality_converging_major_pairs": [
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.3155,
+          "covered": true,
+          "market_context_alignment_score": 0.9571,
+          "pair_label": "ETH/USDC",
+          "quality_score": 0.6255,
+          "sample_size": 419
+        },
+        {
+          "actionable": true,
+          "climax_reversal_score": 0.2513,
+          "covered": true,
+          "market_context_alignment_score": 0.9602,
+          "pair_label": "ETH/USDT",
+          "quality_score": 0.6021,
+          "sample_size": 381
+        }
+      ],
+      "recommended_local_config_actions": [
+        "补齐本地 data/lp_pools.json：优先补 SOL/USDT",
+        "Base/Solana pools 需要对应链 listener/RPC；未支持前不会进入 Ethereum active scan",
+        "enabled 的 Uniswap v3 major pools 需先通过 token0/token1/fee/factory 校验，再进入 majors 覆盖",
+        "已启用但无最近信号：BTC/USDC, BTC/USDT；先确认 listener 已扫描到这些池"
+      ],
+      "recommended_next_round_pairs": [
+        "SOL/USDT",
+        "SOL/USDC",
+        "BTC/USDC",
+        "BTC/USDT"
+      ],
+      "suggestions": [
+        "优先补齐：SOL/USDT",
+        "当前 majors outcome 样本仍偏少，建议先扩 BTC/SOL/更多 ETH 主池",
+        "样本稀少的 majors pairs：BTC/USDC, BTC/USDT, SOL/USDC, SOL/USDT",
+        "确认 listener 是否扫描到对应 pool，并检查链、DEX、pool_type、enabled 配置是否正确",
+        "补齐本地 data/lp_pools.json：优先补 SOL/USDT",
+        "Base/Solana pools 需要对应链 listener/RPC；未支持前不会进入 Ethereum active scan",
+        "enabled 的 Uniswap v3 major pools 需先通过 token0/token1/fee/factory 校验，再进入 majors 覆盖"
+      ],
+      "under_sampled_major_assets": [
+        {
+          "asset_symbol": "BTC",
+          "sample_size": 0
+        },
+        {
+          "asset_symbol": "SOL",
+          "sample_size": 0
+        }
+      ],
+      "under_sampled_major_pairs": [
+        {
+          "pair_label": "BTC/USDC",
+          "sample_size": 0
+        },
+        {
+          "pair_label": "BTC/USDT",
+          "sample_size": 0
+        },
+        {
+          "pair_label": "SOL/USDC",
+          "sample_size": 0
+        },
+        {
+          "pair_label": "SOL/USDT",
+          "sample_size": 0
+        }
+      ],
+      "warnings": [
+        "majors 主池覆盖不完整，下一轮应优先补 majors 而不是 long-tail",
+        "缺少 major 资产覆盖：SOL",
+        "存在 enabled 但最近无信号的 major pairs：BTC/USDC, BTC/USDT",
+        "存在 configured but unsupported 的 major pools；这些条目不会进入当前 Ethereum active scan",
+        "存在 enabled 但未通过 validator 的 major pools；这些条目不会计入 covered majors"
+      ]
+    },
+    "missing_major_pairs": [
+      "BTC/USDT",
+      "BTC/USDC",
+      "SOL/USDT",
+      "SOL/USDC"
+    ],
+    "pair_distribution": {
+      "ETH/USDC": 69,
+      "ETH/USDT": 67
+    },
+    "sol_signal_count": 0
+  },
+  "market_context_health": {
+    "quality_reports_cli": {
+      "archive_base_dir": "/run-project/chain-monitor/app/data/archive",
+      "cache_hit_rate": 0.0154,
+      "context_request_hit_rate": 0.262,
+      "endpoint_hit_rate": [
+        {
+          "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
+          "hit_rate": 0.9981
+        },
+        {
+          "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
+          "hit_rate": 1.0
+        },
+        {
+          "endpoint": "cache",
+          "hit_rate": 0.0
+        }
+      ],
+      "failure_reason_counts": {
+        "timeout": 1
+      },
+      "fallback_chains": [
+        {
+          "chain": "okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success",
+          "count": 527
+        },
+        {
+          "chain": "okx_perp:ETH-USDT-SWAP:cache_hit",
+          "count": 33
+        },
+        {
+          "chain": "okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:success > okx_perp:ETH-USDT-SWAP:failure > okx_perp:ETH-USDT-SWAP:success",
+          "count": 1
+        }
+      ],
+      "live_public_count": 561,
+      "live_public_hit_rate": 0.262,
+      "per_attempt_symbol": [
+        {
+          "attempt_failure": 1,
+          "attempt_failure_rate": 0.0003,
+          "attempt_hit_rate": 0.9997,
+          "attempt_status_cache_hit": 33,
+          "attempt_status_failure": 1,
+          "attempt_status_success": 3167,
+          "attempt_success": 3167,
+          "attempt_total": 3168,
+          "cache_hit_rate": 0.0,
+          "cache_hit_total": 33,
+          "context_request_hit_rate": 0.0,
+          "failure_total": 1,
+          "signal_hit_rate": 0.0,
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 0.9997
+        }
+      ],
+      "per_endpoint": [
+        {
+          "attempt_failure": 1,
+          "attempt_failure_rate": 0.0019,
+          "attempt_hit_rate": 0.9981,
+          "attempt_status_failure": 1,
+          "attempt_status_success": 527,
+          "attempt_success": 527,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/market/history-candles?instId=ETH-USDT-SWAP&bar=1m&limit=8",
+          "endpoint_attempt_success_rate": 0.9981,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 528,
+          "attempt_success": 528,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/market/index-tickers?instId=ETH-USDT",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 528,
+          "attempt_success": 528,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 528,
+          "attempt_success": 528,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 528,
+          "attempt_success": 528,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 1.0,
+          "attempt_status_success": 528,
+          "attempt_success": 528,
+          "attempt_total": 528,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "https://www.okx.com/api/v5/public/mark-price?instType=SWAP&instId=ETH-USDT-SWAP",
+          "endpoint_attempt_success_rate": 1.0,
+          "signal_hit_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "attempt_status_cache_hit": 33,
+          "cache_hit_rate": 0.0,
+          "cache_hit_total": 33,
+          "context_request_hit_rate": 0.0,
+          "endpoint": "cache",
+          "endpoint_attempt_success_rate": 0.0,
+          "signal_hit_rate": 0.0
+        }
+      ],
+      "per_requested_symbol": [
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
+          "signal_hit_rate": 1.0,
+          "signal_success": 281,
+          "signal_total": 281,
+          "symbol": "ETHUSDC",
+          "symbol_attempt_success_rate": 0.0
+        },
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
+          "signal_hit_rate": 1.0,
+          "signal_success": 280,
+          "signal_total": 280,
+          "symbol": "ETHUSDT",
+          "symbol_attempt_success_rate": 0.0
+        }
+      ],
+      "per_resolved_symbol": [
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
+          "signal_hit_rate": 1.0,
+          "signal_success": 561,
+          "signal_total": 561,
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 0.0
+        }
+      ],
+      "per_symbol": [
+        {
+          "attempt_failure_rate": 0.0,
+          "attempt_hit_rate": 0.0,
+          "cache_hit_rate": 0.0,
+          "context_request_hit_rate": 1.0,
+          "signal_hit_rate": 1.0,
+          "signal_success": 561,
+          "signal_total": 561,
+          "symbol": "ETH-USDT-SWAP",
+          "symbol_attempt_success_rate": 0.0
+        }
+      ],
+      "per_venue": [
+        {
+          "attempt_failure": 1,
+          "attempt_failure_rate": 0.0003,
+          "attempt_hit_rate": 0.9997,
+          "attempt_status_cache_hit": 33,
+          "attempt_status_failure": 1,
+          "attempt_status_success": 3167,
+          "attempt_success": 3167,
+          "attempt_total": 3168,
+          "cache_hit_rate": 0.0588,
+          "cache_hit_total": 33,
+          "context_request_hit_rate": 1.0,
+          "signal_hit_rate": 1.0,
+          "signal_success": 561,
+          "signal_total": 561,
+          "timeout_count": 1,
+          "venue": "okx_perp",
+          "venue_attempt_success_rate": 0.9997
+        }
+      ],
+      "signal_rows": 2141,
+      "symbol_fallbacks": [
+        {
+          "fallback_total": 281,
+          "requested_to_resolved": "ETHUSDC->ETH-USDT-SWAP",
+          "signal_success": 281,
+          "signal_total": 281
+        },
+        {
+          "fallback_total": 280,
+          "requested_to_resolved": "ETHUSDT->ETH-USDT-SWAP",
+          "signal_success": 280,
+          "signal_total": 280
+        }
+      ],
+      "symbol_hit_rate": [
+        {
+          "hit_rate": 1.0,
+          "symbol": "ETH-USDT-SWAP"
+        }
+      ],
+      "top_failure_reasons": [
+        {
+          "count": 1,
+          "reason": "timeout"
+        }
+      ],
+      "total_attempts": 3168,
+      "total_context_requests": 2141,
+      "unavailable_count": 1580,
+      "unavailable_rate": 0.738,
+      "unavailable_reason_breakdown": {},
+      "venue_hit_rate": [
+        {
+          "hit_rate": 1.0,
+          "venue": "okx_perp"
+        }
+      ],
+      "warnings": []
+    },
+    "window": {
+      "binance_attempts": 0,
+      "bybit_attempts": 0,
+      "kraken_attempts": 0,
+      "kraken_failure": 0,
+      "kraken_success": 0,
+      "live_public_count": 136,
+      "live_public_rate": 1.0,
+      "okx_attempts": 741,
+      "okx_failure": 1,
+      "okx_success": 740,
+      "requested_to_resolved_distribution": {
+        "ETHUSDC->ETH-USDT-SWAP": 69,
+        "ETHUSDT->ETH-USDT-SWAP": 67
+      },
+      "resolved_symbol_distribution": {
+        "ETH-USDT-SWAP": 136
+      },
+      "top_failure_reasons": [
+        {
+          "count": 1,
+          "reason": "timeout"
+        }
+      ],
+      "unavailable_count": 0,
+      "unavailable_rate": 0.0
+    }
+  },
+  "mismatch_warnings": [
+    "db_archive_mismatch:signals:sqlite=2142:archive=2141",
+    "db_archive_mismatch:delivery_audit:sqlite=197279:archive=197416",
+    "db_archive_mirror_mismatch:parsed_events:sqlite=67807:archive=67806",
+    "db_archive_mirror_mismatch:signals:sqlite=2142:archive=2141",
+    "db_archive_mirror_mismatch:delivery_audit:sqlite=197279:archive=197416"
+  ],
+  "no_trade_lock_summary": {
+    "lock_duration_max_sec": 300,
+    "lock_duration_median_sec": 300.0,
+    "lock_entered_count": 4,
+    "release_count": 123,
+    "suppressed_count": 0
+  },
+  "noise_reduction_summary": {
+    "candidates_sent": 0,
+    "raw_lp_signals": 136,
+    "risk_blockers_sent": 7,
+    "sent_telegram_lp_messages": 7,
+    "state_changes_sent": 0,
+    "suppressed_ratio": 0.9485
+  },
+  "noise_risk_summary": {
+    "delivered_ratio": 0.0515,
+    "exhaustion_risk_count": 21,
+    "local_confirm_share": 0.4868,
+    "reverse_case_count": 0,
+    "unresolved_300s_share": 1.0
+  },
+  "outcome_price_source_summary": {
+    "catchup_completed_count": 0,
+    "catchup_expired_count": 6,
+    "failure_reasons": {
+      "catchup_window_exceeded": 8,
+      "window_elapsed_without_price_update": 536
+    },
+    "outcome_300s_completed_count": 0,
+    "outcome_300s_completed_rate": 0.0,
+    "outcome_300s_expired_count": 136,
+    "outcome_300s_pending_count": 0,
+    "outcome_300s_unavailable_count": 0,
+    "outcome_30s_completed_count": 62,
+    "outcome_30s_completed_rate": 0.4559,
+    "outcome_30s_expired_count": 74,
+    "outcome_30s_pending_count": 0,
+    "outcome_30s_unavailable_count": 0,
+    "outcome_60s_completed_count": 56,
+    "outcome_60s_completed_rate": 0.4118,
+    "outcome_60s_expired_count": 80,
+    "outcome_60s_pending_count": 0,
+    "outcome_60s_unavailable_count": 0,
+    "outcome_failure_reason_distribution": {
+      "catchup_window_exceeded": 8,
+      "window_elapsed_without_price_update": 536
+    },
+    "outcome_price_source_distribution": {
+      "okx_mark": 544
+    },
+    "scheduler_health_summary": {
+      "catchup_completed_count": 0,
+      "catchup_expired_count": 6,
+      "completed_count": 118,
+      "expired_count": 290,
+      "pending_count": 0,
+      "settled_by_distribution": {
+        "outcome_scheduler_catchup": 6
+      },
+      "unavailable_count": 0
+    },
+    "source_distribution": {
+      "okx_mark": 544
+    },
+    "window_status": {
+      "300s": {
+        "expired": 136
+      },
+      "30s": {
+        "completed": 62,
+        "expired": 74
+      },
+      "60s": {
+        "completed": 56,
+        "expired": 80
+      }
+    }
+  },
+  "prealert_lifecycle_summary": {
+    "active_count": 1,
+    "delivered_count": 0,
+    "distribution": {
+      "active": 1,
+      "merged": 59,
+      "upgraded_to_confirm": 76
+    },
+    "expired_count": 0,
+    "merged_count": 59,
+    "suppressed_by_lock_count": 0,
+    "upgraded_count": 76
+  },
+  "prealert_summary": {
+    "major_prealert_count": 1,
+    "non_major_prealert_count": 0,
+    "prealert_candidates": 136,
+    "prealert_count": 1,
+    "prealert_delivered_count": 0,
+    "prealert_dropped_by_reason": {
+      "no_trade_opportunity": 116,
+      "same_blocker_repeat": 5,
+      "stage_budget_observe_tier2_tier_cap": 8
+    },
+    "prealert_gate_passed_count": 136,
+    "prealert_merged_into_case_count": 5,
+    "prealert_to_confirm_30s": 0.0,
+    "prealert_to_confirm_60s": 1.0,
+    "prealert_to_confirm_90s": 1.0,
+    "prealert_upgraded_to_confirm_count": 4,
+    "previous_report_reference_prealert_count": 2
+  },
+  "quality_outcome_fastlane_summary": {
+    "fastlane_promoted_count_window": 0,
+    "fastlane_promoted_delivered_count_window": 0,
+    "full_summary_cli": {
+      "dimensions": {
+        "asset": [
+          {
+            "actionable": true,
+            "climax_count": 210,
+            "climax_reversal_count": 38,
+            "climax_reversal_score": 0.2794,
+            "confirm_conversion_score": 0.2908,
+            "confirm_count": 493,
+            "dimension": "asset",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "ETH",
+            "label": "ETH",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 796,
+            "market_context_alignment_score": 0.9603,
+            "market_context_available_count": 800,
+            "prealert_confirmed_count": 1,
+            "prealert_count": 2,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.685,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6287,
+            "resolved_climaxes": 145,
+            "resolved_confirms": 357,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 1,
+            "sample_size": 800,
+            "tuning_hint": "保持当前阈值"
+          }
+        ],
+        "pair": [
+          {
+            "actionable": true,
+            "climax_count": 108,
+            "climax_reversal_count": 21,
+            "climax_reversal_score": 0.3155,
+            "confirm_conversion_score": 0.2954,
+            "confirm_count": 264,
+            "dimension": "pair",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "ETH/USDC",
+            "label": "ETH/USDC",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 417,
+            "market_context_alignment_score": 0.9571,
+            "market_context_available_count": 419,
+            "prealert_confirmed_count": 1,
+            "prealert_count": 2,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.685,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6255,
+            "resolved_climaxes": 71,
+            "resolved_confirms": 199,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 1,
+            "sample_size": 419,
+            "tuning_hint": "保持当前阈值"
+          },
+          {
+            "actionable": true,
+            "climax_count": 102,
+            "climax_reversal_count": 17,
+            "climax_reversal_score": 0.2513,
+            "confirm_conversion_score": 0.2899,
+            "confirm_count": 229,
+            "dimension": "pair",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "ETH/USDT",
+            "label": "ETH/USDT",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 379,
+            "market_context_alignment_score": 0.9602,
+            "market_context_available_count": 381,
+            "prealert_confirmed_count": 0,
+            "prealert_count": 0,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.58,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6021,
+            "resolved_climaxes": 74,
+            "resolved_confirms": 158,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 0,
+            "sample_size": 381,
+            "tuning_hint": "retail 建议关闭该维度 prealert"
+          }
+        ],
+        "pool": [
+          {
+            "actionable": true,
+            "climax_count": 108,
+            "climax_reversal_count": 21,
+            "climax_reversal_score": 0.3155,
+            "confirm_conversion_score": 0.2954,
+            "confirm_count": 264,
+            "dimension": "pool",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+            "label": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 417,
+            "market_context_alignment_score": 0.9571,
+            "market_context_available_count": 417,
+            "prealert_confirmed_count": 1,
+            "prealert_count": 2,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.685,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6255,
+            "resolved_climaxes": 71,
+            "resolved_confirms": 199,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 1,
+            "sample_size": 417,
+            "tuning_hint": "保持当前阈值"
+          },
+          {
+            "actionable": true,
+            "climax_count": 102,
+            "climax_reversal_count": 17,
+            "climax_reversal_score": 0.2513,
+            "confirm_conversion_score": 0.2899,
+            "confirm_count": 229,
+            "dimension": "pool",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+            "label": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 379,
+            "market_context_alignment_score": 0.9602,
+            "market_context_available_count": 379,
+            "prealert_confirmed_count": 0,
+            "prealert_count": 0,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.58,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6021,
+            "resolved_climaxes": 74,
+            "resolved_confirms": 158,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 0,
+            "sample_size": 379,
+            "tuning_hint": "retail 建议关闭该维度 prealert"
+          }
+        ],
+        "stage": [
+          {
+            "actionable": true,
+            "climax_count": 210,
+            "climax_reversal_count": 38,
+            "climax_reversal_score": 0.2794,
+            "confirm_conversion_score": 0.56,
+            "confirm_count": 0,
+            "dimension": "stage",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "climax",
+            "label": "climax",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 210,
+            "market_context_alignment_score": 0.9364,
+            "market_context_available_count": 210,
+            "prealert_confirmed_count": 0,
+            "prealert_count": 0,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.58,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6659,
+            "resolved_climaxes": 145,
+            "resolved_confirms": 0,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 0,
+            "sample_size": 210,
+            "tuning_hint": "retail 建议关闭该维度 prealert"
+          },
+          {
+            "actionable": true,
+            "climax_count": 0,
+            "climax_reversal_count": 0,
+            "climax_reversal_score": 0.45,
+            "confirm_conversion_score": 0.56,
+            "confirm_count": 0,
+            "dimension": "stage",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "exhaustion_risk",
+            "label": "exhaustion_risk",
+            "last_updated_at": 1776918567,
+            "market_context_alignment_positive_count": 91,
+            "market_context_alignment_score": 0.9662,
+            "market_context_available_count": 91,
+            "prealert_confirmed_count": 0,
+            "prealert_count": 0,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.58,
+            "quality_hint": "历史一般",
+            "quality_score": 0.6517,
+            "resolved_climaxes": 0,
+            "resolved_confirms": 0,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 0,
+            "sample_size": 91,
+            "tuning_hint": "retail 建议关闭该维度 prealert"
+          },
+          {
+            "actionable": true,
+            "climax_count": 0,
+            "climax_reversal_count": 0,
+            "climax_reversal_score": 0.45,
+            "confirm_conversion_score": 0.2908,
+            "confirm_count": 493,
+            "dimension": "stage",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "confirm",
+            "label": "confirm",
+            "last_updated_at": 1776920536,
+            "market_context_alignment_positive_count": 493,
+            "market_context_alignment_score": 0.9637,
+            "market_context_available_count": 493,
+            "prealert_confirmed_count": 0,
+            "prealert_count": 0,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.58,
+            "quality_hint": "历史一般",
+            "quality_score": 0.5813,
+            "resolved_climaxes": 0,
+            "resolved_confirms": 357,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 0,
+            "sample_size": 493,
+            "tuning_hint": "retail 建议关闭该维度 prealert"
+          },
+          {
+            "actionable": false,
+            "climax_count": 0,
+            "climax_reversal_count": 0,
+            "climax_reversal_score": 0.45,
+            "confirm_conversion_score": 0.56,
+            "confirm_count": 0,
+            "dimension": "stage",
+            "fastlane_positive_followthrough": 0,
+            "fastlane_promotions": 0,
+            "fastlane_roi_score": 0.55,
+            "key": "prealert",
+            "label": "prealert",
+            "last_updated_at": 1776697431,
+            "market_context_alignment_positive_count": 2,
+            "market_context_alignment_score": 0.7,
+            "market_context_available_count": 2,
+            "prealert_confirmed_count": 1,
+            "prealert_count": 2,
+            "prealert_false_count": 0,
+            "prealert_precision_score": 0.685,
+            "quality_hint": "历史样本有限",
+            "quality_score": 0.6438,
+            "resolved_climaxes": 0,
+            "resolved_confirms": 0,
+            "resolved_fastlanes": 0,
+            "resolved_prealerts": 1,
+            "sample_size": 2,
+            "tuning_hint": "样本不足，仅观察"
+          }
+        ]
+      },
+      "fastlane_roi_laggards": [
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "label": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 379,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 379,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        },
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDT",
+          "label": "ETH/USDT",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 381,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 381,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        },
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "label": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 417,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 417,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDC",
+          "label": "ETH/USDC",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 419,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 419,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 210,
+          "climax_reversal_count": 38,
+          "climax_reversal_score": 0.2794,
+          "confirm_conversion_score": 0.2908,
+          "confirm_count": 493,
+          "dimension": "asset",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH",
+          "label": "ETH",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 796,
+          "market_context_alignment_score": 0.9603,
+          "market_context_available_count": 800,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6287,
+          "resolved_climaxes": 145,
+          "resolved_confirms": 357,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 800,
+          "tuning_hint": "保持当前阈值"
+        }
+      ],
+      "filters": {
+        "days": null,
+        "limit": null,
+        "top_n": 10
+      },
+      "generated_at": 1776961421,
+      "overall": {
+        "actionable": true,
+        "climax_count": 210,
+        "climax_reversal_count": 38,
+        "climax_reversal_score": 0.2794,
+        "confirm_conversion_score": 0.2908,
+        "confirm_count": 493,
+        "dimension": "overall",
+        "fastlane_positive_followthrough": 0,
+        "fastlane_promotions": 0,
+        "fastlane_roi_score": 0.55,
+        "key": "all",
+        "label": "all",
+        "last_updated_at": 1776920536,
+        "market_context_alignment_positive_count": 796,
+        "market_context_alignment_score": 0.9603,
+        "market_context_available_count": 800,
+        "prealert_confirmed_count": 1,
+        "prealert_count": 2,
+        "prealert_false_count": 0,
+        "prealert_precision_score": 0.685,
+        "quality_hint": "历史一般",
+        "quality_score": 0.6287,
+        "resolved_climaxes": 145,
+        "resolved_confirms": 357,
+        "resolved_fastlanes": 0,
+        "resolved_prealerts": 1,
+        "sample_size": 800,
+        "tuning_hint": "保持当前阈值"
+      },
+      "schema_version": "lp_quality_stats_v1",
+      "top_bad_prealerts": [
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "label": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 379,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 379,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        },
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDT",
+          "label": "ETH/USDT",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 381,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 381,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        },
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "label": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 417,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 417,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDC",
+          "label": "ETH/USDC",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 419,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 419,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 210,
+          "climax_reversal_count": 38,
+          "climax_reversal_score": 0.2794,
+          "confirm_conversion_score": 0.2908,
+          "confirm_count": 493,
+          "dimension": "asset",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH",
+          "label": "ETH",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 796,
+          "market_context_alignment_score": 0.9603,
+          "market_context_available_count": 800,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6287,
+          "resolved_climaxes": 145,
+          "resolved_confirms": 357,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 800,
+          "tuning_hint": "保持当前阈值"
+        }
+      ],
+      "top_climax_reversal": [
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDC",
+          "label": "ETH/USDC",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 419,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 419,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 108,
+          "climax_reversal_count": 21,
+          "climax_reversal_score": 0.3155,
+          "confirm_conversion_score": 0.2954,
+          "confirm_count": 264,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "label": "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 417,
+          "market_context_alignment_score": 0.9571,
+          "market_context_available_count": 417,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6255,
+          "resolved_climaxes": 71,
+          "resolved_confirms": 199,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 417,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 210,
+          "climax_reversal_count": 38,
+          "climax_reversal_score": 0.2794,
+          "confirm_conversion_score": 0.2908,
+          "confirm_count": 493,
+          "dimension": "asset",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH",
+          "label": "ETH",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 796,
+          "market_context_alignment_score": 0.9603,
+          "market_context_available_count": 800,
+          "prealert_confirmed_count": 1,
+          "prealert_count": 2,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.685,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6287,
+          "resolved_climaxes": 145,
+          "resolved_confirms": 357,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 1,
+          "sample_size": 800,
+          "tuning_hint": "保持当前阈值"
+        },
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pair",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "ETH/USDT",
+          "label": "ETH/USDT",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 381,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 381,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        },
+        {
+          "actionable": true,
+          "climax_count": 102,
+          "climax_reversal_count": 17,
+          "climax_reversal_score": 0.2513,
+          "confirm_conversion_score": 0.2899,
+          "confirm_count": 229,
+          "dimension": "pool",
+          "fastlane_positive_followthrough": 0,
+          "fastlane_promotions": 0,
+          "fastlane_roi_score": 0.55,
+          "key": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "label": "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852",
+          "last_updated_at": 1776920536,
+          "market_context_alignment_positive_count": 379,
+          "market_context_alignment_score": 0.9602,
+          "market_context_available_count": 379,
+          "prealert_confirmed_count": 0,
+          "prealert_count": 0,
+          "prealert_false_count": 0,
+          "prealert_precision_score": 0.58,
+          "quality_hint": "历史一般",
+          "quality_score": 0.6021,
+          "resolved_climaxes": 74,
+          "resolved_confirms": 158,
+          "resolved_fastlanes": 0,
+          "resolved_prealerts": 0,
+          "sample_size": 379,
+          "tuning_hint": "retail 建议关闭该维度 prealert"
+        }
+      ]
+    },
+    "outcome_window_status": {
+      "300s": {
+        "expired": 136
+      },
+      "30s": {
+        "completed": 62,
+        "expired": 74
+      },
+      "60s": {
+        "completed": 56,
+        "expired": 80
+      }
+    },
+    "resolved_move_after_300s_count_window": 0,
+    "resolved_move_after_30s_count_window": 62,
+    "resolved_move_after_60s_count_window": 56
+  },
+  "report_data_source": "sqlite",
+  "reversal_special_cases": {
+    "buy_after_300s": {
+      "against_count": 0,
+      "against_rate": null,
+      "resolved_count": 0
+    },
+    "buy_after_300s_fall_ratio": null,
+    "buy_after_30s": {
+      "against_count": 1,
+      "against_rate": 0.0833,
+      "resolved_count": 12
+    },
+    "buy_after_30s_fall_ratio": 0.0833,
+    "buy_after_60s": {
+      "against_count": 1,
+      "against_rate": 0.1,
+      "resolved_count": 10
+    },
+    "buy_after_60s_fall_ratio": 0.1,
+    "buy_confirm_count": 37,
+    "examples": [],
+    "reason_distribution": {},
+    "sell_after_300s": {
+      "against_count": 0,
+      "against_rate": null,
+      "resolved_count": 0
+    },
+    "sell_after_300s_rise_ratio": null,
+    "sell_after_30s": {
+      "against_count": 6,
+      "against_rate": 0.3158,
+      "resolved_count": 19
+    },
+    "sell_after_30s_rise_ratio": 0.3158,
+    "sell_after_60s": {
+      "against_count": 6,
+      "against_rate": 0.3333,
+      "resolved_count": 18
+    },
+    "sell_after_60s_rise_ratio": 0.3333,
+    "sell_confirm_count": 39
+  },
+  "runtime_config_summary": {
+    "ARCHIVE_ENABLE_CASES": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "ARCHIVE_ENABLE_CASE_FOLLOWUPS": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "ARCHIVE_ENABLE_DELIVERY_AUDIT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "ARCHIVE_ENABLE_PARSED_EVENTS": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "ARCHIVE_ENABLE_RAW_EVENTS": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "ARCHIVE_ENABLE_SIGNALS": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "DEFAULT_USER_TIER": {
+      "env_present": true,
+      "env_value": "research",
+      "runtime_value": "research"
+    },
+    "KRAKEN_FUTURES_BASE_URL": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": "https://futures.kraken.com"
+    },
+    "LP_ASSET_CASE_PERSIST_ENABLE": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "LP_MAJOR_ASSETS": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": [
+        "ETH",
+        "WETH",
+        "BTC",
+        "WBTC",
+        "CBBTC",
+        "SOL",
+        "WSOL"
+      ]
+    },
+    "LP_MAJOR_QUOTES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": [
+        "USDT",
+        "USDC",
+        "USDC.E"
+      ]
+    },
+    "LP_PREALERT_DIRECTIONAL_MIN_ACTION_INTENSITY": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.24
+    },
+    "LP_PREALERT_DIRECTIONAL_MIN_VOLUME_SURGE_RATIO": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 1.2
+    },
+    "LP_PREALERT_FOLLOWUP_WINDOW_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 60
+    },
+    "LP_PREALERT_LIQUIDITY_ADDITION_MIN_ACTION_INTENSITY": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.3
+    },
+    "LP_PREALERT_LIQUIDITY_ADDITION_MIN_VOLUME_SURGE_RATIO": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 1.45
+    },
+    "LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.26
+    },
+    "LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 1.25
+    },
+    "LP_PREALERT_MIN_CONFIRMATION": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.36
+    },
+    "LP_PREALERT_MIN_PRICING_CONFIDENCE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.62
+    },
+    "LP_PREALERT_MIN_RESERVE_SKEW": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.08
+    },
+    "LP_PREALERT_MIN_USD": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 1500.0
+    },
+    "LP_PREALERT_MULTI_POOL_WINDOW_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 90
+    },
+    "LP_PREALERT_PRIMARY_TREND_MIN_MATCHES": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 2
+    },
+    "LP_QUALITY_STATS_ENABLE": {
+      "env_present": true,
+      "env_value": "true",
+      "runtime_value": true
+    },
+    "MARKET_CONTEXT_ADAPTER_MODE": {
+      "env_present": true,
+      "env_value": "live",
+      "runtime_value": "live"
+    },
+    "MARKET_CONTEXT_PRIMARY_VENUE": {
+      "env_present": true,
+      "env_value": "okx_perp",
+      "runtime_value": "okx_perp"
+    },
+    "MARKET_CONTEXT_SECONDARY_VENUE": {
+      "env_present": true,
+      "env_value": "kraken_futures",
+      "runtime_value": "kraken_futures"
+    },
+    "OKX_PUBLIC_BASE_URL": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": "https://www.okx.com"
+    },
+    "OPPORTUNITY_NON_LP_EVIDENCE_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_NON_LP_EVIDENCE_WINDOW_SEC": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 300
+    },
+    "OPPORTUNITY_NON_LP_OBSERVE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.0
+    },
+    "OPPORTUNITY_NON_LP_SCORE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.1
+    },
+    "OPPORTUNITY_NON_LP_STRONG_BLOCKER_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "OPPORTUNITY_NON_LP_TENTATIVE_WEIGHT": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": 0.25
+    },
+    "REPORT_ARCHIVE_READ_GZIP": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "REPORT_DB_ARCHIVE_COMPARE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": false
+    },
+    "SQLITE_DB_PATH": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": "data/chain_monitor.sqlite"
+    },
+    "SQLITE_ENABLE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "SQLITE_REPORT_FALLBACK_TO_ARCHIVE": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "SQLITE_REPORT_READ_PREFER_DB": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": true
+    },
+    "confirm_downgrade_logic": {
+      "env_present": false,
+      "env_value": null,
+      "runtime_value": {
+        "chase_risk": [
+          "lp_chase_risk_score >= 0.58",
+          "pool_move_before >= 0.010 or market_move_before >= 0.010",
+          "late and no broader confirmation",
+          "market_context unavailable and single_pool_dominant and pool_move_before >= 0.008",
+          "detect_latency_ms >= 8000 or case_age_sec >= 240"
+        ],
+        "late_confirm": [
+          "alert_timing == late",
+          "market_context unavailable and pool_move_before >= 0.007",
+          "pool_move_before >= 0.009",
+          "market_move_before >= 0.008",
+          "detect_latency_ms >= 4500",
+          "case_age_sec >= 150",
+          "quality_gap >= 0.18"
+        ]
+      }
+    }
+  },
+  "scorecard": {
+    "confirm_honesty_non_misleading_quality": 7.0,
+    "live_market_context_readiness": 9.4,
+    "majors_coverage": 3.2,
+    "noise_control": 6.2,
+    "overall_self_use_score": 6.5,
+    "prealert_effectiveness": 3.5,
+    "research_sampling_readiness": 5.4,
+    "signal_archive_integrity": 9.2,
+    "sweep_quality": 8.0
+  },
+  "sqlite_health": {
+    "archive_mirror": {
+      "db_archive_mirror_match_rate": 0.9998,
+      "per_category": {
+        "case_followups": {
+          "archive_rows": 196,
+          "match_rate": 1.0,
+          "mismatch": false,
+          "sqlite_rows": 196
+        },
+        "delivery_audit": {
+          "archive_rows": 197416,
+          "match_rate": 0.9993,
+          "mismatch": true,
+          "sqlite_rows": 197279
+        },
+        "parsed_events": {
+          "archive_rows": 67806,
+          "match_rate": 1.0,
+          "mismatch": true,
+          "sqlite_rows": 67807
+        },
+        "raw_events": {
+          "archive_rows": 137116,
+          "match_rate": 1.0,
+          "mismatch": false,
+          "sqlite_rows": 137116
+        },
+        "signals": {
+          "archive_rows": 2141,
+          "match_rate": 0.9995,
+          "mismatch": true,
+          "sqlite_rows": 2142
+        }
+      }
+    },
+    "db_exists": true,
+    "db_path": "/run-project/chain-monitor/data/chain_monitor.sqlite",
+    "db_size_bytes": 3690512384,
+    "db_size_mb": 3519.5469,
+    "enabled": true,
+    "init_failed_reason": "",
+    "initialized": true,
+    "last_updated": {
+      "asset_cases": 1776920536.0,
+      "asset_market_states": 1776920536.0,
+      "case_followups": 1776959653.6934445,
+      "delivery_audit": 1776959653.669546,
+      "market_context_attempts": 1776920542.0,
+      "market_context_snapshots": 1776959548.325351,
+      "no_trade_locks": 1776959653.7042084,
+      "opportunity_outcomes": 1776920536.0,
+      "outcomes": 1776959655.5802755,
+      "parsed_events": 1776959532.0961132,
+      "prealert_lifecycle": 1776959548.332898,
+      "quality_stats": 1776920850.0,
+      "raw_events": 1776959403.9534562,
+      "runs": null,
+      "schema_meta": 1776961127.8430533,
+      "signal_features": null,
+      "signals": 1776959548.3205395,
+      "telegram_deliveries": 1776959653.6678283,
+      "trade_opportunities": 1776959654.8644927
+    },
+    "missing_tables": [],
+    "schema_version": "sqlite_schema_v1",
+    "shm_exists": true,
+    "shm_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-shm",
+    "shm_size_bytes": 32768,
+    "shm_size_mb": 0.0312,
+    "table_row_counts": {
+      "asset_cases": 9999,
+      "asset_market_states": 582,
+      "case_followups": 196,
+      "delivery_audit": 197279,
+      "market_context_attempts": 3203,
+      "market_context_snapshots": 2142,
+      "no_trade_locks": 502,
+      "opportunity_outcomes": 2025,
+      "outcomes": 3468,
+      "parsed_events": 67807,
+      "prealert_lifecycle": 2494,
+      "quality_stats": 1270,
+      "raw_events": 137116,
+      "runs": 0,
+      "schema_meta": 1,
+      "signal_features": 9696,
+      "signals": 2142,
+      "telegram_deliveries": 164840,
+      "trade_opportunities": 675
+    },
+    "total_size_bytes": 3690549304,
+    "total_size_mb": 3519.5821,
+    "wal_exists": true,
+    "wal_path": "/run-project/chain-monitor/data/chain_monitor.sqlite-wal",
+    "wal_size_bytes": 4152,
+    "wal_size_mb": 0.004,
+    "warnings": [],
+    "write_error_count": 0
+  },
+  "sqlite_rows_by_table": {
+    "asset_cases": 9999,
+    "asset_market_states": 582,
+    "case_followups": 196,
+    "delivery_audit": 197279,
+    "market_context_attempts": 3203,
+    "market_context_snapshots": 2142,
+    "no_trade_locks": 502,
+    "opportunity_outcomes": 2025,
+    "outcomes": 3468,
+    "parsed_events": 67807,
+    "prealert_lifecycle": 2494,
+    "quality_stats": 1270,
+    "raw_events": 137116,
+    "runs": 0,
+    "schema_meta": 1,
+    "signal_features": 9696,
+    "signals": 2142,
+    "telegram_deliveries": 164840,
+    "trade_opportunities": 675
+  },
+  "sweep_summary": {
+    "direction_performance": {
+      "buy_pressure": {
+        "adverse_300s_rate": null,
+        "adverse_60s_rate": 0.2083,
+        "count": 58,
+        "move_after_300s_median": null,
+        "move_after_60s_median": 0.001843
+      },
+      "sell_pressure": {
+        "adverse_300s_rate": null,
+        "adverse_60s_rate": 0.625,
+        "count": 36,
+        "move_after_300s_median": null,
+        "move_after_60s_median": -0.000316
+      }
+    },
+    "sweep_building_count": 35,
+    "sweep_building_display_climax_residual_count": 0,
+    "sweep_building_residuals": [],
+    "sweep_building_to_continue_rate": 0.6571,
+    "sweep_building_to_sweep_confirmed_rate": 0.3429,
+    "sweep_confirmed_count": 38,
+    "sweep_exhaustion_outcome_300s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "resolved_count": 0
+    },
+    "sweep_exhaustion_risk_count": 21,
+    "sweep_reversal_300s": {
+      "adverse_count": 0,
+      "adverse_rate": null,
+      "resolved_count": 0
+    },
+    "sweep_reversal_60s": {
+      "adverse_count": 8,
+      "adverse_rate": 0.4211,
+      "resolved_count": 19
+    }
+  },
+  "telegram_suppression_summary": {
+    "messages_before_after_suppression_estimate": {
+      "raw_lp_signals": 136,
+      "sent_telegram_messages": 7
+    },
+    "suppression_reasons": {
+      "no_trade_opportunity": 121,
+      "same_blocker_repeat": 6
+    },
+    "total_suppressed": 127,
+    "update_kind_distribution": {
+      "risk_blocker": 9,
+      "suppressed": 127
+    }
+  },
+  "top_findings": [
+    "Latest overnight window is 2026-04-18 18:33:40 UTC to 2026-04-19 07:52:41 UTC, with 68 LP stage rows and 55 delivered LP messages.",
+    "live market context is active in the whole window: 68/68 LP rows are live_public via okx_perp; no unavailable rows remain overnight.",
+    "ETH/USDC -> ETH-USDT-SWAP fallback is real and frequent overnight; kraken_futures was not needed and therefore remains unvalidated in live overnight samples.",
+    "prealert is still absent overnight, so early-stage research sampling has not actually improved in real overnight data.",
+    "sweep_building no longer leaks climax semantics in user-visible rendering; residual count is zero.",
+    "Confirms are materially more honest: 23 local_confirm, 0 broader_confirm, 3 late_confirm, 0 chase_risk, 18 unconfirmed_confirm.",
+    "Majors coverage is still ETH-only in real overnight data; BTC/SOL remain pool-book coverage gaps, not just low overnight activity.",
+    "Signal archive integrity is strong: signal -> delivery -> case_attach -> followup matches are 1.0 on the delivered overnight subset."
+  ],
+  "top_recommendations": [
+    "Fill BTC/SOL majors pool book first to improve representativeness before broad threshold tuning.",
+    "Restore majors prealert in real overnight flow; current sampling still starts too late.",
+    "Keep OKX as primary live context path and add a repeatable kraken fallback check because overnight did not exercise it.",
+    "Persist reliable 30s/60s outcome moves so reversal studies are not blocked by missing data."
+  ],
+  "trade_action_summary": {
+    "chase_allowed_adverse_rate": null,
+    "chase_allowed_rows_resolved_300s": 0,
+    "chase_allowed_success_rate": null,
+    "conflict_after_message_reversal_rate": 0.0,
+    "conflict_no_trade_count": 8,
+    "data_gap_no_trade_count": 0,
+    "do_not_chase_long_count": 31,
+    "do_not_chase_short_count": 33,
+    "generic_confirm_adverse_rate_300s": null,
+    "generic_confirm_success_rate_300s": null,
+    "long_chase_allowed_count": 0,
+    "no_trade_count": 0,
+    "no_trade_would_have_saved_rate": null,
+    "short_chase_allowed_count": 1,
+    "trade_action_adverse_300s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_adverse_30s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.6667,
+        "followthrough_count": 1,
+        "followthrough_rate": 0.3333,
+        "resolved_count": 3
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 2,
+        "adverse_rate": 0.1333,
+        "followthrough_count": 13,
+        "followthrough_rate": 0.8667,
+        "resolved_count": 15
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 5,
+        "adverse_rate": 0.3125,
+        "followthrough_count": 11,
+        "followthrough_rate": 0.6875,
+        "resolved_count": 16
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 3,
+        "adverse_rate": 0.1875,
+        "followthrough_count": 13,
+        "followthrough_rate": 0.8125,
+        "resolved_count": 16
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.5455,
+        "followthrough_count": 5,
+        "followthrough_rate": 0.4545,
+        "resolved_count": 11
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 1,
+        "adverse_rate": 1.0,
+        "followthrough_count": 0,
+        "followthrough_rate": 0.0,
+        "resolved_count": 1
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_adverse_60s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.6667,
+        "followthrough_count": 1,
+        "followthrough_rate": 0.3333,
+        "resolved_count": 3
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 2,
+        "adverse_rate": 0.1667,
+        "followthrough_count": 10,
+        "followthrough_rate": 0.8333,
+        "resolved_count": 12
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 5,
+        "adverse_rate": 0.3333,
+        "followthrough_count": 10,
+        "followthrough_rate": 0.6667,
+        "resolved_count": 15
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 3,
+        "adverse_rate": 0.2,
+        "followthrough_count": 12,
+        "followthrough_rate": 0.8,
+        "resolved_count": 15
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.6,
+        "followthrough_count": 4,
+        "followthrough_rate": 0.4,
+        "resolved_count": 10
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 1,
+        "adverse_rate": 1.0,
+        "followthrough_count": 0,
+        "followthrough_rate": 0.0,
+        "resolved_count": 1
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_distribution": {
+      "CONFLICT_NO_TRADE": 8,
+      "DO_NOT_CHASE_LONG": 31,
+      "DO_NOT_CHASE_SHORT": 33,
+      "LONG_BIAS_OBSERVE": 38,
+      "SHORT_BIAS_OBSERVE": 24,
+      "SHORT_CHASE_ALLOWED": 1,
+      "WAIT_CONFIRMATION": 1
+    },
+    "trade_action_followthrough_300s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_followthrough_30s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.6667,
+        "followthrough_count": 1,
+        "followthrough_rate": 0.3333,
+        "resolved_count": 3
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 2,
+        "adverse_rate": 0.1333,
+        "followthrough_count": 13,
+        "followthrough_rate": 0.8667,
+        "resolved_count": 15
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 5,
+        "adverse_rate": 0.3125,
+        "followthrough_count": 11,
+        "followthrough_rate": 0.6875,
+        "resolved_count": 16
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 3,
+        "adverse_rate": 0.1875,
+        "followthrough_count": 13,
+        "followthrough_rate": 0.8125,
+        "resolved_count": 16
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.5455,
+        "followthrough_count": 5,
+        "followthrough_rate": 0.4545,
+        "resolved_count": 11
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 1,
+        "adverse_rate": 1.0,
+        "followthrough_count": 0,
+        "followthrough_rate": 0.0,
+        "resolved_count": 1
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_followthrough_60s": {
+      "CONFLICT_NO_TRADE": {
+        "adverse_count": 2,
+        "adverse_rate": 0.6667,
+        "followthrough_count": 1,
+        "followthrough_rate": 0.3333,
+        "resolved_count": 3
+      },
+      "DO_NOT_CHASE_LONG": {
+        "adverse_count": 2,
+        "adverse_rate": 0.1667,
+        "followthrough_count": 10,
+        "followthrough_rate": 0.8333,
+        "resolved_count": 12
+      },
+      "DO_NOT_CHASE_SHORT": {
+        "adverse_count": 5,
+        "adverse_rate": 0.3333,
+        "followthrough_count": 10,
+        "followthrough_rate": 0.6667,
+        "resolved_count": 15
+      },
+      "LONG_BIAS_OBSERVE": {
+        "adverse_count": 3,
+        "adverse_rate": 0.2,
+        "followthrough_count": 12,
+        "followthrough_rate": 0.8,
+        "resolved_count": 15
+      },
+      "SHORT_BIAS_OBSERVE": {
+        "adverse_count": 6,
+        "adverse_rate": 0.6,
+        "followthrough_count": 4,
+        "followthrough_rate": 0.4,
+        "resolved_count": 10
+      },
+      "SHORT_CHASE_ALLOWED": {
+        "adverse_count": 1,
+        "adverse_rate": 1.0,
+        "followthrough_count": 0,
+        "followthrough_rate": 0.0,
+        "resolved_count": 1
+      },
+      "WAIT_CONFIRMATION": {
+        "adverse_count": 0,
+        "adverse_rate": null,
+        "followthrough_count": 0,
+        "followthrough_rate": null,
+        "resolved_count": 0
+      }
+    },
+    "trade_action_label_distribution": {
+      "不交易": 8,
+      "不追多": 31,
+      "不追空": 33,
+      "偏多观察": 38,
+      "偏空观察": 24,
+      "可顺势追空": 1,
+      "等待确认": 1
+    },
+    "wait_confirmation_count": 1
+  }
+}

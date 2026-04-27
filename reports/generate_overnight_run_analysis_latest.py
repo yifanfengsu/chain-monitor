@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -50,6 +51,15 @@ UTC = timezone.utc
 SERVER_TZ = UTC
 BJ_TZ = timezone(timedelta(hours=8))
 TOKYO_TZ = timezone(timedelta(hours=9))
+QUALITY_REPORTS_CLI_TIMEOUT_SEC = 45
+
+SQLITE_CATEGORY_TABLES = {
+    "raw_events": ("raw_events", "captured_at"),
+    "parsed_events": ("parsed_events", "parsed_at"),
+    "signals": ("signals", "archive_written_at"),
+    "delivery_audit": ("delivery_audit", "archive_written_at"),
+    "case_followups": ("case_followups", "archive_written_at"),
+}
 
 LP_STAGES = ("prealert", "confirm", "climax", "exhaustion_risk")
 SWEEP_PHASES = ("sweep_building", "sweep_confirmed", "sweep_exhaustion_risk")
@@ -118,6 +128,59 @@ class FileInventory:
     start_ts: int | None
     end_ts: int | None
     notes: str
+
+
+def parse_utc_date(value: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("DATE must be YYYY-MM-DD") from exc
+
+
+def utc_date_bounds(value: str) -> tuple[int, int]:
+    start = parse_utc_date(value)
+    end = start + timedelta(days=1) - timedelta(seconds=1)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def signal_prefetch_window_for_date(value: str | None) -> dict[str, int] | None:
+    if not value:
+        return None
+    day_start, day_end = utc_date_bounds(value)
+    return {"start_ts": day_start - 86400, "end_ts": day_end}
+
+
+def archive_dates_for_window(window: dict[str, Any] | None) -> set[str] | None:
+    if not window:
+        return None
+    start_ts = to_int(window.get("start_ts") or window.get("analysis_window_start_ts"))
+    end_ts = to_int(window.get("end_ts") or window.get("analysis_window_end_ts"))
+    if start_ts is None or end_ts is None:
+        return None
+    start_day = datetime.fromtimestamp(start_ts, UTC).date()
+    end_day = datetime.fromtimestamp(end_ts, UTC).date()
+    days = set()
+    current = start_day
+    while current <= end_day:
+        days.add(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def archive_date_key(path: Path) -> str:
+    name = path.name
+    if name.endswith(".ndjson.gz"):
+        return name[: -len(".ndjson.gz")]
+    if name.endswith(".ndjson"):
+        return name[: -len(".ndjson")]
+    return path.stem
+
+
+def scoped_archive_paths(category: str, archive_dates: set[str] | None = None) -> list[Path]:
+    paths = report_archive_paths(category)
+    if not archive_dates:
+        return paths
+    return [path for path in paths if archive_date_key(path) in archive_dates]
 
 
 def to_int(value: Any) -> int | None:
@@ -277,7 +340,7 @@ def _sqlite_report_enabled() -> bool:
         return False
 
 
-def sqlite_report_source_summary() -> dict[str, Any]:
+def sqlite_report_source_summary(*, fast: bool = False) -> dict[str, Any]:
     if not _sqlite_report_enabled():
         return {
             "report_data_source": "archive",
@@ -292,7 +355,7 @@ def sqlite_report_source_summary() -> dict[str, Any]:
             "warnings": ["sqlite disabled or unavailable"],
         }
     try:
-        payload = loader_report_source_summary()
+        payload = loader_report_source_summary(fast=fast)
         payload["data_source_summary"] = dict(payload)
         return payload
     except Exception as exc:
@@ -326,9 +389,77 @@ def _sqlite_report_prefer_db() -> bool:
         return False
 
 
-def _load_signal_payloads_from_db() -> tuple[list[dict[str, Any]], list[FileInventory]]:
+def _sqlite_db_path() -> Path:
+    if str(APP_DIR) not in sys.path:
+        sys.path.insert(0, str(APP_DIR))
+    import config  # type: ignore
+
+    db_path = Path(getattr(config, "SQLITE_DB_PATH", "data/chain_monitor.sqlite"))
+    if not db_path.is_absolute():
+        db_path = ROOT / db_path
+    return db_path
+
+
+def _sqlite_connect() -> sqlite3.Connection | None:
     try:
-        result = loader_load_signals()
+        if not _sqlite_report_prefer_db():
+            return None
+        db_path = _sqlite_db_path()
+        if not db_path.exists():
+            return None
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return row is not None
+
+
+def _sqlite_window_inventory(category: str, notes: str, window: dict[str, Any] | None) -> FileInventory | None:
+    if not window:
+        return None
+    table_config = SQLITE_CATEGORY_TABLES.get(category)
+    if not table_config:
+        return None
+    table, time_column = table_config
+    conn = _sqlite_connect()
+    if conn is None:
+        return None
+    try:
+        if not _sqlite_table_exists(conn, table):
+            return None
+        start_ts = to_int(window.get("start_ts") or window.get("analysis_window_start_ts"))
+        end_ts = to_int(window.get("end_ts") or window.get("analysis_window_end_ts"))
+        if start_ts is None or end_ts is None:
+            return None
+        row = conn.execute(
+            f"SELECT COUNT(*) AS record_count, MIN({time_column}) AS start_ts, MAX({time_column}) AS end_ts "
+            f"FROM {table} WHERE {time_column} >= ? AND {time_column} <= ?",
+            (int(start_ts), int(end_ts)),
+        ).fetchone()
+        return FileInventory(
+            str(_sqlite_db_path().relative_to(ROOT)),
+            True,
+            int(row["record_count"] or 0) if row else 0,
+            to_int(row["start_ts"]) if row else None,
+            to_int(row["end_ts"]) if row else None,
+            f"{notes}; sqlite window-scoped inventory for {category}",
+        )
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _load_signal_payloads_from_db(
+    window: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[FileInventory]]:
+    try:
+        result = loader_load_signals(window=window, compare_archive=False)
         if result.source != "sqlite":
             return [], []
         rows = result.rows
@@ -698,22 +829,35 @@ def inventory_ndjson(path: Path, notes: str) -> FileInventory:
     return FileInventory(str(path.relative_to(ROOT)), True, count, start_ts, end_ts, notes)
 
 
-def inventory_category(category: str, notes: str) -> list[FileInventory]:
+def inventory_category(
+    category: str,
+    notes: str,
+    *,
+    archive_dates: set[str] | None = None,
+    window: dict[str, Any] | None = None,
+) -> list[FileInventory]:
+    sqlite_inventory = _sqlite_window_inventory(category, notes, window)
+    if sqlite_inventory is not None:
+        return [sqlite_inventory]
     root = ARCHIVE_DIR / category
-    paths = report_archive_paths(category)
+    paths = scoped_archive_paths(category, archive_dates)
     if not paths:
         return [FileInventory(str((root / "*.ndjson(.gz)").relative_to(ROOT)), False, 0, None, None, notes)]
     return [inventory_ndjson(path, notes) for path in paths]
 
 
-def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
+def load_signals(
+    *,
+    window: dict[str, Any] | None = None,
+    archive_dates: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[FileInventory]]:
     if _sqlite_report_prefer_db():
-        db_payloads, db_inventory = _load_signal_payloads_from_db()
+        db_payloads, db_inventory = _load_signal_payloads_from_db(window=window)
         if db_payloads:
             return [_db_signal_row(row) for row in db_payloads], db_inventory
     rows: list[dict[str, Any]] = []
     inventory: list[FileInventory] = []
-    for path in report_archive_paths("signals"):
+    for path in scoped_archive_paths("signals", archive_dates):
         inventory.append(inventory_ndjson(path, "signals archive"))
         with report_open_archive_text(path) as handle:
             for raw_line in handle:
@@ -878,7 +1022,7 @@ def load_signals() -> tuple[list[dict[str, Any]], list[FileInventory]]:
                 row["notifier_line1"] = notifier_line1(row)
                 rows.append(row)
     if not rows and _sqlite_report_enabled():
-        db_payloads, db_inventory = _load_signal_payloads_from_db()
+        db_payloads, db_inventory = _load_signal_payloads_from_db(window=window)
         if db_payloads:
             return [_db_signal_row(row) for row in db_payloads], db_inventory
     return rows, inventory
@@ -1207,18 +1351,94 @@ def join_lp_rows(
     return window_signal_rows, all_lp_rows, lp_rows_window
 
 
+def stream_delivery_audit_from_sqlite(
+    window_start: int,
+    window_end: int,
+    signal_ids: set[str],
+    delivered_signal_ids: set[str],
+) -> tuple[list[FileInventory], dict[str, Any]] | None:
+    conn = _sqlite_connect()
+    if conn is None:
+        return None
+    try:
+        if not _sqlite_table_exists(conn, "delivery_audit"):
+            return None
+        rows = conn.execute(
+            """
+            SELECT signal_id, delivered, sent_to_telegram, notifier_sent_at, archive_written_at
+            FROM delivery_audit
+            WHERE archive_written_at >= ? AND archive_written_at <= ?
+            ORDER BY archive_written_at
+            """,
+            (int(window_start), int(window_end)),
+        ).fetchall()
+        matched_ids: set[str] = set()
+        delivered_matched_ids: set[str] = set()
+        notifier_present = 0
+        delivered_rows = 0
+        times: list[int] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            ts = to_int(row.get("archive_written_at"))
+            if ts is not None:
+                times.append(ts)
+            signal_id = str(row.get("signal_id") or "")
+            if signal_id in signal_ids:
+                matched_ids.add(signal_id)
+            delivered = bool(
+                _bool_from_db(row.get("delivered"))
+                or _bool_from_db(row.get("sent_to_telegram"))
+                or row.get("notifier_sent_at")
+            )
+            if signal_id in delivered_signal_ids and delivered:
+                delivered_matched_ids.add(signal_id)
+                delivered_rows += 1
+                if row.get("notifier_sent_at"):
+                    notifier_present += 1
+        inventory = FileInventory(
+            str(_sqlite_db_path().relative_to(ROOT)),
+            True,
+            len(rows),
+            min(times) if times else None,
+            max(times) if times else None,
+            "sqlite delivery_audit window",
+        )
+        return [inventory], {
+            "matched_signal_ids": matched_ids,
+            "delivered_matched_ids": delivered_matched_ids,
+            "delivered_rows": delivered_rows,
+            "notifier_present_rows": notifier_present,
+        }
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def stream_delivery_audit(
     window_start: int,
     window_end: int,
     signal_ids: set[str],
     delivered_signal_ids: set[str],
+    *,
+    archive_dates: set[str] | None = None,
+    prefer_sqlite: bool = True,
 ) -> tuple[list[FileInventory], dict[str, Any]]:
+    if prefer_sqlite:
+        sqlite_result = stream_delivery_audit_from_sqlite(
+            window_start,
+            window_end,
+            signal_ids,
+            delivered_signal_ids,
+        )
+        if sqlite_result is not None:
+            return sqlite_result
     inventories: list[FileInventory] = []
     matched_ids: set[str] = set()
     delivered_matched_ids: set[str] = set()
     notifier_present = 0
     delivered_rows = 0
-    for path in report_archive_paths("delivery_audit"):
+    for path in scoped_archive_paths("delivery_audit", archive_dates):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
@@ -1263,17 +1483,89 @@ def stream_delivery_audit(
     }
 
 
+def stream_cases_from_sqlite_signals(
+    window_start: int,
+    window_end: int,
+    signal_ids: set[str],
+    delivered_signal_ids: set[str],
+) -> tuple[list[FileInventory], dict[str, Any]] | None:
+    conn = _sqlite_connect()
+    if conn is None:
+        return None
+    try:
+        if not _sqlite_table_exists(conn, "signals"):
+            return None
+        rows = conn.execute(
+            """
+            SELECT signal_id, asset_case_id, lp_alert_stage, archive_written_at
+            FROM signals
+            WHERE archive_written_at >= ? AND archive_written_at <= ?
+            ORDER BY archive_written_at
+            """,
+            (int(window_start), int(window_end)),
+        ).fetchall()
+        case_attached_ids: set[str] = set()
+        case_ids: set[str] = set()
+        lp_case_rows = 0
+        times: list[int] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            ts = to_int(row.get("archive_written_at"))
+            if ts is not None:
+                times.append(ts)
+            signal_id = str(row.get("signal_id") or "")
+            if signal_id not in signal_ids:
+                continue
+            if str(row.get("lp_alert_stage") or "").strip():
+                lp_case_rows += 1
+            case_id = str(row.get("asset_case_id") or "").strip()
+            if not case_id:
+                continue
+            case_ids.add(case_id)
+            if signal_id in delivered_signal_ids:
+                case_attached_ids.add(signal_id)
+        inventory = FileInventory(
+            str(_sqlite_db_path().relative_to(ROOT)),
+            True,
+            len(rows),
+            min(times) if times else None,
+            max(times) if times else None,
+            "sqlite signals-derived case linkage window",
+        )
+        return [inventory], {
+            "case_attached_ids": case_attached_ids,
+            "case_ids": case_ids,
+            "lp_case_rows": lp_case_rows,
+        }
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def stream_cases(
     window_start: int,
     window_end: int,
     signal_ids: set[str],
     delivered_signal_ids: set[str],
+    *,
+    archive_dates: set[str] | None = None,
+    prefer_sqlite: bool = True,
 ) -> tuple[list[FileInventory], dict[str, Any]]:
+    if prefer_sqlite:
+        sqlite_result = stream_cases_from_sqlite_signals(
+            window_start,
+            window_end,
+            signal_ids,
+            delivered_signal_ids,
+        )
+        if sqlite_result is not None:
+            return sqlite_result
     inventories: list[FileInventory] = []
     case_attached_ids: set[str] = set()
     case_ids: set[str] = set()
     lp_case_rows = 0
-    for path in report_archive_paths("cases"):
+    for path in scoped_archive_paths("cases", archive_dates):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
@@ -1329,15 +1621,76 @@ def stream_cases(
     }
 
 
+def stream_case_followups_from_sqlite(
+    window_start: int,
+    window_end: int,
+    delivered_signal_ids: set[str],
+) -> tuple[list[FileInventory], dict[str, Any]] | None:
+    conn = _sqlite_connect()
+    if conn is None:
+        return None
+    try:
+        if not _sqlite_table_exists(conn, "case_followups"):
+            return None
+        rows = conn.execute(
+            """
+            SELECT signal_id, archive_written_at
+            FROM case_followups
+            WHERE archive_written_at >= ? AND archive_written_at <= ?
+            ORDER BY archive_written_at
+            """,
+            (int(window_start), int(window_end)),
+        ).fetchall()
+        followup_signal_ids: set[str] = set()
+        followup_rows = 0
+        times: list[int] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            ts = to_int(row.get("archive_written_at"))
+            if ts is not None:
+                times.append(ts)
+            signal_id = str(row.get("signal_id") or "")
+            if signal_id in delivered_signal_ids:
+                followup_signal_ids.add(signal_id)
+                followup_rows += 1
+        inventory = FileInventory(
+            str(_sqlite_db_path().relative_to(ROOT)),
+            True,
+            len(rows),
+            min(times) if times else None,
+            max(times) if times else None,
+            "sqlite case_followups window",
+        )
+        return [inventory], {
+            "followup_signal_ids": followup_signal_ids,
+            "followup_rows": followup_rows,
+        }
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def stream_case_followups(
     window_start: int,
     window_end: int,
     delivered_signal_ids: set[str],
+    *,
+    archive_dates: set[str] | None = None,
+    prefer_sqlite: bool = True,
 ) -> tuple[list[FileInventory], dict[str, Any]]:
+    if prefer_sqlite:
+        sqlite_result = stream_case_followups_from_sqlite(
+            window_start,
+            window_end,
+            delivered_signal_ids,
+        )
+        if sqlite_result is not None:
+            return sqlite_result
     inventories: list[FileInventory] = []
     followup_signal_ids: set[str] = set()
     followup_rows = 0
-    for path in report_archive_paths("case_followups"):
+    for path in scoped_archive_paths("case_followups", archive_dates):
         record_count = 0
         start_ts: int | None = None
         end_ts: int | None = None
@@ -1379,14 +1732,44 @@ def stream_case_followups(
 def run_cli(args: list[str], expect_json: bool) -> Any:
     python_bin = ROOT / "venv" / "bin" / "python"
     cmd = [str(python_bin if python_bin.exists() else Path(sys.executable)), "-m", "app.quality_reports", *args]
-    result = subprocess.run(
-        cmd,
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(result.stdout) if expect_json else result.stdout
+    timed_out = False
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=QUALITY_REPORTS_CLI_TIMEOUT_SEC,
+        )
+        stdout = result.stdout
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        stdout = exc.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if not stdout.strip():
+            if expect_json:
+                return {
+                    "available": False,
+                    "reason": "quality_reports_cli_timeout",
+                    "args": args,
+                    "timeout_sec": QUALITY_REPORTS_CLI_TIMEOUT_SEC,
+            }
+            return ""
+    if not expect_json:
+        return stdout
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        if timed_out:
+            return {
+                "available": False,
+                "reason": "quality_reports_cli_timeout_invalid_json",
+                "args": args,
+                "timeout_sec": QUALITY_REPORTS_CLI_TIMEOUT_SEC,
+            }
+        raise
 
 
 def stage_distribution(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2730,6 +3113,40 @@ def compute_trade_opportunities(
     }
 
 
+def normalize_opportunity_summary(opportunity_summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(opportunity_summary, dict):
+        opportunity_summary = {}
+    normalized = dict(opportunity_summary)
+    nested_raw = normalized.get("opportunity_summary")
+    nested = dict(nested_raw) if isinstance(nested_raw, dict) else {}
+
+    verified_maturity = normalized.get("verified_maturity") or nested.get("verified_maturity") or "unknown"
+    should_not_trade = normalized.get("verified_should_not_be_traded_reason")
+    if should_not_trade is None:
+        should_not_trade = nested.get("verified_should_not_be_traded_reason")
+    if should_not_trade is None:
+        should_not_trade = ""
+
+    raw_reasons = normalized.get("maturity_reasons")
+    if raw_reasons is None:
+        raw_reasons = nested.get("maturity_reasons")
+    if isinstance(raw_reasons, list):
+        maturity_reasons = raw_reasons
+    elif raw_reasons in (None, ""):
+        maturity_reasons = []
+    else:
+        maturity_reasons = [str(raw_reasons)]
+
+    nested.setdefault("verified_maturity", verified_maturity)
+    nested.setdefault("verified_should_not_be_traded_reason", should_not_trade)
+    nested.setdefault("maturity_reasons", maturity_reasons)
+    normalized["opportunity_summary"] = nested
+    normalized["verified_maturity"] = str(verified_maturity or "unknown")
+    normalized["verified_should_not_be_traded_reason"] = str(should_not_trade or "")
+    normalized["maturity_reasons"] = maturity_reasons
+    return normalized
+
+
 def compute_noise_reduction(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     sent_rows = [row for row in lp_rows if row.get("sent_to_telegram") or row.get("notifier_sent_at")]
     state_changes_sent = sum(
@@ -3179,6 +3596,7 @@ def build_markdown(
     prealert_lifecycle: dict[str, Any],
     candidate_tradeable: dict[str, Any],
     final_outputs: dict[str, Any],
+    opportunities: dict[str, Any],
     outcome_price_sources: dict[str, Any],
     telegram_suppression: dict[str, Any],
     noise_reduction: dict[str, Any],
@@ -3189,6 +3607,11 @@ def build_markdown(
     noise: dict[str, Any],
     scores: dict[str, Any],
 ) -> str:
+    opportunities = normalize_opportunity_summary(opportunities)
+    verified_maturity = opportunities.get("verified_maturity", "unknown")
+    should_not_trade = opportunities.get("verified_should_not_be_traded_reason") or "n/a"
+    maturity_reasons = opportunities.get("maturity_reasons") or []
+    maturity_reasons_display = maturity_reasons if maturity_reasons else "n/a"
     lines: list[str] = []
     raw_present = any(item.exists and "raw_events/" in item.path for item in data_sources)
     parsed_present = any(item.exists and "parsed_events/" in item.path for item in data_sources)
@@ -3227,7 +3650,7 @@ def build_markdown(
         f"- final output 分布：`{final_outputs['final_trading_output_distribution']}`；verified=`{final_outputs['delivered_verified_count']}` candidate=`{final_outputs['delivered_candidate_count']}` blocked=`{final_outputs['delivered_blocked_count']}`。"
     )
     lines.append(
-        f"- opportunity maturity: verified_maturity=`{opportunities['verified_maturity']}` should_not_trade=`{opportunities['verified_should_not_be_traded_reason']}`。"
+        f"- opportunity maturity: verified_maturity=`{verified_maturity}` should_not_trade=`{should_not_trade}` maturity_reasons=`{maturity_reasons_display}`。"
     )
     lines.append(
         f"- legacy chase 审计：downgraded=`{final_outputs['legacy_chase_downgraded_count']}` leaked=`{final_outputs['legacy_chase_leaked_count']}` chase_without_verified=`{final_outputs['trade_action_chase_without_opportunity_count']}` blocked_by_gate=`{final_outputs['messages_blocked_by_opportunity_gate']}`。"
@@ -3316,8 +3739,8 @@ def build_markdown(
     lines.append(f"- 主窗口 `kraken_attempts={market_context['kraken_attempts']}` `kraken_success={market_context['kraken_success']}` `kraken_failure={market_context['kraken_failure']}`。")
     lines.append(f"- 主窗口 `binance_attempts={market_context['binance_attempts']}` `bybit_attempts={market_context['bybit_attempts']}`。")
     lines.append(f"- 主窗口 requested->resolved = `{market_context['requested_to_resolved_distribution']}`")
-    lines.append(f"- CLI full archive live_public_hit_rate = `{cli_market_context['live_public_hit_rate']}`")
-    lines.append(f"- CLI full archive per_venue = `{cli_market_context['per_venue']}`")
+    lines.append(f"- CLI full archive live_public_hit_rate = `{cli_market_context.get('live_public_hit_rate', 'skipped')}`")
+    lines.append(f"- CLI full archive per_venue = `{cli_market_context.get('per_venue', {})}`")
     lines.append("- 判断：OKX 主路径已在真实 overnight 样本中生效；Kraken fallback 未被触发，所以只能确认配置已切到二级位，不能确认其夜间实战成功率。")
     lines.append("")
     lines.append("## 7. prealert 真实表现")
@@ -3466,17 +3889,24 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    signal_prefetch_window = signal_prefetch_window_for_date(args.date)
+    signal_prefetch_dates = archive_dates_for_window(signal_prefetch_window)
     runtime_config = load_runtime_config()
-    sqlite_source = sqlite_report_source_summary()
-    signal_rows, signal_inventory = load_signals()
+    sqlite_source = sqlite_report_source_summary(fast=bool(args.date))
+    signal_rows, signal_inventory = load_signals(
+        window=signal_prefetch_window,
+        archive_dates=signal_prefetch_dates,
+    )
     primary_window, segments = choose_window(signal_rows, requested_date=args.date)
     selected_logical_date = datetime.fromtimestamp(int(primary_window["end_ts"]), UTC).strftime("%Y-%m-%d")
     if args.date and selected_logical_date != args.date:
         raise RuntimeError(
             f"requested logical date {args.date} resolved to overnight run window ending on {selected_logical_date}"
         )
+    selected_archive_dates = archive_dates_for_window(primary_window)
     quality_rows, quality_by_signal, quality_inventory = load_quality_cache()
     asset_case_cache, asset_case_inventory = load_asset_case_cache()
+    trade_opportunity_cache, trade_opportunity_inventory = load_trade_opportunity_cache()
 
     window_signal_rows, _, lp_rows_window = join_lp_rows(
         signal_rows,
@@ -3502,26 +3932,65 @@ def main(argv: list[str] | None = None) -> int:
         int(primary_window["end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
     cases_inventory, cases_summary = stream_cases(
         int(primary_window["start_ts"]),
         int(primary_window["end_ts"]),
         signal_ids,
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
     followup_inventory, followup_summary = stream_case_followups(
         int(primary_window["start_ts"]),
         int(primary_window["end_ts"]),
         delivered_signal_ids,
+        archive_dates=selected_archive_dates,
     )
 
-    raw_events_inventory = inventory_category("raw_events", "raw events archive")
-    parsed_events_inventory = inventory_category("parsed_events", "parsed events archive")
+    raw_events_inventory = inventory_category(
+        "raw_events",
+        "raw events archive",
+        archive_dates=selected_archive_dates,
+        window=primary_window,
+    )
+    parsed_events_inventory = inventory_category(
+        "parsed_events",
+        "parsed events archive",
+        archive_dates=selected_archive_dates,
+        window=primary_window,
+    )
 
-    cli_market_context = run_cli(["--market-context-health"], expect_json=True)
-    cli_major_pool_coverage = run_cli(["--major-pool-coverage"], expect_json=True)
-    cli_summary = run_cli(["--summary"], expect_json=True)
-    cli_csv = run_cli(["--format", "csv"], expect_json=False)
+    cli_market_context = (
+        {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "detail": "window market_context metrics are computed from date-scoped signal rows",
+        }
+        if args.date
+        else run_cli(["--market-context-health"], expect_json=True)
+    )
+    if args.date:
+        cli_major_pool_coverage = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "expected_major_pairs": [
+                f"{asset}/{quote}"
+                for asset in ("ETH", "BTC", "SOL")
+                for quote in ("USDT", "USDC")
+            ],
+            "missing_expected_pairs": [],
+        }
+        cli_summary = {
+            "available": False,
+            "reason": "skipped_for_date_scoped_report",
+            "overall": {},
+        }
+        cli_csv = ""
+    else:
+        cli_major_pool_coverage = run_cli(["--major-pool-coverage"], expect_json=True)
+        cli_summary = run_cli(["--summary"], expect_json=True)
+        cli_csv = run_cli(["--format", "csv"], expect_json=False)
 
     expected_major_pairs = set(cli_major_pool_coverage.get("expected_major_pairs") or [])
     run_overview = {
@@ -3555,6 +4024,7 @@ def main(argv: list[str] | None = None) -> int:
     prealert_lifecycle = compute_prealert_lifecycle_summary(lp_rows_window)
     candidate_tradeable = compute_candidate_tradeable_summary(lp_rows_window)
     final_outputs = compute_final_trading_output_summary(lp_rows_window)
+    opportunities = normalize_opportunity_summary(compute_trade_opportunities(trade_opportunity_cache, lp_rows_window))
     outcome_price_sources = compute_outcome_price_sources(lp_rows_window)
     telegram_suppression = compute_telegram_suppression(lp_rows_window)
     noise_reduction = compute_noise_reduction(lp_rows_window)
@@ -3574,6 +4044,7 @@ def main(argv: list[str] | None = None) -> int:
         *delivery_inventory,
         asset_case_inventory,
         quality_inventory,
+        trade_opportunity_inventory,
     ]
     data_sources.append(
         FileInventory(
@@ -3621,6 +4092,7 @@ def main(argv: list[str] | None = None) -> int:
         prealert_lifecycle,
         candidate_tradeable,
         final_outputs,
+        opportunities,
         outcome_price_sources,
         telegram_suppression,
         noise_reduction,
@@ -3719,6 +4191,11 @@ def main(argv: list[str] | None = None) -> int:
         "prealert_lifecycle_summary": prealert_lifecycle,
         "candidate_tradeable_summary": candidate_tradeable,
         "final_trading_output_summary": final_outputs,
+        "trade_opportunity_summary": opportunities,
+        "opportunity_summary": opportunities.get("opportunity_summary") or {},
+        "verified_maturity": opportunities.get("verified_maturity", "unknown"),
+        "verified_should_not_be_traded_reason": opportunities.get("verified_should_not_be_traded_reason", ""),
+        "maturity_reasons": opportunities.get("maturity_reasons") or [],
         "outcome_price_source_summary": outcome_price_sources,
         "telegram_suppression_summary": telegram_suppression,
         "noise_reduction_summary": noise_reduction,
