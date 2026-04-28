@@ -14,6 +14,7 @@ LEGACY_SCRIPT_NAMES = (
 )
 RETIRED_TOP_LEVEL_SCRIPT_NAMES = (
     *LEGACY_SCRIPT_NAMES,
+    "generate_overnight_opportunity_retention_analysis_latest.py",
 )
 CANONICAL_DAILY_SCRIPT = REPORTS / "generate_daily_report_latest.py"
 
@@ -98,7 +99,16 @@ class ReportPipelineCleanupTests(unittest.TestCase):
 
     def test_opportunity_retention_report_is_legacy_only(self) -> None:
         self.assertFalse((REPORTS / "generate_overnight_opportunity_retention_analysis_latest.py").exists())
-        self.assertTrue((REPORTS / "legacy" / "generate_overnight_opportunity_retention_analysis_latest.py").exists())
+        legacy_path = REPORTS / "legacy" / "generate_overnight_opportunity_retention_analysis_latest.py"
+        self.assertTrue(legacy_path.exists())
+        header = legacy_path.read_text(encoding="utf-8")[:240]
+        self.assertIn("Deprecated legacy report generator.", header)
+        self.assertIn("Daily workflow uses make daily-compare", header)
+
+    def test_gitignore_does_not_ignore_canonical_daily_generator(self) -> None:
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertNotIn("reports/generate_daily_report_latest.py", gitignore)
 
 
 if __name__ == "__main__":

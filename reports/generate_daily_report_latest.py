@@ -39,6 +39,26 @@ EXPECTED_MAJOR_PAIRS = (
 )
 GAP_THRESHOLD_SEC = 3600
 ARCHIVE_TS_RE = re.compile(r'"archive_ts"\s*:\s*(\d+)')
+TRADE_ACTION_FIELDS = (
+    "trade_action",
+    "trade_action_key",
+    "final_trading_output_label",
+    "action_label",
+    "intent_type",
+)
+PREALERT_COUNT_FIELDS = (
+    "prealert_candidate",
+    "lp_prealert_candidate",
+    "prealert_gate_passed",
+    "lp_prealert_gate_passed",
+    "prealert_active",
+    "prealert_delivered",
+    "prealert_upgraded_to_confirm",
+    "prealert_expired",
+    "prealert_lifecycle_state",
+    "prealert_to_confirm_sec",
+    "asset_case_prealert_to_confirm_sec",
+)
 
 
 def _to_int(value: Any) -> int | None:
@@ -70,6 +90,17 @@ def _is_true(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "sent", "completed", "success"}
 
 
+def _from_json(value: Any, default: Any = None) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
 def _rate(numerator: int | float, denominator: int | float) -> float | None:
     if not denominator:
         return None
@@ -94,8 +125,27 @@ def _fmt_bj(ts: int) -> str:
 
 def _container_values(row: dict[str, Any]) -> list[dict[str, Any]]:
     containers = [row]
-    for key in ("event", "metadata", "data", "signal", "opportunity"):
+    for key in (
+        "event",
+        "metadata",
+        "data",
+        "signal",
+        "opportunity",
+        "prealert_diagnostics",
+        "quality",
+        "quality_snapshot",
+        "history_snapshot",
+        "trade_opportunity_history_snapshot",
+        "opportunity_json",
+        "state_json",
+        "audit_json",
+        "message_json",
+        "stats_json",
+        "lifecycle_json",
+    ):
         value = row.get(key)
+        if isinstance(value, str) and value[:1] in {"{", "["}:
+            value = _from_json(value, {})
         if isinstance(value, dict):
             containers.append(value)
             nested = value.get("metadata")
@@ -111,6 +161,23 @@ def _first(row: dict[str, Any], *keys: str) -> Any:
             if value not in (None, "", [], {}, ()):
                 return value
     return None
+
+
+def _field_present(row: dict[str, Any], *keys: str) -> bool:
+    for container in _container_values(row):
+        if any(key in container for key in keys):
+            return True
+    return False
+
+
+def _first_with_key(row: dict[str, Any], keys: tuple[str, ...]) -> tuple[str | None, Any]:
+    for container in _container_values(row):
+        for key in keys:
+            if key in container:
+                value = container.get(key)
+                if value not in (None, "", [], {}, ()):
+                    return key, value
+    return None, None
 
 
 def _row_ts(row: dict[str, Any]) -> int | None:
@@ -402,10 +469,12 @@ def _load_window(window: dict[str, Any]) -> tuple[dict[str, list[dict[str, Any]]
         "asset_market_states": report_data_loader.load_asset_market_states,
         "trade_opportunities": report_data_loader.load_trade_opportunities,
         "outcomes": report_data_loader.load_outcomes,
+        "quality_stats": report_data_loader.load_quality_stats,
         "telegram_deliveries": report_data_loader.load_telegram_deliveries,
         "market_context_attempts": report_data_loader.load_market_context_attempts,
+        "prealert_lifecycle": report_data_loader.load_prealert_lifecycle,
     }
-    count_only = {"raw_events", "parsed_events", "delivery_audit", "case_followups", "asset_cases", "telegram_deliveries"}
+    count_only = {"raw_events", "parsed_events", "case_followups", "asset_cases", "telegram_deliveries"}
     results: dict[str, report_data_loader.LoadResult] = {}
     for key, load in loaders.items():
         try:
@@ -577,7 +646,234 @@ def _outcome_for_rows(rows: list[dict[str, Any]], prefix: str = "opportunity") -
     return payload
 
 
-def _trade_opportunity_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _string_list(value: Any) -> list[str]:
+    if value in (None, "", [], {}, ()):
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    decoded = _from_json(value)
+    if isinstance(decoded, list):
+        return [str(item).strip() for item in decoded if str(item).strip()]
+    raw = str(value).strip()
+    if not raw:
+        return []
+    separator = ";" if ";" in raw else ","
+    return [item.strip() for item in raw.split(separator) if item.strip()]
+
+
+def _maturity_payload(maturity: Any, reasons: list[str], reason: Any, source: str) -> dict[str, Any]:
+    maturity_text = str(maturity or "unknown").strip().lower() or "unknown"
+    clean_reasons = sorted({str(item).strip() for item in reasons if str(item).strip()})
+    reason_text = str(reason or "").strip()
+    if maturity_text == "mature":
+        reason_text = reason_text if reason_text not in {"n/a", "none"} else ""
+    elif not clean_reasons:
+        clean_reasons = ["insufficient_data"] if maturity_text == "unknown" else [f"verified_maturity={maturity_text}"]
+    if maturity_text != "mature" and not reason_text:
+        reason_text = ";".join(clean_reasons) if clean_reasons else "insufficient_data"
+    return {
+        "verified_maturity": maturity_text,
+        "maturity_reasons": clean_reasons,
+        "verified_should_not_be_traded_reason": reason_text,
+        "verified_maturity_source": source,
+    }
+
+
+def _unknown_maturity(reason: str, source: str) -> dict[str, Any]:
+    return _maturity_payload("unknown", [reason], reason, source)
+
+
+def _maturity_from_mapping(mapping: dict[str, Any], source: str) -> dict[str, Any] | None:
+    maturity = _first(mapping, "verified_maturity", "maturity")
+    if maturity in (None, "", [], {}, ()):
+        return None
+    reasons = _string_list(_first(mapping, "maturity_reasons", "verified_maturity_reasons"))
+    reason = _first(
+        mapping,
+        "verified_should_not_be_traded_reason",
+        "should_not_be_traded_reason",
+        "not_tradeable_reason",
+    )
+    return _maturity_payload(maturity, reasons, reason, source)
+
+
+def _maturity_from_rows(rows: list[dict[str, Any]], source: str) -> dict[str, Any] | None:
+    for row in rows:
+        payload = _maturity_from_mapping(row, source)
+        if payload:
+            return payload
+    return None
+
+
+def _derive_verified_maturity(
+    *,
+    verified_count: int,
+    outcome_completion_rate: float | None,
+    max_profile_sample_count: int | None,
+    source: str,
+) -> dict[str, Any]:
+    if verified_count <= 0:
+        return _unknown_maturity("no_verified_opportunity", source)
+    if outcome_completion_rate is None and max_profile_sample_count is None:
+        return _unknown_maturity("insufficient_data", source)
+    if outcome_completion_rate is None:
+        return _unknown_maturity("insufficient_data", source)
+    if max_profile_sample_count is None:
+        return _unknown_maturity("insufficient_verified_samples", source)
+
+    reasons: list[str] = []
+    min_completion = float(getattr(app_config, "OPPORTUNITY_MIN_OUTCOME_COMPLETION_RATE", 0.70))
+    min_samples = int(getattr(app_config, "OPPORTUNITY_MIN_HISTORY_SAMPLES", 20))
+    if float(outcome_completion_rate) < min_completion:
+        reasons.append(f"outcome_completion_rate_below_{min_completion:.2f}")
+    if int(max_profile_sample_count) < min_samples:
+        reasons.append(f"profile_sample_count_below_{min_samples}")
+    if reasons:
+        reasons.append("immature_verified_warning")
+        return _maturity_payload("immature", reasons, ";".join(reasons), source)
+    return _maturity_payload("mature", [], "", source)
+
+
+def _read_opportunity_db_summary() -> dict[str, Any]:
+    path = _db_path()
+    if not path.exists():
+        return {"available": False, "reason": "sqlite_db_missing"}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": f"sqlite_open_failed:{exc}"}
+    try:
+        table_names = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "trade_opportunities" not in table_names:
+            return {"available": False, "reason": "trade_opportunities_table_missing"}
+        status_counts = {
+            str(row["status"] or "NONE"): int(row["count"])
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS count FROM trade_opportunities GROUP BY status"
+            ).fetchall()
+        }
+        total_outcomes: int | None = None
+        completed_outcomes: int | None = None
+        if "opportunity_outcomes" in table_names:
+            total_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes").fetchone()[0])
+            completed_outcomes = int(
+                conn.execute("SELECT COUNT(*) FROM opportunity_outcomes WHERE status='completed'").fetchone()[0]
+            )
+        max_profile_sample_count: int | None = None
+        if "quality_stats" in table_names:
+            profile_rows = conn.execute(
+                "SELECT sample_count, stats_json FROM quality_stats WHERE scope_type='opportunity_profile' AND stage='all'"
+            ).fetchall()
+            samples: list[int] = []
+            for row in profile_rows:
+                value = _to_int(row["sample_count"])
+                stats = _from_json(row["stats_json"], {})
+                if value is None and isinstance(stats, dict):
+                    value = _to_int(stats.get("sample_count"))
+                if value is not None:
+                    samples.append(value)
+            max_profile_sample_count = max(samples) if samples else None
+        outcome_completion_rate = (
+            round(float(completed_outcomes) / float(total_outcomes), 4)
+            if total_outcomes
+            else None
+        )
+        maturity = _derive_verified_maturity(
+            verified_count=int(status_counts.get("VERIFIED", 0)),
+            outcome_completion_rate=outcome_completion_rate,
+            max_profile_sample_count=max_profile_sample_count,
+            source="opportunity_db_summary",
+        )
+        return {
+            "available": True,
+            "status_counts": status_counts,
+            "verified_count": int(status_counts.get("VERIFIED", 0)),
+            "candidate_count": int(status_counts.get("CANDIDATE", 0)),
+            "outcome_completion_rate": outcome_completion_rate,
+            "max_profile_sample_count": max_profile_sample_count,
+            **maturity,
+        }
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": f"opportunity_db_summary_failed:{exc}"}
+    finally:
+        conn.close()
+
+
+def _maturity_from_quality_rows(
+    quality_rows: list[dict[str, Any]],
+    *,
+    verified_count: int,
+    verified_outcome_completion_rate: float | None,
+    verified_outcome_data_available: bool,
+) -> dict[str, Any] | None:
+    explicit = _maturity_from_rows(quality_rows, "quality_stats")
+    if explicit:
+        return explicit
+    profile_rows = [
+        row
+        for row in quality_rows
+        if str(_first(row, "scope_type") or "").strip() == "opportunity_profile"
+        and str(_first(row, "stage") or "all").strip() == "all"
+    ]
+    if not profile_rows:
+        return None
+    samples = [_to_int(_first(row, "sample_count")) for row in profile_rows]
+    completion_values = [
+        _to_float(_first(row, "completion_60s_rate", "outcome_completion_rate"))
+        for row in profile_rows
+    ]
+    max_profile_sample_count = max((value for value in samples if value is not None), default=None)
+    completion_rate = max((value for value in completion_values if value is not None), default=None)
+    if completion_rate is None and verified_outcome_data_available:
+        completion_rate = verified_outcome_completion_rate
+    return _derive_verified_maturity(
+        verified_count=verified_count,
+        outcome_completion_rate=completion_rate,
+        max_profile_sample_count=max_profile_sample_count,
+        source="quality_stats",
+    )
+
+
+def _resolve_verified_maturity(
+    rows: list[dict[str, Any]],
+    quality_rows: list[dict[str, Any]],
+    db_summary: dict[str, Any],
+    summary: dict[str, Any],
+    *,
+    verified_outcome_data_available: bool,
+) -> dict[str, Any]:
+    explicit = _maturity_from_rows(rows, "trade_opportunity_rows")
+    if explicit:
+        return explicit
+    verified_count = int(summary.get("opportunity_verified_count") or 0)
+    if not rows:
+        return _unknown_maturity("insufficient_data", "missing")
+    if verified_count <= 0:
+        return _unknown_maturity("no_verified_opportunity", "trade_summary")
+    db_maturity = _maturity_from_mapping(db_summary, "opportunity_db_summary") if db_summary.get("available") else None
+    if db_maturity:
+        return db_maturity
+    quality_maturity = _maturity_from_quality_rows(
+        quality_rows,
+        verified_count=verified_count,
+        verified_outcome_completion_rate=summary.get("verified_outcome_completion_rate"),
+        verified_outcome_data_available=verified_outcome_data_available,
+    )
+    if quality_maturity:
+        return quality_maturity
+    return _unknown_maturity("insufficient_data", "trade_summary")
+
+
+def _trade_opportunity_summary(
+    rows: list[dict[str, Any]],
+    *,
+    quality_rows: list[dict[str, Any]] | None = None,
+    opportunity_db_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     by_status = Counter(_status(row) for row in rows)
     candidate_rows = [row for row in rows if _status(row) == "CANDIDATE"]
     verified_rows = [row for row in rows if _status(row) == "VERIFIED"]
@@ -606,6 +902,15 @@ def _trade_opportunity_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         maturity_reasons.append("no_verified_rows")
     if candidate_outcomes["60s"]["resolved_count"] == 0:
         maturity_reasons.append("candidate_outcome_history_incomplete")
+    verified_outcome_data_available = any(
+        _field_present(
+            row,
+            "opportunity_outcome_60s",
+            "opportunity_followthrough_60s",
+            "opportunity_adverse_60s",
+        )
+        for row in verified_rows
+    )
     summary = {
         "window_record_count": len(rows),
         "creation_status_distribution": dict(sorted(by_status.items())),
@@ -637,10 +942,16 @@ def _trade_opportunity_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "blocker_false_block_rate": _rate(sum(1 for value in false_block_values if _is_true(value)), len(false_block_values)),
         "top_blockers": dict(hard_blockers.most_common(10)),
         "why_no_opportunities": maturity_reasons or [],
-        "verified_maturity": "immature",
-        "verified_should_not_be_traded_reason": "verified_maturity=immature",
-        "maturity_reasons": sorted(set(maturity_reasons + ["verified_maturity=immature"])),
     }
+    summary.update(
+        _resolve_verified_maturity(
+            rows,
+            quality_rows or [],
+            opportunity_db_summary or {"available": False, "reason": "not_loaded"},
+            summary,
+            verified_outcome_data_available=verified_outcome_data_available,
+        )
+    )
     return summary
 
 
@@ -779,7 +1090,156 @@ def _candidate_verified_summary(trade_summary: dict[str, Any]) -> dict[str, Any]
         "candidate_outcome_completed_rate": trade_summary.get("candidate_outcome_completion_rate"),
         "verified_maturity": trade_summary.get("verified_maturity"),
         "verified_should_not_be_traded_reason": trade_summary.get("verified_should_not_be_traded_reason"),
+        "maturity_reasons": trade_summary.get("maturity_reasons", []),
     }
+
+
+def _top_distribution(distribution: dict[str, Any], limit: int = 5) -> dict[str, int]:
+    counter = Counter({str(key): int(value) for key, value in (distribution or {}).items()})
+    return dict(counter.most_common(limit))
+
+
+def _trade_action_summary(signal_rows: list[dict[str, Any]], delivery_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counter: Counter[str] = Counter()
+    source_fields: Counter[str] = Counter()
+    fields_found = False
+    for row in [*signal_rows, *delivery_rows]:
+        if any(_field_present(row, field) for field in TRADE_ACTION_FIELDS):
+            fields_found = True
+        key, value = _first_with_key(row, TRADE_ACTION_FIELDS)
+        if key is None or value in (None, "", [], {}, ()):
+            continue
+        label = str(value).strip()
+        if not label:
+            continue
+        counter[label] += 1
+        source_fields[key] += 1
+    if not fields_found:
+        return {
+            "available": False,
+            "trade_action_distribution": {},
+            "trade_action_distribution_top": {},
+            "reason": "no_trade_action_fields_found",
+            "source_fields": {},
+        }
+    if not counter:
+        return {
+            "available": False,
+            "trade_action_distribution": {},
+            "trade_action_distribution_top": {},
+            "reason": "no_trade_action_values_found",
+            "source_fields": dict(sorted(source_fields.items())),
+        }
+    distribution = dict(sorted(counter.items()))
+    return {
+        "available": True,
+        "trade_action_distribution": distribution,
+        "trade_action_distribution_top": _top_distribution(distribution),
+        "source_fields": dict(sorted(source_fields.items())),
+        "row_count": sum(counter.values()),
+    }
+
+
+def _is_prealert_stage(row: dict[str, Any]) -> bool:
+    return str(_first(row, "first_seen_stage", "lp_alert_stage", "stage") or "").strip().lower() == "prealert"
+
+
+def _prealert_state(row: dict[str, Any]) -> str:
+    return str(_first(row, "prealert_lifecycle_state", "state", "lifecycle_state") or "").strip().lower()
+
+
+def _prealert_missing_summary() -> dict[str, Any]:
+    return {
+        "available": False,
+        "source": "missing",
+        "reason": "prealert_lifecycle_missing",
+        "prealert_candidate_count": 0,
+        "prealert_gate_passed_count": 0,
+        "prealert_active_count": 0,
+        "prealert_delivered_count": 0,
+        "prealert_upgraded_to_confirm_count": 0,
+        "prealert_expired_count": 0,
+        "median_prealert_to_confirm_sec": None,
+    }
+
+
+def _prealert_lifecycle_from_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    durations = [
+        _to_float(_first(row, "prealert_to_confirm_sec", "asset_case_prealert_to_confirm_sec"))
+        for row in rows
+    ]
+    durations = [value for value in durations if value is not None]
+    distribution = Counter(_prealert_state(row) for row in rows if _prealert_state(row))
+    return {
+        "available": True,
+        "source": "prealert_lifecycle",
+        "row_count": len(rows),
+        "prealert_candidate_count": sum(1 for row in rows if _is_true(_first(row, "candidate", "prealert_candidate", "lp_prealert_candidate"))),
+        "prealert_gate_passed_count": sum(1 for row in rows if _is_true(_first(row, "gate_passed", "prealert_gate_passed", "lp_prealert_gate_passed"))),
+        "prealert_active_count": sum(1 for row in rows if _is_true(_first(row, "active", "prealert_active")) or _prealert_state(row) == "active"),
+        "prealert_delivered_count": sum(1 for row in rows if _is_true(_first(row, "delivered", "prealert_delivered")) or _prealert_state(row) == "delivered"),
+        "prealert_upgraded_to_confirm_count": sum(1 for row in rows if _is_true(_first(row, "upgraded_to_confirm", "prealert_upgraded_to_confirm")) or _prealert_state(row) == "upgraded_to_confirm"),
+        "prealert_expired_count": sum(1 for row in rows if _is_true(_first(row, "expired", "prealert_expired")) or _prealert_state(row) == "expired"),
+        "median_prealert_to_confirm_sec": round(float(median(durations)), 1) if durations else None,
+        "lifecycle_distribution": dict(sorted(distribution.items())),
+    }
+
+
+def _prealert_lifecycle_from_signals(signal_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    rows_with_fields = [
+        row
+        for row in signal_rows
+        if _is_prealert_stage(row) or any(_field_present(row, field) for field in PREALERT_COUNT_FIELDS)
+    ]
+    if not rows_with_fields:
+        return _prealert_missing_summary()
+    durations = [
+        _to_float(_first(row, "prealert_to_confirm_sec", "asset_case_prealert_to_confirm_sec"))
+        for row in rows_with_fields
+    ]
+    durations = [value for value in durations if value is not None]
+    distribution = Counter(_prealert_state(row) for row in rows_with_fields if _prealert_state(row))
+    return {
+        "available": True,
+        "source": "signal_rows",
+        "row_count": len(rows_with_fields),
+        "prealert_candidate_count": sum(
+            1
+            for row in rows_with_fields
+            if _is_true(_first(row, "prealert_candidate", "lp_prealert_candidate")) or _is_prealert_stage(row)
+        ),
+        "prealert_gate_passed_count": sum(
+            1 for row in rows_with_fields if _is_true(_first(row, "prealert_gate_passed", "lp_prealert_gate_passed"))
+        ),
+        "prealert_active_count": sum(
+            1 for row in rows_with_fields if _is_true(_first(row, "prealert_active")) or _prealert_state(row) == "active"
+        ),
+        "prealert_delivered_count": sum(
+            1
+            for row in rows_with_fields
+            if _is_true(_first(row, "prealert_delivered", "prealert_visible_to_user"))
+            or (_is_prealert_stage(row) and _is_true(_first(row, "sent_to_telegram", "telegram_sent", "notifier_sent_at", "delivered_notification")))
+            or _prealert_state(row) == "delivered"
+        ),
+        "prealert_upgraded_to_confirm_count": sum(
+            1
+            for row in rows_with_fields
+            if _is_true(_first(row, "prealert_upgraded_to_confirm"))
+            or _prealert_state(row) == "upgraded_to_confirm"
+            or _to_float(_first(row, "prealert_to_confirm_sec", "asset_case_prealert_to_confirm_sec")) is not None
+        ),
+        "prealert_expired_count": sum(
+            1 for row in rows_with_fields if _is_true(_first(row, "prealert_expired")) or _prealert_state(row) == "expired"
+        ),
+        "median_prealert_to_confirm_sec": round(float(median(durations)), 1) if durations else None,
+        "lifecycle_distribution": dict(sorted(distribution.items())),
+    }
+
+
+def _prealert_lifecycle_summary(prealert_rows: list[dict[str, Any]], signal_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if prealert_rows:
+        return _prealert_lifecycle_from_table(prealert_rows)
+    return _prealert_lifecycle_from_signals(signal_rows)
 
 
 def _markdown(payload: dict[str, Any]) -> str:
@@ -797,6 +1257,19 @@ def _markdown(payload: dict[str, Any]) -> str:
     ]
     for item in payload.get("key_findings", []):
         lines.append(f"- {item}")
+    trade_action = payload.get("trade_action_summary") or {}
+    prealert = payload.get("prealert_lifecycle_summary") or {}
+    trade_action_top = trade_action.get("trade_action_distribution_top") or _top_distribution(trade_action.get("trade_action_distribution") or {})
+    lines.extend(
+        [
+            "",
+            "## Metric Snapshot",
+            "",
+            f"- verified_maturity: `{payload.get('trade_opportunity_summary', {}).get('verified_maturity', 'unknown')}`",
+            f"- trade_action_distribution_top: `{json.dumps(trade_action_top, ensure_ascii=False, sort_keys=True)}`",
+            f"- prealert_lifecycle_available: `{bool(prealert.get('available'))}` source=`{prealert.get('source', 'missing')}`",
+        ]
+    )
     lines.extend(["", "## Limitations", ""])
     for item in payload.get("limitations", []) or ["none"]:
         lines.append(f"- {item}")
@@ -817,6 +1290,11 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("run", "lp_signal_rows", payload.get("run_overview", {}).get("lp_signal_rows")),
         ("opportunity", "opportunity_candidate_count", payload.get("trade_opportunity_summary", {}).get("opportunity_candidate_count")),
         ("opportunity", "opportunity_verified_count", payload.get("trade_opportunity_summary", {}).get("opportunity_verified_count")),
+        ("opportunity", "verified_maturity", payload.get("trade_opportunity_summary", {}).get("verified_maturity")),
+        ("trade_action", "trade_action_distribution_top", payload.get("trade_action_summary", {}).get("trade_action_distribution_top")),
+        ("prealert", "prealert_candidate_count", payload.get("prealert_lifecycle_summary", {}).get("prealert_candidate_count")),
+        ("prealert", "prealert_delivered_count", payload.get("prealert_lifecycle_summary", {}).get("prealert_delivered_count")),
+        ("prealert", "median_prealert_to_confirm_sec", payload.get("prealert_lifecycle_summary", {}).get("median_prealert_to_confirm_sec")),
         ("telegram", "telegram_suppression_ratio", payload.get("telegram_suppression_summary", {}).get("telegram_suppression_ratio")),
         ("market_context", "okx_attempts", payload.get("market_context_health", {}).get("window", {}).get("okx_attempts")),
         ("majors", "missing_major_pairs_count", len(payload.get("major_coverage_summary", {}).get("missing_major_pairs") or [])),
@@ -829,37 +1307,53 @@ def _csv_text(payload: dict[str, Any]) -> str:
 def build_daily_report(logical_date: str) -> dict[str, Any]:
     window = _logical_window(logical_date)
     rows, results = _load_window(window)
-    signal_rows = rows["signals"]
+    signal_rows = rows.get("signals", [])
     lp_rows = [row for row in signal_rows if _is_lp_row(row)]
     segment_summary = _build_segments(signal_rows, lp_rows)
-    telegram = _telegram_summary(lp_rows, rows["telegram_deliveries"] or rows["delivery_audit"])
-    opportunity_rows = rows["trade_opportunities"] or [
+    delivery_rows = rows.get("delivery_audit", [])
+    telegram = _telegram_summary(lp_rows, rows.get("telegram_deliveries", []) or delivery_rows)
+    opportunity_rows = rows.get("trade_opportunities", []) or [
         row
         for row in signal_rows
         if _first(row, "trade_opportunity_status", "trade_opportunity_status_at_creation", "trade_opportunity_id")
     ]
-    trade_summary = _trade_opportunity_summary(opportunity_rows)
-    asset_state = _asset_market_state_summary(rows["asset_market_states"] or signal_rows)
+    opportunity_db_summary = _read_opportunity_db_summary()
+    trade_summary = _trade_opportunity_summary(
+        opportunity_rows,
+        quality_rows=rows.get("quality_stats", []),
+        opportunity_db_summary=opportunity_db_summary,
+    )
+    asset_state = _asset_market_state_summary(rows.get("asset_market_states", []) or signal_rows)
     no_trade_lock = _no_trade_lock_summary(asset_state)
-    outcome = _outcome_source_summary(rows["outcomes"] or signal_rows)
-    market_context = _market_context_health(rows["market_context_attempts"], lp_rows)
+    outcome = _outcome_source_summary(rows.get("outcomes", []) or signal_rows)
+    market_context = _market_context_health(rows.get("market_context_attempts", []), lp_rows)
     majors = _major_coverage_summary(lp_rows)
     data_source = _data_source_summary(results)
-    limitations = [
-        "CANDIDATE is not a trade signal",
-        "verified_maturity=immature; VERIFIED must not be treated as mature trade signal",
-    ]
+    trade_actions = _trade_action_summary(signal_rows, delivery_rows)
+    prealert_lifecycle = _prealert_lifecycle_summary(rows.get("prealert_lifecycle", []), signal_rows)
+    verified_maturity = str(trade_summary.get("verified_maturity") or "unknown")
+    verified_reason = str(trade_summary.get("verified_should_not_be_traded_reason") or "")
+    limitations = ["CANDIDATE is not a trade signal"]
+    if verified_maturity == "immature":
+        limitations.append("verified_maturity=immature; VERIFIED must not be treated as mature trade signal")
+    elif verified_maturity == "unknown":
+        limitations.append(f"verified_maturity_unknown:{verified_reason or 'insufficient_data'}")
+    if not trade_actions.get("available"):
+        limitations.append(f"trade_action_summary_unavailable:{trade_actions.get('reason', 'unknown')}")
+    if not prealert_lifecycle.get("available"):
+        limitations.append("prealert_lifecycle_missing")
     limitations.extend(segment_summary.get("gap_warnings") or [])
     limitations.extend(data_source.get("source_warnings") or [])
+    result_count = lambda key: results.get(key, _empty_result()).row_count
     run_overview = {
-        "total_raw_events": results["raw_events"].row_count,
-        "total_parsed_events": results["parsed_events"].row_count,
+        "total_raw_events": result_count("raw_events"),
+        "total_parsed_events": result_count("parsed_events"),
         "total_signal_rows": len(signal_rows),
         "lp_signal_rows": len(lp_rows),
         "delivered_lp_signals": telegram["delivered_lp_signals"],
         "suppressed_lp_signals": telegram["suppressed_lp_signals"],
-        "asset_case_count": results["asset_cases"].row_count,
-        "case_followup_count": results["case_followups"].row_count,
+        "asset_case_count": result_count("asset_cases"),
+        "case_followup_count": result_count("case_followups"),
     }
     blocker_summary = {
         "hard_blocker_distribution": trade_summary.get("hard_blocker_distribution", {}),
@@ -877,8 +1371,15 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             f"verified={trade_summary['opportunity_verified_count']} "
             f"blocked={trade_summary['opportunity_blocked_count']}"
         ),
-        "verified_maturity=immature; CANDIDATE is not a trade signal",
+        f"verified_maturity={verified_maturity}; CANDIDATE is not a trade signal",
+        f"trade_action_distribution_top={json.dumps(trade_actions.get('trade_action_distribution_top') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"prealert_lifecycle_available={bool(prealert_lifecycle.get('available'))} source={prealert_lifecycle.get('source', 'missing')}",
     ]
+    key_risks = ["CANDIDATE is not a trade signal"]
+    if verified_maturity == "immature":
+        key_risks.append("VERIFIED maturity is immature and must remain research/filter evidence only")
+    elif verified_maturity == "unknown":
+        key_risks.append("VERIFIED maturity is unknown because supporting maturity data is insufficient")
     payload = {
         "report_type": "daily_canonical",
         "logical_date": logical_date,
@@ -911,15 +1412,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "telegram_suppression_summary": telegram,
         "asset_market_state_summary": asset_state,
         "no_trade_lock_summary": no_trade_lock,
-        "trade_action_summary": {"trade_action_distribution": {}},
-        "prealert_lifecycle_summary": {
-            "prealert_candidate_count": 0,
-            "prealert_gate_passed_count": 0,
-            "prealert_active_count": 0,
-            "prealert_delivered_count": 0,
-            "prealert_upgraded_to_confirm_count": 0,
-            "prealert_expired_count": 0,
-        },
+        "trade_action_summary": trade_actions,
+        "prealert_lifecycle_summary": prealert_lifecycle,
         "major_coverage_summary": majors,
         "majors_coverage_summary": majors,
         "archive_health": {
@@ -927,7 +1421,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "archive_fallback_used": data_source.get("archive_fallback_used"),
         },
         "key_findings": key_findings,
-        "key_risks": ["VERIFIED maturity is immature and must remain research/filter evidence only"],
+        "key_risks": key_risks,
         "limitations": sorted(set(str(item) for item in limitations if item)),
     }
     return payload

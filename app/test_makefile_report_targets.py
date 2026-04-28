@@ -8,6 +8,7 @@ OLD_SCRIPT_NAMES = (
     "reports/generate_afternoon_evening_state_analysis_latest.py",
     "reports/generate_overnight_trade_action_analysis_latest.py",
     "reports/generate_overnight_run_analysis_latest.py",
+    "reports/generate_overnight_opportunity_retention_analysis_latest.py",
 )
 DAILY_SCRIPT = "reports/generate_daily_report_latest.py"
 LEGACY_SCRIPT_NAMES = (

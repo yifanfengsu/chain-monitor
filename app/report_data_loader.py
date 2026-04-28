@@ -49,6 +49,7 @@ DB_TABLES = {
     "quality_stats": {"table": "quality_stats", "time_column": "updated_at", "json_column": "stats_json", "cache": "lp_quality_stats.cache.json"},
     "telegram_deliveries": {"table": "telegram_deliveries", "time_column": "created_at", "json_column": "message_json", "archive": ""},
     "market_context_attempts": {"table": "market_context_attempts", "time_column": "created_at", "json_column": "", "archive": ""},
+    "prealert_lifecycle": {"table": "prealert_lifecycle", "time_column": "first_seen_at", "json_column": "lifecycle_json", "archive": ""},
 }
 
 REPORT_SOURCE_ARCHIVE_CATEGORIES = ("raw_events", "parsed_events", "signals", "delivery_audit", "cases", "case_followups")
@@ -468,6 +469,10 @@ def load_telegram_deliveries(window: Any = None, prefer_db: bool = True, **kwarg
 
 def load_market_context_attempts(window: Any = None, prefer_db: bool = True, **kwargs) -> LoadResult:
     return load_dataset("market_context_attempts", window=window, prefer_db=prefer_db, **kwargs)
+
+
+def load_prealert_lifecycle(window: Any = None, prefer_db: bool = True, **kwargs) -> LoadResult:
+    return load_dataset("prealert_lifecycle", window=window, prefer_db=prefer_db, **kwargs)
 
 
 def sqlite_health(db_path: str | Path | None = None, *, fast: bool = False) -> dict[str, Any]:
