@@ -82,6 +82,7 @@ DAILY_REPORT_KEY = "daily_report"
 DAILY_REPORT_SPEC = ReportSpec(
     key=DAILY_REPORT_KEY,
     latest_filename="daily/daily_report_latest.json",
+    generator_script="reports/generate_daily_report_latest.py",
 )
 
 REPORT_ORDER = (
@@ -96,7 +97,7 @@ CANONICAL_SOURCE_MODE = "canonical_daily_report"
 MIXED_SOURCE_MODE = "mixed_daily_legacy"
 
 SOURCE_SELECTION_RULE = (
-    "existing daily_report dated JSON -> matching daily_report latest JSON; no generator is invoked; legacy three-report bundle only with --legacy-fallback"
+    "daily_report dated JSON -> matching daily_report latest JSON; rebuild calls reports/generate_daily_report_latest.py --date; legacy three-report bundle only with --legacy-fallback"
 )
 
 PRIMARY_DIRECTIONAL_METRICS = {
@@ -134,7 +135,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Compatibility mode that records missing today/previous summaries without invoking retired generators",
+        help="Rebuild missing canonical daily reports with reports/generate_daily_report_latest.py --date before comparing",
     )
     parser.add_argument(
         "--legacy-fallback",
@@ -2076,9 +2077,10 @@ def generate_daily_compare(
     inventory = discovered_inventory if legacy_fallback else _default_compare_inventory(discovered_inventory)
     selection = select_compare_dates(inventory, requested_date=requested_date)
     generation_warnings: list[str] = []
+    effective_rebuild = bool(rebuild or (strict and allow_generate))
     if (
         allow_generate
-        and rebuild
+        and effective_rebuild
         and not requested_date
         and (not selection["available_dates"])
     ):
@@ -2094,7 +2096,7 @@ def generate_daily_compare(
         project_root=project_root,
         reports_dir=reports_dir,
         allow_generate=allow_generate,
-        rebuild=rebuild,
+        rebuild=effective_rebuild,
         strict=strict,
         legacy_fallback=legacy_fallback,
     )
@@ -2103,7 +2105,7 @@ def generate_daily_compare(
         selection = select_compare_dates(inventory, requested_date=requested_date)
     rebuild_summary = _build_rebuild_summary(
         strict_mode=strict,
-        rebuild_mode=rebuild,
+        rebuild_mode=effective_rebuild,
         requested_today=requested_date,
         selected_today=selection.get("today_date"),
         selected_previous=selection.get("previous_date"),

@@ -1,0 +1,1032 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import re
+import sqlite3
+import sys
+from collections import Counter
+from datetime import UTC, date, datetime, timedelta, timezone
+from pathlib import Path
+from statistics import median
+from typing import Any, Callable
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_DIR = ROOT / "app"
+REPORTS_DIR = ROOT / "reports"
+DAILY_DIR = REPORTS_DIR / "daily"
+BJ_TZ = timezone(timedelta(hours=8))
+
+for import_path in (ROOT, APP_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
+
+import config as app_config  # noqa: E402
+from app import report_data_loader  # noqa: E402
+
+
+LP_STAGES = {"prealert", "confirm", "climax", "exhaustion_risk"}
+EXPECTED_MAJOR_PAIRS = (
+    "ETH/USDT",
+    "ETH/USDC",
+    "BTC/USDT",
+    "BTC/USDC",
+    "SOL/USDT",
+    "SOL/USDC",
+)
+GAP_THRESHOLD_SEC = 3600
+ARCHIVE_TS_RE = re.compile(r'"archive_ts"\s*:\s*(\d+)')
+
+
+def _to_int(value: Any) -> int | None:
+    if value in (None, "", [], {}, ()):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _to_float(value: Any) -> float | None:
+    if value in (None, "", [], {}, ()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "sent", "completed", "success"}
+
+
+def _rate(numerator: int | float, denominator: int | float) -> float | None:
+    if not denominator:
+        return None
+    return round(float(numerator) / float(denominator), 4)
+
+
+def _percentile(values: list[float], ratio: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = int((len(ordered) - 1) * ratio)
+    return round(float(ordered[index]), 4)
+
+
+def _fmt_utc(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt_bj(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), BJ_TZ).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+
+
+def _container_values(row: dict[str, Any]) -> list[dict[str, Any]]:
+    containers = [row]
+    for key in ("event", "metadata", "data", "signal", "opportunity"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+            nested = value.get("metadata")
+            if isinstance(nested, dict):
+                containers.append(nested)
+    return containers
+
+
+def _first(row: dict[str, Any], *keys: str) -> Any:
+    for container in _container_values(row):
+        for key in keys:
+            value = container.get(key)
+            if value not in (None, "", [], {}, ()):
+                return value
+    return None
+
+
+def _row_ts(row: dict[str, Any]) -> int | None:
+    return _to_int(
+        _first(
+            row,
+            "archive_ts",
+            "archive_written_at",
+            "created_at",
+            "updated_at",
+            "timestamp",
+            "parsed_at",
+            "captured_at",
+        )
+    )
+
+
+def _canonical_asset(value: Any) -> str:
+    raw = str(value or "").strip().upper().replace(".E", "")
+    return {"WETH": "ETH", "WBTC": "BTC", "CBBTC": "BTC", "WSOL": "SOL"}.get(raw, raw)
+
+
+def _canonical_pair(value: Any, asset: Any = None) -> str:
+    raw = str(value or "").strip().upper().replace(" ", "")
+    if "/" in raw:
+        base, quote = raw.split("/", 1)
+        return f"{_canonical_asset(base)}/{quote.replace('.E', '')}"
+    asset_value = _canonical_asset(asset)
+    return asset_value if asset_value else raw
+
+
+def _logical_window(logical_date: str) -> dict[str, Any]:
+    parsed = date.fromisoformat(logical_date)
+    start_bj = datetime(parsed.year, parsed.month, parsed.day, tzinfo=BJ_TZ)
+    start_ts = int(start_bj.timestamp())
+    end_ts = start_ts + 24 * 3600 - 1
+    return {
+        "logical_date": logical_date,
+        "timezone": "Asia/Shanghai",
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "logical_window_start_utc": _fmt_utc(start_ts),
+        "logical_window_end_utc": _fmt_utc(end_ts),
+        "logical_window_start_beijing": _fmt_bj(start_ts),
+        "logical_window_end_beijing": _fmt_bj(end_ts),
+        "wall_clock_duration_hours": 24.0,
+        "selection_reason": "canonical Beijing natural day; no cross-gap longest-window selection",
+    }
+
+
+def _db_path() -> Path:
+    raw = Path(str(getattr(app_config, "SQLITE_DB_PATH", "data/chain_monitor.sqlite")))
+    if raw.is_absolute():
+        return raw
+    return ROOT / raw
+
+
+def _sqlite_latest_timestamp() -> int | None:
+    path = _db_path()
+    if not path.exists():
+        return None
+    max_ts: int | None = None
+    try:
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error:
+        return None
+    try:
+        for cfg in report_data_loader.DB_TABLES.values():
+            table = str(cfg.get("table") or "")
+            column = str(cfg.get("time_column") or "")
+            if not table or not column:
+                continue
+            try:
+                exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+                if not exists:
+                    continue
+                row = conn.execute(f"SELECT MAX({column}) FROM {table}").fetchone()
+            except sqlite3.Error:
+                continue
+            value = _to_int(row[0] if row else None)
+            if value is not None and (max_ts is None or value > max_ts):
+                max_ts = value
+    finally:
+        conn.close()
+    return max_ts
+
+
+def _archive_file_date(path: Path) -> str | None:
+    name = path.name
+    if name.endswith(".ndjson.gz"):
+        name = name[: -len(".ndjson.gz")]
+    elif name.endswith(".ndjson"):
+        name = name[: -len(".ndjson")]
+    else:
+        name = path.stem
+    try:
+        return date.fromisoformat(name).isoformat()
+    except ValueError:
+        return None
+
+
+def _archive_latest_logical_date() -> str | None:
+    dates: set[str] = set()
+    for category in ("signals", "parsed_events", "raw_events", "delivery_audit", "case_followups"):
+        for path in report_data_loader.archive_paths(category):
+            file_date = _archive_file_date(path)
+            if file_date:
+                dates.add(file_date)
+    return sorted(dates)[-1] if dates else None
+
+
+def _existing_daily_latest_logical_date() -> str | None:
+    dates: set[str] = set()
+    for path in DAILY_DIR.glob("daily_report_*.json"):
+        if path.name == "daily_report_latest.json":
+            continue
+        value = path.stem.removeprefix("daily_report_")
+        try:
+            dates.add(date.fromisoformat(value).isoformat())
+        except ValueError:
+            continue
+    return sorted(dates)[-1] if dates else None
+
+
+def latest_available_logical_date() -> str:
+    archive_date = _archive_latest_logical_date()
+    if archive_date:
+        return archive_date
+    existing_daily_date = _existing_daily_latest_logical_date()
+    if existing_daily_date:
+        return existing_daily_date
+    latest_ts = _sqlite_latest_timestamp()
+    if latest_ts is None:
+        raise RuntimeError("No SQLite or archive timestamps available for automatic logical date selection")
+    return datetime.fromtimestamp(latest_ts, BJ_TZ).date().isoformat()
+
+
+def _load_result_dict(result: report_data_loader.LoadResult) -> dict[str, Any]:
+    return {
+        "source": result.source,
+        "row_count": result.row_count,
+        "warnings": list(result.warnings),
+        "fallback_used": result.fallback_used,
+        "compressed_archive_rows": result.compressed_archive_rows,
+        "mismatch_info": result.mismatch_info,
+    }
+
+
+def _archive_base_dir() -> Path:
+    raw = Path(str(getattr(app_config, "ARCHIVE_BASE_DIR", APP_DIR / "data" / "archive")))
+    if raw.is_absolute():
+        return raw
+    return ROOT / raw
+
+
+def _window_archive_dates(window: dict[str, Any]) -> list[str]:
+    start_day = datetime.fromtimestamp(int(window["start_ts"]), UTC).date()
+    end_day = datetime.fromtimestamp(int(window["end_ts"]), UTC).date()
+    values: list[str] = []
+    current = start_day
+    while current <= end_day:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return values
+
+
+def _line_archive_ts(line: str) -> int | None:
+    match = ARCHIVE_TS_RE.search(line[:80])
+    return _to_int(match.group(1)) if match else None
+
+
+def _read_archive_category(
+    category: str,
+    window: dict[str, Any],
+    *,
+    parse_payload: bool,
+) -> report_data_loader.LoadResult:
+    root = _archive_base_dir() / category
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    paths: list[Path] = []
+    for date_key in _window_archive_dates(window):
+        plain = root / f"{date_key}.ndjson"
+        gz = root / f"{date_key}.ndjson.gz"
+        if plain.exists():
+            paths.append(plain)
+        elif gz.exists():
+            paths.append(gz)
+    if not paths:
+        return report_data_loader.LoadResult([], "unavailable", 0, [f"archive_missing:{category}"], False, {}, 0)
+    for path in paths:
+        try:
+            with report_data_loader.open_archive_text(path) as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if not parse_payload:
+                        ts = _line_archive_ts(line)
+                        if ts is not None and int(window["start_ts"]) <= ts <= int(window["end_ts"]):
+                            rows.append({"archive_ts": ts})
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        warnings.append(f"invalid_json:{path.name}")
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                    if not isinstance(data, dict):
+                        continue
+                    row = dict(data)
+                    ts = _to_int(payload.get("archive_ts")) or _row_ts(row)
+                    if ts is None:
+                        continue
+                    if int(window["start_ts"]) <= ts <= int(window["end_ts"]):
+                        row.setdefault("archive_ts", ts)
+                        row.setdefault("archive_written_at", ts)
+                        rows.append(row)
+        except OSError as exc:
+            warnings.append(f"archive_read_failed:{path.name}:{exc}")
+    compressed_rows = sum(1 for path in paths if path.name.endswith(".gz"))
+    return report_data_loader.LoadResult(rows, "archive", len(rows), warnings, False, {}, compressed_rows)
+
+
+def _empty_result(source: str = "unavailable", warning: str | None = None) -> report_data_loader.LoadResult:
+    return report_data_loader.LoadResult([], source, 0, [warning] if warning else [], False, {}, 0)
+
+
+def _sqlite_count_only(loader_key: str, window: dict[str, Any]) -> report_data_loader.LoadResult | None:
+    cfg = report_data_loader.DB_TABLES[loader_key]
+    table = str(cfg.get("table") or "")
+    column = str(cfg.get("time_column") or "")
+    if not table or not column:
+        return None
+    path = _db_path()
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error:
+        return None
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            return None
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {column} >= ? AND {column} <= ?",
+            (window["start_ts"], window["end_ts"]),
+        ).fetchone()
+        count = int(row[0] if row else 0)
+        return report_data_loader.LoadResult(
+            rows=[],
+            source="sqlite",
+            row_count=count,
+            warnings=[],
+            fallback_used=False,
+            mismatch_info={"loader": loader_key, "sqlite_rows": count, "match_rate": None, "mismatch": None},
+        )
+    except sqlite3.Error as exc:
+        return report_data_loader.LoadResult(
+            rows=[],
+            source="unavailable",
+            row_count=0,
+            warnings=[f"db_count_failed:{loader_key}:{exc}"],
+            fallback_used=False,
+            mismatch_info={"loader": loader_key, "sqlite_rows": 0, "match_rate": None, "mismatch": None},
+        )
+    finally:
+        conn.close()
+
+
+def _load_window(window: dict[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, report_data_loader.LoadResult]]:
+    bounds = {"start_ts": window["start_ts"], "end_ts": window["end_ts"]}
+    loaders: dict[str, Callable[..., report_data_loader.LoadResult]] = {
+        "raw_events": report_data_loader.load_raw_events,
+        "parsed_events": report_data_loader.load_parsed_events,
+        "signals": report_data_loader.load_signals,
+        "delivery_audit": report_data_loader.load_delivery_audit,
+        "case_followups": report_data_loader.load_case_followups,
+        "asset_cases": report_data_loader.load_asset_cases,
+        "asset_market_states": report_data_loader.load_asset_market_states,
+        "trade_opportunities": report_data_loader.load_trade_opportunities,
+        "outcomes": report_data_loader.load_outcomes,
+        "telegram_deliveries": report_data_loader.load_telegram_deliveries,
+        "market_context_attempts": report_data_loader.load_market_context_attempts,
+    }
+    count_only = {"raw_events", "parsed_events", "delivery_audit", "case_followups", "asset_cases", "telegram_deliveries"}
+    results: dict[str, report_data_loader.LoadResult] = {}
+    for key, load in loaders.items():
+        try:
+            result = _sqlite_count_only(key, bounds) if key in count_only else None
+            if result is None:
+                result = load(window=bounds, compare_archive=False)
+        except Exception as exc:  # pragma: no cover - defensive report degradation
+            result = _empty_result(warning=f"load_failed:{key}:{exc}")
+        results[key] = result
+    rows = {key: result.rows for key, result in results.items()}
+    return rows, results
+
+
+def _data_source_summary(results: dict[str, report_data_loader.LoadResult]) -> dict[str, Any]:
+    source_components = {key: result.source for key, result in results.items()}
+    row_counts = {key: result.row_count for key, result in results.items()}
+    warnings = sorted({warning for result in results.values() for warning in result.warnings})
+    fallback_used = any(result.fallback_used for result in results.values())
+    active_sources = {source for source in source_components.values() if source and source != "unavailable"}
+    source = "mixed" if len(active_sources) > 1 else next(iter(active_sources), "unavailable")
+    return {
+        "report_data_source": source,
+        "data_source": source,
+        "source_components": source_components,
+        "row_counts": row_counts,
+        "loader_results": {key: _load_result_dict(result) for key, result in results.items()},
+        "archive_fallback_used": fallback_used,
+        "db_archive_mirror_match_rate": None,
+        "mismatch_warnings": warnings,
+        "source_warnings": warnings,
+        "sqlite_health": report_data_loader.sqlite_health(fast=True),
+    }
+
+
+def _is_lp_row(row: dict[str, Any]) -> bool:
+    stage = str(_first(row, "lp_alert_stage", "lp_stage", "stage") or "").strip().lower()
+    if stage in LP_STAGES:
+        return True
+    return bool(
+        _first(row, "asset_market_state_key", "trade_opportunity_status", "trade_opportunity_id")
+    )
+
+
+def _build_segments(signal_rows: list[dict[str, Any]], lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    timestamps = sorted(ts for ts in (_row_ts(row) for row in signal_rows) if ts is not None)
+    if not timestamps:
+        return {
+            "segment_count": 0,
+            "gap_threshold_sec": GAP_THRESHOLD_SEC,
+            "largest_gap_sec": None,
+            "active_duration_hours": 0.0,
+            "wall_clock_duration_hours": 24.0,
+            "segments": [],
+            "gap_warnings": ["no_signal_rows_in_logical_day"],
+        }
+    segments: list[dict[str, Any]] = []
+    start = prev = timestamps[0]
+    largest_gap = 0
+    for ts in timestamps[1:]:
+        gap = ts - prev
+        if gap > largest_gap:
+            largest_gap = gap
+        if gap > GAP_THRESHOLD_SEC:
+            segments.append({"start_ts": start, "end_ts": prev})
+            start = ts
+        prev = ts
+    segments.append({"start_ts": start, "end_ts": prev})
+    lp_ts = [_row_ts(row) for row in lp_rows]
+    formatted = []
+    active_sec = 0
+    for item in segments:
+        seg_start = int(item["start_ts"])
+        seg_end = int(item["end_ts"])
+        duration = max(seg_end - seg_start, 0)
+        active_sec += duration
+        formatted.append(
+            {
+                "start_ts": seg_start,
+                "end_ts": seg_end,
+                "start_utc": _fmt_utc(seg_start),
+                "end_utc": _fmt_utc(seg_end),
+                "start_beijing": _fmt_bj(seg_start),
+                "end_beijing": _fmt_bj(seg_end),
+                "duration_hours": round(duration / 3600.0, 2),
+                "signal_rows": sum(1 for ts in timestamps if seg_start <= ts <= seg_end),
+                "lp_signal_rows": sum(1 for ts in lp_ts if ts is not None and seg_start <= ts <= seg_end),
+            }
+        )
+    gap_warnings = []
+    if largest_gap > GAP_THRESHOLD_SEC:
+        gap_warnings.append(f"large_gap_detected:{largest_gap}s; active_duration_excludes_gap")
+    return {
+        "segment_count": len(formatted),
+        "gap_threshold_sec": GAP_THRESHOLD_SEC,
+        "largest_gap_sec": largest_gap,
+        "active_duration_hours": round(active_sec / 3600.0, 2),
+        "wall_clock_duration_hours": 24.0,
+        "segments": formatted,
+        "gap_warnings": gap_warnings,
+    }
+
+
+def _telegram_summary(lp_rows: list[dict[str, Any]], delivery_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    sent_lp = [
+        row
+        for row in lp_rows
+        if _is_true(_first(row, "sent_to_telegram", "telegram_sent", "notifier_sent_at", "delivered_notification"))
+    ]
+    should_send = [row for row in lp_rows if _is_true(_first(row, "telegram_should_send"))]
+    reason_counter = Counter(
+        str(_first(row, "telegram_suppression_reason", "suppression_reason") or "")
+        for row in lp_rows
+        if str(_first(row, "telegram_suppression_reason", "suppression_reason") or "").strip()
+    )
+    delivery_sent = sum(1 for row in delivery_rows if _is_true(_first(row, "sent")))
+    delivery_suppressed = sum(
+        1
+        for row in delivery_rows
+        if _is_true(_first(row, "suppressed")) or str(_first(row, "suppression_reason") or "").strip()
+    )
+    sent_count = len(sent_lp) if lp_rows else delivery_sent
+    suppressed = max(len(lp_rows) - len(sent_lp), 0) if lp_rows else delivery_suppressed
+    total = len(lp_rows) if lp_rows else sent_count + suppressed
+    return {
+        "telegram_should_send_count": len(should_send),
+        "telegram_suppressed_count": suppressed,
+        "telegram_suppression_ratio": _rate(suppressed, total),
+        "telegram_suppression_reasons": dict(sorted(reason_counter.items())),
+        "messages_before_suppression_estimate": total,
+        "messages_after_suppression_actual": sent_count,
+        "high_value_suppressed_count": 0,
+        "delivered_lp_signals": sent_count,
+        "suppressed_lp_signals": suppressed,
+    }
+
+
+def _status(row: dict[str, Any]) -> str:
+    return str(
+        _first(
+            row,
+            "trade_opportunity_status_at_creation",
+            "status_at_creation",
+            "trade_opportunity_status",
+            "status",
+        )
+        or "NONE"
+    ).upper()
+
+
+def _outcome_for_rows(rows: list[dict[str, Any]], prefix: str = "opportunity") -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for window in ("30s", "60s", "300s"):
+        status_key = f"{prefix}_outcome_{window}"
+        follow_key = f"{prefix}_followthrough_{window}"
+        adverse_key = f"{prefix}_adverse_{window}"
+        completed = [row for row in rows if str(_first(row, status_key) or "").lower() == "completed"]
+        followthrough = sum(1 for row in completed if _is_true(_first(row, follow_key)))
+        adverse = sum(1 for row in completed if _is_true(_first(row, adverse_key)))
+        payload[window] = {
+            "count": len(rows),
+            "resolved_count": len(completed),
+            "followthrough_count": followthrough,
+            "followthrough_rate": _rate(followthrough, len(completed)),
+            "adverse_count": adverse,
+            "adverse_rate": _rate(adverse, len(completed)),
+            "expired_count": sum(1 for row in rows if str(_first(row, status_key) or "").lower() == "expired"),
+            "unavailable_count": sum(1 for row in rows if str(_first(row, status_key) or "").lower() in {"", "pending", "missing"}),
+        }
+    return payload
+
+
+def _trade_opportunity_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_status = Counter(_status(row) for row in rows)
+    candidate_rows = [row for row in rows if _status(row) == "CANDIDATE"]
+    verified_rows = [row for row in rows if _status(row) == "VERIFIED"]
+    blocked_rows = [row for row in rows if _status(row) == "BLOCKED"]
+    scores = [
+        value
+        for value in (_to_float(_first(row, "trade_opportunity_score", "score", "calibrated_score")) for row in rows)
+        if value is not None
+    ]
+    hard_blockers = Counter(
+        str(_first(row, "primary_hard_blocker", "trade_opportunity_primary_blocker", "primary_blocker") or "")
+        for row in blocked_rows
+        if str(_first(row, "primary_hard_blocker", "trade_opportunity_primary_blocker", "primary_blocker") or "").strip()
+    )
+    verification_blockers = Counter(
+        str(_first(row, "primary_verification_blocker") or "")
+        for row in rows
+        if str(_first(row, "primary_verification_blocker") or "").strip()
+    )
+    candidate_outcomes = _outcome_for_rows(candidate_rows)
+    verified_outcomes = _outcome_for_rows(verified_rows)
+    blocker_saved_values = [_first(row, "blocker_saved_trade") for row in blocked_rows if _first(row, "blocker_saved_trade") is not None]
+    false_block_values = [_first(row, "blocker_false_block_possible") for row in blocked_rows if _first(row, "blocker_false_block_possible") is not None]
+    maturity_reasons = []
+    if not verified_rows:
+        maturity_reasons.append("no_verified_rows")
+    if candidate_outcomes["60s"]["resolved_count"] == 0:
+        maturity_reasons.append("candidate_outcome_history_incomplete")
+    summary = {
+        "window_record_count": len(rows),
+        "creation_status_distribution": dict(sorted(by_status.items())),
+        "opportunity_none_count": by_status.get("NONE", 0),
+        "opportunity_candidate_count": len(candidate_rows),
+        "opportunity_verified_count": len(verified_rows),
+        "opportunity_blocked_count": len(blocked_rows),
+        "opportunity_expired_count": by_status.get("EXPIRED", 0),
+        "opportunity_invalidated_count": by_status.get("INVALIDATED", 0),
+        "opportunity_candidate_to_verified_rate": _rate(len(verified_rows), len(candidate_rows)),
+        "opportunity_score_median": round(float(median(scores)), 4) if scores else None,
+        "opportunity_score_p90": _percentile(scores, 0.9),
+        "opportunity_hard_blocker_distribution": dict(sorted(hard_blockers.items())),
+        "hard_blocker_distribution": dict(sorted(hard_blockers.items())),
+        "verification_blocker_distribution": dict(sorted(verification_blockers.items())),
+        "candidate_outcome_30s": candidate_outcomes["30s"],
+        "candidate_outcome_60s": candidate_outcomes["60s"],
+        "candidate_outcome_300s": candidate_outcomes["300s"],
+        "verified_outcome_30s": verified_outcomes["30s"],
+        "verified_outcome_60s": verified_outcomes["60s"],
+        "verified_outcome_300s": verified_outcomes["300s"],
+        "opportunity_candidate_followthrough_60s_rate": candidate_outcomes["60s"]["followthrough_rate"],
+        "opportunity_candidate_adverse_60s_rate": candidate_outcomes["60s"]["adverse_rate"],
+        "opportunity_verified_followthrough_60s_rate": verified_outcomes["60s"]["followthrough_rate"],
+        "opportunity_verified_adverse_60s_rate": verified_outcomes["60s"]["adverse_rate"],
+        "candidate_outcome_completion_rate": _rate(candidate_outcomes["60s"]["resolved_count"], len(candidate_rows)),
+        "verified_outcome_completion_rate": _rate(verified_outcomes["60s"]["resolved_count"], len(verified_rows)),
+        "blocker_saved_rate": _rate(sum(1 for value in blocker_saved_values if _is_true(value)), len(blocker_saved_values)),
+        "blocker_false_block_rate": _rate(sum(1 for value in false_block_values if _is_true(value)), len(false_block_values)),
+        "top_blockers": dict(hard_blockers.most_common(10)),
+        "why_no_opportunities": maturity_reasons or [],
+        "verified_maturity": "immature",
+        "verified_should_not_be_traded_reason": "verified_maturity=immature",
+        "maturity_reasons": sorted(set(maturity_reasons + ["verified_maturity=immature"])),
+    }
+    return summary
+
+
+def _asset_market_state_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    state_counter = Counter(
+        str(_first(row, "current_state", "asset_market_state_key") or "")
+        for row in rows
+        if str(_first(row, "current_state", "asset_market_state_key") or "").strip()
+    )
+    final: dict[str, Any] = {}
+    transitions = 0
+    for row in sorted(rows, key=lambda item: _row_ts(item) or 0):
+        asset = _canonical_asset(_first(row, "asset", "asset_symbol"))
+        current = str(_first(row, "current_state", "asset_market_state_key") or "")
+        if not asset or not current:
+            continue
+        if _is_true(_first(row, "state_changed", "asset_market_state_changed")):
+            transitions += 1
+        final[asset] = {
+            "state_key": current,
+            "state_label": _first(row, "asset_market_state_label") or current,
+            "updated_at": _row_ts(row),
+        }
+    return {
+        "state_distribution": dict(sorted(state_counter.items())),
+        "state_transition_count": transitions,
+        "state_change_count": transitions,
+        "final_state_by_asset": final,
+        "current_final_state_per_asset": final,
+    }
+
+
+def _no_trade_lock_summary(asset_state_summary: dict[str, Any]) -> dict[str, Any]:
+    states = asset_state_summary.get("state_distribution") or {}
+    lock_count = int(states.get("NO_TRADE_LOCK") or 0)
+    return {
+        "lock_entered_count": lock_count,
+        "lock_suppressed_count": lock_count,
+        "lock_released_count": 0,
+    }
+
+
+def _outcome_source_summary(outcome_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    source_counter = Counter(str(_first(row, "outcome_price_source", "price_source") or "") for row in outcome_rows)
+    source_counter.pop("", None)
+    failure_counter = Counter(str(_first(row, "failure_reason") or "") for row in outcome_rows)
+    failure_counter.pop("", None)
+    payload: dict[str, Any] = {
+        "outcome_price_source_distribution": dict(sorted(source_counter.items())),
+        "outcome_failure_reason_distribution": dict(sorted(failure_counter.items())),
+        "catchup_completed_count": sum(1 for row in outcome_rows if _is_true(_first(row, "catchup")) and str(_first(row, "status") or "").lower() == "completed"),
+        "catchup_expired_count": sum(1 for row in outcome_rows if _is_true(_first(row, "catchup")) and str(_first(row, "status") or "").lower() == "expired"),
+        "scheduler_health_summary": {},
+    }
+    for seconds in (30, 60, 300):
+        rows = [row for row in outcome_rows if _to_int(_first(row, "window_sec")) == seconds]
+        completed = sum(1 for row in rows if str(_first(row, "status") or "").lower() == "completed")
+        payload[f"outcome_{seconds}s_completed_rate"] = _rate(completed, len(rows))
+        payload[f"outcome_{seconds}s_completed_count"] = completed
+    return payload
+
+
+def _market_context_health(attempt_rows: list[dict[str, Any]], lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    venue_attempts = Counter()
+    venue_success = Counter()
+    failures = Counter()
+    resolved = Counter()
+    for row in attempt_rows:
+        venue = str(_first(row, "venue") or "")
+        if venue:
+            venue_attempts[venue] += 1
+            if _is_true(_first(row, "success")):
+                venue_success[venue] += 1
+        failure = str(_first(row, "failure_reason") or "")
+        if failure:
+            failures[failure] += 1
+        symbol = str(_first(row, "resolved_symbol") or "")
+        if symbol:
+            resolved[symbol] += 1
+    source_counter = Counter(str(_first(row, "market_context_source") or "") for row in lp_rows)
+    total_lp = len(lp_rows)
+    window = {
+        "live_public_rate": _rate(source_counter.get("live_public", 0), total_lp),
+        "unavailable_rate": _rate(source_counter.get("unavailable", 0), total_lp),
+        "okx_attempts": venue_attempts.get("okx_perp", 0) + venue_attempts.get("okx", 0),
+        "okx_success": venue_success.get("okx_perp", 0) + venue_success.get("okx", 0),
+        "kraken_attempts": venue_attempts.get("kraken_futures", 0) + venue_attempts.get("kraken", 0),
+        "kraken_success": venue_success.get("kraken_futures", 0) + venue_success.get("kraken", 0),
+        "resolved_symbol_distribution": dict(resolved.most_common(20)),
+        "top_failure_reasons": dict(failures.most_common(10)),
+    }
+    return {"window": window}
+
+
+def _major_coverage_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pair_counter = Counter()
+    asset_counter = Counter()
+    for row in lp_rows:
+        asset = _canonical_asset(_first(row, "asset", "asset_symbol"))
+        pair = _canonical_pair(_first(row, "pair", "pair_label"), asset)
+        if asset:
+            asset_counter[asset] += 1
+        if pair and "/" in pair:
+            pair_counter[pair] += 1
+    covered = sorted(pair for pair in EXPECTED_MAJOR_PAIRS if pair_counter.get(pair, 0) > 0)
+    missing = sorted(pair for pair in EXPECTED_MAJOR_PAIRS if pair not in covered)
+    return {
+        "configured_major_assets": ["ETH", "WETH", "BTC", "WBTC", "CBBTC", "SOL", "WSOL"],
+        "configured_major_quotes": ["USDT", "USDC", "USDC.E"],
+        "asset_distribution": dict(sorted(asset_counter.items())),
+        "pair_distribution": dict(sorted(pair_counter.items())),
+        "covered_major_pairs": covered,
+        "missing_major_pairs": missing,
+        "eth_signal_count": asset_counter.get("ETH", 0),
+        "btc_signal_count": asset_counter.get("BTC", 0),
+        "sol_signal_count": asset_counter.get("SOL", 0),
+        "current_sample_still_eth_only": bool(asset_counter) and set(asset_counter).issubset({"ETH"}),
+        "major_cli_summary": {
+            "available": False,
+            "reason": "date_scoped_daily_report_uses_window_rows",
+            "expected_major_pairs": list(EXPECTED_MAJOR_PAIRS),
+            "covered_major_pairs": covered,
+            "missing_expected_pairs": missing,
+        },
+    }
+
+
+def _candidate_verified_summary(trade_summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_count": trade_summary.get("opportunity_candidate_count", 0),
+        "verified_count": trade_summary.get("opportunity_verified_count", 0),
+        "candidate_distribution": {"CANDIDATE": trade_summary.get("opportunity_candidate_count", 0)},
+        "verified_distribution": {"VERIFIED": trade_summary.get("opportunity_verified_count", 0)},
+        "candidate_outcome_60s": trade_summary.get("candidate_outcome_60s", {}),
+        "verified_outcome_60s": trade_summary.get("verified_outcome_60s", {}),
+        "candidate_outcome_completed_rate": trade_summary.get("candidate_outcome_completion_rate"),
+        "verified_maturity": trade_summary.get("verified_maturity"),
+        "verified_should_not_be_traded_reason": trade_summary.get("verified_should_not_be_traded_reason"),
+    }
+
+
+def _markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Canonical Daily Report",
+        "",
+        f"- logical_date: `{payload['logical_date']}`",
+        f"- logical_window_utc: `{payload['logical_window_start_utc']} -> {payload['logical_window_end_utc']}`",
+        f"- active_duration_hours: `{payload['active_duration_hours']}`",
+        f"- wall_clock_duration_hours: `{payload['wall_clock_duration_hours']}`",
+        f"- data_source: `{payload['data_source_summary'].get('report_data_source')}`",
+        "",
+        "## Summary",
+        "",
+    ]
+    for item in payload.get("key_findings", []):
+        lines.append(f"- {item}")
+    lines.extend(["", "## Limitations", ""])
+    for item in payload.get("limitations", []) or ["none"]:
+        lines.append(f"- {item}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _csv_text(payload: dict[str, Any]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["metric_group", "metric_name", "value"])
+    writer.writeheader()
+    rows = [
+        ("window", "logical_date", payload.get("logical_date")),
+        ("window", "active_duration_hours", payload.get("active_duration_hours")),
+        ("window", "wall_clock_duration_hours", payload.get("wall_clock_duration_hours")),
+        ("run", "raw_events_count", payload.get("run_overview", {}).get("total_raw_events")),
+        ("run", "parsed_events_count", payload.get("run_overview", {}).get("total_parsed_events")),
+        ("run", "signals_count", payload.get("run_overview", {}).get("total_signal_rows")),
+        ("run", "lp_signal_rows", payload.get("run_overview", {}).get("lp_signal_rows")),
+        ("opportunity", "opportunity_candidate_count", payload.get("trade_opportunity_summary", {}).get("opportunity_candidate_count")),
+        ("opportunity", "opportunity_verified_count", payload.get("trade_opportunity_summary", {}).get("opportunity_verified_count")),
+        ("telegram", "telegram_suppression_ratio", payload.get("telegram_suppression_summary", {}).get("telegram_suppression_ratio")),
+        ("market_context", "okx_attempts", payload.get("market_context_health", {}).get("window", {}).get("okx_attempts")),
+        ("majors", "missing_major_pairs_count", len(payload.get("major_coverage_summary", {}).get("missing_major_pairs") or [])),
+    ]
+    for group, name, value in rows:
+        writer.writerow({"metric_group": group, "metric_name": name, "value": json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value})
+    return output.getvalue()
+
+
+def build_daily_report(logical_date: str) -> dict[str, Any]:
+    window = _logical_window(logical_date)
+    rows, results = _load_window(window)
+    signal_rows = rows["signals"]
+    lp_rows = [row for row in signal_rows if _is_lp_row(row)]
+    segment_summary = _build_segments(signal_rows, lp_rows)
+    telegram = _telegram_summary(lp_rows, rows["telegram_deliveries"] or rows["delivery_audit"])
+    opportunity_rows = rows["trade_opportunities"] or [
+        row
+        for row in signal_rows
+        if _first(row, "trade_opportunity_status", "trade_opportunity_status_at_creation", "trade_opportunity_id")
+    ]
+    trade_summary = _trade_opportunity_summary(opportunity_rows)
+    asset_state = _asset_market_state_summary(rows["asset_market_states"] or signal_rows)
+    no_trade_lock = _no_trade_lock_summary(asset_state)
+    outcome = _outcome_source_summary(rows["outcomes"] or signal_rows)
+    market_context = _market_context_health(rows["market_context_attempts"], lp_rows)
+    majors = _major_coverage_summary(lp_rows)
+    data_source = _data_source_summary(results)
+    limitations = [
+        "CANDIDATE is not a trade signal",
+        "verified_maturity=immature; VERIFIED must not be treated as mature trade signal",
+    ]
+    limitations.extend(segment_summary.get("gap_warnings") or [])
+    limitations.extend(data_source.get("source_warnings") or [])
+    run_overview = {
+        "total_raw_events": results["raw_events"].row_count,
+        "total_parsed_events": results["parsed_events"].row_count,
+        "total_signal_rows": len(signal_rows),
+        "lp_signal_rows": len(lp_rows),
+        "delivered_lp_signals": telegram["delivered_lp_signals"],
+        "suppressed_lp_signals": telegram["suppressed_lp_signals"],
+        "asset_case_count": results["asset_cases"].row_count,
+        "case_followup_count": results["case_followups"].row_count,
+    }
+    blocker_summary = {
+        "hard_blocker_distribution": trade_summary.get("hard_blocker_distribution", {}),
+        "verification_blocker_distribution": trade_summary.get("verification_blocker_distribution", {}),
+        "top_blockers": trade_summary.get("top_blockers", {}),
+        "blocker_saved_rate": trade_summary.get("blocker_saved_rate"),
+        "blocker_false_block_rate": trade_summary.get("blocker_false_block_rate"),
+    }
+    key_findings = [
+        f"logical_date={logical_date} source={data_source.get('report_data_source')} lp_rows={len(lp_rows)}",
+        f"segments={segment_summary['segment_count']} active_hours={segment_summary['active_duration_hours']} wall_clock_hours=24.0",
+        (
+            "opportunities: "
+            f"candidate={trade_summary['opportunity_candidate_count']} "
+            f"verified={trade_summary['opportunity_verified_count']} "
+            f"blocked={trade_summary['opportunity_blocked_count']}"
+        ),
+        "verified_maturity=immature; CANDIDATE is not a trade signal",
+    ]
+    payload = {
+        "report_type": "daily_canonical",
+        "logical_date": logical_date,
+        "timezone": "Asia/Shanghai",
+        "analysis_window": {
+            **window,
+            "duration_hours": 24.0,
+            "start_utc": window["logical_window_start_utc"],
+            "end_utc": window["logical_window_end_utc"],
+            "start_bj": window["logical_window_start_beijing"],
+            "end_bj": window["logical_window_end_beijing"],
+        },
+        "logical_window_start_utc": window["logical_window_start_utc"],
+        "logical_window_end_utc": window["logical_window_end_utc"],
+        "logical_window_start_beijing": window["logical_window_start_beijing"],
+        "logical_window_end_beijing": window["logical_window_end_beijing"],
+        "segment_summary": segment_summary,
+        "active_duration_hours": segment_summary["active_duration_hours"],
+        "wall_clock_duration_hours": 24.0,
+        "run_overview": run_overview,
+        "data_source": data_source.get("report_data_source"),
+        "data_source_summary": data_source,
+        "market_context_health": market_context,
+        "trade_opportunity_summary": trade_summary,
+        "candidate_verified_summary": _candidate_verified_summary(trade_summary),
+        "candidate_tradeable_summary": _candidate_verified_summary(trade_summary),
+        "blocker_summary": blocker_summary,
+        "outcome_summary": outcome,
+        "outcome_source_summary": outcome,
+        "telegram_suppression_summary": telegram,
+        "asset_market_state_summary": asset_state,
+        "no_trade_lock_summary": no_trade_lock,
+        "trade_action_summary": {"trade_action_distribution": {}},
+        "prealert_lifecycle_summary": {
+            "prealert_candidate_count": 0,
+            "prealert_gate_passed_count": 0,
+            "prealert_active_count": 0,
+            "prealert_delivered_count": 0,
+            "prealert_upgraded_to_confirm_count": 0,
+            "prealert_expired_count": 0,
+        },
+        "major_coverage_summary": majors,
+        "majors_coverage_summary": majors,
+        "archive_health": {
+            "archive_base_dir": str(getattr(app_config, "ARCHIVE_BASE_DIR", APP_DIR / "data" / "archive")),
+            "archive_fallback_used": data_source.get("archive_fallback_used"),
+        },
+        "key_findings": key_findings,
+        "key_risks": ["VERIFIED maturity is immature and must remain research/filter evidence only"],
+        "limitations": sorted(set(str(item) for item in limitations if item)),
+    }
+    return payload
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def write_daily_artifacts(payload: dict[str, Any], *, output_dir: Path = DAILY_DIR) -> dict[str, str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logical_date = str(payload["logical_date"])
+    latest_md = output_dir / "daily_report_latest.md"
+    latest_csv = output_dir / "daily_report_latest.csv"
+    latest_json = output_dir / "daily_report_latest.json"
+    dated_md = output_dir / f"daily_report_{logical_date}.md"
+    dated_csv = output_dir / f"daily_report_{logical_date}.csv"
+    dated_json = output_dir / f"daily_report_{logical_date}.json"
+    markdown = _markdown(payload)
+    csv_text = _csv_text(payload)
+    for path in (latest_md, dated_md):
+        _write_text(path, markdown)
+    for path in (latest_csv, dated_csv):
+        _write_text(path, csv_text)
+    for path in (latest_json, dated_json):
+        _write_json(path, payload)
+    return {
+        "latest_markdown": str(latest_md),
+        "latest_csv": str(latest_csv),
+        "latest_json": str(latest_json),
+        "dated_markdown": str(dated_md),
+        "dated_csv": str(dated_csv),
+        "dated_json": str(dated_json),
+    }
+
+
+def generate_daily_report(logical_date: str | None = None, *, output_dir: Path = DAILY_DIR) -> tuple[dict[str, Any], dict[str, str]]:
+    selected_date = logical_date or latest_available_logical_date()
+    payload = build_daily_report(selected_date)
+    written = write_daily_artifacts(payload, output_dir=output_dir)
+    return payload, written
+
+
+def _date_range(start_date: str, end_date: str) -> list[str]:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("END_DATE must be greater than or equal to START_DATE")
+    values: list[str] = []
+    current = start
+    while current <= end:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return values
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate canonical Beijing-logical-day daily report")
+    parser.add_argument("--date", help="Generate report for the specified Beijing logical date YYYY-MM-DD")
+    parser.add_argument("--start-date", help="Generate reports for an inclusive Beijing logical date range")
+    parser.add_argument("--end-date", help="Generate reports for an inclusive Beijing logical date range")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.date and (args.start_date or args.end_date):
+        raise SystemExit("--date cannot be combined with --start-date/--end-date")
+    if bool(args.start_date) != bool(args.end_date):
+        raise SystemExit("--start-date and --end-date must be provided together")
+    if args.start_date and args.end_date:
+        reports = []
+        for logical_date in _date_range(args.start_date, args.end_date):
+            payload, written = generate_daily_report(logical_date)
+            reports.append({"logical_date": payload["logical_date"], "outputs": written})
+        print(json.dumps({"status": "ok", "reports": reports}, ensure_ascii=False))
+        return 0
+    payload, written = generate_daily_report(args.date)
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "logical_date": payload["logical_date"],
+                "outputs": written,
+                "active_duration_hours": payload["active_duration_hours"],
+                "wall_clock_duration_hours": payload["wall_clock_duration_hours"],
+                "limitations": payload["limitations"][:10],
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

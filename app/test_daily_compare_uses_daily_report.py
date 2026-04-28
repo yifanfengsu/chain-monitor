@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from reports.generate_daily_compare_report import generate_daily_compare
+from reports.generate_daily_compare_report import _refresh_dated_reports_for_date, generate_daily_compare
 from app.test_daily_compare_report import _sample_values, _seed_day
 
 
@@ -231,6 +231,41 @@ class DailyCompareUsesDailyReportTests(unittest.TestCase):
                 set(payload["source_files"]["today"].keys()),
             )
             self.assertIn("legacy_source_used", payload["limitations"])
+
+    def test_rebuild_invokes_canonical_daily_report_generator_for_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            reports_dir = root / "reports"
+            script_path = reports_dir / "generate_daily_report_latest.py"
+            script_path.parent.mkdir(parents=True)
+            script_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "from pathlib import Path",
+                        "date = sys.argv[sys.argv.index('--date') + 1]",
+                        "out = Path('reports/daily')",
+                        "out.mkdir(parents=True, exist_ok=True)",
+                        "payload = {'report_type': 'daily_canonical', 'logical_date': date}",
+                        "(out / f'daily_report_{date}.json').write_text(json.dumps(payload), encoding='utf-8')",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            attempts, warnings = _refresh_dated_reports_for_date(
+                project_root=root,
+                reports_dir=reports_dir,
+                logical_date="2026-04-24",
+                report_types=["daily_report"],
+            )
+
+            self.assertEqual([], warnings)
+            self.assertTrue(attempts["daily_report"]["attempted"])
+            self.assertTrue(attempts["daily_report"]["success"])
+            self.assertEqual("2026-04-24", attempts["daily_report"]["actual_logical_date"])
+            self.assertTrue((reports_dir / "daily" / "daily_report_2026-04-24.json").exists())
 
 
 if __name__ == "__main__":

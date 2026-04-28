@@ -635,22 +635,39 @@ class DailyCompareReportTests(unittest.TestCase):
         self.assertIn("strict_failure_reason: `rebuild_failed`", payload["markdown"])
         self.assertGreaterEqual(refresh_mock.call_count, 1)
 
-    def test_rebuild_does_not_invoke_retired_daily_generator(self) -> None:
+    def test_rebuild_invokes_canonical_daily_generator_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            reports_dir = Path(temp_dir) / "reports"
+            root = Path(temp_dir)
+            reports_dir = root / "reports"
             reports_dir.mkdir(parents=True)
+            script_path = reports_dir / "generate_daily_report_latest.py"
+            script_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "from pathlib import Path",
+                        "date = sys.argv[sys.argv.index('--date') + 1]",
+                        "out = Path('reports/daily')",
+                        "out.mkdir(parents=True, exist_ok=True)",
+                        "payload = {'report_type': 'daily_canonical', 'logical_date': date}",
+                        "(out / f'daily_report_{date}.json').write_text(json.dumps(payload), encoding='utf-8')",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             attempts, warnings = _refresh_dated_reports_for_date(
-                project_root=Path(temp_dir),
+                project_root=root,
                 reports_dir=reports_dir,
                 logical_date="2026-04-22",
                 report_types=["daily_report"],
             )
 
-        self.assertEqual(["rebuild_disabled:daily_report:2026-04-22"], warnings)
+        self.assertEqual([], warnings)
         self.assertTrue(attempts["daily_report"]["attempted"])
-        self.assertFalse(attempts["daily_report"]["success"])
-        self.assertEqual("rebuild_disabled", attempts["daily_report"]["failure_reason"])
+        self.assertTrue(attempts["daily_report"]["success"])
+        self.assertIsNone(attempts["daily_report"]["failure_reason"])
         self.assertIn("reports/daily/daily_report_2026-04-22.json", attempts["daily_report"]["output_path"])
 
     def test_rebuild_mode_sets_rebuild_summary_attempted_true(self) -> None:

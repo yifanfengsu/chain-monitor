@@ -207,14 +207,16 @@ SQLite mirror / query layer：
   - `./venv/bin/python -m app.sqlite_store --prune --dry-run`
   - `./venv/bin/python -m app.sqlite_store --prune --execute`
 
-## 每日报告生成清理
+## 每日报告主流程
 
-- 日报生成入口已退役；`reports/generate_daily_report_latest.py` 已退役，不再作为日常入口，也不应从 Makefile / README / tests 调用。
-- 日常流程只跑 daily compare：`daily-close` 做 archive -> SQLite migrate、DB/quality/mirror 检查、`daily-compare DATE=...`、archive compression dry-run 和 SQLite checkpoint。
+- canonical daily report 是日常唯一主报告，入口是 `reports/generate_daily_report_latest.py`。
+- `make report-daily`：自动选择最新可用北京时间 logical date，生成 canonical daily report。
+- `make report-daily-date DATE=YYYY-MM-DD`：生成指定北京时间 logical date 的 canonical daily report。
+- `make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD`：按日期范围生成 canonical daily reports。
+- `daily-close` 会先做 archive -> SQLite migrate、DB/quality/mirror 检查，然后生成 `report-daily-date DATE=...`，再运行 `daily-compare DATE=...`，最后做 archive compression dry-run 和 SQLite checkpoint。
 - 旧三件套已退役；`reports/legacy/` 仅作为 legacy/debug 兼容入口，日常报告不依赖它们。
 - `reports/` 根目录旧三件套脚本不再使用，也不应新增或从 Makefile / README / tests 作为日常入口调用。
-- `make report-daily`、`make report-daily-date DATE=YYYY-MM-DD`、`make report-daily-range START_DATE=... END_DATE=...` 仅保留兼容提示，不执行任何 generator。
-- 已存在的 `reports/daily/daily_report_YYYY-MM-DD.json` 仍可作为 compare 输入；当前日常流程不会重建这些日报 JSON，也不会用旧三件套补齐。
+- daily compare 默认比较 canonical daily report JSON；缺失时 `--rebuild` 或 strict 模式会调用 `reports/generate_daily_report_latest.py --date YYYY-MM-DD` 尝试补齐。
 - 清理旧生成报告：
   - `make report-clean-dry-run`
   - `make report-clean-generated CONFIRM=YES`
@@ -222,9 +224,9 @@ SQLite mirror / query layer：
 - 建议先预览 Git 索引里的历史生成物，再只清索引、不删本地文件：
   - `git ls-files 'reports/*.md' 'reports/*.csv' 'reports/*.json' 'reports/daily/*.md' 'reports/daily/*.csv' 'reports/daily/*.json' 'reports/daily_compare/*.md' 'reports/daily_compare/*.csv' 'reports/daily_compare/*.json'`
   - `git rm --cached --ignore-unmatch -- reports/*.md reports/*.csv reports/*.json reports/daily/*.md reports/daily/*.csv reports/daily/*.json reports/daily_compare/*.md reports/daily_compare/*.csv reports/daily_compare/*.json`
-- daily compare 现在默认只比较已有 daily report JSON；旧三件套只有显式启用 legacy fallback 时才会作为兼容输入。
+- daily compare 默认只比较 canonical daily report JSON；旧三件套只有显式启用 legacy fallback 时才会作为兼容输入。
 - daily report JSON 不是交易建议。`CANDIDATE` 不是交易信号；`VERIFIED` 在 `maturity=immature` 时不能当成熟交易信号。
-- 删除或清理旧 report generator / generated reports 不影响 archive/cache/db；不要删除 `app/data/archive/`、`data/chain_monitor.sqlite` 或 `data/*.cache.json`。
+- 删除或清理旧 generated reports 不影响 archive/cache/db；不要删除 `app/data/archive/`、`data/chain_monitor.sqlite` 或 `data/*.cache.json`。
 
 ## 每日对比报告
 
@@ -241,15 +243,15 @@ SQLite mirror / query layer：
   - `make daily-compare-rebuild DATE=YYYY-MM-DD`
 - 模式区别：
   - `daily-compare`：宽松模式；能出就出，缺字段或缺某类 summary 时写进 `limitations`
-  - `daily-compare-strict`：严格模式；要求 today/previous 的 daily report JSON 已存在，缺失就 fail-closed，并在 JSON / Markdown 里写出 `strict_failure_reason`
-  - `daily-compare-rebuild`：兼容模式；记录 today/previous 缺失输入，但不再调用已退役日报 generator，并会输出 `rebuild_summary` / `rebuild_warnings`
+  - `daily-compare-strict`：严格模式；缺 today/previous canonical daily report JSON 时先尝试 rebuild，仍缺失就 fail-closed，并在 JSON / Markdown 里写出 `strict_failure_reason`
+  - `daily-compare-rebuild`：重建模式；缺失 today/previous canonical daily report JSON 时调用 `reports/generate_daily_report_latest.py --date YYYY-MM-DD`，并输出 `rebuild_summary` / `rebuild_warnings`
 - 输入文件：
   - 第一优先读取 `reports/daily/daily_report_YYYY-MM-DD.json`
   - 其次允许读取 `reports/daily/daily_report_latest.json`，但 summary 内 `logical_date` 必须匹配
   - 默认不会 fallback 到旧三件套 summary；daily report JSON 缺失时会写入 `limitations`，不会编造
   - 只有显式运行 `./venv/bin/python reports/generate_daily_compare_report.py --legacy-fallback` 时，才允许使用旧三件套 summary：`overnight_trade_action`、`afternoon_evening_state`、`overnight_run`
   - 使用旧三件套 fallback 时，JSON 会写 `source_mode=legacy_three_report_bundle`、`legacy_fallback_used=true`，limitations 会写 `legacy_source_used`
-  - `daily-compare-rebuild` 不再重建 daily report JSON；如果 daily report JSON 缺失，会记录 `rebuild_disabled` / `missing_canonical_daily_report`
+  - `daily-compare-rebuild` 会尝试重建缺失 daily report JSON；strict 模式也会先尝试 rebuild，仍缺失时 fail-closed
   - compare 不会用 Markdown 正文做字符串 diff；如果字段不存在，会在报告里写 `字段缺失` 或 `schema drift / 字段不一致`
 - `compare_basis`：
   - `exact_previous_day`：today 与精确前一天比较
@@ -403,8 +405,9 @@ SQLite 角色先说明清楚：
   - `make report-overnight`
   - `make report-state`
   - `make report-run`
+  - `./venv/bin/python reports/legacy/generate_overnight_opportunity_retention_analysis_latest.py`
 
-`make report-all` 现在只跑 daily compare，不再默认生成 canonical daily report 或旧三件套。`make report-daily*` 是 retired compatibility target，只输出提示，不执行 generator。`reports/` 根目录旧三件套脚本不再使用；`make report-state` / `make report-overnight` / `make report-run` 是 legacy/debug 入口，只调用 `reports/legacy/`。`make report-run` 会在 `reports/legacy/generate_overnight_run_analysis_latest.py` 存在时执行，脚本不存在时只输出 `report-run script not found`。如果旧脚本已移除，`make report-legacy-all` 会友好提示 `Legacy report generators removed.`。
+`make report-all` 会先生成 canonical daily report，再生成 daily compare，不会默认运行旧三件套。`make report-daily*` 是 canonical daily report 主入口。`reports/` 根目录旧三件套脚本不再使用；`make report-state` / `make report-overnight` / `make report-run` 是 legacy/debug 入口，只调用 `reports/legacy/`。`make report-run` 会在 `reports/legacy/generate_overnight_run_analysis_latest.py` 存在时执行，脚本不存在时只输出 `report-run script not found`。如果旧脚本已移除，`make report-legacy-all` 会友好提示 `Legacy report generators removed.`。
 
 报告生成物默认不进 git：`reports/daily/*.md/csv/json`、`reports/*latest*.md/csv/json`、`reports/daily_compare/*.md/csv/json`、`reports/generated/` 和 `reports/archive/` 已被忽略。历史 generated reports 如果已经被 Git 跟踪，需要用户手动用 `git rm --cached --ignore-unmatch -- reports/...` 清索引；这不会删除本地文件。需要分享某一天的报告时，用 `git add -f reports/...` 精确添加；不要用 `git add .` 提交海量生成报告。
 
@@ -470,7 +473,7 @@ SQLite 角色先说明清楚：
 - `make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES`
 - `make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES CONFIRM=YES`
 
-`daily-close` 会按顺序执行：`archive -> SQLite migrate`、`db-integrity`、`db-summary/db-report`、mirror-check、`daily-compare DATE=$(DATE)`、archive compression dry-run、SQLite checkpoint。它不再默认生成 `daily_report`、`afternoon_evening_state`、`overnight_trade_action` 或 `overnight_run`。
+`daily-close` 会按顺序执行：`archive -> SQLite migrate`、`db-integrity`、`db-summary/db-report`、mirror-check、`report-daily-date DATE=$(DATE)`、`daily-compare DATE=$(DATE)`、archive compression dry-run、SQLite checkpoint。它会生成 canonical `daily_report`，但不会默认生成 `afternoon_evening_state`、`overnight_trade_action` 或 `overnight_run`。
 
 Archive / 日终的安全约束：
 - compression 是 gzip archive，不是删除数据。

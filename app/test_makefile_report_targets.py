@@ -5,11 +5,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD_SCRIPT_NAMES = (
-    "reports/generate_daily_report_latest.py",
     "reports/generate_afternoon_evening_state_analysis_latest.py",
     "reports/generate_overnight_trade_action_analysis_latest.py",
     "reports/generate_overnight_run_analysis_latest.py",
 )
+DAILY_SCRIPT = "reports/generate_daily_report_latest.py"
 LEGACY_SCRIPT_NAMES = (
     "reports/legacy/generate_afternoon_evening_state_analysis_latest.py",
     "reports/legacy/generate_overnight_trade_action_analysis_latest.py",
@@ -27,10 +27,12 @@ class MakefileReportTargetTests(unittest.TestCase):
             check=False,
         )
 
-    def test_report_all_uses_only_compare_default(self) -> None:
+    def test_report_all_generates_daily_then_compare(self) -> None:
         result = self._make_dry_run("report-all")
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("report-daily", result.stdout)
+        self.assertIn(DAILY_SCRIPT, result.stdout)
         self.assertIn("daily-compare", result.stdout)
         for script_name in OLD_SCRIPT_NAMES:
             self.assertNotIn(script_name, result.stdout)
@@ -40,18 +42,19 @@ class MakefileReportTargetTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("reports/generate_daily_compare_report.py --date", result.stdout)
+        self.assertNotIn(DAILY_SCRIPT, result.stdout)
         for script_name in OLD_SCRIPT_NAMES:
             self.assertNotIn(script_name, result.stdout)
 
-    def test_report_daily_date_is_retired_noop(self) -> None:
+    def test_report_daily_date_calls_canonical_generator(self) -> None:
         result = self._make_dry_run("report-daily-date", "DATE=2026-04-24")
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("report-daily-date generator has been retired", result.stdout)
-        self.assertNotIn("reports/generate_daily_report_latest.py", result.stdout)
+        self.assertIn(DAILY_SCRIPT, result.stdout)
+        self.assertIn("--date \"2026-04-24\"", result.stdout)
         self.assertIn("2026-04-24", result.stdout)
 
-    def test_report_daily_range_is_retired_noop(self) -> None:
+    def test_report_daily_range_calls_canonical_generator(self) -> None:
         result = self._make_dry_run(
             "report-daily-range",
             "START_DATE=2026-04-22",
@@ -59,10 +62,9 @@ class MakefileReportTargetTests(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("report-daily-range generator has been retired", result.stdout)
-        self.assertNotIn("reports/generate_daily_report_latest.py", result.stdout)
-        self.assertIn("2026-04-22", result.stdout)
-        self.assertIn("2026-04-24", result.stdout)
+        self.assertIn(DAILY_SCRIPT, result.stdout)
+        self.assertIn("--start-date \"2026-04-22\"", result.stdout)
+        self.assertIn("--end-date \"2026-04-24\"", result.stdout)
 
     def test_report_legacy_all_is_legacy_debug_only(self) -> None:
         result = self._make_dry_run("report-legacy-all")

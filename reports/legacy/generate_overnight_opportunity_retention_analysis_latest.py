@@ -14,15 +14,16 @@ from typing import Any
 
 THIS_DIR = Path(__file__).resolve().parent
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
 ARCHIVE_DIR = APP_DIR / "data" / "archive"
 DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 ENV_PATH = ROOT / ".env"
 
-if str(THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(THIS_DIR))
+for import_path in (THIS_DIR, REPORTS_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 MARKDOWN_PATH = REPORTS_DIR / "overnight_opportunity_retention_analysis_latest.md"
 CSV_PATH = REPORTS_DIR / "overnight_opportunity_retention_metrics_latest.csv"
