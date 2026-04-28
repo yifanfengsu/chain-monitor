@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 # Deprecated legacy report generator.
-# Daily workflow uses reports/generate_daily_report_latest.py.
+# Daily workflow uses make daily-compare and does not run legacy generators.
 # This script is kept only for manual/debug compatibility.
 
 import argparse

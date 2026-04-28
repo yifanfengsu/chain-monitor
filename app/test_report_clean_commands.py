@@ -42,7 +42,7 @@ class ReportCleanCommandTests(unittest.TestCase):
         self.assertIn("CONFIRM=YES", result.stdout)
         self.assertTrue(self.temp_report.exists())
 
-    def test_report_daily_range_target_invokes_range_generator(self) -> None:
+    def test_report_daily_range_target_is_retired_noop(self) -> None:
         result = subprocess.run(
             ["make", "-n", "report-daily-range", "START_DATE=2026-04-22", "END_DATE=2026-04-24"],
             cwd=str(ROOT),
@@ -52,7 +52,8 @@ class ReportCleanCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode)
-        self.assertIn("generate_daily_report_latest.py --start-date", result.stdout)
+        self.assertIn("report-daily-range generator has been retired", result.stdout)
+        self.assertNotIn("generate_daily_report_latest.py", result.stdout)
         self.assertIn("2026-04-22", result.stdout)
         self.assertIn("2026-04-24", result.stdout)
 
@@ -66,8 +67,8 @@ class ReportCleanCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode)
-        self.assertIn("report-daily", result.stdout)
         self.assertIn("daily-compare", result.stdout)
+        self.assertNotIn("generate_daily_report_latest.py", result.stdout)
         self.assertNotIn("generate_afternoon_evening_state_analysis_latest.py", result.stdout)
 
 

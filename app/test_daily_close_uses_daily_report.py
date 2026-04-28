@@ -5,6 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD_DAILY_ENTRYPOINTS = (
+    "report-daily-date",
+    "reports/generate_daily_report_latest.py",
     "report-state",
     "report-overnight",
     "report-run",
@@ -15,7 +17,7 @@ OLD_DAILY_ENTRYPOINTS = (
 
 
 class DailyCloseUsesDailyReportTests(unittest.TestCase):
-    def test_daily_close_dry_run_uses_canonical_daily_report(self) -> None:
+    def test_daily_close_dry_run_uses_daily_compare_without_retired_generators(self) -> None:
         result = subprocess.run(
             ["make", "-n", "daily-close", "DATE=2026-04-24"],
             cwd=str(ROOT),
@@ -25,7 +27,6 @@ class DailyCloseUsesDailyReportTests(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("report-daily-date DATE=\"2026-04-24\"", result.stdout)
         self.assertIn("daily-compare DATE=\"2026-04-24\"", result.stdout)
         self.assertIn("--migrate-archive --date \"2026-04-24\"", result.stdout)
         self.assertIn("--checkpoint", result.stdout)

@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from reports.generate_daily_compare_report import REPORT_ORDER, generate_daily_compare
+from reports.generate_daily_compare_report import REPORT_ORDER, _refresh_dated_reports_for_date, generate_daily_compare
 
 
 def _base_data_source_summary() -> dict:
@@ -634,6 +634,24 @@ class DailyCompareReportTests(unittest.TestCase):
         self.assertIn("## 重建尝试与严格模式结果", payload["markdown"])
         self.assertIn("strict_failure_reason: `rebuild_failed`", payload["markdown"])
         self.assertGreaterEqual(refresh_mock.call_count, 1)
+
+    def test_rebuild_does_not_invoke_retired_daily_generator(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_dir = Path(temp_dir) / "reports"
+            reports_dir.mkdir(parents=True)
+
+            attempts, warnings = _refresh_dated_reports_for_date(
+                project_root=Path(temp_dir),
+                reports_dir=reports_dir,
+                logical_date="2026-04-22",
+                report_types=["daily_report"],
+            )
+
+        self.assertEqual(["rebuild_disabled:daily_report:2026-04-22"], warnings)
+        self.assertTrue(attempts["daily_report"]["attempted"])
+        self.assertFalse(attempts["daily_report"]["success"])
+        self.assertEqual("rebuild_disabled", attempts["daily_report"]["failure_reason"])
+        self.assertIn("reports/daily/daily_report_2026-04-22.json", attempts["daily_report"]["output_path"])
 
     def test_rebuild_mode_sets_rebuild_summary_attempted_true(self) -> None:
         previous = _sample_values(raw_events=100, candidate_count=2, candidate_ft=0.40, candidate_adv=0.30, candidate_completion=0.50, blocker_saved=0.40, blocker_false=0.20, outcome_rate=0.50, market_success=0.60, messages_after=3, high_value_suppressed=2)

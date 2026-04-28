@@ -23,7 +23,7 @@ DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 class ReportSpec:
     key: str
     latest_filename: str
-    generator_script: str
+    generator_script: str | None = None
 
 
 @dataclass
@@ -82,7 +82,6 @@ DAILY_REPORT_KEY = "daily_report"
 DAILY_REPORT_SPEC = ReportSpec(
     key=DAILY_REPORT_KEY,
     latest_filename="daily/daily_report_latest.json",
-    generator_script="reports/generate_daily_report_latest.py",
 )
 
 REPORT_ORDER = (
@@ -97,7 +96,7 @@ CANONICAL_SOURCE_MODE = "canonical_daily_report"
 MIXED_SOURCE_MODE = "mixed_daily_legacy"
 
 SOURCE_SELECTION_RULE = (
-    "daily_report dated JSON -> matching daily_report latest JSON; legacy three-report bundle only with --legacy-fallback"
+    "existing daily_report dated JSON -> matching daily_report latest JSON; no generator is invoked; legacy three-report bundle only with --legacy-fallback"
 )
 
 PRIMARY_DIRECTIONAL_METRICS = {
@@ -135,7 +134,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Attempt to rebuild today/previous dated summaries before generating compare output",
+        help="Compatibility mode that records missing today/previous summaries without invoking retired generators",
     )
     parser.add_argument(
         "--legacy-fallback",
@@ -696,6 +695,8 @@ def _empty_rebuild_summary(
 def _warning_to_failure_reason(warning: str) -> str | None:
     if warning.startswith("missing_generator_script:"):
         return "missing_generator"
+    if warning.startswith("rebuild_disabled:"):
+        return "rebuild_disabled"
     if warning.startswith("generator_missing_date_support:"):
         return "generator_failed"
     if warning.startswith("rebuild_failed:"):
@@ -820,11 +821,15 @@ def _determine_strict_failure_reason(
     if not previous_date:
         if "logical_date_mismatch" in failure_reasons:
             return "rebuild_logical_date_mismatch"
+        if "rebuild_disabled" in failure_reasons:
+            return "rebuild_disabled"
         if failure_reasons:
             return "rebuild_failed"
         return "no_previous_available"
     if "logical_date_mismatch" in failure_reasons:
         return "rebuild_logical_date_mismatch"
+    if "rebuild_disabled" in failure_reasons and (missing_today_reports or missing_previous_reports):
+        return "rebuild_disabled"
     if failure_reasons and (missing_today_reports or missing_previous_reports):
         return "rebuild_failed"
     if DAILY_REPORT_KEY in missing_today_reports or DAILY_REPORT_KEY in missing_previous_reports:
@@ -912,6 +917,9 @@ def _refresh_latest_reports(
         latest_path = _latest_path_for_report(reports_dir, report_type)
         if latest_path.exists():
             continue
+        if not spec.generator_script:
+            warnings.append(f"rebuild_disabled:{report_type}")
+            continue
         script_path = project_root / spec.generator_script
         if not script_path.exists():
             warnings.append(f"generator_missing:{report_type}")
@@ -954,9 +962,15 @@ def _refresh_dated_reports_for_date(
         attempt = _default_rebuild_attempt(expected_logical_date=logical_date)
         attempt["attempted"] = True
         spec = _report_spec(report_type)
-        script_path = project_root / spec.generator_script
         expected_dated_json = _dated_path_for_report(reports_dir, report_type, logical_date)
         attempt["output_path"] = _display_path(expected_dated_json)
+        if not spec.generator_script:
+            attempt["failure_reason"] = "rebuild_disabled"
+            attempt["warning"] = f"rebuild_disabled:{report_type}:{logical_date}"
+            warnings.append(attempt["warning"])
+            attempts[report_type] = attempt
+            continue
+        script_path = project_root / spec.generator_script
         if not script_path.exists():
             attempt["failure_reason"] = "missing_generator"
             attempt["warning"] = f"missing_generator_script:{report_type}:{logical_date}"
@@ -2211,11 +2225,11 @@ def generate_daily_compare(
             "improvement_flags": [],
             "regression_flags": [],
             "unchanged_flags": [],
-            "key_findings": ["compare failed: selected dates do not have complete canonical daily report coverage"],
+            "key_findings": ["compare failed: selected dates do not have complete daily report JSON coverage"],
             "key_risks": ["daily compare refuses to fabricate or partially infer missing today/previous data"],
-            "next_actions": ["先补齐 today/previous 的 canonical daily report JSON，再运行 daily-compare"],
+            "next_actions": ["先提供 today/previous 的 daily report JSON，再运行 daily-compare"],
             "limitations": sorted(set(base_limitations + [f"missing_today_reports={','.join(missing_today_reports)}", f"missing_previous_reports={','.join(missing_previous_reports)}"])),
-            "question_answers": {str(index): "无法判断；today/previous 的 canonical daily report JSON 不完整。" for index in range(1, 14)},
+            "question_answers": {str(index): "无法判断；today/previous 的 daily report JSON 不完整。" for index in range(1, 14)},
         }
         payload = _finalize_payload(
             payload,

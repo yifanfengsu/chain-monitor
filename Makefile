@@ -17,7 +17,6 @@ DB_INTEGRITY_FLAGS = $(if $(filter YES yes TRUE true 1,$(DB_INTEGRITY_FAST)),--f
 REPORT_LEGACY_STATE_SCRIPT = $(REPORTS)/legacy/generate_afternoon_evening_state_analysis_latest.py
 REPORT_LEGACY_ACTION_SCRIPT = $(REPORTS)/legacy/generate_overnight_trade_action_analysis_latest.py
 REPORT_RUN_SCRIPT = $(REPORTS)/legacy/generate_overnight_run_analysis_latest.py
-REPORT_DAILY_SCRIPT = $(REPORTS)/generate_daily_report_latest.py
 ARCHIVE_DIR = $(APP)/data/archive
 
 TEST_SQLITE_MODULES := \
@@ -45,8 +44,6 @@ TEST_REPORT_MODULES := \
 	$(APP).test_daily_compare_report \
 	$(APP).test_daily_compare_source_selection \
 	$(APP).test_daily_compare_makefile \
-	$(APP).test_daily_canonical_report \
-	$(APP).test_daily_report_window_selection \
 	$(APP).test_daily_compare_uses_daily_report \
 	$(APP).test_report_pipeline_cleanup \
 	$(APP).test_makefile_report_targets \
@@ -254,32 +251,32 @@ help:
 	@printf '%s\n' "                                          Preview gzip archive compression for one date."
 	@printf '%s\n' "  make archive-compress-date DATE=YYYY-MM-DD CONFIRM=YES [ALLOW_TODAY=YES]"
 	@printf '%s\n' "                                          Execute gzip compression for one date."
-	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD        Migrate, check DB, run canonical daily report, compare, compress dry-run, checkpoint."
+	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD        Migrate, check DB, run daily compare, compress dry-run, checkpoint."
 	@printf '%s\n' "  make daily-close DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
 	@printf '%s\n' "                                          Request gzip after dry-run; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-close-strict DATE=YYYY-MM-DD COMPRESS=YES [CONFIRM=YES]"
 	@printf '%s\n' "                                          Strict mirror-check variant; actual compression still needs CONFIRM=YES."
 	@printf '%s\n' "  make daily-compare [DATE=YYYY-MM-DD]    Generate today vs previous-available compare report."
 	@printf '%s\n' "  make daily-compare-strict [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Strict compare; require canonical daily reports first, then fail with strict_failure_reason if inputs stay incomplete."
+	@printf '%s\n' "                                          Strict compare; require existing daily report JSON inputs, then fail with strict_failure_reason if incomplete."
 	@printf '%s\n' "  make daily-compare-rebuild [DATE=YYYY-MM-DD]"
-	@printf '%s\n' "                                          Rebuild today/previous canonical daily reports first, then generate compare in non-strict mode and emit rebuild_summary/rebuild_warnings."
+	@printf '%s\n' "                                          Compatibility mode; records missing inputs but does not run retired daily report generators."
 	@printf '%s\n' ""
 	@printf '%s\n' "Reports:"
-	@printf '%s\n' "  make report-daily                       Generate latest canonical daily report."
-	@printf '%s\n' "  make report-daily-date DATE=YYYY-MM-DD  Generate canonical daily report for one Beijing logical date."
+	@printf '%s\n' "  make report-daily                       Retired compatibility target; no generator is run."
+	@printf '%s\n' "  make report-daily-date DATE=YYYY-MM-DD  Retired compatibility target; no generator is run."
 	@printf '%s\n' "  make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD"
-	@printf '%s\n' "                                          Rebuild canonical daily reports for an inclusive date range."
+	@printf '%s\n' "                                          Retired compatibility target; no generator is run."
 	@printf '%s\n' "  make report-overnight                   Legacy/debug only; runs reports/legacy overnight trade action analysis."
 	@printf '%s\n' "  make report-state                       Legacy/debug only; runs reports/legacy afternoon/evening state analysis."
 	@printf '%s\n' "  make report-run                         Legacy/debug only; runs reports/legacy overnight run analysis if present."
 	@printf '%s\n' "  make report-legacy-all                  Legacy/debug only; runs reports/legacy only, not part of daily workflow."
-	@printf '%s\n' "  make report-all                         Generate canonical daily report, then daily compare."
+	@printf '%s\n' "  make report-all                         Generate daily compare only."
 	@printf '%s\n' "  make report-clean-dry-run               List generated report files that can be cleaned; deletes nothing."
 	@printf '%s\n' "  make report-clean-generated CONFIRM=YES Delete generated report files only; never archive/cache/db."
-	@printf '%s\n' "  make daily-compare                      宽松模式生成 canonical daily today vs previous compare；缺口写 limitations。"
-	@printf '%s\n' "  make daily-compare-strict               严格模式：要求 canonical daily reports 已存在；缺失就 fail-closed。"
-	@printf '%s\n' "  make daily-compare-rebuild              先尝试补 today/previous canonical daily reports，再按宽松模式输出 compare。"
+	@printf '%s\n' "  make daily-compare                      宽松模式生成 today vs previous compare；缺口写 limitations。"
+	@printf '%s\n' "  make daily-compare-strict               严格模式：要求 daily report JSON 已存在；缺失就 fail-closed。"
+	@printf '%s\n' "  make daily-compare-rebuild              兼容模式：记录缺失输入，不运行已退役日报生成器。"
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -437,7 +434,6 @@ daily-close:
 	$(RUN_PY) -m $(APP).quality_reports --db-integrity --fast
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)"
-	$(MAKE) report-daily-date DATE="$(DATE)"
 	$(MAKE) daily-compare DATE="$(DATE)"
 	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
 	@if [ "$(COMPRESS)" = "YES" ]; then \
@@ -459,7 +455,6 @@ daily-close-strict:
 	$(RUN_PY) -m $(APP).quality_reports --db-integrity
 	$(RUN_PY) -m $(APP).quality_reports --opportunity-db-summary
 	$(RUN_PY) -m $(APP).archive_maintenance --mirror-check-date "$(DATE)" --strict
-	$(MAKE) report-daily-date DATE="$(DATE)"
 	$(MAKE) daily-compare DATE="$(DATE)"
 	ALLOW_TODAY="$(ALLOW_TODAY)" $(RUN_PY) -m $(APP).archive_maintenance --compress-date "$(DATE)" --dry-run
 	@if [ "$(COMPRESS)" = "YES" ]; then \
@@ -498,15 +493,15 @@ daily-compare-rebuild:
 	fi
 
 report-daily:
-	$(RUN_PY) $(REPORT_DAILY_SCRIPT)
+	@printf '%s\n' "report-daily generator has been retired; no report script was run. Use make daily-compare for the current daily workflow."
 
 report-daily-date:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make report-daily-date DATE=YYYY-MM-DD"; exit 2; fi
-	$(RUN_PY) $(REPORT_DAILY_SCRIPT) --date "$(DATE)"
+	@printf '%s\n' "report-daily-date generator has been retired for $(DATE); no report script was run. Use make daily-compare DATE=$(DATE)."
 
 report-daily-range:
 	@if [ -z "$(START_DATE)" ] || [ -z "$(END_DATE)" ]; then echo "Usage: make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD"; exit 2; fi
-	$(RUN_PY) $(REPORT_DAILY_SCRIPT) --start-date "$(START_DATE)" --end-date "$(END_DATE)"
+	@printf '%s\n' "report-daily-range generator has been retired for $(START_DATE)..$(END_DATE); no report script was run."
 
 report-overnight:
 	@if [ -f "$(REPORT_LEGACY_ACTION_SCRIPT)" ]; then \
@@ -516,7 +511,7 @@ report-overnight:
 	fi
 
 report-state:
-	@echo "report-state is legacy/debug; daily workflow uses make report-daily."
+	@echo "report-state is legacy/debug; daily workflow uses make daily-compare."
 	@if [ -f "$(REPORT_LEGACY_STATE_SCRIPT)" ]; then \
 		$(RUN_PY) $(REPORT_LEGACY_STATE_SCRIPT); \
 	else \
@@ -544,7 +539,6 @@ report-legacy-all:
 	fi
 
 report-all:
-	$(MAKE) report-daily
 	$(MAKE) daily-compare
 
 report-clean-dry-run:

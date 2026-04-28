@@ -12,6 +12,10 @@ LEGACY_SCRIPT_NAMES = (
     "generate_overnight_trade_action_analysis_latest.py",
     "generate_overnight_run_analysis_latest.py",
 )
+RETIRED_TOP_LEVEL_SCRIPT_NAMES = (
+    "generate_daily_report_latest.py",
+    *LEGACY_SCRIPT_NAMES,
+)
 
 
 class ReportPipelineCleanupTests(unittest.TestCase):
@@ -30,11 +34,11 @@ class ReportPipelineCleanupTests(unittest.TestCase):
             if legacy_path.exists():
                 header = legacy_path.read_text(encoding="utf-8")[:240]
                 self.assertIn("Deprecated legacy report generator.", header)
-                self.assertIn("Daily workflow uses reports/generate_daily_report_latest.py.", header)
+                self.assertIn("Daily workflow uses make daily-compare", header)
 
-    def test_top_level_legacy_generators_are_not_tracked(self) -> None:
+    def test_top_level_retired_generators_are_not_tracked(self) -> None:
         result = subprocess.run(
-            ["git", "ls-files", *(f"reports/{script_name}" for script_name in LEGACY_SCRIPT_NAMES)],
+            ["git", "ls-files", *(f"reports/{script_name}" for script_name in RETIRED_TOP_LEVEL_SCRIPT_NAMES)],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -51,20 +55,23 @@ class ReportPipelineCleanupTests(unittest.TestCase):
 
         for target_body in (report_all, daily_close):
             self.assertIn("daily-compare", target_body)
+            self.assertNotIn("generate_daily_report_latest.py", target_body)
+            self.assertNotIn("report-daily-date", target_body)
             self.assertNotIn("generate_afternoon_evening_state_analysis_latest.py", target_body)
             self.assertNotIn("generate_overnight_trade_action_analysis_latest.py", target_body)
             self.assertNotIn("generate_overnight_run_analysis_latest.py", target_body)
 
-    def test_readme_no_longer_recommends_legacy_trio_as_daily_reports(self) -> None:
+    def test_readme_no_longer_recommends_retired_generators_as_daily_reports(self) -> None:
         readme = README.read_text(encoding="utf-8")
 
-        self.assertIn("日常只看一份 canonical daily report", readme)
-        self.assertIn("canonical daily report 是日常唯一主报告", readme)
+        self.assertIn("日报生成入口已退役", readme)
+        self.assertIn("日常流程只跑 daily compare", readme)
         self.assertIn("旧三件套已退役", readme)
         self.assertIn("reports/legacy/` 仅作为 legacy/debug", readme)
         self.assertIn("`reports/` 根目录旧三件套脚本不再使用", readme)
         self.assertIn("generated reports 默认不进 Git", readme)
         self.assertIn("git rm --cached", readme)
+        self.assertIn("`reports/generate_daily_report_latest.py` 已退役", readme)
         self.assertIn("默认不会 fallback 到旧三件套 summary", readme)
         self.assertNotIn("如果 canonical daily report 缺失，才 fallback 到旧三件套 summary", readme)
 

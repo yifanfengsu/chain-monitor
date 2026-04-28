@@ -40,5 +40,11 @@ reports/**/*.tmp
 !reports/README*
 !reports/daily/.gitkeep
 !reports/daily_compare/.gitkeep
+
+# Retired report generator entrypoints; keep restored local copies out of Git.
+reports/generate_daily_report_latest.py
+reports/generate_overnight_trade_action_analysis_latest.py
+reports/generate_overnight_run_analysis_latest.py
+reports/generate_afternoon_evening_state_analysis_latest.py
 .idea/
 .vscode/

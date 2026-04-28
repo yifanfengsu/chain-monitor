@@ -35,7 +35,7 @@ class DailyCompareDocsAndMakefileTests(unittest.TestCase):
         self.assertIn("daily-compare-strict", result.stdout)
         self.assertIn("daily-compare-rebuild", result.stdout)
         self.assertIn("fail with strict_failure_reason", result.stdout)
-        self.assertIn("emit rebuild_summary/rebuild_warnings", result.stdout)
+        self.assertIn("does not run retired daily report generators", result.stdout)
 
 
 if __name__ == "__main__":
