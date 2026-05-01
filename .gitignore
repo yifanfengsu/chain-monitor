@@ -28,6 +28,7 @@ reports/daily_compare/*.csv
 reports/daily_compare/*.json
 reports/generated/
 reports/archive/
+reports/hermes/
 reports/**/*.tmp
 !reports/*.py
 !reports/report_output_utils.py

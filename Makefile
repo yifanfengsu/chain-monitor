@@ -175,6 +175,9 @@ endef
 	report-all \
 	report-clean-dry-run \
 	report-clean-generated \
+	install-hermes-skill \
+	validate-hermes-skill \
+	validate-hermes-ops \
 	test-sqlite \
 	test-sqlite-compact \
 	test-reports \
@@ -279,6 +282,11 @@ help:
 	@printf '%s\n' "  make daily-compare                      宽松模式生成 today vs previous compare；缺口写 limitations。"
 	@printf '%s\n' "  make daily-compare-strict               严格模式：缺 canonical daily report 时先 rebuild，仍缺失就 fail-closed。"
 	@printf '%s\n' "  make daily-compare-rebuild              重建缺失 canonical daily report 输入后再 compare。"
+	@printf '%s\n' ""
+	@printf '%s\n' "Hermes:"
+	@printf '%s\n' "  make install-hermes-skill               Install the chain-monitor Hermes report analyst skill."
+	@printf '%s\n' "  make validate-hermes-skill              Validate the Hermes report analyst skill source."
+	@printf '%s\n' "  make validate-hermes-ops                Validate the safe Hermes command wrapper."
 	@printf '%s\n' ""
 	@printf '%s\n' "Tests:"
 	@printf '%s\n' "  make test-sqlite                        Run SQLite schema/writer/mirror/report/migration tests."
@@ -506,6 +514,15 @@ report-daily-date:
 report-daily-range:
 	@if [ -z "$(START_DATE)" ] || [ -z "$(END_DATE)" ]; then echo "Usage: make report-daily-range START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD"; exit 2; fi
 	$(RUN_PY) $(REPORT_DAILY_SCRIPT) --start-date "$(START_DATE)" --end-date "$(END_DATE)"
+
+install-hermes-skill:
+	bash scripts/install_hermes_skill.sh
+
+validate-hermes-skill:
+	bash scripts/validate_hermes_skill.sh
+
+validate-hermes-ops:
+	bash scripts/validate_hermes_cm_ops.sh
 
 report-overnight:
 	@if [ -f "$(REPORT_LEGACY_ACTION_SCRIPT)" ]; then \
