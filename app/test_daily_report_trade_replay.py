@@ -83,7 +83,7 @@ class DailyReportTradeReplayTests(unittest.TestCase):
         self.assertEqual("valid", payload["data_quality_summary"]["data_quality_status"])
         self.assertEqual(runtime["active_hours"], payload["runtime_health"]["active_hours"])
         markdown = report._markdown(payload)
-        self.assertIn("交易后验 / Trade Replay", markdown)
+        self.assertIn("交易回放 / Replay 后验", markdown)
         self.assertIn("Shadow Opportunity 学习样本", markdown)
         self.assertIn("数据质量 / Runtime Health", markdown)
 

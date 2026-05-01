@@ -1137,23 +1137,187 @@ def _major_coverage_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _read_trade_replay_summary(logical_date: str) -> dict[str, Any]:
     path = _db_path()
     if not path.exists():
-        return {"trade_replay_available": False, "reason": "sqlite_db_missing", "logical_date": logical_date, "replay_count": 0}
+        return _default_trade_replay_summary(logical_date, reason="sqlite_db_missing")
     try:
-        import quality_reports
-
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
     except Exception as exc:
-        return {"trade_replay_available": False, "reason": f"sqlite_open_failed:{exc}", "logical_date": logical_date, "replay_count": 0}
+        return _default_trade_replay_summary(logical_date, reason=f"sqlite_open_failed:{exc}")
     try:
         tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "trade_replay_examples" not in tables or "trade_replay_profile_stats" not in tables:
-            return {"trade_replay_available": False, "reason": "trade_replay_tables_missing", "logical_date": logical_date, "replay_count": 0}
-        return quality_reports._trade_replay_summary_payload(conn, logical_date)
+            return _default_trade_replay_summary(logical_date, reason="trade_replay_tables_missing")
+        return _normalize_trade_replay_summary(_trade_replay_summary_from_sqlite(conn, logical_date), logical_date)
     except Exception as exc:
-        return {"trade_replay_available": False, "reason": f"trade_replay_summary_failed:{exc}", "logical_date": logical_date, "replay_count": 0}
+        return _default_trade_replay_summary(logical_date, reason=f"trade_replay_summary_failed:{exc}")
     finally:
         conn.close()
+
+
+def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_replay_missing") -> dict[str, Any]:
+    return {
+        "trade_replay_available": False,
+        "reason": reason,
+        "logical_date": logical_date,
+        "replay_count": 0,
+        "valid_replay_count": 0,
+        "valid_count": 0,
+        "win_rate": 0.0,
+        "avg_net_pnl_bps": 0.0,
+        "clean_followthrough_rate": 0.0,
+        "bad_entry_rate": 0.0,
+        "absorption_reversal_rate": 0.0,
+        "chop_rate": 0.0,
+        "data_invalid_rate": 0.0,
+        "suppressed_replay_count": 0,
+        "suppressed_profitable_rate": 0.0,
+        "suppressed_clean_followthrough_rate": 0.0,
+        "suppressed_absorption_reversal_rate": 0.0,
+        "blocked_saved_rate_estimate": 0.0,
+        "blocked_false_block_rate_estimate": 0.0,
+        "shadow_replay_count": 0,
+        "top_positive_profiles": [],
+        "top_negative_profiles": [],
+        "recommended_profile_actions": [],
+        "warnings": ["trade_replay_missing"] if reason in {"trade_replay_missing", "trade_replay_tables_missing", "sqlite_db_missing"} else [reason],
+    }
+
+
+def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) -> dict[str, Any]:
+    normalized = _default_trade_replay_summary(logical_date, reason=str(payload.get("reason") or "trade_replay_missing"))
+    normalized.update(payload)
+    normalized["logical_date"] = logical_date
+    normalized["trade_replay_available"] = bool(normalized.get("trade_replay_available"))
+    for key in (
+        "replay_count",
+        "valid_replay_count",
+        "valid_count",
+        "suppressed_replay_count",
+        "shadow_replay_count",
+    ):
+        normalized[key] = int(normalized.get(key) or 0)
+    for key in (
+        "win_rate",
+        "avg_net_pnl_bps",
+        "clean_followthrough_rate",
+        "bad_entry_rate",
+        "absorption_reversal_rate",
+        "chop_rate",
+        "data_invalid_rate",
+        "suppressed_profitable_rate",
+        "suppressed_clean_followthrough_rate",
+        "suppressed_absorption_reversal_rate",
+        "blocked_saved_rate_estimate",
+        "blocked_false_block_rate_estimate",
+    ):
+        normalized[key] = float(normalized.get(key) or 0.0)
+    for key in ("top_positive_profiles", "top_negative_profiles", "recommended_profile_actions", "warnings"):
+        value = normalized.get(key)
+        normalized[key] = value if isinstance(value, list) else []
+    if not normalized["trade_replay_available"] and "trade_replay_missing" not in normalized["warnings"]:
+        normalized["warnings"].append("trade_replay_missing")
+    normalized["warnings"] = sorted(set(str(item) for item in normalized["warnings"] if item))
+    return normalized
+
+
+def _sqlite_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _trade_replay_summary_from_sqlite(conn: sqlite3.Connection, logical_date: str) -> dict[str, Any]:
+    example_columns = _sqlite_columns(conn, "trade_replay_examples")
+    profile_columns = _sqlite_columns(conn, "trade_replay_profile_stats")
+    if "logical_date" not in example_columns:
+        return _default_trade_replay_summary(logical_date, reason="schema_error:trade_replay_examples.logical_date_missing")
+
+    rows = [dict(row) for row in conn.execute("SELECT * FROM trade_replay_examples WHERE logical_date = ?", (logical_date,)).fetchall()]
+    if not rows:
+        return _default_trade_replay_summary(logical_date, reason="trade_replay_missing")
+
+    warnings: list[str] = []
+    if "data_valid" not in example_columns:
+        warnings.append("schema_warning:trade_replay_examples.data_valid_missing")
+    if "label" not in example_columns:
+        warnings.append("schema_warning:trade_replay_examples.label_missing")
+    if "net_pnl_bps" not in example_columns:
+        warnings.append("schema_warning:trade_replay_examples.net_pnl_bps_missing")
+
+    total = len(rows)
+    valid_rows = [row for row in rows if _is_true(row.get("data_valid", 1))]
+    valid = len(valid_rows)
+    label_counts = Counter(str(row.get("label") or "") for row in rows)
+    net_values = [_to_float(row.get("net_pnl_bps")) for row in valid_rows]
+    net_values = [value for value in net_values if value is not None]
+    wins = sum(1 for value in net_values if value > 0.0)
+    valid_den = max(valid, 1)
+
+    suppressed_rows = [row for row in rows if str(row.get("signal_stage") or "") == "SUPPRESSED"] if "signal_stage" in example_columns else []
+    suppressed_valid = [row for row in suppressed_rows if _is_true(row.get("data_valid", 1))]
+    suppressed_net = [_to_float(row.get("net_pnl_bps")) for row in suppressed_valid]
+    suppressed_net = [value for value in suppressed_net if value is not None]
+    blocked_rows = [row for row in rows if str(row.get("opportunity_status") or "") == "BLOCKED"] if "opportunity_status" in example_columns else []
+    blocked_valid = [row for row in blocked_rows if _is_true(row.get("data_valid", 1))]
+    shadow_count = (
+        sum(1 for row in rows if str(row.get("shadow_status") or "").strip() not in {"", "NONE"})
+        if "shadow_status" in example_columns
+        else 0
+    )
+
+    profile_rows = [dict(row) for row in conn.execute("SELECT * FROM trade_replay_profile_stats").fetchall()] if profile_columns else []
+    if not profile_rows:
+        warnings.append("trade_replay_profile_stats_missing_or_empty")
+
+    def profile_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "profile_key": row.get("profile_key"),
+            "valid_sample_count": int(row.get("valid_sample_count") or row.get("valid_count") or 0),
+            "avg_net_pnl_bps": float(row.get("avg_net_pnl_bps") or 0.0),
+            "win_rate": float(row.get("win_rate") or 0.0),
+            "recommended_action": row.get("recommended_action"),
+        }
+
+    positive = [
+        profile_payload(row)
+        for row in sorted(profile_rows, key=lambda item: (-float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0), str(item.get("profile_key") or "")))
+        if float(row.get("avg_net_pnl_bps") or 0.0) > 0.0
+    ][:5]
+    negative = [
+        profile_payload(row)
+        for row in sorted(profile_rows, key=lambda item: (float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0), str(item.get("profile_key") or "")))
+        if float(row.get("avg_net_pnl_bps") or 0.0) < 0.0
+    ][:5]
+
+    return {
+        "trade_replay_available": True,
+        "logical_date": logical_date,
+        "replay_count": total,
+        "valid_replay_count": valid,
+        "valid_count": valid,
+        "win_rate": round(wins / valid_den, 4),
+        "avg_net_pnl_bps": round(sum(net_values) / len(net_values), 2) if net_values else 0.0,
+        "clean_followthrough_rate": round(int(label_counts.get("clean_followthrough") or 0) / valid_den, 4),
+        "bad_entry_rate": round((int(label_counts.get("bad_entry") or 0) + int(label_counts.get("followthrough_but_bad_entry") or 0)) / valid_den, 4),
+        "absorption_reversal_rate": round(int(label_counts.get("absorption_reversal") or 0) / valid_den, 4),
+        "chop_rate": round(int(label_counts.get("chop_no_edge") or 0) / valid_den, 4),
+        "data_invalid_rate": round((total - valid) / max(total, 1), 4),
+        "suppressed_replay_count": len(suppressed_rows),
+        "suppressed_profitable_rate": round(sum(1 for value in suppressed_net if value > 0.0) / max(len(suppressed_net), 1), 4),
+        "suppressed_clean_followthrough_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "clean_followthrough") / max(len(suppressed_valid), 1), 4),
+        "suppressed_absorption_reversal_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "absorption_reversal") / max(len(suppressed_valid), 1), 4),
+        "blocked_saved_rate_estimate": round(sum(1 for row in blocked_valid if row.get("label") == "absorption_reversal") / max(len(blocked_valid), 1), 4),
+        "blocked_false_block_rate_estimate": round(
+            sum(1 for row in blocked_valid if (_to_float(row.get("net_pnl_bps")) or 0.0) > 0.0) / max(len(blocked_valid), 1),
+            4,
+        ),
+        "shadow_replay_count": shadow_count,
+        "top_positive_profiles": positive,
+        "top_negative_profiles": negative,
+        "recommended_profile_actions": [
+            {"profile_key": row.get("profile_key"), "recommended_action": row.get("recommended_action")}
+            for row in profile_rows[:10]
+        ],
+        "warnings": sorted(set(warnings)),
+    }
 
 
 def _shadow_opportunity_summary(opportunity_rows: list[dict[str, Any]], replay_summary: dict[str, Any]) -> dict[str, Any]:
@@ -1441,7 +1605,7 @@ def _markdown(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 交易后验 / Trade Replay",
+            "## 交易回放 / Replay 后验",
             "",
             f"- trade_replay_available: `{bool(replay.get('trade_replay_available'))}`",
             f"- replay_count: `{replay.get('replay_count', 0)}`",

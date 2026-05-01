@@ -14,7 +14,7 @@ import argparse
 import json
 import sqlite3
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -37,29 +37,58 @@ REPLAY_SAMPLE_INSUFFICIENT = 5
 
 
 class ReplayDiagnostics:
-    def __init__(self) -> None:
+    def __init__(self, external_collector: Any | None = None) -> None:
+        self._external_collector = external_collector
         self.warnings: list[str] = []
         self.query_errors: list[str] = []
         self.price_errors: list[str] = []
         self.schema_errors: list[str] = []
 
+    def _emit(self, category: str, message: str) -> None:
+        collector = self._external_collector
+        if not collector:
+            return
+        if isinstance(collector, dict):
+            values = collector.setdefault(category, [])
+            if isinstance(values, list) and message not in values:
+                values.append(message)
+            if category != "warnings":
+                warnings = collector.setdefault("warnings", [])
+                if isinstance(warnings, list) and message not in warnings:
+                    warnings.append(message)
+            return
+        if isinstance(collector, list):
+            item = f"{category}:{message}"
+            if item not in collector:
+                collector.append(item)
+            return
+        if callable(collector):
+            try:
+                collector(category, message)
+            except TypeError:
+                collector(message)
+
     def warning(self, message: str) -> None:
         if message and message not in self.warnings:
             self.warnings.append(message)
+            self._emit("warnings", message)
 
     def query_error(self, message: str) -> None:
         if message and message not in self.query_errors:
             self.query_errors.append(message)
+            self._emit("query_errors", message)
             self.warning(message)
 
     def price_error(self, message: str) -> None:
         if message and message not in self.price_errors:
             self.price_errors.append(message)
+            self._emit("price_errors", message)
             self.warning(message)
 
     def schema_error(self, message: str) -> None:
         if message and message not in self.schema_errors:
             self.schema_errors.append(message)
+            self._emit("schema_errors", message)
             self.warning(message)
 
     def as_dict(self) -> dict[str, list[str]]:
@@ -69,6 +98,17 @@ class ReplayDiagnostics:
             "price_errors": list(self.price_errors),
             "schema_errors": list(self.schema_errors),
         }
+
+
+def _coerce_diagnostics(
+    error_collector: Any | None = None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
+) -> ReplayDiagnostics:
+    if replay_diagnostics is not None:
+        return replay_diagnostics
+    if isinstance(error_collector, ReplayDiagnostics):
+        return error_collector
+    return ReplayDiagnostics(external_collector=error_collector)
 
 
 def replay_signal(
@@ -284,6 +324,210 @@ def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, 
     return dict(stats_by_profile)
 
 
+def _recommend_profile_action(stat: dict[str, Any], valid: list[dict[str, Any]] | None = None) -> str:
+    """Compatibility shim for persisted replay profile stats."""
+    action_input = dict(stat)
+    if "valid_count" not in action_input:
+        action_input["valid_count"] = int(action_input.get("valid_sample_count") or len(valid or []))
+    if "absorption_rate" not in action_input:
+        action_input["absorption_rate"] = float(action_input.get("absorption_reversal_rate") or 0.0)
+    return _infer_profile_action(action_input)
+
+
+def _update_profile_stats(
+    stats: dict[str, dict[str, Any]],
+    replay_results: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Update profile stats without reading partially assigned stats[profile_key]."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for replay in replay_results:
+        profile_key = str(replay.get("profile_key") or "")
+        if profile_key:
+            grouped[profile_key].append(replay)
+
+    for profile_key, samples in grouped.items():
+        valid = [item for item in samples if bool(item.get("data_valid"))]
+        valid_count = len(valid)
+        net_values = [float(item.get("net_pnl_bps") or 0.0) for item in valid]
+        gross_values = [float(item.get("gross_pnl_bps") or 0.0) for item in valid]
+        win_count = sum(1 for value in net_values if value > 0.0)
+        label_counts = Counter(str(item.get("label") or "") for item in valid)
+        stat = {
+            "profile_key": profile_key,
+            "sample_count": len(samples),
+            "valid_sample_count": valid_count,
+            "valid_count": valid_count,
+            "win_count": win_count,
+            "loss_count": max(valid_count - win_count, 0),
+            "win_rate": round(win_count / valid_count, 4) if valid_count else 0.0,
+            "avg_net_pnl_bps": round(sum(net_values) / valid_count, 2) if valid_count else 0.0,
+            "avg_gross_pnl_bps": round(sum(gross_values) / valid_count, 2) if valid_count else 0.0,
+            "clean_followthrough_rate": round(label_counts.get("clean_followthrough", 0) / valid_count, 4) if valid_count else 0.0,
+            "bad_entry_rate": round(label_counts.get("bad_entry", 0) / valid_count, 4) if valid_count else 0.0,
+            "absorption_reversal_rate": round(label_counts.get("absorption_reversal", 0) / valid_count, 4) if valid_count else 0.0,
+            "absorption_rate": round(label_counts.get("absorption_reversal", 0) / valid_count, 4) if valid_count else 0.0,
+            "chop_rate": round(label_counts.get("chop_no_edge", 0) / valid_count, 4) if valid_count else 0.0,
+            "data_invalid_rate": round((len(samples) - valid_count) / len(samples), 4) if samples else 0.0,
+        }
+        stat["recommended_action"] = _recommend_profile_action(stat, valid)
+        stats[profile_key] = stat
+    return stats
+
+
+def replay_single_signal(
+    signal_row: dict[str, Any],
+    *,
+    price_source_fn: Any | None = None,
+    entry_delay_sec: int = DEFAULT_ENTRY_DELAY_SEC,
+    max_hold_sec: int = DEFAULT_MAX_HOLD_SEC,
+    stop_loss_bps: float = DEFAULT_STOP_LOSS_BPS,
+    take_profit_bps: float = DEFAULT_TAKE_PROFIT_BPS,
+    fee_bps: float = DEFAULT_FEE_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+    prefer_source: str = "",
+    error_collector: Any | None = None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
+) -> dict[str, Any]:
+    """Replay one signal through a pluggable price source.
+
+    The first price_source_fn call uses exact signal/opportunity identifiers;
+    legacy custom functions that do not accept those keywords still work.
+    """
+    diagnostics = _coerce_diagnostics(error_collector, replay_diagnostics)
+    signal_id = str(signal_row.get("signal_id") or "")
+    trade_opportunity_id = str(signal_row.get("trade_opportunity_id") or "")
+    asset = str(signal_row.get("asset_symbol") or signal_row.get("asset") or "")
+    pair = str(signal_row.get("pair_label") or signal_row.get("pair") or "")
+    direction = _normalize_direction(signal_row.get("trade_opportunity_side") or signal_row.get("direction"))
+    signal_ts = _to_int(signal_row.get("archive_ts") or signal_row.get("timestamp") or signal_row.get("created_at"))
+
+    if not signal_id:
+        return _invalid_replay("signal_id_missing")
+    if direction not in {"LONG", "SHORT"}:
+        return _invalid_replay("direction_ambiguous", signal_id=signal_id, trade_opportunity_id=trade_opportunity_id)
+    if not signal_ts:
+        return _invalid_replay("timestamp_missing", signal_id=signal_id, trade_opportunity_id=trade_opportunity_id)
+
+    price_fn = price_source_fn or get_price_at_ts
+    entry_ts = signal_ts + entry_delay_sec
+    exit_ts = entry_ts + max_hold_sec
+    entry_result = _call_price_source_fn(
+        price_fn,
+        asset=asset,
+        pair=pair,
+        ts=entry_ts,
+        prefer_source=prefer_source,
+        signal_id=signal_id,
+        trade_opportunity_id=trade_opportunity_id,
+        error_collector=diagnostics,
+    )
+    entry_price = _price_from_lookup(entry_result)
+    if entry_price is None:
+        reason = _reason_from_lookup(entry_result, default="no_entry_price")
+        return _invalid_replay(
+            _normalize_invalid_reason(reason, stage="entry"),
+            signal_id=signal_id,
+            trade_opportunity_id=trade_opportunity_id,
+            entry_ts=entry_ts,
+        )
+
+    exit_result = _call_price_source_fn(
+        price_fn,
+        asset=asset,
+        pair=pair,
+        ts=exit_ts,
+        prefer_source=prefer_source,
+        signal_id=signal_id,
+        trade_opportunity_id=trade_opportunity_id,
+        error_collector=diagnostics,
+    )
+    exit_price = _price_from_lookup(exit_result)
+    if exit_price is None:
+        reason = _reason_from_lookup(exit_result, default="no_exit_price")
+        return _invalid_replay(
+            _normalize_invalid_reason(reason, stage="exit"),
+            signal_id=signal_id,
+            trade_opportunity_id=trade_opportunity_id,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+        )
+
+    gross_pnl_bps = _calc_gross_pnl_bps(entry_price, exit_price, direction)
+    net_pnl_bps = gross_pnl_bps - (fee_bps * 2) - (slippage_bps * 2)
+    label = _classify_replay_label(
+        net_pnl_bps=net_pnl_bps,
+        mfe_bps=gross_pnl_bps,
+        mae_bps=gross_pnl_bps,
+        close_reason="max_hold",
+        direction=direction,
+    )
+    if gross_pnl_bps <= -stop_loss_bps:
+        close_reason = "stop_loss"
+    elif gross_pnl_bps >= take_profit_bps:
+        close_reason = "take_profit"
+    else:
+        close_reason = "max_hold"
+    return {
+        "replay_id": f"replay_{signal_id}_{int(time.time())}",
+        "signal_id": signal_id,
+        "trade_opportunity_id": trade_opportunity_id,
+        "asset": asset,
+        "pair": pair,
+        "direction": direction,
+        "signal_ts": signal_ts,
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "entry_price": round(entry_price, 8),
+        "exit_price": round(exit_price, 8),
+        "entry_source": _source_from_lookup(entry_result),
+        "exit_source": _source_from_lookup(exit_result),
+        "entry_delay_sec": entry_delay_sec,
+        "hold_duration_sec": max_hold_sec,
+        "gross_pnl_bps": round(gross_pnl_bps, 2),
+        "net_pnl_bps": round(net_pnl_bps, 2),
+        "fee_bps": fee_bps * 2,
+        "slippage_bps": slippage_bps * 2,
+        "mfe_bps": round(gross_pnl_bps, 2),
+        "mae_bps": round(gross_pnl_bps, 2),
+        "stop_loss_bps": stop_loss_bps,
+        "take_profit_bps": take_profit_bps,
+        "close_reason": close_reason,
+        "label": label,
+        "data_valid": True,
+        "invalid_reason": None,
+        "profile_key": str(signal_row.get("opportunity_profile_key") or signal_row.get("profile_key") or ""),
+        "opportunity_status": str(signal_row.get("trade_opportunity_status") or signal_row.get("opportunity_status") or ""),
+        "shadow_status": str(signal_row.get("trade_opportunity_shadow_status") or signal_row.get("shadow_status") or "NONE"),
+        "created_at": int(time.time()),
+    }
+
+
+def _call_price_source_fn(price_source_fn: Any, **kwargs) -> Any:
+    try:
+        return price_source_fn(**kwargs)
+    except TypeError:
+        legacy_kwargs = {key: kwargs[key] for key in ("asset", "pair", "ts", "prefer_source")}
+        return price_source_fn(**legacy_kwargs)
+
+
+def _price_from_lookup(result: Any) -> float | None:
+    if isinstance(result, dict):
+        return _to_float(result.get("price"))
+    return _to_float(result)
+
+
+def _reason_from_lookup(result: Any, *, default: str) -> str:
+    if isinstance(result, dict):
+        return str(result.get("reason") or default)
+    return default
+
+
+def _source_from_lookup(result: Any) -> str:
+    if isinstance(result, dict):
+        return str(result.get("source") or "unavailable")
+    return "custom_price_source"
+
+
 def get_price_at_ts(
     asset: str,
     pair: str,
@@ -291,24 +535,30 @@ def get_price_at_ts(
     prefer_source: str = "",
     signal_id: str = "",
     trade_opportunity_id: str = "",
+    error_collector: Any | None = None,
+    *,
     conn: sqlite3.Connection | None = None,
     replay_diagnostics: ReplayDiagnostics | None = None,
 ) -> dict[str, Any]:
     """Resolve price with exact-match fallbacks only.
 
     Order:
-    a. outcomes.signal_id = signal_id
-    b. opportunity_outcomes.trade_opportunity_id = trade_opportunity_id
-    c. market_context_snapshots asset + nearest timestamp
+    a. market_context_snapshots asset + nearest timestamp
+    b. outcomes.signal_id = signal_id
+    c. opportunity_outcomes.trade_opportunity_id = trade_opportunity_id
     d. otherwise no_price_for_signal_id
     """
-    diagnostics = replay_diagnostics or ReplayDiagnostics()
+    diagnostics = _coerce_diagnostics(error_collector, replay_diagnostics)
     canonical_asset = str(asset or "").strip().upper()
     canonical_pair = str(pair or "").strip().upper()
     ts_value = _to_int(ts)
     if ts_value <= 0:
         diagnostics.price_error("price_lookup_invalid_ts")
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    if not signal_id:
+        diagnostics.warning("outcome_fallback_skipped_missing_signal_id")
+    if not trade_opportunity_id:
+        diagnostics.warning("opportunity_fallback_skipped_missing_trade_opportunity_id")
 
     owned_conn = False
     if conn is None:
@@ -325,6 +575,17 @@ def get_price_at_ts(
             return {"price": None, "source": "unavailable", "reason": "schema_error"}
 
     try:
+        market_result = _lookup_price_from_market_context(
+            conn,
+            asset=canonical_asset,
+            pair=canonical_pair,
+            ts=ts_value,
+            prefer_source=prefer_source,
+            replay_diagnostics=diagnostics,
+        )
+        if market_result["price"] is not None:
+            return market_result
+
         if signal_id:
             outcome_result = _lookup_price_from_outcomes(
                 conn,
@@ -336,7 +597,8 @@ def get_price_at_ts(
             )
             if outcome_result["price"] is not None:
                 return outcome_result
-        if signal_id and trade_opportunity_id:
+
+        if trade_opportunity_id:
             opp_result = _lookup_price_from_opportunity_outcomes(
                 conn,
                 trade_opportunity_id=str(trade_opportunity_id),
@@ -346,22 +608,14 @@ def get_price_at_ts(
             )
             if opp_result["price"] is not None:
                 return opp_result
-        elif trade_opportunity_id and not signal_id:
-            diagnostics.warning("outcome_fallback_skipped_missing_signal_id")
 
-        market_result = _lookup_price_from_market_context(
-            conn,
-            asset=canonical_asset,
-            pair=canonical_pair,
-            ts=ts_value,
-            prefer_source=prefer_source,
-            replay_diagnostics=diagnostics,
-        )
-        if market_result["price"] is not None:
-            return market_result
         if diagnostics.schema_errors:
             return {"price": None, "source": "unavailable", "reason": "schema_error"}
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    except sqlite3.Error as exc:
+        diagnostics.query_error(f"price_lookup_failed:{exc}")
+        diagnostics.schema_error(f"schema_error:price_lookup_failed:{exc}")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
     finally:
         if owned_conn and conn is not None:
             conn.close()
@@ -467,6 +721,7 @@ def run_trade_replay(
         return summary
     except sqlite3.Error as exc:
         diagnostics.query_error(f"trade_replay_query_failed:{exc}")
+        diagnostics.schema_error(f"schema_error:trade_replay_query_failed:{exc}")
         summary["status"] = "error"
         summary.update(diagnostics.as_dict())
         return summary
@@ -656,9 +911,9 @@ def _classify_replay_label(
 
 def _select_price_from_context(context: dict[str, Any]) -> tuple[float | None, str]:
     venue = str(context.get("market_context_venue") or context.get("venue") or "").strip().lower()
-    mark_price = _to_float(context.get("perp_mark_price"))
-    index_price = _to_float(context.get("perp_index_price"))
-    last_price = _to_float(context.get("perp_last_price"))
+    mark_price = _to_float(context.get("perp_mark_price") or context.get("mark_price"))
+    index_price = _to_float(context.get("perp_index_price") or context.get("index_price"))
+    last_price = _to_float(context.get("perp_last_price") or context.get("last_price") or context.get("price"))
     if venue == "okx_perp" and OUTCOME_PREFER_OKX_MARK and mark_price:
         return mark_price, "okx_mark"
     if index_price:
@@ -679,31 +934,45 @@ def _lookup_price_from_outcomes(
     ts: int,
     replay_diagnostics: ReplayDiagnostics,
 ) -> dict[str, Any]:
-    required = {"signal_id", "asset", "pair", "start_price", "end_price", "created_at", "completed_at"}
-    if not _require_table_columns(conn, "outcomes", required, replay_diagnostics):
+    if not _table_exists(conn, "outcomes"):
+        replay_diagnostics.schema_error("schema_error:missing_table:outcomes")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    columns = _table_columns(conn, "outcomes", replay_diagnostics)
+    if "signal_id" not in columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:outcomes:signal_id")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    price_columns = [
+        column
+        for column in ("start_price", "entry_price", "outcome_price_start", "price_start", "end_price", "exit_price", "outcome_price_end", "price_end")
+        if column in columns
+    ]
+    if not price_columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:outcomes:start_price,entry_price,end_price,exit_price")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    select_columns = ["signal_id", *[column for column in ("asset", "pair") if column in columns], *price_columns]
+    time_columns = [column for column in ("completed_at", "created_at", "due_at", "updated_at") if column in columns]
+    time_expr = f"COALESCE({', '.join(time_columns)}, 0)" if time_columns else "0"
     try:
         row = conn.execute(
-            "SELECT asset, pair, start_price, end_price, completed_at, created_at FROM outcomes "
-            "WHERE signal_id = ? ORDER BY ABS(COALESCE(completed_at, created_at, 0) - ?) ASC, COALESCE(completed_at, created_at, 0) ASC LIMIT 1",
+            f"SELECT {', '.join(select_columns)} FROM outcomes "
+            f"WHERE signal_id = ? ORDER BY ABS({time_expr} - ?) ASC, {time_expr} ASC LIMIT 1",
             (signal_id, ts),
         ).fetchone()
     except sqlite3.Error as exc:
         replay_diagnostics.query_error(f"outcomes_lookup_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:outcomes_lookup_failed:{exc}")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
     if row is None:
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
-    row_asset = str(row["asset"] or "").strip().upper()
-    row_pair = str(row["pair"] or "").strip().upper()
+    row_asset = str(row["asset"] or "").strip().upper() if "asset" in columns else ""
+    row_pair = str(row["pair"] or "").strip().upper() if "pair" in columns else ""
     if asset and row_asset and row_asset != asset:
         replay_diagnostics.price_error(f"outcomes_asset_mismatch:{signal_id}:{row_asset}!={asset}")
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
     if pair and row_pair and row_pair != pair:
         replay_diagnostics.price_error(f"outcomes_pair_mismatch:{signal_id}:{row_pair}!={pair}")
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
-    price = _to_float(row["start_price"])
-    if price is None:
-        price = _to_float(row["end_price"])
+    price = _row_first_float(row, ("start_price", "entry_price", "outcome_price_start", "price_start", "end_price", "exit_price", "outcome_price_end", "price_end"))
     if price is None:
         replay_diagnostics.price_error(f"outcomes_price_missing:{signal_id}")
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
@@ -718,23 +987,37 @@ def _lookup_price_from_opportunity_outcomes(
     ts: int,
     replay_diagnostics: ReplayDiagnostics,
 ) -> dict[str, Any]:
-    required = {"trade_opportunity_id", "start_price", "end_price", "created_at", "completed_at"}
-    if not _require_table_columns(conn, "opportunity_outcomes", required, replay_diagnostics):
+    if not _table_exists(conn, "opportunity_outcomes"):
+        replay_diagnostics.schema_error("schema_error:missing_table:opportunity_outcomes")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    columns = _table_columns(conn, "opportunity_outcomes", replay_diagnostics)
+    if "trade_opportunity_id" not in columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:opportunity_outcomes:trade_opportunity_id")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    price_columns = [
+        column
+        for column in ("start_price", "entry_price", "outcome_price_start", "price_start", "end_price", "exit_price", "outcome_price_end", "price_end")
+        if column in columns
+    ]
+    if not price_columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:opportunity_outcomes:start_price,entry_price,end_price,exit_price")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    select_columns = ["trade_opportunity_id", *price_columns]
+    time_columns = [column for column in ("completed_at", "created_at", "due_at", "updated_at") if column in columns]
+    time_expr = f"COALESCE({', '.join(time_columns)}, 0)" if time_columns else "0"
     try:
         row = conn.execute(
-            "SELECT start_price, end_price, completed_at, created_at FROM opportunity_outcomes "
-            "WHERE trade_opportunity_id = ? ORDER BY ABS(COALESCE(completed_at, created_at, 0) - ?) ASC, COALESCE(completed_at, created_at, 0) ASC LIMIT 1",
+            f"SELECT {', '.join(select_columns)} FROM opportunity_outcomes "
+            f"WHERE trade_opportunity_id = ? ORDER BY ABS({time_expr} - ?) ASC, {time_expr} ASC LIMIT 1",
             (trade_opportunity_id, ts),
         ).fetchone()
     except sqlite3.Error as exc:
         replay_diagnostics.query_error(f"opportunity_outcomes_lookup_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:opportunity_outcomes_lookup_failed:{exc}")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
     if row is None:
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
-    price = _to_float(row["start_price"])
-    if price is None:
-        price = _to_float(row["end_price"])
+    price = _row_first_float(row, ("start_price", "entry_price", "outcome_price_start", "price_start", "end_price", "exit_price", "outcome_price_end", "price_end"))
     if price is None:
         replay_diagnostics.price_error(f"opportunity_outcomes_price_missing:{trade_opportunity_id}")
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
@@ -750,28 +1033,57 @@ def _lookup_price_from_market_context(
     prefer_source: str,
     replay_diagnostics: ReplayDiagnostics,
 ) -> dict[str, Any]:
-    required = {"asset", "pair", "venue", "perp_mark_price", "perp_index_price", "perp_last_price", "created_at"}
-    if not _require_table_columns(conn, "market_context_snapshots", required, replay_diagnostics):
+    if not _table_exists(conn, "market_context_snapshots"):
+        replay_diagnostics.schema_error("schema_error:missing_table:market_context_snapshots")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    columns = _table_columns(conn, "market_context_snapshots", replay_diagnostics)
+    if "asset" not in columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:market_context_snapshots:asset")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    time_column = next((column for column in ("created_at", "timestamp", "ts", "archive_ts", "updated_at") if column in columns), "")
+    if not time_column:
+        replay_diagnostics.schema_error("schema_error:missing_columns:market_context_snapshots:created_at")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    price_columns = [
+        column
+        for column in ("perp_mark_price", "perp_index_price", "perp_last_price", "mark_price", "index_price", "last_price", "price")
+        if column in columns
+    ]
+    if not price_columns:
+        replay_diagnostics.schema_error("schema_error:missing_columns:market_context_snapshots:price")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    select_columns = ["asset", time_column, *[column for column in ("pair", "venue") if column in columns], *price_columns]
     try:
         row = conn.execute(
-            "SELECT asset, pair, venue, perp_mark_price, perp_index_price, perp_last_price, created_at "
-            "FROM market_context_snapshots WHERE asset = ? ORDER BY ABS(COALESCE(created_at, 0) - ?) ASC, COALESCE(created_at, 0) ASC LIMIT 1",
+            f"SELECT {', '.join(select_columns)} "
+            f"FROM market_context_snapshots WHERE asset = ? ORDER BY ABS(COALESCE({time_column}, 0) - ?) ASC, COALESCE({time_column}, 0) ASC LIMIT 1",
             (asset, ts),
         ).fetchone()
     except sqlite3.Error as exc:
         replay_diagnostics.query_error(f"market_context_lookup_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:market_context_lookup_failed:{exc}")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
     if row is None:
         replay_diagnostics.price_error(f"market_context_missing:{asset}:{pair}")
         return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
     price, source = _select_price_from_context(dict(row))
     if price is None:
-        replay_diagnostics.price_error(f"market_context_price_missing:{asset}:{pair}:{row['venue']}")
+        venue = row["venue"] if "venue" in row.keys() else ""
+        replay_diagnostics.price_error(f"market_context_price_missing:{asset}:{pair}:{venue}")
         return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
     if prefer_source and prefer_source not in source:
         replay_diagnostics.warning(f"prefer_source_unmet:{prefer_source}:{source}")
     return {"price": price, "source": source or "market_context_snapshots", "reason": None}
+
+
+def _row_first_float(row: sqlite3.Row, columns: tuple[str, ...]) -> float | None:
+    keys = set(row.keys())
+    for column in columns:
+        if column in keys:
+            price = _to_float(row[column])
+            if price is not None:
+                return price
+    return None
 
 
 def _invalid_replay(reason: str, **kwargs) -> dict[str, Any]:

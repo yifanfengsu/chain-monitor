@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,8 +13,10 @@ from trade_replay import (
     _calc_gross_pnl_bps,
     _classify_replay_label,
     _infer_profile_action,
+    _update_profile_stats,
     aggregate_profile_stats,
     get_price_at_ts,
+    replay_single_signal,
     replay_signal,
     run_trade_replay,
 )
@@ -268,6 +271,93 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(profile_stats["valid_count"], 1)
         self.assertEqual(profile_stats["data_invalid_count"], 1)
 
+    def test_update_profile_stats_builds_stat_before_recommendation(self):
+        stats = {}
+        results = [
+            {
+                "profile_key": "ETH|LONG|profile",
+                "data_valid": True,
+                "net_pnl_bps": 30.0,
+                "gross_pnl_bps": 42.0,
+                "label": "clean_followthrough",
+            },
+            {
+                "profile_key": "ETH|LONG|profile",
+                "data_valid": True,
+                "net_pnl_bps": -10.0,
+                "gross_pnl_bps": 2.0,
+                "label": "bad_entry",
+            },
+        ]
+
+        updated = _update_profile_stats(stats, results)
+
+        profile_stats = updated["ETH|LONG|profile"]
+        self.assertEqual(2, profile_stats["valid_sample_count"])
+        self.assertEqual(0.5, profile_stats["win_rate"])
+        self.assertEqual(10.0, profile_stats["avg_net_pnl_bps"])
+        self.assertTrue(profile_stats["recommended_action"])
+
+    def test_replay_single_signal_passes_signal_and_opportunity_to_price_source(self):
+        calls = []
+
+        def price_source_fn(**kwargs):
+            calls.append(kwargs)
+            return {"price": 2000.0 if len(calls) == 1 else 2010.0, "source": "test", "reason": None}
+
+        result = replay_single_signal(
+            {
+                "signal_id": "sig-eth-1",
+                "trade_opportunity_id": "opp-eth-1",
+                "asset": "ETH",
+                "pair": "ETH/USDT",
+                "direction": "LONG",
+                "archive_ts": 1000,
+            },
+            price_source_fn=price_source_fn,
+        )
+
+        self.assertTrue(result["data_valid"])
+        self.assertEqual("sig-eth-1", calls[0]["signal_id"])
+        self.assertEqual("opp-eth-1", calls[0]["trade_opportunity_id"])
+
+    def test_replay_single_signal_legacy_price_source_still_works(self):
+        def price_source_fn(asset, pair, ts, prefer_source=""):
+            return 2000.0 if ts == 1005 else 2010.0
+
+        result = replay_single_signal(
+            {
+                "signal_id": "sig-eth-legacy",
+                "trade_opportunity_id": "opp-eth-legacy",
+                "asset": "ETH",
+                "pair": "ETH/USDT",
+                "direction": "LONG",
+                "archive_ts": 1000,
+            },
+            price_source_fn=price_source_fn,
+        )
+
+        self.assertTrue(result["data_valid"])
+
+    def test_replay_single_signal_records_no_price_invalid_reason(self):
+        def price_source_fn(**kwargs):
+            return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+
+        result = replay_single_signal(
+            {
+                "signal_id": "sig-no-price",
+                "trade_opportunity_id": "opp-no-price",
+                "asset": "ETH",
+                "pair": "ETH/USDT",
+                "direction": "LONG",
+                "archive_ts": 1000,
+            },
+            price_source_fn=price_source_fn,
+        )
+
+        self.assertFalse(result["data_valid"])
+        self.assertEqual("no_price_for_signal_id", result["invalid_reason"])
+
 
 class TestTradeReplaySqlLookups(unittest.TestCase):
     def setUp(self) -> None:
@@ -487,7 +577,7 @@ class TestTradeReplaySqlLookups(unittest.TestCase):
         self.conn.close()
         self.temp_dir.cleanup()
 
-    def test_signal_id_exact_match_returns_outcome_price(self):
+    def test_market_context_priority_over_outcomes(self):
         diagnostics = ReplayDiagnostics()
         result = get_price_at_ts(
             "ETH",
@@ -498,9 +588,59 @@ class TestTradeReplaySqlLookups(unittest.TestCase):
             conn=self.conn,
             replay_diagnostics=diagnostics,
         )
-        self.assertEqual(2000.0, result["price"])
+        self.assertEqual(2002.0, result["price"])
+        self.assertEqual("okx_mark", result["source"])
+        self.assertEqual([], diagnostics.schema_errors)
+
+    def test_signal_id_exact_match_returns_outcome_price_without_market_context(self):
+        self.conn.execute("DELETE FROM market_context_snapshots WHERE asset='BTC'")
+        self.conn.commit()
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "BTC",
+            "BTC/USDT",
+            1002,
+            signal_id="sig-btc-1",
+            trade_opportunity_id="opp-btc-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+        self.assertEqual(30000.0, result["price"])
         self.assertEqual("outcomes.signal_id", result["source"])
         self.assertEqual([], diagnostics.schema_errors)
+
+    def test_opportunity_outcomes_exact_match_without_signal_id(self):
+        self.conn.execute("DELETE FROM market_context_snapshots WHERE asset='ETH'")
+        self.conn.commit()
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            trade_opportunity_id="opp-eth-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+        self.assertEqual(1999.0, result["price"])
+        self.assertEqual("opportunity_outcomes.trade_opportunity_id", result["source"])
+        self.assertIn("outcome_fallback_skipped_missing_signal_id", diagnostics.warnings)
+
+    def test_signal_id_exact_match_does_not_cross_asset(self):
+        self.conn.execute("DELETE FROM market_context_snapshots WHERE asset='ETH'")
+        self.conn.commit()
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            signal_id="sig-btc-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+
+        self.assertIsNone(result["price"])
+        self.assertEqual("no_price_for_signal_id", result["reason"])
+        self.assertTrue(any("outcomes_asset_mismatch" in item for item in diagnostics.price_errors))
 
     def test_eth_signal_does_not_match_btc_outcome(self):
         diagnostics = ReplayDiagnostics()
@@ -515,7 +655,7 @@ class TestTradeReplaySqlLookups(unittest.TestCase):
         )
         self.assertEqual(2002.0, result["price"])
         self.assertEqual("okx_mark", result["source"])
-        self.assertTrue(any("outcomes_asset_mismatch" in item for item in diagnostics.price_errors))
+        self.assertFalse(any("outcomes_asset_mismatch" in item for item in diagnostics.price_errors))
 
     def test_no_signal_id_skips_outcome_fallback(self):
         diagnostics = ReplayDiagnostics()
@@ -558,6 +698,38 @@ class TestTradeReplaySqlLookups(unittest.TestCase):
         self.assertEqual("degraded", summary["status"])
         self.assertTrue(summary["schema_errors"])
         self.assertTrue(any("schema_error" in item for item in summary["warnings"]))
+
+    def test_run_trade_replay_query_exception_reports_schema_error(self):
+        db_path = Path(self.temp_dir.name) / "raises.sqlite"
+        db_path.write_text("", encoding="utf-8")
+        conn = mock.Mock()
+        conn.execute.side_effect = sqlite3.OperationalError("mock query boom")
+        with mock.patch("trade_replay.sqlite3.connect", return_value=conn):
+            summary = run_trade_replay("2026-04-30", db_path=db_path)
+
+        self.assertEqual("error", summary["status"])
+        self.assertTrue(summary["query_errors"])
+        self.assertTrue(summary["schema_errors"])
+
+    def test_price_lookup_sql_exception_is_visible(self):
+        class BrokenConnection:
+            def execute(self, *args, **kwargs):
+                raise sqlite3.OperationalError("mock sql boom")
+
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            signal_id="sig-eth-1",
+            conn=BrokenConnection(),
+            replay_diagnostics=diagnostics,
+        )
+
+        self.assertIsNone(result["price"])
+        self.assertEqual("schema_error", result["reason"])
+        self.assertTrue(diagnostics.query_errors)
+        self.assertTrue(diagnostics.schema_errors)
 
 
 if __name__ == "__main__":

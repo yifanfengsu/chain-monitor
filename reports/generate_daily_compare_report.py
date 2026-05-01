@@ -1251,6 +1251,7 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
     }
     if today_record is None or previous_record is None:
         result["warnings"].append("replay_compare_insufficient:missing_daily_report")
+        result["warnings"].append("missing_daily_report")
         return result
 
     today_replay = today_record.data.get("trade_replay_summary") if isinstance(today_record.data.get("trade_replay_summary"), dict) else {}
@@ -1269,6 +1270,7 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
 
     if not today_available or not previous_available:
         result["warnings"].append("replay_compare_insufficient:missing_replay")
+        result["warnings"].append("missing_replay")
         return result
 
     if str(today_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"} or str(previous_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"}:
@@ -1276,6 +1278,7 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
         result["summary"] = "evidence_insufficient"
         result["data_quality_gate"] = "evidence_insufficient"
         result["warnings"].append("replay_compare_evidence_insufficient:data_quality_degraded")
+        result["warnings"].append("data_quality_degraded")
 
     today_valid = int(today_replay.get("valid_replay_count") or 0)
     previous_valid = int(previous_replay.get("valid_replay_count") or 0)
@@ -1285,6 +1288,7 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
             result["status"] = "sample_insufficient"
             result["summary"] = "sample_insufficient"
         result["warnings"].append("replay_compare_sample_insufficient")
+        result["warnings"].append("sample_insufficient")
 
     source_map = {
         "replay_count": (today_replay, previous_replay),
@@ -1592,6 +1596,8 @@ def build_question_answers(
     top_regression = _top_flag(rows, "regression")
     improvement_answer = _metric_delta_text(top_improvement) if top_improvement else "证据不足；没有足够强的方向性改善指标。"
     regression_answer = _metric_delta_text(top_regression) if top_regression else "证据不足；没有足够强的方向性退步指标。"
+    if replay_status == "evidence_insufficient":
+        improvement_answer = "证据不足；replay/data quality 对比被降级为 evidence_insufficient，不能声称系统进步。"
 
     if top_regression:
         next_action = f"明天最优先修 {top_regression['metric_name']} 对应链路；当前最明显退步是 {_metric_delta_text(top_regression)}。"
@@ -1599,6 +1605,8 @@ def build_question_answers(
         next_action = f"明天最优先处理 verified 缺失的主因：{_summarize_reason_object(why_no_opportunities.get('today_value'))}。"
     else:
         next_action = f"明天先补齐 {compare_basis} 之外仍缺失的结构化字段，并继续观察 {_metric_delta_text(top_improvement) if top_improvement else '关键质量指标'}。"
+    if replay_status == "evidence_insufficient":
+        next_action = "先修复 data_quality_status 降级来源，再判断 replay/shadow 是否进步。"
 
     return {
         "1": overall,
@@ -1790,6 +1798,14 @@ def _build_limitations(
 
 
 def _build_key_findings(rows: list[dict[str, Any]], answers: dict[str, str]) -> list[str]:
+    if "evidence_insufficient" in str(answers.get("1") or ""):
+        findings = [
+            answers["1"],
+            "data quality 降级；key_findings 不判定系统进步。",
+            answers.get("5", ""),
+            answers.get("9", ""),
+        ]
+        return [item for item in findings if item][:8]
     findings = [answers["1"], answers["3"], answers["4"], answers["5"], answers["8"], answers["9"]]
     return [item for item in findings if item][:8]
 
