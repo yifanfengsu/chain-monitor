@@ -893,6 +893,14 @@ def migrate_schema() -> bool:
                 trade_action_key TEXT,
                 asset_market_state_key TEXT,
                 trade_opportunity_status TEXT,
+                trade_opportunity_shadow_status TEXT DEFAULT 'NONE',
+                trade_opportunity_shadow_reason TEXT,
+                trade_opportunity_shadow_score REAL,
+                opportunity_profile_key TEXT,
+                opportunity_maturity TEXT,
+                replay_eligible INTEGER,
+                would_have_been_candidate INTEGER,
+                would_have_been_verified INTEGER,
                 direction TEXT,
                 notional_usd REAL,
                 price_impact_ratio REAL,
@@ -1135,8 +1143,12 @@ def migrate_schema() -> bool:
                 adverse_after_block INTEGER,
                 blocker_saved_trade INTEGER,
                 blocker_false_block_possible INTEGER,
+                would_have_been_candidate INTEGER,
+                would_have_been_verified INTEGER,
                 required_confirmation TEXT,
                 invalidated_by TEXT,
+                maturity TEXT,
+                replay_eligible INTEGER,
                 created_at REAL,
                 expires_at REAL,
                 telegram_sent INTEGER,
@@ -1268,6 +1280,13 @@ def migrate_schema() -> bool:
                 event_id TEXT,
                 trade_opportunity_id TEXT,
                 asset TEXT,
+                opportunity_status TEXT,
+                shadow_status TEXT DEFAULT 'NONE',
+                shadow_reason TEXT,
+                blocked_reason TEXT,
+                profile_key TEXT,
+                maturity TEXT,
+                replay_eligible INTEGER,
                 delivery_decision TEXT,
                 reason TEXT,
                 sent_to_telegram INTEGER,
@@ -1346,6 +1365,10 @@ def migrate_schema() -> bool:
                 price_source TEXT,
                 data_valid INTEGER DEFAULT 1,
                 invalid_reason TEXT,
+                was_profitable INTEGER,
+                was_stopped INTEGER,
+                was_late INTEGER,
+                price_points_seen INTEGER,
                 blockers_json TEXT,
                 features_json TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
@@ -1384,6 +1407,7 @@ def migrate_schema() -> bool:
                 active_hours REAL,
                 raw_events_count INTEGER,
                 signals_count INTEGER,
+                parsed_events_count INTEGER,
                 max_raw_event_gap_sec REAL,
                 max_signal_gap_sec REAL,
                 data_gap_warnings TEXT,
@@ -1425,6 +1449,13 @@ def migrate_schema() -> bool:
             conn,
             "delivery_audit",
             {
+                "opportunity_status": "TEXT",
+                "shadow_status": "TEXT",
+                "shadow_reason": "TEXT",
+                "blocked_reason": "TEXT",
+                "profile_key": "TEXT",
+                "maturity": "TEXT",
+                "replay_eligible": "INTEGER",
                 "delivery_decision": "TEXT",
                 "reason": "TEXT",
                 "sent_to_telegram": "INTEGER",
@@ -1501,6 +1532,14 @@ def migrate_schema() -> bool:
             conn,
             "signals",
             {
+                "trade_opportunity_shadow_status": "TEXT",
+                "trade_opportunity_shadow_reason": "TEXT",
+                "trade_opportunity_shadow_score": "REAL",
+                "opportunity_profile_key": "TEXT",
+                "opportunity_maturity": "TEXT",
+                "replay_eligible": "INTEGER",
+                "would_have_been_candidate": "INTEGER",
+                "would_have_been_verified": "INTEGER",
                 "final_trading_output_source": "TEXT",
                 "final_trading_output_label": "TEXT",
                 "final_trading_output_allowed": "INTEGER",
@@ -1538,6 +1577,10 @@ def migrate_schema() -> bool:
                 "adverse_after_block": "INTEGER",
                 "blocker_saved_trade": "INTEGER",
                 "blocker_false_block_possible": "INTEGER",
+                "would_have_been_candidate": "INTEGER",
+                "would_have_been_verified": "INTEGER",
+                "maturity": "TEXT",
+                "replay_eligible": "INTEGER",
                 "final_trading_output_source": "TEXT",
                 "final_trading_output_label": "TEXT",
                 "final_trading_output_allowed": "INTEGER",
@@ -1549,6 +1592,23 @@ def migrate_schema() -> bool:
                 "shadow_status": "TEXT",
                 "shadow_reason": "TEXT",
                 "shadow_score": "REAL",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "trade_replay_examples",
+            {
+                "was_profitable": "INTEGER",
+                "was_stopped": "INTEGER",
+                "was_late": "INTEGER",
+                "price_points_seen": "INTEGER",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "runtime_heartbeats",
+            {
+                "parsed_events_count": "INTEGER",
             },
         )
         _ensure_columns(
@@ -1737,6 +1797,14 @@ def write_signal(record: Any) -> bool:
             "trade_action_key": _text(_first(data, "trade_action_key")),
             "asset_market_state_key": _text(_first(data, "asset_market_state_key")),
             "trade_opportunity_status": _text(_first(data, "trade_opportunity_status")),
+            "trade_opportunity_shadow_status": _text(_first(data, "trade_opportunity_shadow_status", "shadow_status")),
+            "trade_opportunity_shadow_reason": _text(_first(data, "trade_opportunity_shadow_reason", "shadow_reason")),
+            "trade_opportunity_shadow_score": _real(_first(data, "trade_opportunity_shadow_score", "shadow_score")),
+            "opportunity_profile_key": _text(_first(data, "opportunity_profile_key", "profile_key")),
+            "opportunity_maturity": _text(_first(data, "trade_opportunity_maturity", "maturity", "verified_maturity")),
+            "replay_eligible": _bool_int(_first(data, "trade_opportunity_replay_eligible", "replay_eligible")),
+            "would_have_been_candidate": _bool_int(_first(data, "trade_opportunity_would_have_been_candidate", "would_have_been_candidate")),
+            "would_have_been_verified": _bool_int(_first(data, "trade_opportunity_would_have_been_verified", "would_have_been_verified")),
             "direction": _direction_from_record(data),
             "notional_usd": _real(_first(data, "notional_usd", "usd_value", "amount_usd")),
             "price_impact_ratio": _real(_first(data, "price_impact_ratio", "lp_price_impact_ratio")),
@@ -1856,6 +1924,13 @@ def write_delivery_audit(record: Any) -> bool:
             "event_id": _text(_first(data, "event_id")),
             "trade_opportunity_id": _text(_first(data, "trade_opportunity_id")),
             "asset": _text(_first(data, "asset_symbol", "asset")),
+            "opportunity_status": _text(_first(data, "trade_opportunity_status", "opportunity_status")),
+            "shadow_status": _text(_first(data, "trade_opportunity_shadow_status", "shadow_status")),
+            "shadow_reason": _text(_first(data, "trade_opportunity_shadow_reason", "shadow_reason")),
+            "blocked_reason": _text(_first(data, "trade_opportunity_primary_blocker", "blocked_reason", "primary_blocker")),
+            "profile_key": _text(_first(data, "opportunity_profile_key", "profile_key")),
+            "maturity": _text(_first(data, "trade_opportunity_maturity", "maturity", "verified_maturity")),
+            "replay_eligible": _bool_int(_first(data, "trade_opportunity_replay_eligible", "replay_eligible")),
             "delivery_decision": _text(_first(data, "delivery_decision", "delivery_reason", "delivery_class")),
             "reason": _text(_first(data, "reason", "gate_reason", "delivery_reason", "suppression_reason")),
             "sent_to_telegram": sent_to_telegram,
@@ -2111,8 +2186,12 @@ def upsert_trade_opportunity(record: Any) -> bool:
             "adverse_after_block": _bool_int(_first(data, "adverse_after_block")),
             "blocker_saved_trade": _bool_int(_first(data, "blocker_saved_trade")),
             "blocker_false_block_possible": _bool_int(_first(data, "blocker_false_block_possible")),
+            "would_have_been_candidate": _bool_int(_first(data, "trade_opportunity_would_have_been_candidate", "would_have_been_candidate")),
+            "would_have_been_verified": _bool_int(_first(data, "trade_opportunity_would_have_been_verified", "would_have_been_verified")),
             "required_confirmation": _text(_first(data, "trade_opportunity_required_confirmation", "required_confirmation")),
             "invalidated_by": _text(_first(data, "trade_opportunity_invalidated_by", "invalidated_by")),
+            "maturity": _text(_first(data, "trade_opportunity_maturity", "maturity", "verified_maturity")),
+            "replay_eligible": _bool_int(_first(data, "trade_opportunity_replay_eligible", "replay_eligible")),
             "created_at": created_at,
             "expires_at": _real(_first(data, "trade_opportunity_expires_at", "expires_at")),
             "telegram_sent": _bool_int(_first(data, "trade_opportunity_delivered_notification", "telegram_should_send", "sent_to_telegram")),
@@ -2506,6 +2585,43 @@ def write_market_context_attempt(record: Any) -> bool:
             "created_at": created_at,
         },
         ("attempt_id",),
+    )
+
+
+def write_runtime_heartbeat(record: Any) -> bool:
+    data, _envelope = _unwrap(record)
+    if not data:
+        return False
+    check_ts = _int(_first(data, "check_ts", "process_heartbeat_ts", "created_at")) or int(_now())
+    return _execute(
+        """
+        INSERT INTO runtime_heartbeats(
+            check_ts, last_raw_event_ts, last_parsed_event_ts, last_signal_ts,
+            last_market_context_success_ts, last_block_seen, process_heartbeat_ts,
+            active_hours, raw_events_count, parsed_events_count, signals_count,
+            max_raw_event_gap_sec, max_signal_gap_sec, data_gap_warnings,
+            zero_activity_day, data_quality_status
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            check_ts,
+            _int(_first(data, "last_raw_event_ts")),
+            _int(_first(data, "last_parsed_event_ts")),
+            _int(_first(data, "last_signal_ts")),
+            _int(_first(data, "last_market_context_success_ts")),
+            _int(_first(data, "last_block_seen")),
+            _int(_first(data, "process_heartbeat_ts")) or check_ts,
+            _real(_first(data, "active_hours")),
+            _int(_first(data, "raw_events_count")),
+            _int(_first(data, "parsed_events_count")),
+            _int(_first(data, "signals_count")),
+            _real(_first(data, "max_raw_event_gap_sec")),
+            _real(_first(data, "max_signal_gap_sec")),
+            _json(_first(data, "data_gap_warnings", default=[])),
+            _bool_int(_first(data, "zero_activity_day")),
+            _text(_first(data, "data_quality_status")),
+        ),
     )
 
 

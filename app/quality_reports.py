@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
 import sys
 
 from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
+import config
 from lp_product_helpers import canonical_asset_symbol, normalize_symbol
 from lp_registry import (
     ACTIVE_LP_POOLS,
@@ -44,6 +46,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trade-replay-summary", action="store_true", help="trade replay summary")
     parser.add_argument("--shadow-opportunity-summary", action="store_true", help="shadow opportunity summary")
     parser.add_argument("--runtime-health-summary", action="store_true", help="runtime health summary")
+    parser.add_argument("--db-reconcile-dry-run", action="store_true", help="DB/archive reconcile dry-run summary")
+    parser.add_argument("--date", type=str, default=None, help="Beijing logical date YYYY-MM-DD")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
     parser.add_argument("--top-n", type=int, default=None, help="top/bottom 行数")
@@ -281,6 +285,11 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
     per_resolved_symbol = _attach_rates(_sort_table(resolved_symbol_stats, key_name="symbol"), label="symbol")
     per_requested_symbol = _attach_rates(_sort_table(requested_symbol_stats, key_name="symbol"), label="symbol")
     per_attempt_symbol = _attach_rates(_sort_table(attempt_symbol_stats, key_name="symbol"), label="symbol")
+    
+    # Calculate success_rate (ensure it's never None)
+    context_request_hit_rate = round((live_public_count / total), 4) if total else 0.0
+    attempt_success_rate = round((sum(v.get("attempt_success", 0) for v in venue_stats.values()) / total_attempts), 4) if total_attempts else 0.0
+    
     return {
         "archive_base_dir": str(Path(base_dir)),
         "signal_rows": total,
@@ -288,10 +297,12 @@ def build_market_context_health_report(*, base_dir: str | Path = ARCHIVE_BASE_DI
         "total_attempts": total_attempts,
         "live_public_count": live_public_count,
         "unavailable_count": unavailable_count,
-        "context_request_hit_rate": round((live_public_count / total), 4) if total else 0.0,
-        "live_public_hit_rate": round((live_public_count / total), 4) if total else 0.0,
+        "context_request_hit_rate": context_request_hit_rate,
+        "live_public_hit_rate": context_request_hit_rate,
         "unavailable_rate": round((unavailable_count / total), 4) if total else 0.0,
         "cache_hit_rate": round((cache_hit_request_count / total), 4) if total else 0.0,
+        "attempt_success_rate": attempt_success_rate,
+        "success_rate": context_request_hit_rate,
         "per_venue": per_venue,
         "per_endpoint": per_endpoint,
         "per_requested_symbol": per_requested_symbol,
@@ -668,6 +679,193 @@ def build_major_pool_coverage_report(
     }
 
 
+_BJ_TZ = timezone(timedelta(hours=8))
+
+
+def _date_bounds(date_str: str | None) -> tuple[int | None, int | None]:
+    if not date_str:
+        return None, None
+    parsed = datetime.strptime(date_str, "%Y-%m-%d")
+    start = parsed.replace(tzinfo=_BJ_TZ)
+    start_ts = int(start.timestamp())
+    return start_ts, start_ts + 24 * 3600 - 1
+
+
+def _where_for_date(column: str, date_str: str | None) -> tuple[str, tuple]:
+    start_ts, end_ts = _date_bounds(date_str)
+    clauses: list[str] = []
+    params: list[object] = []
+    if start_ts is not None:
+        clauses.append(f"{column} >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        clauses.append(f"{column} <= ?")
+        params.append(end_ts)
+    return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), tuple(params)
+
+
+def _market_context_kpi_payload(conn, date_str: str | None = None) -> dict:
+    where, params = _where_for_date("created_at", date_str)
+    total = conn.execute(f"SELECT COUNT(*) FROM market_context_attempts {where}", params).fetchone()
+    success_where = f"{where} AND success=1" if where else "WHERE success=1"
+    failure_where = f"{where} AND success=0" if where else "WHERE success=0"
+    success = conn.execute(f"SELECT COUNT(*) FROM market_context_attempts {success_where}", params).fetchone()
+    failure = conn.execute(f"SELECT COUNT(*) FROM market_context_attempts {failure_where}", params).fetchone()
+    attempt_count = int(total[0]) if total else 0
+    success_count = int(success[0]) if success else 0
+    failure_count = int(failure[0]) if failure else 0
+    if attempt_count == 0:
+        success_rate = None
+        success_rate_reason = "no_attempts"
+    else:
+        success_rate = round(success_count / attempt_count, 4)
+        success_rate_reason = ""
+    last_success = conn.execute(
+        f"SELECT MAX(created_at) FROM market_context_attempts {success_where}",
+        params,
+    ).fetchone()
+    fixture = conn.execute(
+        f"SELECT COUNT(*) FROM market_context_attempts {where + (' AND' if where else 'WHERE')} (failure_reason LIKE '%fixture%' OR endpoint LIKE '%fixture%')",
+        params,
+    ).fetchone()
+    live = conn.execute(
+        f"SELECT COUNT(*) FROM market_context_attempts {where + (' AND' if where else 'WHERE')} (LOWER(endpoint) LIKE '%okx%' OR LOWER(endpoint) LIKE '%kraken%')",
+        params,
+    ).fetchone()
+    unavailable = conn.execute(
+        f"SELECT COUNT(*) FROM market_context_attempts {where + (' AND' if where else 'WHERE')} success=0",
+        params,
+    ).fetchone()
+    return {
+        "logical_date": date_str,
+        "market_context_attempt_count": attempt_count,
+        "market_context_success_count": success_count,
+        "market_context_failure_count": failure_count,
+        "market_context_success_rate": success_rate,
+        "market_context_success_rate_reason": success_rate_reason,
+        "market_context_primary_venue": str(getattr(config, "MARKET_CONTEXT_PRIMARY_VENUE", "")),
+        "market_context_secondary_venue": str(getattr(config, "MARKET_CONTEXT_SECONDARY_VENUE", "")),
+        "market_context_fixture_mode_detected": int(fixture[0]) if fixture else 0,
+        "market_context_live_mode_detected": int(live[0]) if live else 0,
+        "market_context_unavailable_count": int(unavailable[0]) if unavailable else failure_count,
+        "market_context_last_success_ts": int(last_success[0]) if last_success and last_success[0] is not None else None,
+        "warnings": ["market_context_no_attempts"] if attempt_count == 0 else [],
+    }
+
+
+def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
+    where = "WHERE logical_date = ?" if date_str else ""
+    params = (date_str,) if date_str else ()
+    try:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where}", params).fetchone()[0])
+    except Exception as exc:
+        return {"trade_replay_available": False, "reason": f"trade_replay_unavailable:{exc}", "logical_date": date_str}
+    if total <= 0:
+        return {"trade_replay_available": False, "reason": "trade_replay_missing", "logical_date": date_str, "replay_count": 0}
+    valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1", params).fetchone()[0])
+    label_counts = {
+        str(row[0] or ""): int(row[1])
+        for row in conn.execute(
+            f"SELECT label, COUNT(*) FROM trade_replay_examples {where} GROUP BY label",
+            params,
+        ).fetchall()
+    }
+    avg_row = conn.execute(
+        f"SELECT AVG(net_pnl_bps) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1",
+        params,
+    ).fetchone()
+    wins = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
+    suppressed_where = f"{where + (' AND' if where else 'WHERE')} signal_stage='SUPPRESSED'"
+    suppressed_total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where}", params).fetchone()[0])
+    suppressed_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1", params).fetchone()[0])
+    suppressed_profit = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
+    suppressed_clean = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='clean_followthrough'", params).fetchone()[0])
+    suppressed_absorb = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='absorption_reversal'", params).fetchone()[0])
+    blocked_where = f"{where + (' AND' if where else 'WHERE')} opportunity_status='BLOCKED'"
+    blocked_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1", params).fetchone()[0])
+    blocked_saved = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND label='absorption_reversal'", params).fetchone()[0])
+    blocked_false = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
+    shadow_count = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != 'NONE' AND shadow_status != ''", params).fetchone()[0])
+    profiles = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM trade_replay_profile_stats ORDER BY avg_net_pnl_bps DESC, valid_sample_count DESC LIMIT 50"
+        ).fetchall()
+    ]
+    positive = [
+        {
+            "profile_key": row.get("profile_key"),
+            "valid_sample_count": int(row.get("valid_sample_count") or 0),
+            "avg_net_pnl_bps": float(row.get("avg_net_pnl_bps") or 0.0),
+            "win_rate": float(row.get("win_rate") or 0.0),
+            "recommended_action": row.get("recommended_action"),
+        }
+        for row in profiles
+        if float(row.get("avg_net_pnl_bps") or 0.0) > 0
+    ][:5]
+    negative = [
+        {
+            "profile_key": row.get("profile_key"),
+            "valid_sample_count": int(row.get("valid_sample_count") or 0),
+            "avg_net_pnl_bps": float(row.get("avg_net_pnl_bps") or 0.0),
+            "win_rate": float(row.get("win_rate") or 0.0),
+            "recommended_action": row.get("recommended_action"),
+        }
+        for row in sorted(profiles, key=lambda item: (float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0)))
+        if float(row.get("avg_net_pnl_bps") or 0.0) < 0
+    ][:5]
+    valid_den = max(valid, 1)
+    return {
+        "trade_replay_available": True,
+        "logical_date": date_str,
+        "replay_count": total,
+        "valid_replay_count": valid,
+        "valid_count": valid,
+        "win_rate": round(wins / valid_den, 4),
+        "avg_net_pnl_bps": round(float(avg_row[0] or 0.0), 2) if avg_row else 0.0,
+        "clean_followthrough_rate": round(int(label_counts.get("clean_followthrough") or 0) / valid_den, 4),
+        "bad_entry_rate": round(int(label_counts.get("followthrough_but_bad_entry") or 0) / valid_den, 4),
+        "absorption_reversal_rate": round(int(label_counts.get("absorption_reversal") or 0) / valid_den, 4),
+        "chop_rate": round(int(label_counts.get("chop_no_edge") or 0) / valid_den, 4),
+        "data_invalid_rate": round(int(label_counts.get("data_invalid") or 0) / max(total, 1), 4),
+        "suppressed_replay_count": suppressed_total,
+        "suppressed_profitable_rate": round(suppressed_profit / max(suppressed_valid, 1), 4),
+        "suppressed_clean_followthrough_rate": round(suppressed_clean / max(suppressed_valid, 1), 4),
+        "suppressed_absorption_reversal_rate": round(suppressed_absorb / max(suppressed_valid, 1), 4),
+        "blocked_saved_rate_estimate": round(blocked_saved / max(blocked_valid, 1), 4),
+        "blocked_false_block_rate_estimate": round(blocked_false / max(blocked_valid, 1), 4),
+        "shadow_replay_count": shadow_count,
+        "top_positive_profiles": positive,
+        "top_negative_profiles": negative,
+        "recommended_profile_actions": [
+            {"profile_key": row.get("profile_key"), "recommended_action": row.get("recommended_action")}
+            for row in profiles[:10]
+        ],
+    }
+
+
+def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
+    where, params = _where_for_date("created_at", date_str)
+    candidate = conn.execute(
+        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status='SHADOW_CANDIDATE'",
+        params,
+    ).fetchone()
+    verified = conn.execute(
+        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status='SHADOW_VERIFIED'",
+        params,
+    ).fetchone()
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != '' AND shadow_status != 'NONE'",
+        params,
+    ).fetchone()
+    return {
+        "logical_date": date_str,
+        "shadow_total": int(total[0]) if total else 0,
+        "shadow_candidate_count": int(candidate[0]) if candidate else 0,
+        "shadow_verified_count": int(verified[0]) if verified else 0,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -757,33 +955,7 @@ def main(argv: list[str] | None = None) -> int:
         if conn is None:
             payload["error"] = "no_sqlite_connection"
         else:
-            total = conn.execute("SELECT COUNT(*) FROM market_context_attempts").fetchone()
-            success = conn.execute("SELECT COUNT(*) FROM market_context_attempts WHERE success=1").fetchone()
-            failure = conn.execute("SELECT COUNT(*) FROM market_context_attempts WHERE success=0").fetchone()
-            attempt_count = int(total[0]) if total else 0
-            success_count = int(success[0]) if success else 0
-            failure_count = int(failure[0]) if failure else 0
-            if attempt_count == 0:
-                success_rate = None
-                success_rate_reason = "no_attempts"
-            else:
-                success_rate = round(success_count / attempt_count, 4)
-                success_rate_reason = None
-            fixture_rows = conn.execute(
-                "SELECT COUNT(DISTINCT signal_id) FROM market_context_attempts WHERE failure_reason LIKE '%fixture%'"
-            ).fetchone()
-            live_rows = conn.execute(
-                "SELECT COUNT(DISTINCT signal_id) FROM market_context_attempts WHERE endpoint LIKE '%okx%' OR endpoint LIKE '%kraken%' OR endpoint LIKE '%binance%' OR endpoint LIKE '%bybit%'"
-            ).fetchone()
-            payload = {
-                "attempt_count": attempt_count,
-                "success_count": success_count,
-                "failure_count": failure_count,
-                "success_rate": success_rate,
-                "success_rate_reason": success_rate_reason,
-                "fixture_mode_detected": int(fixture_rows[0]) if fixture_rows else 0,
-                "live_mode_detected": int(live_rows[0]) if live_rows else 0,
-            }
+            payload = _market_context_kpi_payload(conn, args.date)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0
@@ -791,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.data_quality_summary or args.runtime_health_summary:
         import runtime_health
 
-        payload = runtime_health.build_runtime_health_report()
+        payload = runtime_health.build_runtime_health_report(date_str=args.date)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0
@@ -805,12 +977,7 @@ def main(argv: list[str] | None = None) -> int:
         if conn is None:
             payload["error"] = "no_sqlite_connection"
         else:
-            examples = conn.execute("SELECT COUNT(*) FROM trade_replay_examples").fetchone()
-            profiles = conn.execute("SELECT COUNT(*) FROM trade_replay_profile_stats").fetchone()
-            payload = {
-                "trade_replay_examples_count": int(examples[0]) if examples else 0,
-                "trade_replay_profile_stats_count": int(profiles[0]) if profiles else 0,
-            }
+            payload = _trade_replay_summary_payload(conn, args.date)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0
@@ -824,20 +991,22 @@ def main(argv: list[str] | None = None) -> int:
         if conn is None:
             payload["error"] = "no_sqlite_connection"
         else:
-            shadow_total = conn.execute(
-                "SELECT COUNT(*) FROM trade_opportunities WHERE status LIKE '%SHADOW%'"
-            ).fetchone()
-            shadow_candidate = conn.execute(
-                "SELECT COUNT(*) FROM trade_opportunities WHERE status='SHADOW_CANDIDATE'"
-            ).fetchone()
-            shadow_verified = conn.execute(
-                "SELECT COUNT(*) FROM trade_opportunities WHERE status='SHADOW_VERIFIED'"
-            ).fetchone()
-            payload = {
-                "shadow_total": int(shadow_total[0]) if shadow_total else 0,
-                "shadow_candidate": int(shadow_candidate[0]) if shadow_candidate else 0,
-                "shadow_verified": int(shadow_verified[0]) if shadow_verified else 0,
-            }
+            payload = _shadow_opportunity_payload(conn, args.date)
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.db_reconcile_dry_run:
+        import report_data_loader
+
+        window = None
+        if args.date:
+            start_ts, end_ts = _date_bounds(args.date)
+            window = {"start_ts": start_ts, "end_ts": end_ts}
+        payload = report_data_loader.report_source_summary(window=window, fast=False)
+        payload["logical_date"] = args.date
+        payload["dry_run"] = True
+        payload["would_modify"] = False
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0

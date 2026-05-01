@@ -1981,6 +1981,18 @@ class TradeOpportunityManager:
         )
         opportunity_id = self._id(opportunity_key=opportunity_key, signal_id=str(summary.get("signal_id") or ""), event_ts=created_at)
         calibration_snapshot = dict(score_payload.get("trade_opportunity_calibration_snapshot") or {})
+        shadow_status = str(shadow.get("shadow_status") or "NONE")
+        maturity = "mature" if verified_ready else "immature" if (
+            status in {"CANDIDATE", "VERIFIED"} or shadow_status in SHADOW_STATUSES
+        ) else "none"
+        replay_eligible = bool(
+            side in {"LONG", "SHORT"}
+            and (
+                status in {"CANDIDATE", "VERIFIED", "BLOCKED"}
+                or shadow_status in SHADOW_STATUSES
+                or bool(summary.get("no_trade_lock_active"))
+            )
+        )
         return {
             "trade_opportunity_id": opportunity_id,
             "trade_opportunity_key": opportunity_key,
@@ -2100,9 +2112,13 @@ class TradeOpportunityManager:
             "adverse_after_block": None,
             "blocker_saved_trade": None,
             "blocker_false_block_possible": None,
-            "trade_opportunity_shadow_status": shadow["shadow_status"],
-            "trade_opportunity_shadow_reason": shadow["shadow_reason"],
-            "trade_opportunity_shadow_score": round(shadow["shadow_score"], 4),
+            "trade_opportunity_shadow_status": shadow_status,
+            "trade_opportunity_shadow_reason": str(shadow.get("shadow_reason") or ""),
+            "trade_opportunity_shadow_score": round(float(shadow.get("shadow_score") or 0.0), 4),
+            "trade_opportunity_would_have_been_candidate": bool(shadow.get("would_have_been_candidate")),
+            "trade_opportunity_would_have_been_verified": bool(shadow.get("would_have_been_verified")),
+            "trade_opportunity_maturity": maturity,
+            "trade_opportunity_replay_eligible": replay_eligible,
         }
 
     def _evaluate_shadow_opportunity(
@@ -2128,6 +2144,24 @@ class TradeOpportunityManager:
         """
         if not bool(SHADOW_OPPORTUNITY_ENABLE):
             return {"shadow_status": "NONE", "shadow_reason": "shadow_disabled", "shadow_score": 0.0}
+
+        # Hard blockers prevent even shadow opportunities
+        # These are fundamental issues that make the signal unreliable
+        hard_blocker_keys = {
+            "no_trade_lock",
+            "direction_conflict",
+            "data_gap",
+            "sweep_exhaustion_risk",
+        }
+        blocking_hard_blockers = [b for b in hard_blockers if b in hard_blocker_keys]
+        if blocking_hard_blockers:
+            return {
+                "shadow_status": "NONE",
+                "shadow_reason": f"hard_blocker:{blocking_hard_blockers[0]}",
+                "shadow_score": calibrated_score,
+                "would_have_been_candidate": False,
+                "would_have_been_verified": False,
+            }
 
         shadow_status = "NONE"
         shadow_reason = ""
@@ -2211,6 +2245,8 @@ class TradeOpportunityManager:
             "shadow_status": shadow_status,
             "shadow_reason": shadow_reason,
             "shadow_score": shadow_score,
+            "would_have_been_candidate": bool(candidate_ready or shadow_candidate_ready),
+            "would_have_been_verified": bool(verified_ready or shadow_status == "SHADOW_VERIFIED"),
         }
 
     def _hard_blockers(
@@ -2858,6 +2894,13 @@ class TradeOpportunityManager:
             "adverse_after_block": previous.get("adverse_after_block"),
             "blocker_saved_trade": previous.get("blocker_saved_trade"),
             "blocker_false_block_possible": previous.get("blocker_false_block_possible"),
+            "trade_opportunity_shadow_status": "NONE",
+            "trade_opportunity_shadow_reason": "",
+            "trade_opportunity_shadow_score": 0.0,
+            "trade_opportunity_would_have_been_candidate": False,
+            "trade_opportunity_would_have_been_verified": False,
+            "trade_opportunity_maturity": "none",
+            "trade_opportunity_replay_eligible": False,
         }
 
     def _telegram_decision(

@@ -3442,6 +3442,51 @@ class SignalPipeline:
                 or event_metadata.get("trade_opportunity_status")
                 or ""
             ),
+            "trade_opportunity_shadow_status": str(
+                signal_context.get("trade_opportunity_shadow_status")
+                or signal_metadata.get("trade_opportunity_shadow_status")
+                or event_metadata.get("trade_opportunity_shadow_status")
+                or "NONE"
+            ),
+            "trade_opportunity_shadow_reason": str(
+                signal_context.get("trade_opportunity_shadow_reason")
+                or signal_metadata.get("trade_opportunity_shadow_reason")
+                or event_metadata.get("trade_opportunity_shadow_reason")
+                or ""
+            ),
+            "trade_opportunity_shadow_score": float(
+                signal_context.get("trade_opportunity_shadow_score")
+                or signal_metadata.get("trade_opportunity_shadow_score")
+                or event_metadata.get("trade_opportunity_shadow_score")
+                or 0.0
+            ),
+            "trade_opportunity_maturity": str(
+                signal_context.get("trade_opportunity_maturity")
+                or signal_metadata.get("trade_opportunity_maturity")
+                or event_metadata.get("trade_opportunity_maturity")
+                or ""
+            ),
+            "trade_opportunity_replay_eligible": bool(
+                signal_context.get("trade_opportunity_replay_eligible")
+                if signal_context.get("trade_opportunity_replay_eligible") is not None
+                else signal_metadata.get("trade_opportunity_replay_eligible")
+                if signal_metadata.get("trade_opportunity_replay_eligible") is not None
+                else event_metadata.get("trade_opportunity_replay_eligible")
+            ),
+            "trade_opportunity_would_have_been_candidate": bool(
+                signal_context.get("trade_opportunity_would_have_been_candidate")
+                if signal_context.get("trade_opportunity_would_have_been_candidate") is not None
+                else signal_metadata.get("trade_opportunity_would_have_been_candidate")
+                if signal_metadata.get("trade_opportunity_would_have_been_candidate") is not None
+                else event_metadata.get("trade_opportunity_would_have_been_candidate")
+            ),
+            "trade_opportunity_would_have_been_verified": bool(
+                signal_context.get("trade_opportunity_would_have_been_verified")
+                if signal_context.get("trade_opportunity_would_have_been_verified") is not None
+                else signal_metadata.get("trade_opportunity_would_have_been_verified")
+                if signal_metadata.get("trade_opportunity_would_have_been_verified") is not None
+                else event_metadata.get("trade_opportunity_would_have_been_verified")
+            ),
             "trade_opportunity_label": str(
                 signal_context.get("trade_opportunity_label")
                 or signal_metadata.get("trade_opportunity_label")
@@ -3551,6 +3596,12 @@ class SignalPipeline:
                 or signal_metadata.get("trade_opportunity_history_snapshot")
                 or event_metadata.get("trade_opportunity_history_snapshot")
                 or {}
+            ),
+            "opportunity_profile_key": str(
+                signal_context.get("opportunity_profile_key")
+                or signal_metadata.get("opportunity_profile_key")
+                or event_metadata.get("opportunity_profile_key")
+                or ""
             ),
             "trade_opportunity_status_at_creation": str(
                 signal_context.get("trade_opportunity_status_at_creation")
@@ -5281,6 +5332,42 @@ class SignalPipeline:
                 signal_context.get("opportunity_gate_failure_reason"),
                 signal_metadata.get("opportunity_gate_failure_reason"),
                 event_metadata.get("opportunity_gate_failure_reason"),
+            ),
+            "trade_opportunity_status": _text(
+                signal_context.get("trade_opportunity_status"),
+                signal_metadata.get("trade_opportunity_status"),
+                event_metadata.get("trade_opportunity_status"),
+            ),
+            "trade_opportunity_shadow_status": _text(
+                signal_context.get("trade_opportunity_shadow_status"),
+                signal_metadata.get("trade_opportunity_shadow_status"),
+                event_metadata.get("trade_opportunity_shadow_status"),
+                "NONE",
+            ),
+            "trade_opportunity_shadow_reason": _text(
+                signal_context.get("trade_opportunity_shadow_reason"),
+                signal_metadata.get("trade_opportunity_shadow_reason"),
+                event_metadata.get("trade_opportunity_shadow_reason"),
+            ),
+            "trade_opportunity_primary_blocker": _text(
+                signal_context.get("trade_opportunity_primary_blocker"),
+                signal_metadata.get("trade_opportunity_primary_blocker"),
+                event_metadata.get("trade_opportunity_primary_blocker"),
+            ),
+            "opportunity_profile_key": _text(
+                signal_context.get("opportunity_profile_key"),
+                signal_metadata.get("opportunity_profile_key"),
+                event_metadata.get("opportunity_profile_key"),
+            ),
+            "trade_opportunity_maturity": _text(
+                signal_context.get("trade_opportunity_maturity"),
+                signal_metadata.get("trade_opportunity_maturity"),
+                event_metadata.get("trade_opportunity_maturity"),
+            ),
+            "trade_opportunity_replay_eligible": _bool_value(
+                signal_context.get("trade_opportunity_replay_eligible"),
+                signal_metadata.get("trade_opportunity_replay_eligible"),
+                event_metadata.get("trade_opportunity_replay_eligible"),
             ),
             "lp_confirm_scope": _text(
                 signal_context.get("lp_confirm_scope"),

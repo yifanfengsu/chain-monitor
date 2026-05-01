@@ -480,7 +480,7 @@ def _load_window(window: dict[str, Any]) -> tuple[dict[str, list[dict[str, Any]]
         try:
             result = _sqlite_count_only(key, bounds) if key in count_only else None
             if result is None:
-                result = load(window=bounds, compare_archive=False)
+                result = load(window=bounds, compare_archive=key in {"signals", "delivery_audit", "case_followups"})
         except Exception as exc:  # pragma: no cover - defensive report degradation
             result = _empty_result(warning=f"load_failed:{key}:{exc}")
         results[key] = result
@@ -495,6 +495,21 @@ def _data_source_summary(results: dict[str, report_data_loader.LoadResult]) -> d
     fallback_used = any(result.fallback_used for result in results.values())
     active_sources = {source for source in source_components.values() if source and source != "unavailable"}
     source = "mixed" if len(active_sources) > 1 else next(iter(active_sources), "unavailable")
+    mirror_detail = {
+        key: dict(result.mismatch_info or {})
+        for key, result in results.items()
+        if result.mismatch_info
+    }
+    mismatch_items = {
+        key: item
+        for key, item in mirror_detail.items()
+        if item.get("mismatch")
+    }
+    match_rates = [
+        float(item.get("match_rate"))
+        for item in mirror_detail.values()
+        if item.get("match_rate") is not None
+    ]
     return {
         "report_data_source": source,
         "data_source": source,
@@ -502,7 +517,13 @@ def _data_source_summary(results: dict[str, report_data_loader.LoadResult]) -> d
         "row_counts": row_counts,
         "loader_results": {key: _load_result_dict(result) for key, result in results.items()},
         "archive_fallback_used": fallback_used,
-        "db_archive_mirror_match_rate": None,
+        "db_archive_mirror_match_rate": round(sum(match_rates) / len(match_rates), 4) if match_rates else None,
+        "db_archive_mirror_detail": mirror_detail,
+        "db_archive_mismatch_categories": sorted(mismatch_items),
+        "db_archive_mismatch_rows": sum(
+            abs(int(item.get("sqlite_rows") or 0) - int(item.get("archive_rows") or item.get("cache_rows") or 0))
+            for item in mismatch_items.values()
+        ),
         "mismatch_warnings": warnings,
         "source_warnings": warnings,
         "sqlite_health": report_data_loader.sqlite_health(fast=True),
@@ -1019,11 +1040,21 @@ def _market_context_health(attempt_rows: list[dict[str, Any]], lp_rows: list[dic
     venue_success = Counter()
     failures = Counter()
     resolved = Counter()
+    attempt_count = 0
+    success_count = 0
+    last_success_ts: int | None = None
     for row in attempt_rows:
+        attempt_count += 1
         venue = str(_first(row, "venue") or "")
+        success = _is_true(_first(row, "success"))
+        if success:
+            success_count += 1
+            row_ts = _row_ts(row)
+            if row_ts is not None and (last_success_ts is None or row_ts > last_success_ts):
+                last_success_ts = row_ts
         if venue:
             venue_attempts[venue] += 1
-            if _is_true(_first(row, "success")):
+            if success:
                 venue_success[venue] += 1
         failure = str(_first(row, "failure_reason") or "")
         if failure:
@@ -1036,6 +1067,24 @@ def _market_context_health(attempt_rows: list[dict[str, Any]], lp_rows: list[dic
     window = {
         "live_public_rate": _rate(source_counter.get("live_public", 0), total_lp),
         "unavailable_rate": _rate(source_counter.get("unavailable", 0), total_lp),
+        "market_context_attempt_count": attempt_count,
+        "market_context_success_count": success_count,
+        "market_context_failure_count": max(attempt_count - success_count, 0),
+        "market_context_attempt_success_rate": _rate(success_count, attempt_count),
+        "market_context_success_rate": _rate(success_count, attempt_count),
+        "market_context_success_rate_reason": "no_attempts" if attempt_count == 0 else "",
+        "market_context_primary_venue": str(getattr(app_config, "MARKET_CONTEXT_PRIMARY_VENUE", "")),
+        "market_context_secondary_venue": str(getattr(app_config, "MARKET_CONTEXT_SECONDARY_VENUE", "")),
+        "market_context_fixture_mode_detected": sum(
+            1 for row in attempt_rows
+            if "fixture" in str(_first(row, "endpoint", "failure_reason") or "").lower()
+        ),
+        "market_context_live_mode_detected": sum(
+            1 for row in attempt_rows
+            if any(item in str(_first(row, "endpoint", "venue") or "").lower() for item in ("okx", "kraken"))
+        ),
+        "market_context_unavailable_count": source_counter.get("unavailable", 0),
+        "market_context_last_success_ts": last_success_ts,
         "okx_attempts": venue_attempts.get("okx_perp", 0) + venue_attempts.get("okx", 0),
         "okx_success": venue_success.get("okx_perp", 0) + venue_success.get("okx", 0),
         "kraken_attempts": venue_attempts.get("kraken_futures", 0) + venue_attempts.get("kraken", 0),
@@ -1076,6 +1125,119 @@ def _major_coverage_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
             "covered_major_pairs": covered,
             "missing_expected_pairs": missing,
         },
+        "btc_coverage_status": "has_recent_signals" if asset_counter.get("BTC", 0) > 0 else "no_recent_btc_signals",
+        "btc_recent_signal_count": asset_counter.get("BTC", 0),
+        "btc_recent_outcomes_count": 0,
+        "btc_usdc_configured": "BTC/USDC" in EXPECTED_MAJOR_PAIRS,
+        "btc_usdt_configured": "BTC/USDT" in EXPECTED_MAJOR_PAIRS,
+        "sol_unsupported_reason": "native_solana_requires_solana_listener; current active LP scan is Ethereum-only",
+    }
+
+
+def _read_trade_replay_summary(logical_date: str) -> dict[str, Any]:
+    path = _db_path()
+    if not path.exists():
+        return {"trade_replay_available": False, "reason": "sqlite_db_missing", "logical_date": logical_date, "replay_count": 0}
+    try:
+        import quality_reports
+
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception as exc:
+        return {"trade_replay_available": False, "reason": f"sqlite_open_failed:{exc}", "logical_date": logical_date, "replay_count": 0}
+    try:
+        tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "trade_replay_examples" not in tables or "trade_replay_profile_stats" not in tables:
+            return {"trade_replay_available": False, "reason": "trade_replay_tables_missing", "logical_date": logical_date, "replay_count": 0}
+        return quality_reports._trade_replay_summary_payload(conn, logical_date)
+    except Exception as exc:
+        return {"trade_replay_available": False, "reason": f"trade_replay_summary_failed:{exc}", "logical_date": logical_date, "replay_count": 0}
+    finally:
+        conn.close()
+
+
+def _shadow_opportunity_summary(opportunity_rows: list[dict[str, Any]], replay_summary: dict[str, Any]) -> dict[str, Any]:
+    shadow_candidate = 0
+    shadow_verified = 0
+    for row in opportunity_rows:
+        shadow_status = str(_first(row, "trade_opportunity_shadow_status", "shadow_status") or "NONE")
+        if shadow_status == "SHADOW_CANDIDATE":
+            shadow_candidate += 1
+        elif shadow_status == "SHADOW_VERIFIED":
+            shadow_verified += 1
+    positive_profiles = [
+        item for item in replay_summary.get("top_positive_profiles", [])
+        if "SHADOW_" in str(item.get("profile_key") or "")
+    ]
+    negative_profiles = [
+        item for item in replay_summary.get("top_negative_profiles", [])
+        if "SHADOW_" in str(item.get("profile_key") or "")
+    ]
+    return {
+        "shadow_candidate_count": shadow_candidate,
+        "shadow_verified_count": shadow_verified,
+        "shadow_replay_count": int(replay_summary.get("shadow_replay_count") or 0),
+        "shadow_positive_profile_count": len(positive_profiles),
+        "shadow_negative_profile_count": len(negative_profiles),
+    }
+
+
+def _runtime_health_summary(logical_date: str) -> dict[str, Any]:
+    try:
+        import runtime_health
+
+        return runtime_health.build_runtime_health_report(date_str=logical_date)
+    except Exception as exc:
+        return {"data_quality_status": "unknown", "data_gap_warnings": [f"runtime_health_unavailable:{exc}"]}
+
+
+def _data_quality_summary(
+    *,
+    runtime: dict[str, Any],
+    data_source: dict[str, Any],
+    market_context: dict[str, Any],
+    run_overview: dict[str, Any],
+    opportunity_count: int,
+) -> dict[str, Any]:
+    warnings = list(runtime.get("data_gap_warnings") or [])
+    mismatch_warnings = list(data_source.get("mismatch_warnings") or data_source.get("source_warnings") or [])
+    mismatch_rows = 0
+    mismatch_categories: list[str] = []
+    for key, item in (data_source.get("db_archive_mirror_detail") or {}).items():
+        if not isinstance(item, dict) or not item.get("mismatch"):
+            continue
+        mismatch_categories.append(str(key))
+        mismatch_rows += abs(int(item.get("sqlite_rows") or 0) - int(item.get("archive_rows") or 0))
+    if mismatch_warnings and not mismatch_categories:
+        mismatch_categories = [str(item).split(":")[1] if ":" in str(item) else str(item) for item in mismatch_warnings]
+        mismatch_rows = len(mismatch_warnings)
+    status = str(runtime.get("data_quality_status") or "valid")
+    if mismatch_rows > 0 and status == "valid":
+        status = "degraded"
+    if int(runtime.get("raw_events_count") or run_overview.get("total_raw_events") or 0) == 0 and opportunity_count > 0:
+        warnings.append("stale_or_cross_day_data_warning")
+        status = "degraded" if status == "valid" else status
+    if int(runtime.get("zero_activity_day") or 0):
+        status = "invalid_or_no_activity"
+    return {
+        "active_hours": runtime.get("active_hours"),
+        "raw_events_count": runtime.get("raw_events_count", run_overview.get("total_raw_events")),
+        "parsed_events_count": runtime.get("parsed_events_count", run_overview.get("total_parsed_events")),
+        "signals_count": runtime.get("signals_count", run_overview.get("total_signal_rows")),
+        "max_raw_event_gap_sec": runtime.get("max_raw_event_gap_sec"),
+        "max_signal_gap_sec": runtime.get("max_signal_gap_sec"),
+        "max_gap": max(
+            float(runtime.get("max_raw_event_gap_sec") or 0.0),
+            float(runtime.get("max_signal_gap_sec") or 0.0),
+        ),
+        "zero_activity_day": bool(runtime.get("zero_activity_day")),
+        "data_gap_warnings": sorted(set(str(item) for item in warnings if item)),
+        "market_context_success_rate": (market_context.get("window") or {}).get("market_context_success_rate"),
+        "db_archive_mismatch_status": "mismatch" if mismatch_rows > 0 else "match_or_unchecked",
+        "db_archive_mirror_match_rate": data_source.get("db_archive_mirror_match_rate"),
+        "db_archive_mismatch_categories": mismatch_categories,
+        "db_archive_mismatch_rows": mismatch_rows,
+        "data_quality_status": status,
     }
 
 
@@ -1251,6 +1413,7 @@ def _markdown(payload: dict[str, Any]) -> str:
         f"- active_duration_hours: `{payload['active_duration_hours']}`",
         f"- wall_clock_duration_hours: `{payload['wall_clock_duration_hours']}`",
         f"- data_source: `{payload['data_source_summary'].get('report_data_source')}`",
+        f"- report_conclusion: `{payload.get('report_conclusion')}`",
         "",
         "## Summary",
         "",
@@ -1268,6 +1431,47 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- verified_maturity: `{payload.get('trade_opportunity_summary', {}).get('verified_maturity', 'unknown')}`",
             f"- trade_action_distribution_top: `{json.dumps(trade_action_top, ensure_ascii=False, sort_keys=True)}`",
             f"- prealert_lifecycle_available: `{bool(prealert.get('available'))}` source=`{prealert.get('source', 'missing')}`",
+        ]
+    )
+    replay = payload.get("trade_replay_summary") or {}
+    shadow = payload.get("shadow_opportunity_summary") or {}
+    data_quality = payload.get("data_quality_summary") or {}
+    lines.extend(
+        [
+            "",
+            "## 交易后验 / Trade Replay",
+            "",
+            f"- trade_replay_available: `{bool(replay.get('trade_replay_available'))}`",
+            f"- replay_count: `{replay.get('replay_count', 0)}`",
+            f"- valid_replay_count: `{replay.get('valid_replay_count', replay.get('valid_count', 0))}`",
+            f"- win_rate: `{replay.get('win_rate')}`",
+            f"- avg_net_pnl_bps: `{replay.get('avg_net_pnl_bps')}`",
+            f"- clean_followthrough_rate: `{replay.get('clean_followthrough_rate')}`",
+            f"- bad_entry_rate: `{replay.get('bad_entry_rate')}`",
+            f"- absorption_reversal_rate: `{replay.get('absorption_reversal_rate')}`",
+            f"- chop_rate: `{replay.get('chop_rate')}`",
+            f"- data_invalid_rate: `{replay.get('data_invalid_rate')}`",
+            f"- suppressed_profitable_rate: `{replay.get('suppressed_profitable_rate')}`",
+            f"- blocked_saved_rate_estimate: `{replay.get('blocked_saved_rate_estimate')}`",
+            f"- top_positive_profiles: `{json.dumps(replay.get('top_positive_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
+            f"- top_negative_profiles: `{json.dumps(replay.get('top_negative_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
+            "",
+            "## Shadow Opportunity 学习样本",
+            "",
+            f"- shadow_candidate_count: `{shadow.get('shadow_candidate_count', 0)}`",
+            f"- shadow_verified_count: `{shadow.get('shadow_verified_count', 0)}`",
+            f"- shadow_replay_count: `{shadow.get('shadow_replay_count', 0)}`",
+            f"- shadow_positive_profile_count: `{shadow.get('shadow_positive_profile_count', 0)}`",
+            f"- shadow_negative_profile_count: `{shadow.get('shadow_negative_profile_count', 0)}`",
+            "",
+            "## 数据质量",
+            "",
+            f"- active_hours: `{data_quality.get('active_hours')}`",
+            f"- max_gap: `{data_quality.get('max_gap')}`",
+            f"- zero_activity_day: `{data_quality.get('zero_activity_day')}`",
+            f"- market_context_success_rate: `{data_quality.get('market_context_success_rate')}`",
+            f"- db_archive_mismatch_status: `{data_quality.get('db_archive_mismatch_status')}`",
+            f"- data_quality_status: `{data_quality.get('data_quality_status')}`",
         ]
     )
     lines.extend(["", "## Limitations", ""])
@@ -1297,7 +1501,18 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("prealert", "median_prealert_to_confirm_sec", payload.get("prealert_lifecycle_summary", {}).get("median_prealert_to_confirm_sec")),
         ("telegram", "telegram_suppression_ratio", payload.get("telegram_suppression_summary", {}).get("telegram_suppression_ratio")),
         ("market_context", "okx_attempts", payload.get("market_context_health", {}).get("window", {}).get("okx_attempts")),
+        ("market_context", "market_context_attempt_success_rate", payload.get("market_context_health", {}).get("window", {}).get("market_context_attempt_success_rate")),
         ("majors", "missing_major_pairs_count", len(payload.get("major_coverage_summary", {}).get("missing_major_pairs") or [])),
+        ("majors", "btc_recent_signal_count", payload.get("major_coverage_summary", {}).get("btc_recent_signal_count")),
+        ("trade_replay", "replay_count", payload.get("trade_replay_summary", {}).get("replay_count")),
+        ("trade_replay", "valid_replay_count", payload.get("trade_replay_summary", {}).get("valid_replay_count")),
+        ("trade_replay", "avg_net_pnl_bps", payload.get("trade_replay_summary", {}).get("avg_net_pnl_bps")),
+        ("trade_replay", "clean_followthrough_rate", payload.get("trade_replay_summary", {}).get("clean_followthrough_rate")),
+        ("trade_replay", "bad_entry_rate", payload.get("trade_replay_summary", {}).get("bad_entry_rate")),
+        ("trade_replay", "absorption_reversal_rate", payload.get("trade_replay_summary", {}).get("absorption_reversal_rate")),
+        ("shadow", "shadow_candidate_count", payload.get("shadow_opportunity_summary", {}).get("shadow_candidate_count")),
+        ("shadow", "shadow_verified_count", payload.get("shadow_opportunity_summary", {}).get("shadow_verified_count")),
+        ("data_quality", "data_quality_status", payload.get("data_quality_summary", {}).get("data_quality_status")),
     ]
     for group, name, value in rows:
         writer.writerow({"metric_group": group, "metric_name": name, "value": json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value})
@@ -1329,6 +1544,9 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
     market_context = _market_context_health(rows.get("market_context_attempts", []), lp_rows)
     majors = _major_coverage_summary(lp_rows)
     data_source = _data_source_summary(results)
+    replay_summary = _read_trade_replay_summary(logical_date)
+    shadow_summary = _shadow_opportunity_summary(opportunity_rows, replay_summary)
+    runtime_health_summary = _runtime_health_summary(logical_date)
     trade_actions = _trade_action_summary(signal_rows, delivery_rows)
     prealert_lifecycle = _prealert_lifecycle_summary(rows.get("prealert_lifecycle", []), signal_rows)
     verified_maturity = str(trade_summary.get("verified_maturity") or "unknown")
@@ -1355,6 +1573,13 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "asset_case_count": result_count("asset_cases"),
         "case_followup_count": result_count("case_followups"),
     }
+    data_quality = _data_quality_summary(
+        runtime=runtime_health_summary,
+        data_source=data_source,
+        market_context=market_context,
+        run_overview=run_overview,
+        opportunity_count=len(opportunity_rows),
+    )
     blocker_summary = {
         "hard_blocker_distribution": trade_summary.get("hard_blocker_distribution", {}),
         "verification_blocker_distribution": trade_summary.get("verification_blocker_distribution", {}),
@@ -1372,6 +1597,13 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             f"blocked={trade_summary['opportunity_blocked_count']}"
         ),
         f"verified_maturity={verified_maturity}; CANDIDATE is not a trade signal",
+        (
+            "trade_replay: "
+            f"available={bool(replay_summary.get('trade_replay_available'))} "
+            f"replay={int(replay_summary.get('replay_count') or 0)} "
+            f"valid={int(replay_summary.get('valid_replay_count') or replay_summary.get('valid_count') or 0)}"
+        ),
+        f"data_quality={data_quality.get('data_quality_status')} zero_activity_day={bool(data_quality.get('zero_activity_day'))}",
         f"trade_action_distribution_top={json.dumps(trade_actions.get('trade_action_distribution_top') or {}, ensure_ascii=False, sort_keys=True)}",
         f"prealert_lifecycle_available={bool(prealert_lifecycle.get('available'))} source={prealert_lifecycle.get('source', 'missing')}",
     ]
@@ -1380,6 +1612,24 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         key_risks.append("VERIFIED maturity is immature and must remain research/filter evidence only")
     elif verified_maturity == "unknown":
         key_risks.append("VERIFIED maturity is unknown because supporting maturity data is insufficient")
+    if not replay_summary.get("trade_replay_available"):
+        limitations.append("trade_replay_missing")
+    if data_quality.get("data_quality_status") in {"degraded", "invalid_or_no_activity"}:
+        limitations.append(f"data_quality={data_quality.get('data_quality_status')}")
+    if data_quality.get("data_quality_status") == "invalid_or_no_activity":
+        report_conclusion = "data_invalid"
+    elif data_quality.get("data_quality_status") == "degraded":
+        report_conclusion = "data_invalid"
+    elif replay_summary.get("trade_replay_available") and replay_summary.get("top_positive_profiles"):
+        report_conclusion = "replay_positive_profiles_found"
+    elif shadow_summary.get("shadow_candidate_count") or shadow_summary.get("shadow_verified_count"):
+        report_conclusion = "learning_samples_accumulating"
+    elif trade_summary.get("opportunity_blocked_count") and not trade_summary.get("opportunity_candidate_count") and not trade_summary.get("opportunity_verified_count"):
+        report_conclusion = "risk_filtering_only"
+    elif verified_maturity == "mature" and replay_summary.get("trade_replay_available"):
+        report_conclusion = "production_trade_ready"
+    else:
+        report_conclusion = "learning_samples_accumulating"
     payload = {
         "report_type": "daily_canonical",
         "logical_date": logical_date,
@@ -1402,8 +1652,17 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "run_overview": run_overview,
         "data_source": data_source.get("report_data_source"),
         "data_source_summary": data_source,
+        "data_quality_summary": data_quality,
+        "runtime_health_summary": runtime_health_summary,
         "market_context_health": market_context,
         "trade_opportunity_summary": trade_summary,
+        "trade_replay_summary": replay_summary,
+        "profile_posterior_summary": {
+            "top_positive_profiles": replay_summary.get("top_positive_profiles", []),
+            "top_negative_profiles": replay_summary.get("top_negative_profiles", []),
+            "recommended_profile_actions": replay_summary.get("recommended_profile_actions", []),
+        },
+        "shadow_opportunity_summary": shadow_summary,
         "candidate_verified_summary": _candidate_verified_summary(trade_summary),
         "candidate_tradeable_summary": _candidate_verified_summary(trade_summary),
         "blocker_summary": blocker_summary,
@@ -1420,6 +1679,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "archive_base_dir": str(getattr(app_config, "ARCHIVE_BASE_DIR", APP_DIR / "data" / "archive")),
             "archive_fallback_used": data_source.get("archive_fallback_used"),
         },
+        "report_conclusion": report_conclusion,
         "key_findings": key_findings,
         "key_risks": key_risks,
         "limitations": sorted(set(str(item) for item in limitations if item)),

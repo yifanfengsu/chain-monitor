@@ -23,13 +23,40 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 
-from config import PROJECT_ROOT, SQLITE_DB_PATH
 from sqlite_store import get_connection, init_sqlite_store
 
 _GAP_WARNING_SEC = 900  # 15 min
 _GAP_DEGRADED_SEC = 3600  # 60 min
+_BJ_TZ = timezone(timedelta(hours=8))
+
+
+def _date_bounds(date_str: str | None) -> tuple[int | None, int | None]:
+    if not date_str:
+        return None, None
+    parsed = datetime.strptime(date_str, "%Y-%m-%d")
+    start = parsed.replace(tzinfo=_BJ_TZ)
+    start_ts = int(start.timestamp())
+    return start_ts, start_ts + 24 * 3600 - 1
+
+
+def _fetch_ts(conn, table: str, column: str, start_ts: int | None, end_ts: int | None) -> list[float]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if start_ts is not None:
+        clauses.append(f"{column} >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        clauses.append(f"{column} <= ?")
+        params.append(end_ts)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        rows = conn.execute(f"SELECT {column} FROM {table} {where} ORDER BY {column} ASC", tuple(params)).fetchall()
+    except Exception:
+        return []
+    return [float(r[0]) for r in rows if r[0] is not None]
 
 
 def _query_timestamps(date_str: str | None = None) -> dict:
@@ -39,39 +66,54 @@ def _query_timestamps(date_str: str | None = None) -> dict:
     if conn is None:
         return {"error": "no_sqlite_connection"}
 
-    date_filter = ""
-    params: tuple = ()
-    if date_str:
-        date_filter = "WHERE date(created_at) = ?"
-        params = (date_str,)
+    start_ts, end_ts = _date_bounds(date_str)
+    raw_timestamps = _fetch_ts(conn, "raw_events", "captured_at", start_ts, end_ts)
+    parsed_timestamps = _fetch_ts(conn, "parsed_events", "parsed_at", start_ts, end_ts)
+    signal_timestamps = _fetch_ts(conn, "signals", "timestamp", start_ts, end_ts)
 
-    raw_rows = conn.execute(
-        f"SELECT captured_at FROM raw_events {date_filter} ORDER BY captured_at ASC"
-    ).fetchall()
-
-    signal_rows = conn.execute(
-        f"SELECT timestamp FROM signals {date_filter} ORDER BY timestamp ASC"
-    ).fetchall()
-
-    raw_timestamps = [float(r[0]) for r in raw_rows if r[0] is not None]
-    signal_timestamps = [float(r[0]) for r in signal_rows if r[0] is not None]
-
-    # market context success attempts
+    clauses = ["success=1"]
+    params: list[object] = []
+    if start_ts is not None:
+        clauses.append("created_at >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        clauses.append("created_at <= ?")
+        params.append(end_ts)
     mc_rows = conn.execute(
-        f"SELECT created_at FROM market_context_attempts WHERE success=1 {date_filter} ORDER BY created_at ASC"
+        f"SELECT created_at FROM market_context_attempts WHERE {' AND '.join(clauses)} ORDER BY created_at ASC",
+        tuple(params),
     ).fetchall()
     mc_timestamps = [float(r[0]) for r in mc_rows if r[0] is not None]
 
-    # blocks seen
-    block_rows = conn.execute(
-        f"SELECT MAX(block_number) FROM raw_events {date_filter}"
-    ).fetchone()
+    raw_clauses: list[str] = []
+    raw_params: list[object] = []
+    if start_ts is not None:
+        raw_clauses.append("captured_at >= ?")
+        raw_params.append(start_ts)
+    if end_ts is not None:
+        raw_clauses.append("captured_at <= ?")
+        raw_params.append(end_ts)
+    raw_where = f"WHERE {' AND '.join(raw_clauses)}" if raw_clauses else ""
+    block_rows = conn.execute(f"SELECT MAX(block_number) FROM raw_events {raw_where}", tuple(raw_params)).fetchone()
+
+    opp_clauses: list[str] = []
+    opp_params: list[object] = []
+    if start_ts is not None:
+        opp_clauses.append("created_at >= ?")
+        opp_params.append(start_ts)
+    if end_ts is not None:
+        opp_clauses.append("created_at <= ?")
+        opp_params.append(end_ts)
+    opp_where = f"WHERE {' AND '.join(opp_clauses)}" if opp_clauses else ""
+    opp_rows = conn.execute(f"SELECT COUNT(*) FROM trade_opportunities {opp_where}", tuple(opp_params)).fetchone()
 
     return {
         "raw_timestamps": raw_timestamps,
+        "parsed_timestamps": parsed_timestamps,
         "signal_timestamps": signal_timestamps,
         "mc_timestamps": mc_timestamps,
         "last_block_seen": int(block_rows[0]) if block_rows and block_rows[0] is not None else None,
+        "trade_opportunity_count": int(opp_rows[0]) if opp_rows else 0,
     }
 
 
@@ -95,11 +137,13 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
         return data
 
     raw_timestamps = data["raw_timestamps"]
+    parsed_timestamps = data["parsed_timestamps"]
     signal_timestamps = data["signal_timestamps"]
     mc_timestamps = data["mc_timestamps"]
     last_block_seen = data["last_block_seen"]
 
     raw_event_count = len(raw_timestamps)
+    parsed_event_count = len(parsed_timestamps)
     signal_count = len(signal_timestamps)
 
     max_raw_gap, raw_warnings = _compute_gaps(raw_timestamps)
@@ -114,11 +158,14 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
         active_hours = round(span / 3600.0, 2)
 
     last_raw_event_ts = raw_timestamps[-1] if raw_timestamps else None
+    last_parsed_event_ts = parsed_timestamps[-1] if parsed_timestamps else None
     last_signal_ts = signal_timestamps[-1] if signal_timestamps else None
     last_market_context_success_ts = mc_timestamps[-1] if mc_timestamps else None
 
     # data quality status
     zero_activity = (raw_event_count == 0 and signal_count == 0)
+    if raw_event_count == 0 and int(data.get("trade_opportunity_count") or 0) > 0:
+        all_warnings.append("stale_or_cross_day_data_warning")
     if zero_activity or raw_event_count == 0:
         data_quality_status = "invalid_or_no_activity"
     elif max_raw_gap and max_raw_gap > _GAP_DEGRADED_SEC:
@@ -131,16 +178,20 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
     return {
         "active_hours": active_hours,
         "last_raw_event_ts": last_raw_event_ts,
+        "last_parsed_event_ts": last_parsed_event_ts,
         "last_signal_ts": last_signal_ts,
         "last_market_context_success_ts": last_market_context_success_ts,
         "last_block_seen": last_block_seen,
         "raw_events_count": raw_event_count,
+        "parsed_events_count": parsed_event_count,
         "signals_count": signal_count,
         "max_raw_event_gap_sec": max_raw_gap,
         "max_signal_gap_sec": max_signal_gap,
         "data_gap_warnings": all_warnings,
         "zero_activity_day": 1 if zero_activity else 0,
         "data_quality_status": data_quality_status,
+        "process_heartbeat_ts": int(time.time()),
+        "trade_opportunities_count": int(data.get("trade_opportunity_count") or 0),
     }
 
 
@@ -152,6 +203,13 @@ def main(argv: list[str] | None = None) -> int:
 
     init_sqlite_store()
     payload = build_runtime_health_report(date_str=args.date)
+    if args.summary and not args.date:
+        try:
+            import sqlite_store
+
+            sqlite_store.write_runtime_heartbeat(payload)
+        except Exception:
+            pass
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     sys.stdout.write("\n")
     return 0
