@@ -1,15 +1,21 @@
 """Test trade replay engine."""
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from trade_replay import (
-    replay_signal,
-    aggregate_profile_stats,
-    _classify_replay_label,
+    ReplayDiagnostics,
     _calc_gross_pnl_bps,
+    _classify_replay_label,
     _infer_profile_action,
+    aggregate_profile_stats,
+    get_price_at_ts,
+    replay_signal,
+    run_trade_replay,
 )
 
 
@@ -17,7 +23,6 @@ class TestTradeReplay(unittest.TestCase):
     """Test trade replay functionality."""
 
     def test_replay_signal_with_valid_data(self):
-        """Test replay with valid signal data."""
         signal_row = {
             "signal_id": "test_signal_001",
             "asset_symbol": "ETH",
@@ -30,69 +35,84 @@ class TestTradeReplay(unittest.TestCase):
             "opportunity_profile_key": "ETH|LONG|broader_confirm|confirm|leading|no_absorption|major|clean|high",
             "trade_opportunity_status": "CANDIDATE",
         }
-        
+
         result = replay_signal(signal_row, max_hold_sec=60)
-        
+
         self.assertTrue(result["data_valid"])
         self.assertEqual(result["signal_id"], "test_signal_001")
         self.assertEqual(result["direction"], "LONG")
         self.assertIsNotNone(result["entry_price"])
         self.assertIsNotNone(result["exit_price"])
         self.assertIsNotNone(result["net_pnl_bps"])
-        self.assertIn(result["label"], {
-            "clean_followthrough", "small_win", "small_loss", 
-            "neutral", "chop_no_edge", "bad_entry", "absorption_reversal"
-        })
+        self.assertIn(
+            result["label"],
+            {
+                "clean_followthrough",
+                "small_win",
+                "small_loss",
+                "neutral",
+                "chop_no_edge",
+                "bad_entry",
+                "absorption_reversal",
+            },
+        )
 
     def test_replay_signal_missing_signal_id(self):
-        """Test replay with missing signal_id."""
         signal_row = {
             "asset_symbol": "ETH",
             "direction": "LONG",
             "archive_ts": 1700000000,
         }
-        
+
         result = replay_signal(signal_row)
-        
+
         self.assertFalse(result["data_valid"])
         self.assertEqual(result["label"], "data_invalid")
 
     def test_replay_signal_ambiguous_direction(self):
-        """Test replay with ambiguous direction."""
         signal_row = {
             "signal_id": "test_signal_002",
             "asset_symbol": "ETH",
             "direction": "NONE",
             "archive_ts": 1700000000,
         }
-        
+
         result = replay_signal(signal_row)
-        
+
         self.assertFalse(result["data_valid"])
         self.assertEqual(result["close_reason"], "direction_ambiguous")
 
+    def test_replay_signal_market_context_exception_is_visible(self):
+        adapter = MagicMock()
+        adapter.get_market_context.side_effect = RuntimeError("adapter boom")
+        signal_row = {
+            "signal_id": "test_signal_003",
+            "asset_symbol": "ETH",
+            "pair_label": "ETH/USDT",
+            "direction": "LONG",
+            "archive_ts": 1700000000,
+        }
+        diagnostics = ReplayDiagnostics()
+
+        result = replay_signal(signal_row, market_context_adapter=adapter, replay_diagnostics=diagnostics)
+
+        self.assertFalse(result["data_valid"])
+        self.assertEqual("market_context_unavailable", result["invalid_reason"])
+        self.assertTrue(any("market_context_lookup_failed:entry" in item for item in diagnostics.price_errors))
+
     def test_calc_gross_pnl_bps_long(self):
-        """Test PnL calculation for LONG position."""
-        # 1% gain
         pnl = _calc_gross_pnl_bps(2000.0, 2020.0, "LONG")
         self.assertAlmostEqual(pnl, 100.0, places=1)
-        
-        # 1% loss
         pnl = _calc_gross_pnl_bps(2000.0, 1980.0, "LONG")
         self.assertAlmostEqual(pnl, -100.0, places=1)
 
     def test_calc_gross_pnl_bps_short(self):
-        """Test PnL calculation for SHORT position."""
-        # 1% gain (price drops)
         pnl = _calc_gross_pnl_bps(2000.0, 1980.0, "SHORT")
         self.assertAlmostEqual(pnl, 101.0, places=0)
-        
-        # 1% loss (price rises)
         pnl = _calc_gross_pnl_bps(2000.0, 2020.0, "SHORT")
         self.assertAlmostEqual(pnl, -99.0, places=0)
 
     def test_classify_replay_label_clean_followthrough(self):
-        """Test clean followthrough classification."""
         label = _classify_replay_label(
             net_pnl_bps=30.0,
             mfe_bps=35.0,
@@ -103,7 +123,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(label, "clean_followthrough")
 
     def test_classify_replay_label_bad_entry(self):
-        """Test bad entry classification."""
         label = _classify_replay_label(
             net_pnl_bps=-25.0,
             mfe_bps=5.0,
@@ -114,7 +133,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(label, "bad_entry")
 
     def test_classify_replay_label_absorption_reversal(self):
-        """Test absorption reversal classification."""
         label = _classify_replay_label(
             net_pnl_bps=-15.0,
             mfe_bps=25.0,
@@ -125,7 +143,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(label, "absorption_reversal")
 
     def test_classify_replay_label_chop(self):
-        """Test chop classification."""
         label = _classify_replay_label(
             net_pnl_bps=2.0,
             mfe_bps=8.0,
@@ -136,12 +153,10 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(label, "chop_no_edge")
 
     def test_aggregate_profile_stats_empty(self):
-        """Test profile stats aggregation with empty list."""
         stats = aggregate_profile_stats([])
         self.assertEqual(len(stats), 0)
 
     def test_aggregate_profile_stats_single_profile(self):
-        """Test profile stats aggregation with single profile."""
         replays = [
             {
                 "profile_key": "ETH|LONG|broader_confirm|confirm|leading|no_absorption|major|clean|high",
@@ -171,13 +186,13 @@ class TestTradeReplay(unittest.TestCase):
                 "mae_bps": -15.0,
             },
         ]
-        
+
         stats = aggregate_profile_stats(replays)
-        
+
         self.assertEqual(len(stats), 1)
         profile_key = "ETH|LONG|broader_confirm|confirm|leading|no_absorption|major|clean|high"
         self.assertIn(profile_key, stats)
-        
+
         profile_stats = stats[profile_key]
         self.assertEqual(profile_stats["sample_count"], 3)
         self.assertEqual(profile_stats["valid_count"], 3)
@@ -187,7 +202,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertAlmostEqual(profile_stats["avg_net_pnl_bps"], 13.33, places=1)
 
     def test_infer_profile_action_needs_more_samples(self):
-        """Test profile action inference with insufficient samples."""
         stats = {
             "valid_count": 5,
             "win_rate": 0.80,
@@ -197,7 +211,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(action, "needs_more_samples")
 
     def test_infer_profile_action_hard_block(self):
-        """Test profile action inference for hard block."""
         stats = {
             "valid_count": 20,
             "win_rate": 0.30,
@@ -209,7 +222,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(action, "hard_block")
 
     def test_infer_profile_action_eligible_verified(self):
-        """Test profile action inference for eligible verified."""
         stats = {
             "valid_count": 30,
             "win_rate": 0.75,
@@ -221,7 +233,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(action, "eligible_verified")
 
     def test_infer_profile_action_promote_candidate(self):
-        """Test profile action inference for promote candidate."""
         stats = {
             "valid_count": 25,
             "win_rate": 0.64,
@@ -233,7 +244,6 @@ class TestTradeReplay(unittest.TestCase):
         self.assertEqual(action, "promote_candidate")
 
     def test_aggregate_profile_stats_with_invalid_data(self):
-        """Test profile stats aggregation with some invalid data."""
         replays = [
             {
                 "profile_key": "ETH|LONG|broader_confirm|confirm|leading|no_absorption|major|clean|high",
@@ -248,15 +258,306 @@ class TestTradeReplay(unittest.TestCase):
                 "label": "data_invalid",
             },
         ]
-        
+
         stats = aggregate_profile_stats(replays)
-        
+
         profile_key = "ETH|LONG|broader_confirm|confirm|leading|no_absorption|major|clean|high"
         profile_stats = stats[profile_key]
-        
+
         self.assertEqual(profile_stats["sample_count"], 2)
         self.assertEqual(profile_stats["valid_count"], 1)
         self.assertEqual(profile_stats["data_invalid_count"], 1)
+
+
+class TestTradeReplaySqlLookups(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "trade_replay.sqlite"
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(
+            """
+            CREATE TABLE outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                signal_id TEXT,
+                trade_opportunity_id TEXT,
+                asset TEXT,
+                pair TEXT,
+                direction TEXT,
+                window_sec INTEGER,
+                due_at REAL,
+                price_source TEXT,
+                start_price_source TEXT,
+                end_price_source TEXT,
+                outcome_price_source TEXT,
+                start_price REAL,
+                end_price REAL,
+                raw_move REAL,
+                direction_adjusted_move REAL,
+                followthrough INTEGER,
+                adverse INTEGER,
+                reversal INTEGER,
+                status TEXT,
+                failure_reason TEXT,
+                completed_at REAL,
+                created_at REAL,
+                updated_at REAL,
+                settled_by TEXT,
+                catchup INTEGER
+            );
+            CREATE TABLE opportunity_outcomes (
+                trade_opportunity_id TEXT,
+                window_sec INTEGER,
+                start_price REAL,
+                end_price REAL,
+                completed_at REAL,
+                created_at REAL,
+                PRIMARY KEY(trade_opportunity_id, window_sec)
+            );
+            CREATE TABLE market_context_snapshots (
+                context_id TEXT PRIMARY KEY,
+                signal_id TEXT,
+                asset TEXT,
+                pair TEXT,
+                venue TEXT,
+                resolved_symbol TEXT,
+                source TEXT,
+                perp_last_price REAL,
+                perp_mark_price REAL,
+                perp_index_price REAL,
+                spot_reference_price REAL,
+                basis_bps REAL,
+                mark_index_spread_bps REAL,
+                funding_rate REAL,
+                alert_relative_timing TEXT,
+                market_move_before_30s REAL,
+                market_move_before_60s REAL,
+                market_move_after_60s REAL,
+                market_move_after_300s REAL,
+                failure_reason TEXT,
+                created_at REAL,
+                updated_at REAL
+            );
+            CREATE TABLE trade_replay_examples (
+                replay_id TEXT PRIMARY KEY,
+                logical_date TEXT NOT NULL,
+                signal_id TEXT,
+                trade_opportunity_id TEXT,
+                asset TEXT NOT NULL,
+                pair TEXT,
+                signal_ts INTEGER NOT NULL,
+                entry_ts INTEGER,
+                exit_ts INTEGER,
+                entry_price REAL,
+                exit_price REAL,
+                net_pnl_bps REAL,
+                data_valid INTEGER DEFAULT 1,
+                invalid_reason TEXT,
+                label TEXT
+            );
+            CREATE TABLE trade_replay_profile_stats (
+                profile_key TEXT PRIMARY KEY,
+                valid_sample_count INTEGER DEFAULT 0,
+                avg_net_pnl_bps REAL,
+                win_rate REAL,
+                recommended_action TEXT
+            );
+            """
+        )
+        self.conn.execute(
+            "INSERT INTO outcomes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "out-eth",
+                "sig-eth-1",
+                "opp-eth-1",
+                "ETH",
+                "ETH/USDT",
+                "LONG",
+                60,
+                1000,
+                "okx_mark",
+                "okx_mark",
+                "okx_mark",
+                "okx_mark",
+                2000.0,
+                2010.0,
+                None,
+                None,
+                1,
+                0,
+                0,
+                "completed",
+                None,
+                1005,
+                1000,
+                1005,
+                "scheduler",
+                0,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO outcomes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "out-btc",
+                "sig-btc-1",
+                "opp-btc-1",
+                "BTC",
+                "BTC/USDT",
+                "LONG",
+                60,
+                1000,
+                "okx_mark",
+                "okx_mark",
+                "okx_mark",
+                "okx_mark",
+                30000.0,
+                30100.0,
+                None,
+                None,
+                1,
+                0,
+                0,
+                "completed",
+                None,
+                1005,
+                1000,
+                1005,
+                "scheduler",
+                0,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO opportunity_outcomes VALUES (?,?,?,?,?,?)",
+            ("opp-eth-1", 60, 1999.0, 2005.0, 1004, 1000),
+        )
+        self.conn.execute(
+            "INSERT INTO market_context_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "ctx-eth-1",
+                "sig-ctx-1",
+                "ETH",
+                "ETH/USDT",
+                "okx_perp",
+                "ETH-USDT-SWAP",
+                "live",
+                2001.0,
+                2002.0,
+                2000.5,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1001,
+                1001,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO trade_replay_examples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "replay-1",
+                "2026-04-30",
+                "sig-eth-1",
+                "opp-eth-1",
+                "ETH",
+                "ETH/USDT",
+                1000,
+                1005,
+                1065,
+                2000.0,
+                2010.0,
+                38.0,
+                1,
+                None,
+                "clean_followthrough",
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO trade_replay_profile_stats VALUES (?,?,?,?,?)",
+            ("ETH|LONG|profile", 1, 38.0, 1.0, "needs_more_samples"),
+        )
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.temp_dir.cleanup()
+
+    def test_signal_id_exact_match_returns_outcome_price(self):
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            signal_id="sig-eth-1",
+            trade_opportunity_id="opp-eth-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+        self.assertEqual(2000.0, result["price"])
+        self.assertEqual("outcomes.signal_id", result["source"])
+        self.assertEqual([], diagnostics.schema_errors)
+
+    def test_eth_signal_does_not_match_btc_outcome(self):
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            signal_id="sig-btc-1",
+            trade_opportunity_id="opp-btc-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+        self.assertEqual(2002.0, result["price"])
+        self.assertEqual("okx_mark", result["source"])
+        self.assertTrue(any("outcomes_asset_mismatch" in item for item in diagnostics.price_errors))
+
+    def test_no_signal_id_skips_outcome_fallback(self):
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "ETH",
+            "ETH/USDT",
+            1002,
+            trade_opportunity_id="opp-eth-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+        self.assertEqual(2002.0, result["price"])
+        self.assertEqual("okx_mark", result["source"])
+        self.assertIn("outcome_fallback_skipped_missing_signal_id", diagnostics.warnings)
+
+    def test_no_signal_id_and_no_market_context_returns_no_price(self):
+        diagnostics = ReplayDiagnostics()
+        result = get_price_at_ts(
+            "BTC",
+            "BTC/USDT",
+            1002,
+            trade_opportunity_id="opp-btc-1",
+            conn=self.conn,
+            replay_diagnostics=diagnostics,
+        )
+
+        self.assertIsNone(result["price"])
+        self.assertEqual("no_price_for_signal_id", result["reason"])
+        self.assertIn("outcome_fallback_skipped_missing_signal_id", diagnostics.warnings)
+
+    def test_run_trade_replay_reports_schema_errors(self):
+        broken = sqlite3.connect(Path(self.temp_dir.name) / "broken.sqlite")
+        broken.execute("CREATE TABLE trade_replay_examples (replay_id TEXT PRIMARY KEY, logical_date TEXT)")
+        broken.execute("CREATE TABLE trade_replay_profile_stats (profile_key TEXT PRIMARY KEY)")
+        broken.commit()
+        broken.close()
+
+        summary = run_trade_replay("2026-04-30", db_path=Path(self.temp_dir.name) / "broken.sqlite")
+
+        self.assertEqual("degraded", summary["status"])
+        self.assertTrue(summary["schema_errors"])
+        self.assertTrue(any("schema_error" in item for item in summary["warnings"]))
 
 
 if __name__ == "__main__":

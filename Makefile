@@ -187,6 +187,7 @@ endef
 	test-lp \
 	test-clmm \
 	test-core \
+	test-replay \
 	test-all \
 	archive-check \
 	smoke \
@@ -298,7 +299,8 @@ help:
 	@printf '%s\n' "  make test-lp                            Run LP majors / archive / latency / coverage tests."
 	@printf '%s\n' "  make test-clmm                          Run CLMM parser / replay tests."
 	@printf '%s\n' "  make test-core                          Run core notifier / attribution / fallback tests."
-	@printf '%s\n' "  make test-all                           Run every grouped test target."
+	@printf '%s\n' "  make test-replay                        Run replay/runtime/report closure tests."
+	@printf '%s\n' "  make test-all                           Run every grouped test target, including replay."
 
 env-check:
 	@SQLITE_DB_PATH="$(DB_PATH)" $(PY) -c 'import importlib, json; c = importlib.import_module("$(APP).config"); keys = ("DEFAULT_USER_TIER", "MARKET_CONTEXT_ADAPTER_MODE", "MARKET_CONTEXT_PRIMARY_VENUE", "MARKET_CONTEXT_SECONDARY_VENUE", "ARCHIVE_ENABLE_RAW_EVENTS", "ARCHIVE_ENABLE_PARSED_EVENTS", "ARCHIVE_ENABLE_SIGNALS", "SQLITE_ENABLE", "SQLITE_DB_PATH", "SQLITE_REPORT_READ_PREFER_DB", "OPPORTUNITY_ENABLE", "ASSET_MARKET_STATE_ENABLE", "NO_TRADE_LOCK_ENABLE"); print(json.dumps({key: getattr(c, key, None) for key in keys}, ensure_ascii=False, indent=2, sort_keys=True))'
@@ -615,6 +617,7 @@ test-all:
 	$(MAKE) test-lp
 	$(MAKE) test-clmm
 	$(MAKE) test-core
+	$(MAKE) test-replay
 
 archive-check:
 	@ls -ld $(ARCHIVE_DIR)/raw_events || true
@@ -698,11 +701,13 @@ db-reconcile-date:
 
 TEST_REPLAY_MODULES := \
 	$(APP).test_trade_replay \
+	$(APP).test_shadow_opportunity \
+	$(APP).test_runtime_health \
+	$(APP).test_daily_report_trade_replay \
+	$(APP).test_daily_compare_trade_replay
 
 test-replay:
 	@$(call run_existing_tests,$(TEST_REPLAY_MODULES))
-
-test-all: test-replay
 
 smoke-full:
 	$(MAKE) smoke-fast

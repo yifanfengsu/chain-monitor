@@ -1,22 +1,27 @@
-"""Trade replay engine: simulate historical signal trades with realistic entry/exit rules.
+"""Trade replay engine and replay closure helpers.
 
-This module provides:
-1. Entry price resolution (signal_time + delay)
-2. Exit simulation (stop loss / take profit / max hold / timeout)
-3. PnL calculation (gross + fees + slippage)
-4. MFE/MAE tracking
-5. Replay label classification
-6. Profile stats aggregation
+This module keeps the lightweight per-signal replay logic used by tests,
+and adds read-only SQLite helpers for replay closure/report workflows:
+- exact signal_id / trade_opportunity_id price lookup
+- visible warning / error collection instead of silent failures
+- minimal CLI for DATE-scoped replay summaries
+
+It does not change production trade semantics.
 """
 from __future__ import annotations
 
+import argparse
+import json
+import sqlite3
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 from config import (
     OUTCOME_PREFER_OKX_MARK,
     OUTCOME_USE_MARKET_CONTEXT_PRICE,
+    SQLITE_DB_PATH,
 )
 
 
@@ -28,6 +33,42 @@ DEFAULT_TAKE_PROFIT_BPS = 50
 DEFAULT_FEE_BPS = 6
 DEFAULT_SLIPPAGE_BPS = 5
 MIN_PROFILE_REPLAY_SAMPLES = 10
+REPLAY_SAMPLE_INSUFFICIENT = 5
+
+
+class ReplayDiagnostics:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.query_errors: list[str] = []
+        self.price_errors: list[str] = []
+        self.schema_errors: list[str] = []
+
+    def warning(self, message: str) -> None:
+        if message and message not in self.warnings:
+            self.warnings.append(message)
+
+    def query_error(self, message: str) -> None:
+        if message and message not in self.query_errors:
+            self.query_errors.append(message)
+            self.warning(message)
+
+    def price_error(self, message: str) -> None:
+        if message and message not in self.price_errors:
+            self.price_errors.append(message)
+            self.warning(message)
+
+    def schema_error(self, message: str) -> None:
+        if message and message not in self.schema_errors:
+            self.schema_errors.append(message)
+            self.warning(message)
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "warnings": list(self.warnings),
+            "query_errors": list(self.query_errors),
+            "price_errors": list(self.price_errors),
+            "schema_errors": list(self.schema_errors),
+        }
 
 
 def replay_signal(
@@ -41,51 +82,36 @@ def replay_signal(
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
     state_manager=None,
     market_context_adapter=None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
 ) -> dict[str, Any]:
-    """
-    Replay a single signal as if it were a real trade.
-    
-    Args:
-        signal_row: Signal record with signal_id, asset, direction, timestamp, etc.
-        entry_delay_sec: Delay after signal before entry (simulates reaction time)
-        max_hold_sec: Maximum hold duration
-        stop_loss_bps: Stop loss threshold in basis points
-        take_profit_bps: Take profit threshold in basis points
-        fee_bps: Trading fee in basis points (one-way)
-        slippage_bps: Slippage in basis points (one-way)
-        state_manager: Optional state manager for price lookup
-        market_context_adapter: Optional market context adapter
-    
-    Returns:
-        Replay result with PnL, label, MFE/MAE, etc.
-    """
+    """Replay a single signal with visible invalid reasons."""
     signal_id = str(signal_row.get("signal_id") or "")
     if not signal_id:
         return _invalid_replay("signal_id_missing")
-    
+
     direction = _normalize_direction(signal_row.get("trade_opportunity_side") or signal_row.get("direction"))
     if direction not in {"LONG", "SHORT"}:
         return _invalid_replay("direction_ambiguous")
-    
+
     signal_ts = _to_int(signal_row.get("archive_ts") or signal_row.get("timestamp") or signal_row.get("created_at"))
     if not signal_ts:
         return _invalid_replay("timestamp_missing")
-    
-    # 1. Get entry price
+
     entry_ts = signal_ts + entry_delay_sec
     entry_result = _get_entry_price(
         signal_row,
         entry_ts=entry_ts,
         state_manager=state_manager,
         market_context_adapter=market_context_adapter,
+        replay_diagnostics=replay_diagnostics,
     )
     if not entry_result["valid"]:
-        return _invalid_replay(entry_result["reason"], entry_ts=entry_ts)
-    
+        reason = _normalize_invalid_reason(entry_result.get("reason"), stage="entry")
+        return _invalid_replay(reason, entry_ts=entry_ts, signal_id=signal_id)
+
     entry_price = entry_result["price"]
     entry_source = entry_result["source"]
-    
-    # 2. Simulate hold period and find exit
+
     exit_result = _simulate_hold(
         signal_row,
         entry_price=entry_price,
@@ -96,20 +122,19 @@ def replay_signal(
         take_profit_bps=take_profit_bps,
         state_manager=state_manager,
         market_context_adapter=market_context_adapter,
+        replay_diagnostics=replay_diagnostics,
     )
-    
     if not exit_result["valid"]:
-        return _invalid_replay(exit_result["reason"], entry_ts=entry_ts, entry_price=entry_price)
-    
+        reason = _normalize_invalid_reason(exit_result.get("reason"), stage="exit")
+        return _invalid_replay(reason, entry_ts=entry_ts, entry_price=entry_price, signal_id=signal_id)
+
     exit_price = exit_result["price"]
     exit_ts = exit_result["ts"]
     close_reason = exit_result["reason"]
-    
-    # 3. Calculate PnL
+
     gross_pnl_bps = _calc_gross_pnl_bps(entry_price, exit_price, direction)
     net_pnl_bps = gross_pnl_bps - (fee_bps * 2) - (slippage_bps * 2)
-    
-    # 4. Calculate MFE/MAE
+
     mfe_bps, mae_bps = _calc_mfe_mae(
         signal_row,
         entry_price=entry_price,
@@ -119,8 +144,7 @@ def replay_signal(
         state_manager=state_manager,
         market_context_adapter=market_context_adapter,
     )
-    
-    # 5. Classify replay label
+
     label = _classify_replay_label(
         net_pnl_bps=net_pnl_bps,
         mfe_bps=mfe_bps,
@@ -128,12 +152,12 @@ def replay_signal(
         close_reason=close_reason,
         direction=direction,
     )
-    
-    # 6. Build result
+
     hold_duration_sec = exit_ts - entry_ts
     return {
         "replay_id": f"replay_{signal_id}_{int(time.time())}",
         "signal_id": signal_id,
+        "trade_opportunity_id": str(signal_row.get("trade_opportunity_id") or ""),
         "asset": str(signal_row.get("asset_symbol") or signal_row.get("asset") or ""),
         "pair": str(signal_row.get("pair_label") or signal_row.get("pair") or ""),
         "direction": direction,
@@ -157,63 +181,61 @@ def replay_signal(
         "close_reason": close_reason,
         "label": label,
         "data_valid": True,
+        "invalid_reason": None,
         "profile_key": str(signal_row.get("opportunity_profile_key") or ""),
-        "opportunity_status": str(signal_row.get("trade_opportunity_status") or ""),
-        "shadow_status": str(signal_row.get("trade_opportunity_shadow_status") or "NONE"),
+        "opportunity_status": str(signal_row.get("trade_opportunity_status") or signal_row.get("opportunity_status") or ""),
+        "shadow_status": str(signal_row.get("trade_opportunity_shadow_status") or signal_row.get("shadow_status") or "NONE"),
         "created_at": int(time.time()),
     }
 
 
 def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """
-    Aggregate replay results by profile_key.
-    
-    Returns:
-        Dict mapping profile_key to aggregated stats with recommended_action.
-    """
-    stats_by_profile: dict[str, dict[str, Any]] = defaultdict(lambda: {
-        "profile_key": "",
-        "sample_count": 0,
-        "valid_count": 0,
-        "win_count": 0,
-        "loss_count": 0,
-        "clean_followthrough_count": 0,
-        "bad_entry_count": 0,
-        "absorption_reversal_count": 0,
-        "chop_count": 0,
-        "data_invalid_count": 0,
-        "total_net_pnl_bps": 0.0,
-        "total_gross_pnl_bps": 0.0,
-        "net_pnl_values": [],
-        "gross_pnl_values": [],
-        "mfe_values": [],
-        "mae_values": [],
-    })
-    
+    """Aggregate replay results by profile_key."""
+    stats_by_profile: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "profile_key": "",
+            "sample_count": 0,
+            "valid_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "clean_followthrough_count": 0,
+            "bad_entry_count": 0,
+            "absorption_reversal_count": 0,
+            "chop_count": 0,
+            "data_invalid_count": 0,
+            "total_net_pnl_bps": 0.0,
+            "total_gross_pnl_bps": 0.0,
+            "net_pnl_values": [],
+            "gross_pnl_values": [],
+            "mfe_values": [],
+            "mae_values": [],
+        }
+    )
+
     for replay in replay_examples:
         profile_key = str(replay.get("profile_key") or "")
         if not profile_key:
             continue
-        
+
         stats = stats_by_profile[profile_key]
         stats["profile_key"] = profile_key
         stats["sample_count"] += 1
-        
+
         if replay.get("data_valid"):
             stats["valid_count"] += 1
             net_pnl = float(replay.get("net_pnl_bps") or 0.0)
             gross_pnl = float(replay.get("gross_pnl_bps") or 0.0)
-            
+
             stats["total_net_pnl_bps"] += net_pnl
             stats["total_gross_pnl_bps"] += gross_pnl
             stats["net_pnl_values"].append(net_pnl)
             stats["gross_pnl_values"].append(gross_pnl)
-            
+
             if net_pnl > 0:
                 stats["win_count"] += 1
             else:
                 stats["loss_count"] += 1
-            
+
             label = str(replay.get("label") or "")
             if label == "clean_followthrough":
                 stats["clean_followthrough_count"] += 1
@@ -223,7 +245,7 @@ def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, 
                 stats["absorption_reversal_count"] += 1
             elif label == "chop_no_edge":
                 stats["chop_count"] += 1
-            
+
             mfe = replay.get("mfe_bps")
             mae = replay.get("mae_bps")
             if mfe is not None:
@@ -232,9 +254,8 @@ def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, 
                 stats["mae_values"].append(float(mae))
         else:
             stats["data_invalid_count"] += 1
-    
-    # Calculate derived metrics and recommended actions
-    for profile_key, stats in stats_by_profile.items():
+
+    for _, stats in stats_by_profile.items():
         valid_count = stats["valid_count"]
         if valid_count > 0:
             stats["win_rate"] = round(stats["win_count"] / valid_count, 4)
@@ -244,7 +265,6 @@ def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, 
             stats["bad_entry_rate"] = round(stats["bad_entry_count"] / valid_count, 4)
             stats["absorption_rate"] = round(stats["absorption_reversal_count"] / valid_count, 4)
             stats["chop_rate"] = round(stats["chop_count"] / valid_count, 4)
-            
             if stats["mfe_values"]:
                 stats["avg_mfe_bps"] = round(sum(stats["mfe_values"]) / len(stats["mfe_values"]), 2)
             if stats["mae_values"]:
@@ -257,62 +277,233 @@ def aggregate_profile_stats(replay_examples: list[dict[str, Any]]) -> dict[str, 
             stats["bad_entry_rate"] = 0.0
             stats["absorption_rate"] = 0.0
             stats["chop_rate"] = 0.0
-        
+
         stats["recommended_action"] = _infer_profile_action(stats)
         stats["confidence"] = _infer_profile_confidence(stats)
-    
+
     return dict(stats_by_profile)
 
 
+def get_price_at_ts(
+    asset: str,
+    pair: str,
+    ts: int,
+    prefer_source: str = "",
+    signal_id: str = "",
+    trade_opportunity_id: str = "",
+    conn: sqlite3.Connection | None = None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
+) -> dict[str, Any]:
+    """Resolve price with exact-match fallbacks only.
+
+    Order:
+    a. outcomes.signal_id = signal_id
+    b. opportunity_outcomes.trade_opportunity_id = trade_opportunity_id
+    c. market_context_snapshots asset + nearest timestamp
+    d. otherwise no_price_for_signal_id
+    """
+    diagnostics = replay_diagnostics or ReplayDiagnostics()
+    canonical_asset = str(asset or "").strip().upper()
+    canonical_pair = str(pair or "").strip().upper()
+    ts_value = _to_int(ts)
+    if ts_value <= 0:
+        diagnostics.price_error("price_lookup_invalid_ts")
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+
+    owned_conn = False
+    if conn is None:
+        db_path = _resolve_db_path()
+        if not db_path.exists():
+            diagnostics.query_error(f"sqlite_db_missing:{db_path}")
+            return {"price": None, "source": "unavailable", "reason": "schema_error"}
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            owned_conn = True
+        except sqlite3.Error as exc:
+            diagnostics.query_error(f"sqlite_open_failed:{exc}")
+            return {"price": None, "source": "unavailable", "reason": "schema_error"}
+
+    try:
+        if signal_id:
+            outcome_result = _lookup_price_from_outcomes(
+                conn,
+                signal_id=str(signal_id),
+                asset=canonical_asset,
+                pair=canonical_pair,
+                ts=ts_value,
+                replay_diagnostics=diagnostics,
+            )
+            if outcome_result["price"] is not None:
+                return outcome_result
+        if signal_id and trade_opportunity_id:
+            opp_result = _lookup_price_from_opportunity_outcomes(
+                conn,
+                trade_opportunity_id=str(trade_opportunity_id),
+                asset=canonical_asset,
+                ts=ts_value,
+                replay_diagnostics=diagnostics,
+            )
+            if opp_result["price"] is not None:
+                return opp_result
+        elif trade_opportunity_id and not signal_id:
+            diagnostics.warning("outcome_fallback_skipped_missing_signal_id")
+
+        market_result = _lookup_price_from_market_context(
+            conn,
+            asset=canonical_asset,
+            pair=canonical_pair,
+            ts=ts_value,
+            prefer_source=prefer_source,
+            replay_diagnostics=diagnostics,
+        )
+        if market_result["price"] is not None:
+            return market_result
+        if diagnostics.schema_errors:
+            return {"price": None, "source": "unavailable", "reason": "schema_error"}
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    finally:
+        if owned_conn and conn is not None:
+            conn.close()
+
+
+def run_trade_replay(
+    date_str: str,
+    *,
+    db_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Read-only DATE-scoped replay summary for closure validation."""
+    diagnostics = ReplayDiagnostics()
+    logical_date = str(date_str or "").strip()
+    resolved_path = Path(db_path) if db_path else _resolve_db_path()
+    summary: dict[str, Any] = {
+        "logical_date": logical_date,
+        "status": "ok",
+        "replay_count": 0,
+        "valid_replay_count": 0,
+        "sample_insufficient": True,
+        "trade_replay_available": False,
+        "warnings": [],
+        "query_errors": [],
+        "price_errors": [],
+        "schema_errors": [],
+        "results": [],
+        "dry_run": bool(dry_run),
+        "db_path": str(resolved_path),
+    }
+    if not logical_date:
+        diagnostics.query_error("missing_date")
+        summary["status"] = "error"
+        summary.update(diagnostics.as_dict())
+        return summary
+    if not resolved_path.exists():
+        diagnostics.query_error(f"sqlite_db_missing:{resolved_path}")
+        summary["status"] = "error"
+        summary.update(diagnostics.as_dict())
+        return summary
+
+    try:
+        conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        diagnostics.query_error(f"sqlite_open_failed:{exc}")
+        summary["status"] = "error"
+        summary.update(diagnostics.as_dict())
+        return summary
+
+    try:
+        required = {
+            "trade_replay_examples": {"logical_date", "data_valid", "invalid_reason", "signal_id", "trade_opportunity_id", "asset", "pair", "signal_ts", "entry_ts", "exit_ts", "entry_price", "exit_price", "net_pnl_bps", "label"},
+            "trade_replay_profile_stats": {"profile_key", "valid_sample_count", "avg_net_pnl_bps", "win_rate", "recommended_action"},
+        }
+        for table, columns in required.items():
+            if not _table_exists(conn, table):
+                diagnostics.schema_error(f"schema_error:missing_table:{table}")
+                continue
+            missing = sorted(columns - _table_columns(conn, table, diagnostics))
+            if missing:
+                diagnostics.schema_error(f"schema_error:missing_columns:{table}:{','.join(missing)}")
+
+        if diagnostics.schema_errors:
+            summary["status"] = "degraded"
+            summary.update(diagnostics.as_dict())
+            return summary
+
+        rows = conn.execute(
+            "SELECT replay_id, logical_date, signal_id, trade_opportunity_id, asset, pair, signal_ts, entry_ts, exit_ts, "
+            "entry_price, exit_price, net_pnl_bps, data_valid, invalid_reason, label "
+            "FROM trade_replay_examples WHERE logical_date = ? ORDER BY signal_ts ASC",
+            (logical_date,),
+        ).fetchall()
+        summary["replay_count"] = len(rows)
+        summary["trade_replay_available"] = len(rows) > 0
+        summary["valid_replay_count"] = sum(1 for row in rows if int(row["data_valid"] or 0) == 1)
+        summary["sample_insufficient"] = summary["valid_replay_count"] < REPLAY_SAMPLE_INSUFFICIENT
+
+        preview: list[dict[str, Any]] = []
+        for row in rows[:10]:
+            item = {
+                "signal_id": str(row["signal_id"] or ""),
+                "trade_opportunity_id": str(row["trade_opportunity_id"] or ""),
+                "asset": str(row["asset"] or ""),
+                "pair": str(row["pair"] or ""),
+                "signal_ts": _to_int(row["signal_ts"]),
+                "data_valid": bool(int(row["data_valid"] or 0)),
+                "invalid_reason": row["invalid_reason"],
+                "label": row["label"],
+                "entry_price": _to_float(row["entry_price"]),
+                "exit_price": _to_float(row["exit_price"]),
+                "net_pnl_bps": _to_float(row["net_pnl_bps"]),
+            }
+            if not item["data_valid"]:
+                item["invalid_reason"] = _normalize_invalid_reason(item.get("invalid_reason"), stage="entry")
+            preview.append(item)
+        summary["results"] = preview
+        if not rows:
+            diagnostics.warning("trade_replay_missing")
+            summary["status"] = "degraded"
+        summary.update(diagnostics.as_dict())
+        return summary
+    except sqlite3.Error as exc:
+        diagnostics.query_error(f"trade_replay_query_failed:{exc}")
+        summary["status"] = "error"
+        summary.update(diagnostics.as_dict())
+        return summary
+    finally:
+        conn.close()
+
+
 def _infer_profile_action(stats: dict[str, Any]) -> str:
-    """Infer recommended action based on profile stats."""
     valid_count = stats["valid_count"]
-    
     if valid_count < MIN_PROFILE_REPLAY_SAMPLES:
         return "needs_more_samples"
-    
+
     win_rate = stats.get("win_rate", 0.0)
     avg_pnl = stats.get("avg_net_pnl_bps", 0.0)
     absorption_rate = stats.get("absorption_rate", 0.0)
     bad_entry_rate = stats.get("bad_entry_rate", 0.0)
-    
-    # Hard block: consistently loses money with high absorption
+
     if absorption_rate > 0.50 and avg_pnl < -10:
         return "hard_block"
-    
-    # Hard block: consistently bad entries
     if bad_entry_rate > 0.60 and avg_pnl < -5:
         return "hard_block"
-    
-    # Eligible for verified: strong win rate and positive PnL
     if win_rate >= 0.70 and avg_pnl > 25:
         return "eligible_verified"
-    
-    # Promote to candidate: decent win rate and positive PnL
     if win_rate >= 0.60 and avg_pnl > 15:
         return "promote_candidate"
-    
-    # Keep as observe only: neutral or slightly negative
     if win_rate >= 0.45 and avg_pnl > -10:
         return "keep_observe_only"
-    
-    # Block: consistently loses
     return "block_profile"
 
 
 def _infer_profile_confidence(stats: dict[str, Any]) -> float:
-    """Calculate confidence score for profile recommendation."""
     valid_count = stats["valid_count"]
     if valid_count < MIN_PROFILE_REPLAY_SAMPLES:
         return 0.0
-    
-    # Confidence increases with sample size
     sample_confidence = min(1.0, valid_count / 50.0)
-    
-    # Confidence decreases with high data invalid rate
     total_count = stats["sample_count"]
     data_quality = stats["valid_count"] / total_count if total_count > 0 else 0.0
-    
     return round(sample_confidence * data_quality, 4)
 
 
@@ -322,14 +513,13 @@ def _get_entry_price(
     entry_ts: int,
     state_manager=None,
     market_context_adapter=None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
 ) -> dict[str, Any]:
-    """Get entry price at entry_ts."""
-    # Try outcome price first (if available)
+    diagnostics = replay_diagnostics or ReplayDiagnostics()
     outcome_price = _to_float(signal_row.get("outcome_price_start"))
     if outcome_price and outcome_price > 0:
         return {"valid": True, "price": outcome_price, "source": "outcome_price_start"}
-    
-    # Try market context if enabled
+
     if OUTCOME_USE_MARKET_CONTEXT_PRICE and market_context_adapter:
         token_or_pair = str(signal_row.get("pair_label") or signal_row.get("asset_symbol") or "")
         if token_or_pair:
@@ -338,10 +528,11 @@ def _get_entry_price(
                 price, source = _select_price_from_context(context)
                 if price:
                     return {"valid": True, "price": price, "source": source}
-            except Exception:
-                pass
-    
-    # Try pool quote proxy
+                diagnostics.price_error("market_context_unavailable:entry")
+            except Exception as exc:
+                diagnostics.price_error(f"market_context_lookup_failed:entry:{exc}")
+                return {"valid": False, "price": None, "source": "unavailable", "reason": "market_context_unavailable"}
+
     if state_manager and hasattr(state_manager, "get_latest_pool_quote_proxy"):
         pool_address = str(signal_row.get("pool_address") or "")
         if pool_address:
@@ -349,10 +540,11 @@ def _get_entry_price(
                 price = state_manager.get_latest_pool_quote_proxy(pool_address, max_age_sec=300, now_ts=entry_ts)
                 if price:
                     return {"valid": True, "price": price, "source": "pool_quote_proxy"}
-            except Exception:
-                pass
-    
-    return {"valid": False, "price": None, "source": "unavailable", "reason": "entry_price_unavailable"}
+            except Exception as exc:
+                diagnostics.price_error(f"pool_quote_proxy_failed:entry:{exc}")
+                return {"valid": False, "price": None, "source": "unavailable", "reason": "no_entry_price"}
+
+    return {"valid": False, "price": None, "source": "unavailable", "reason": "no_entry_price"}
 
 
 def _simulate_hold(
@@ -366,24 +558,20 @@ def _simulate_hold(
     take_profit_bps: float,
     state_manager=None,
     market_context_adapter=None,
+    replay_diagnostics: ReplayDiagnostics | None = None,
 ) -> dict[str, Any]:
-    """Simulate holding period and find exit point."""
-    # For now, use simple timeout exit at max_hold_sec
-    # In production, this would sample prices during hold period
+    diagnostics = replay_diagnostics or ReplayDiagnostics()
     exit_ts = entry_ts + max_hold_sec
-    
-    # Try to get exit price from outcome
+
     outcome_60s_price = _to_float(signal_row.get("outcome_60s_price_end"))
     if outcome_60s_price and outcome_60s_price > 0 and max_hold_sec <= 60:
-        # Check if stop loss or take profit hit
         move_bps = _calc_gross_pnl_bps(entry_price, outcome_60s_price, direction)
         if move_bps <= -stop_loss_bps:
             return {"valid": True, "price": outcome_60s_price, "ts": exit_ts, "source": "outcome_60s", "reason": "stop_loss"}
         if move_bps >= take_profit_bps:
             return {"valid": True, "price": outcome_60s_price, "ts": exit_ts, "source": "outcome_60s", "reason": "take_profit"}
         return {"valid": True, "price": outcome_60s_price, "ts": exit_ts, "source": "outcome_60s", "reason": "max_hold"}
-    
-    # Fallback: try market context at exit_ts
+
     if market_context_adapter:
         token_or_pair = str(signal_row.get("pair_label") or signal_row.get("asset_symbol") or "")
         if token_or_pair:
@@ -399,10 +587,12 @@ def _simulate_hold(
                     else:
                         reason = "max_hold"
                     return {"valid": True, "price": price, "ts": exit_ts, "source": source, "reason": reason}
-            except Exception:
-                pass
-    
-    return {"valid": False, "price": None, "ts": exit_ts, "source": "unavailable", "reason": "exit_price_unavailable"}
+                diagnostics.price_error("market_context_unavailable:exit")
+            except Exception as exc:
+                diagnostics.price_error(f"market_context_lookup_failed:exit:{exc}")
+                return {"valid": False, "price": None, "ts": exit_ts, "source": "unavailable", "reason": "market_context_unavailable"}
+
+    return {"valid": False, "price": None, "ts": exit_ts, "source": "unavailable", "reason": "no_exit_price"}
 
 
 def _calc_mfe_mae(
@@ -415,35 +605,27 @@ def _calc_mfe_mae(
     state_manager=None,
     market_context_adapter=None,
 ) -> tuple[float | None, float | None]:
-    """Calculate Maximum Favorable Excursion and Maximum Adverse Excursion."""
-    # Simplified: use outcome windows if available
     prices = []
-    
     if max_hold_sec >= 30:
         price_30s = _to_float(signal_row.get("outcome_30s_price_end"))
         if price_30s:
             prices.append(price_30s)
-    
     if max_hold_sec >= 60:
         price_60s = _to_float(signal_row.get("outcome_60s_price_end"))
         if price_60s:
             prices.append(price_60s)
-    
     if not prices:
         return None, None
-    
     moves = [_calc_gross_pnl_bps(entry_price, p, direction) for p in prices]
     mfe = max(moves) if moves else None
     mae = min(moves) if moves else None
-    
     return mfe, mae
 
 
 def _calc_gross_pnl_bps(entry_price: float, exit_price: float, direction: str) -> float:
-    """Calculate gross PnL in basis points."""
     if direction == "LONG":
         return ((exit_price / entry_price) - 1.0) * 10000
-    elif direction == "SHORT":
+    if direction == "SHORT":
         return ((entry_price / exit_price) - 1.0) * 10000
     return 0.0
 
@@ -456,60 +638,152 @@ def _classify_replay_label(
     close_reason: str,
     direction: str,
 ) -> str:
-    """Classify replay result into a label."""
-    # Clean followthrough: positive PnL, good MFE, small MAE
     if net_pnl_bps > 15:
         if mfe_bps is not None and mfe_bps > 20 and (mae_bps is None or mae_bps > -10):
             return "clean_followthrough"
-    
-    # Bad entry: immediate adverse move
     if mae_bps is not None and mae_bps < -20 and net_pnl_bps < 0:
         return "bad_entry"
-    
-    # Absorption reversal: good MFE but ended negative
     if mfe_bps is not None and mfe_bps > 15 and net_pnl_bps < -10:
         return "absorption_reversal"
-    
-    # Chop: small moves both ways
-    if mfe_bps is not None and mae_bps is not None:
-        if abs(mfe_bps) < 15 and abs(mae_bps) < 15:
-            return "chop_no_edge"
-    
-    # Default: neutral
+    if mfe_bps is not None and mae_bps is not None and abs(mfe_bps) < 15 and abs(mae_bps) < 15:
+        return "chop_no_edge"
     if net_pnl_bps > 0:
         return "small_win"
-    elif net_pnl_bps < 0:
+    if net_pnl_bps < 0:
         return "small_loss"
     return "neutral"
 
 
 def _select_price_from_context(context: dict[str, Any]) -> tuple[float | None, str]:
-    """Select best price from market context."""
-    venue = str(context.get("market_context_venue") or "").strip().lower()
+    venue = str(context.get("market_context_venue") or context.get("venue") or "").strip().lower()
     mark_price = _to_float(context.get("perp_mark_price"))
     index_price = _to_float(context.get("perp_index_price"))
     last_price = _to_float(context.get("perp_last_price"))
-    
     if venue == "okx_perp" and OUTCOME_PREFER_OKX_MARK and mark_price:
         return mark_price, "okx_mark"
     if index_price:
-        return index_price, f"{venue}_index"
+        return index_price, f"{venue}_index" if venue else "index"
     if mark_price:
-        return mark_price, f"{venue}_mark"
+        return mark_price, f"{venue}_mark" if venue else "mark"
     if last_price:
-        return last_price, f"{venue}_last"
-    
+        return last_price, f"{venue}_last" if venue else "last"
     return None, "unavailable"
 
 
+def _lookup_price_from_outcomes(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str,
+    asset: str,
+    pair: str,
+    ts: int,
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, Any]:
+    required = {"signal_id", "asset", "pair", "start_price", "end_price", "created_at", "completed_at"}
+    if not _require_table_columns(conn, "outcomes", required, replay_diagnostics):
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    try:
+        row = conn.execute(
+            "SELECT asset, pair, start_price, end_price, completed_at, created_at FROM outcomes "
+            "WHERE signal_id = ? ORDER BY ABS(COALESCE(completed_at, created_at, 0) - ?) ASC, COALESCE(completed_at, created_at, 0) ASC LIMIT 1",
+            (signal_id, ts),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"outcomes_lookup_failed:{exc}")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    if row is None:
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    row_asset = str(row["asset"] or "").strip().upper()
+    row_pair = str(row["pair"] or "").strip().upper()
+    if asset and row_asset and row_asset != asset:
+        replay_diagnostics.price_error(f"outcomes_asset_mismatch:{signal_id}:{row_asset}!={asset}")
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    if pair and row_pair and row_pair != pair:
+        replay_diagnostics.price_error(f"outcomes_pair_mismatch:{signal_id}:{row_pair}!={pair}")
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    price = _to_float(row["start_price"])
+    if price is None:
+        price = _to_float(row["end_price"])
+    if price is None:
+        replay_diagnostics.price_error(f"outcomes_price_missing:{signal_id}")
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    return {"price": price, "source": "outcomes.signal_id", "reason": None}
+
+
+def _lookup_price_from_opportunity_outcomes(
+    conn: sqlite3.Connection,
+    *,
+    trade_opportunity_id: str,
+    asset: str,
+    ts: int,
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, Any]:
+    required = {"trade_opportunity_id", "start_price", "end_price", "created_at", "completed_at"}
+    if not _require_table_columns(conn, "opportunity_outcomes", required, replay_diagnostics):
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    try:
+        row = conn.execute(
+            "SELECT start_price, end_price, completed_at, created_at FROM opportunity_outcomes "
+            "WHERE trade_opportunity_id = ? ORDER BY ABS(COALESCE(completed_at, created_at, 0) - ?) ASC, COALESCE(completed_at, created_at, 0) ASC LIMIT 1",
+            (trade_opportunity_id, ts),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"opportunity_outcomes_lookup_failed:{exc}")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    if row is None:
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    price = _to_float(row["start_price"])
+    if price is None:
+        price = _to_float(row["end_price"])
+    if price is None:
+        replay_diagnostics.price_error(f"opportunity_outcomes_price_missing:{trade_opportunity_id}")
+        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+    return {"price": price, "source": "opportunity_outcomes.trade_opportunity_id", "reason": None}
+
+
+def _lookup_price_from_market_context(
+    conn: sqlite3.Connection,
+    *,
+    asset: str,
+    pair: str,
+    ts: int,
+    prefer_source: str,
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, Any]:
+    required = {"asset", "pair", "venue", "perp_mark_price", "perp_index_price", "perp_last_price", "created_at"}
+    if not _require_table_columns(conn, "market_context_snapshots", required, replay_diagnostics):
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    try:
+        row = conn.execute(
+            "SELECT asset, pair, venue, perp_mark_price, perp_index_price, perp_last_price, created_at "
+            "FROM market_context_snapshots WHERE asset = ? ORDER BY ABS(COALESCE(created_at, 0) - ?) ASC, COALESCE(created_at, 0) ASC LIMIT 1",
+            (asset, ts),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"market_context_lookup_failed:{exc}")
+        return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    if row is None:
+        replay_diagnostics.price_error(f"market_context_missing:{asset}:{pair}")
+        return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
+    price, source = _select_price_from_context(dict(row))
+    if price is None:
+        replay_diagnostics.price_error(f"market_context_price_missing:{asset}:{pair}:{row['venue']}")
+        return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
+    if prefer_source and prefer_source not in source:
+        replay_diagnostics.warning(f"prefer_source_unmet:{prefer_source}:{source}")
+    return {"price": price, "source": source or "market_context_snapshots", "reason": None}
+
+
 def _invalid_replay(reason: str, **kwargs) -> dict[str, Any]:
-    """Return invalid replay result."""
+    invalid_reason = reason
     return {
         "replay_id": "",
         "signal_id": kwargs.get("signal_id", ""),
+        "trade_opportunity_id": kwargs.get("trade_opportunity_id", ""),
         "data_valid": False,
         "label": "data_invalid",
-        "close_reason": reason,
+        "close_reason": invalid_reason,
+        "invalid_reason": invalid_reason,
         "net_pnl_bps": 0.0,
         "gross_pnl_bps": 0.0,
         "entry_price": kwargs.get("entry_price"),
@@ -521,7 +795,6 @@ def _invalid_replay(reason: str, **kwargs) -> dict[str, Any]:
 
 
 def _normalize_direction(value: Any) -> str:
-    """Normalize direction to LONG/SHORT."""
     raw = str(value or "").strip().upper()
     if raw in {"LONG", "BUY", "BUY_PRESSURE"}:
         return "LONG"
@@ -530,8 +803,62 @@ def _normalize_direction(value: Any) -> str:
     return raw
 
 
+def _normalize_invalid_reason(reason: Any, *, stage: str) -> str:
+    raw = str(reason or "").strip()
+    if raw in {"schema_error", "market_context_unavailable", "no_price_for_signal_id", "no_entry_price", "no_exit_price"}:
+        return raw
+    if stage == "entry":
+        if raw in {"entry_price_unavailable", "outcomes_price_missing"}:
+            return "no_entry_price"
+        return "no_entry_price"
+    if raw in {"exit_price_unavailable"}:
+        return "no_exit_price"
+    return "no_exit_price"
+
+
+def _resolve_db_path() -> Path:
+    path = Path(str(SQLITE_DB_PATH or "data/chain_monitor.sqlite"))
+    if path.is_absolute():
+        return path
+    return Path(__file__).resolve().parents[1] / path
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str, replay_diagnostics: ReplayDiagnostics | None = None) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error as exc:
+        if replay_diagnostics is not None:
+            replay_diagnostics.schema_error(f"schema_error:pragma_failed:{table}:{exc}")
+        return set()
+    return {str(row[1]) for row in rows}
+
+
+def _require_table_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    required: set[str],
+    replay_diagnostics: ReplayDiagnostics,
+) -> bool:
+    if not _table_exists(conn, table):
+        replay_diagnostics.schema_error(f"schema_error:missing_table:{table}")
+        return False
+    columns = _table_columns(conn, table, replay_diagnostics)
+    missing = sorted(required - columns)
+    if missing:
+        replay_diagnostics.schema_error(f"schema_error:missing_columns:{table}:{','.join(missing)}")
+        return False
+    return True
+
+
 def _to_int(value: Any) -> int:
-    """Convert to int."""
     try:
         return int(float(value))
     except (TypeError, ValueError):
@@ -539,9 +866,48 @@ def _to_int(value: Any) -> int:
 
 
 def _to_float(value: Any) -> float | None:
-    """Convert to float."""
     try:
-        f = float(value)
-        return f if f > 0 else None
+        result = float(value)
+        return result if result > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Trade replay closure summary")
+    parser.add_argument("--date", required=True, help="Logical date YYYY-MM-DD")
+    parser.add_argument("--format", default="text", choices=("text", "json"), help="Output format")
+    parser.add_argument("--dry-run", action="store_true", help="Read summary only")
+    parser.add_argument("--include-suppressed", action="store_true", help="Compatibility flag; no-op in summary mode")
+    parser.add_argument("--include-blocked", action="store_true", help="Compatibility flag; no-op in summary mode")
+    return parser
+
+
+def _render_text(summary: dict[str, Any]) -> str:
+    lines = [
+        f"trade_replay logical_date={summary.get('logical_date')}",
+        f"status={summary.get('status')}",
+        f"trade_replay_available={summary.get('trade_replay_available')}",
+        f"replay_count={summary.get('replay_count')}",
+        f"valid_replay_count={summary.get('valid_replay_count')}",
+        f"sample_insufficient={summary.get('sample_insufficient')}",
+        f"warnings={json.dumps(summary.get('warnings') or [], ensure_ascii=False)}",
+        f"query_errors={json.dumps(summary.get('query_errors') or [], ensure_ascii=False)}",
+        f"price_errors={json.dumps(summary.get('price_errors') or [], ensure_ascii=False)}",
+        f"schema_errors={json.dumps(summary.get('schema_errors') or [], ensure_ascii=False)}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    summary = run_trade_replay(args.date, dry_run=bool(args.dry_run))
+    if args.format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(_render_text(summary), end="")
+    return 0 if summary.get("status") in {"ok", "degraded"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

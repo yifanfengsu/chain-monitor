@@ -99,6 +99,7 @@ MIXED_SOURCE_MODE = "mixed_daily_legacy"
 SOURCE_SELECTION_RULE = (
     "daily_report dated JSON -> matching daily_report latest JSON; rebuild calls reports/generate_daily_report_latest.py --date; legacy three-report bundle only with --legacy-fallback"
 )
+REPLAY_SAMPLE_INSUFFICIENT = 5
 
 PRIMARY_DIRECTIONAL_METRICS = {
     "blocker_saved_rate": 5,
@@ -121,6 +122,11 @@ PRIMARY_DIRECTIONAL_METRICS = {
     "current_sample_still_eth_only": 2,
     "mismatch_warning_count": 3,
     "db_archive_mirror_match_rate": 3,
+    "avg_net_pnl_bps": 4,
+    "clean_followthrough_rate": 4,
+    "bad_entry_rate": 4,
+    "absorption_reversal_rate": 4,
+    "data_invalid_rate": 4,
 }
 
 
@@ -1214,6 +1220,133 @@ def _compare_metric(spec: MetricSpec, today_bundle: dict[str, SummaryRecord], pr
     }
 
 
+
+
+def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundle: dict[str, SummaryRecord]) -> dict[str, Any]:
+    metrics = {
+        "replay_count": "count_only",
+        "valid_replay_count": "count_only",
+        "avg_net_pnl_bps": "higher_better",
+        "clean_followthrough_rate": "higher_better",
+        "bad_entry_rate": "lower_better",
+        "absorption_reversal_rate": "lower_better",
+        "data_invalid_rate": "lower_better",
+        "shadow_candidate_count": "count_only",
+        "shadow_verified_count": "count_only",
+        "data_quality_status": "object",
+    }
+    today_record = today_bundle.get(DAILY_REPORT_KEY)
+    previous_record = previous_bundle.get(DAILY_REPORT_KEY)
+    result: dict[str, Any] = {
+        "status": "insufficient",
+        "summary": "insufficient",
+        "sample_insufficient": False,
+        "data_quality_gate": "ok",
+        "today_available": False,
+        "previous_available": False,
+        "today_data_quality_status": None,
+        "previous_data_quality_status": None,
+        "metrics": {},
+        "warnings": [],
+    }
+    if today_record is None or previous_record is None:
+        result["warnings"].append("replay_compare_insufficient:missing_daily_report")
+        return result
+
+    today_replay = today_record.data.get("trade_replay_summary") if isinstance(today_record.data.get("trade_replay_summary"), dict) else {}
+    previous_replay = previous_record.data.get("trade_replay_summary") if isinstance(previous_record.data.get("trade_replay_summary"), dict) else {}
+    today_shadow = today_record.data.get("shadow_opportunity_summary") if isinstance(today_record.data.get("shadow_opportunity_summary"), dict) else {}
+    previous_shadow = previous_record.data.get("shadow_opportunity_summary") if isinstance(previous_record.data.get("shadow_opportunity_summary"), dict) else {}
+    today_quality = today_record.data.get("data_quality_summary") if isinstance(today_record.data.get("data_quality_summary"), dict) else {}
+    previous_quality = previous_record.data.get("data_quality_summary") if isinstance(previous_record.data.get("data_quality_summary"), dict) else {}
+
+    today_available = bool(today_replay.get("trade_replay_available"))
+    previous_available = bool(previous_replay.get("trade_replay_available"))
+    result["today_available"] = today_available
+    result["previous_available"] = previous_available
+    result["today_data_quality_status"] = today_quality.get("data_quality_status")
+    result["previous_data_quality_status"] = previous_quality.get("data_quality_status")
+
+    if not today_available or not previous_available:
+        result["warnings"].append("replay_compare_insufficient:missing_replay")
+        return result
+
+    if str(today_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"} or str(previous_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"}:
+        result["status"] = "evidence_insufficient"
+        result["summary"] = "evidence_insufficient"
+        result["data_quality_gate"] = "evidence_insufficient"
+        result["warnings"].append("replay_compare_evidence_insufficient:data_quality_degraded")
+
+    today_valid = int(today_replay.get("valid_replay_count") or 0)
+    previous_valid = int(previous_replay.get("valid_replay_count") or 0)
+    if today_valid < REPLAY_SAMPLE_INSUFFICIENT or previous_valid < REPLAY_SAMPLE_INSUFFICIENT:
+        result["sample_insufficient"] = True
+        if result["status"] == "insufficient":
+            result["status"] = "sample_insufficient"
+            result["summary"] = "sample_insufficient"
+        result["warnings"].append("replay_compare_sample_insufficient")
+
+    source_map = {
+        "replay_count": (today_replay, previous_replay),
+        "valid_replay_count": (today_replay, previous_replay),
+        "avg_net_pnl_bps": (today_replay, previous_replay),
+        "clean_followthrough_rate": (today_replay, previous_replay),
+        "bad_entry_rate": (today_replay, previous_replay),
+        "absorption_reversal_rate": (today_replay, previous_replay),
+        "data_invalid_rate": (today_replay, previous_replay),
+        "shadow_candidate_count": (today_shadow, previous_shadow),
+        "shadow_verified_count": (today_shadow, previous_shadow),
+        "data_quality_status": (today_quality, previous_quality),
+    }
+    for metric_name, direction in metrics.items():
+        today_source, previous_source = source_map[metric_name]
+        today_value = today_source.get(metric_name)
+        previous_value = previous_source.get(metric_name)
+        classification = "unchanged"
+        abs_change = None
+        pct_change = None
+        interpretation = ""
+        if today_value is None or previous_value is None:
+            classification = "insufficient"
+            interpretation = "today/previous replay 字段不完整"
+        elif isinstance(today_value, (int, float)) and isinstance(previous_value, (int, float)) and not isinstance(today_value, bool):
+            abs_change = round(float(today_value) - float(previous_value), 6)
+            pct_change = None if float(previous_value) == 0.0 else round((float(today_value) - float(previous_value)) / float(previous_value) * 100.0, 2)
+            if abs_change == 0:
+                classification = "unchanged"
+                interpretation = "与 previous 持平"
+            elif direction == "higher_better":
+                classification = "improvement" if float(today_value) > float(previous_value) else "regression"
+                interpretation = "改善：指标上升" if classification == "improvement" else "退步：指标下降"
+            elif direction == "lower_better":
+                classification = "improvement" if float(today_value) < float(previous_value) else "regression"
+                interpretation = "改善：指标下降" if classification == "improvement" else "退步：指标上升"
+            else:
+                classification = "changed"
+                interpretation = "样本规模变化"
+        elif today_value == previous_value:
+            classification = "unchanged"
+            interpretation = "状态未变化"
+        else:
+            classification = "changed"
+            interpretation = "状态变化；需结合上下文解读"
+        result["metrics"][metric_name] = {
+            "today_value": today_value,
+            "previous_value": previous_value,
+            "classification": classification,
+            "direction": direction,
+            "abs_change": abs_change,
+            "pct_change": pct_change,
+            "interpretation": interpretation,
+        }
+
+    if result["status"] == "insufficient":
+        result["status"] = "ok"
+        result["summary"] = "ok"
+    result["warnings"] = sorted(set(str(item) for item in result["warnings"] if item))
+    return result
+
+
 def build_core_metric_rows(today_bundle: dict[str, SummaryRecord], previous_bundle: dict[str, SummaryRecord]) -> list[dict[str, Any]]:
     return [_compare_metric(spec, today_bundle, previous_bundle) for spec in METRIC_SPECS]
 
@@ -1266,7 +1399,14 @@ def _summarize_reason_object(value: Any) -> str:
     return "无明确结构化原因"
 
 
-def build_question_answers(rows: list[dict[str, Any]], *, today_date: str, previous_date: str | None, compare_basis: str) -> dict[str, str]:
+def build_question_answers(
+    rows: list[dict[str, Any]],
+    *,
+    today_date: str,
+    previous_date: str | None,
+    compare_basis: str,
+    replay_compare: dict[str, Any] | None = None,
+) -> dict[str, str]:
     rows_by_name = _index_metric(rows)
     improvements = _flag_rows(rows, "improvement")
     regressions = _flag_rows(rows, "regression")
@@ -1288,20 +1428,29 @@ def build_question_answers(rows: list[dict[str, Any]], *, today_date: str, previ
         insufficient = f"无法判断；缺少 {today_date} 之前的 previous_date 数据。"
         return {str(index): insufficient for index in range(1, 14)}
 
-    if len(changed_directional_rows) < 2:
-        comparable_names = ", ".join(row["metric_name"] for row in comparable_directional_rows[:6]) or "无"
-        overall = f"证据不足，无法把整体明确判定为进步/持平/退步；当前可直接判定的方向性指标太少，仅有 {comparable_names}。"
-    elif not improvements and not regressions:
-        overall = "持平；可判定的方向性指标没有出现明确变化。"
-    elif weighted_improvement >= weighted_regression + 4:
-        evidence = "; ".join(_metric_delta_text(row) for row in sorted(improvements, key=lambda item: (-_score_row(item), item["metric_name"]))[:3])
-        overall = f"有进步；主要依据是 {evidence}。"
-    elif weighted_regression >= weighted_improvement + 4:
-        evidence = "; ".join(_metric_delta_text(row) for row in sorted(regressions, key=lambda item: (-_score_row(item), item["metric_name"]))[:3])
-        overall = f"有退步；主要依据是 {evidence}。"
+    replay_status = str((replay_compare or {}).get("status") or "")
+    if replay_status == "evidence_insufficient":
+        overall = "证据不足；replay/data quality 对比被降级为 evidence_insufficient。"
+    elif replay_status == "sample_insufficient":
+        overall = "证据不足；replay 样本量过小，当前仅能做 sample_insufficient 判断。"
     else:
-        evidence = "; ".join(_metric_delta_text(row) for row in sorted(improvements + regressions, key=lambda item: (-_score_row(item), item["metric_name"]))[:4])
-        overall = f"持平偏混合；方向性证据互相抵消，主要变化包括 {evidence}。"
+        overall = None
+
+    if overall is None:
+        comparable_names = ", ".join(row["metric_name"] for row in comparable_directional_rows[:6]) or "无"
+        if len(changed_directional_rows) < 2:
+            overall = f"证据不足，无法把整体明确判定为进步/持平/退步；当前可直接判定的方向性指标太少，仅有 {comparable_names}。"
+        elif not improvements and not regressions:
+            overall = "持平；可判定的方向性指标没有出现明确变化。"
+        elif weighted_improvement >= weighted_regression + 4:
+            evidence = "; ".join(_metric_delta_text(row) for row in sorted(improvements, key=lambda item: (-_score_row(item), item["metric_name"]))[:3])
+            overall = f"有进步；主要依据是 {evidence}。"
+        elif weighted_regression >= weighted_improvement + 4:
+            evidence = "; ".join(_metric_delta_text(row) for row in sorted(regressions, key=lambda item: (-_score_row(item), item["metric_name"]))[:3])
+            overall = f"有退步；主要依据是 {evidence}。"
+        else:
+            evidence = "; ".join(_metric_delta_text(row) for row in sorted(improvements + regressions, key=lambda item: (-_score_row(item), item["metric_name"]))[:4])
+            overall = f"持平偏混合；方向性证据互相抵消，主要变化包括 {evidence}。"
 
     telegram_after = _metric_value(rows_by_name, "messages_after_suppression_actual")
     high_value = _metric_value(rows_by_name, "high_value_suppressed_count")
@@ -1897,6 +2046,32 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     lines.append(f"- {answers.get('9', '证据不足')}")
     lines.append(f"- {answers.get('10', '证据不足')}")
     lines.append("")
+    lines.append("## Replay / Shadow / Data Quality 对比")
+    replay_compare = payload.get("replay_compare") or {}
+    replay_metrics = replay_compare.get("metrics") or {}
+    lines.append(f"- replay_compare_status: `{replay_compare.get('status')}`")
+    lines.append(f"- replay_compare_summary: `{replay_compare.get('summary')}`")
+    lines.append(f"- replay_sample_insufficient: `{replay_compare.get('sample_insufficient')}`")
+    lines.append(f"- replay_data_quality_gate: `{replay_compare.get('data_quality_gate')}`")
+    for metric_name in (
+        "replay_count",
+        "valid_replay_count",
+        "avg_net_pnl_bps",
+        "clean_followthrough_rate",
+        "bad_entry_rate",
+        "absorption_reversal_rate",
+        "data_invalid_rate",
+        "shadow_candidate_count",
+        "shadow_verified_count",
+        "data_quality_status",
+    ):
+        metric = replay_metrics.get(metric_name) or {}
+        lines.append(
+            f"- {metric_name}: `{_format_table_value(metric.get('previous_value'))} -> {_format_table_value(metric.get('today_value'))}` classification=`{metric.get('classification')}`"
+        )
+    if replay_compare.get("warnings"):
+        lines.append(f"- replay_warnings: {' | '.join(str(item) for item in replay_compare.get('warnings')[:4])}")
+    lines.append("")
     lines.append("## 今天相对昨天的进步")
     lines.append(f"- {answers.get('11', '证据不足')}")
     lines.append("")
@@ -1936,6 +2111,18 @@ def build_compare_payload(
     prefer_legacy_sources = effective_source_mode == LEGACY_SOURCE_MODE
     if not previous_date:
         answers = {str(index): f"无法判断；{today_date} 之前缺少 previous_date 结构化 summary JSON。" for index in range(1, 14)}
+        replay_compare = {
+            "status": "insufficient",
+            "summary": "insufficient",
+            "sample_insufficient": False,
+            "data_quality_gate": "ok",
+            "today_available": False,
+            "previous_available": False,
+            "today_data_quality_status": None,
+            "previous_data_quality_status": None,
+            "metrics": {},
+            "warnings": ["replay_compare_insufficient:missing_previous_date"],
+        }
         payload = {
             "compare_available": False,
             "compare_window": f"{today_date} vs unavailable",
@@ -1954,6 +2141,7 @@ def build_compare_payload(
                 "previous": _aggregate_data_source_summary(previous_bundle, logical_date=None, prefer_legacy=prefer_legacy_sources),
             },
             "core_metrics_compare": [],
+            "replay_compare": replay_compare,
             "improvement_flags": [],
             "regression_flags": [],
             "unchanged_flags": [],
@@ -1974,7 +2162,14 @@ def build_compare_payload(
         return payload
 
     rows = build_core_metric_rows(today_bundle, previous_bundle)
-    answers = build_question_answers(rows, today_date=today_date, previous_date=previous_date, compare_basis=compare_basis)
+    replay_compare = _build_replay_compare(today_bundle, previous_bundle)
+    answers = build_question_answers(
+        rows,
+        today_date=today_date,
+        previous_date=previous_date,
+        compare_basis=compare_basis,
+        replay_compare=replay_compare,
+    )
     limitations = _build_limitations(
         rows,
         today_bundle=today_bundle,
@@ -1999,6 +2194,7 @@ def build_compare_payload(
             "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
         },
         "core_metrics_compare": rows,
+        "replay_compare": replay_compare,
         "improvement_flags": _flag_rows(rows, "improvement"),
         "regression_flags": _flag_rows(rows, "regression"),
         "unchanged_flags": _flag_rows(rows, "unchanged"),
@@ -2119,6 +2315,18 @@ def generate_daily_compare(
     previous_date = selection.get("previous_date")
     compare_basis = selection.get("compare_basis")
     if not today_date:
+        replay_compare = {
+            "status": "insufficient",
+            "summary": "insufficient",
+            "sample_insufficient": False,
+            "data_quality_gate": "ok",
+            "today_available": False,
+            "previous_available": False,
+            "today_data_quality_status": None,
+            "previous_data_quality_status": None,
+            "metrics": {},
+            "warnings": ["replay_compare_insufficient:no_available_dates"],
+        }
         payload = {
             "compare_available": False,
             "compare_window": "unavailable",
@@ -2137,6 +2345,7 @@ def generate_daily_compare(
                 "previous": _aggregate_data_source_summary({}, logical_date=None),
             },
             "core_metrics_compare": [],
+            "replay_compare": replay_compare,
             "improvement_flags": [],
             "regression_flags": [],
             "unchanged_flags": [],
@@ -2206,6 +2415,7 @@ def generate_daily_compare(
             missing_previous_reports=missing_previous_reports,
             rebuild_summary=rebuild_summary,
         )
+        replay_compare = _build_replay_compare(today_bundle, previous_bundle)
         payload = {
             "compare_available": False,
             "compare_window": f"{today_date} vs {previous_date or 'unavailable'}",
@@ -2224,6 +2434,7 @@ def generate_daily_compare(
                 "previous": _aggregate_data_source_summary(previous_bundle, logical_date=previous_date, prefer_legacy=prefer_legacy_sources),
             },
             "core_metrics_compare": [],
+            "replay_compare": replay_compare,
             "improvement_flags": [],
             "regression_flags": [],
             "unchanged_flags": [],

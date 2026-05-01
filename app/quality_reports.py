@@ -824,7 +824,7 @@ def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
         "win_rate": round(wins / valid_den, 4),
         "avg_net_pnl_bps": round(float(avg_row[0] or 0.0), 2) if avg_row else 0.0,
         "clean_followthrough_rate": round(int(label_counts.get("clean_followthrough") or 0) / valid_den, 4),
-        "bad_entry_rate": round(int(label_counts.get("followthrough_but_bad_entry") or 0) / valid_den, 4),
+        "bad_entry_rate": round((int(label_counts.get("bad_entry") or 0) + int(label_counts.get("followthrough_but_bad_entry") or 0)) / valid_den, 4),
         "absorption_reversal_rate": round(int(label_counts.get("absorption_reversal") or 0) / valid_den, 4),
         "chop_rate": round(int(label_counts.get("chop_no_edge") or 0) / valid_den, 4),
         "data_invalid_rate": round(int(label_counts.get("data_invalid") or 0) / max(total, 1), 4),
