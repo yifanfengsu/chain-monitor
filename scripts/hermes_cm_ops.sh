@@ -15,7 +15,12 @@ Usage:
 Environment:
   HERMES_OPS_MAX_CMD_BYTES=80000
   HERMES_OPS_MAX_CMD_LINES=400
+
   HERMES_OPS_CMD_TIMEOUT_SEC=120
+  HERMES_OPS_REPORT_TIMEOUT_SEC=900
+  HERMES_OPS_CLOSE_TIMEOUT_SEC=900
+  HERMES_OPS_HEALTH_TIMEOUT_SEC=180
+  HERMES_OPS_DIGEST_TIMEOUT_SEC=300
 
 Exit codes:
   0 success
@@ -84,12 +89,16 @@ limit_output_file() {
 }
 
 run_with_timeout() {
-  timeout "${CMD_TIMEOUT_SEC}s" "$@"
+  local timeout_sec="$1"
+  shift
+  timeout "${timeout_sec}s" "$@"
 }
 
 run_command() {
   local title="$1"
-  shift
+  local timeout_sec="$2"
+  shift 2
+
   local safe_title="${title//[!A-Za-z0-9_]/_}"
   local raw_path="${TMP_DIR}/${safe_title}.raw"
   local limited_path="${TMP_DIR}/${safe_title}.out"
@@ -99,8 +108,9 @@ run_command() {
   RUN_RAW_BYTES=0
   RUN_RAW_LINES=0
   RUN_TRUNCATED=0
+  RUN_TIMEOUT_SEC="$timeout_sec"
 
-  if run_with_timeout "$@" >"$raw_path" 2>&1; then
+  if run_with_timeout "$timeout_sec" "$@" >"$raw_path" 2>&1; then
     rc=0
   else
     rc=$?
@@ -124,7 +134,7 @@ emit_command_report() {
 
   echo "## ${title}"
   echo "command: $(display_command "$@")"
-  echo "timeout_sec: ${CMD_TIMEOUT_SEC}"
+  echo "timeout_sec: ${RUN_TIMEOUT_SEC:-$CMD_TIMEOUT_SEC}"
   echo "output_limit: max_bytes=${MAX_CMD_BYTES} max_lines=${MAX_CMD_LINES}"
   if [[ "$rc" -eq 0 ]]; then
     echo "status: ok"
@@ -150,9 +160,15 @@ ensure_repo_root() {
 
 ensure_runtime() {
   command -v timeout >/dev/null 2>&1 || die "timeout command not found"
+
   is_positive_int "$MAX_CMD_BYTES" || die "HERMES_OPS_MAX_CMD_BYTES must be a positive integer"
   is_positive_int "$MAX_CMD_LINES" || die "HERMES_OPS_MAX_CMD_LINES must be a positive integer"
+
   is_positive_int "$CMD_TIMEOUT_SEC" || die "HERMES_OPS_CMD_TIMEOUT_SEC must be a positive integer"
+  is_positive_int "$REPORT_TIMEOUT_SEC" || die "HERMES_OPS_REPORT_TIMEOUT_SEC must be a positive integer"
+  is_positive_int "$CLOSE_TIMEOUT_SEC" || die "HERMES_OPS_CLOSE_TIMEOUT_SEC must be a positive integer"
+  is_positive_int "$HEALTH_TIMEOUT_SEC" || die "HERMES_OPS_HEALTH_TIMEOUT_SEC must be a positive integer"
+  is_positive_int "$DIGEST_TIMEOUT_SEC" || die "HERMES_OPS_DIGEST_TIMEOUT_SEC must be a positive integer"
 }
 
 parse_required_date() {
@@ -206,11 +222,13 @@ digest_header_value() {
 
 run_analyze_step() {
   local title="$1"
-  shift
+  local timeout_sec="$2"
+  shift 2
+
   local rc=0
 
   echo "command: $(display_command "$@")"
-  if run_command "$title" "$@"; then
+  if run_command "$title" "$timeout_sec" "$@"; then
     rc=0
   else
     rc=$?
@@ -255,7 +273,7 @@ cmd_report() {
 
   cmd=(make report-daily-date "DATE=${report_date}")
   echo "command: $(display_command "${cmd[@]}")"
-  if run_command "report_${report_date}" "${cmd[@]}"; then
+  if run_command "report_${report_date}" "$REPORT_TIMEOUT_SEC" "${cmd[@]}"; then
     rc=0
   else
     rc=$?
@@ -319,7 +337,7 @@ cmd_close() {
 
   echo "STATE-CHANGING COMMAND: daily-close with confirmed compression."
   echo "exact command: $(display_command "${cmd[@]}")"
-  if run_command "close_${close_date}" "${cmd[@]}"; then
+  if run_command "close_${close_date}" "$CLOSE_TIMEOUT_SEC" "${cmd[@]}"; then
     rc=0
   else
     rc=$?
@@ -342,7 +360,7 @@ append_health_section() {
   echo "== ${title} =="
   echo "command: $(display_command "$@")"
 
-  if run_command "$title" "$@"; then
+  if run_command "$title" "$HEALTH_TIMEOUT_SEC" "$@"; then
     rc=0
   else
     rc=$?
@@ -358,7 +376,7 @@ append_health_section() {
   {
     echo "## ${title}"
     echo "command=$(display_command "$@")"
-    echo "command_timeout_sec=${CMD_TIMEOUT_SEC}"
+    echo "command_timeout_sec=${RUN_TIMEOUT_SEC:-$HEALTH_TIMEOUT_SEC}"
     echo "command_limit=max_bytes=${MAX_CMD_BYTES} max_lines=${MAX_CMD_LINES}"
     echo "command_status=${status}"
     if [[ "$rc" -eq 124 ]]; then
@@ -396,7 +414,7 @@ cmd_health() {
     echo "output_policy=aggregate diagnostics only; no raw rows or raw payloads requested"
     echo "max_cmd_bytes=${MAX_CMD_BYTES}"
     echo "max_cmd_lines=${MAX_CMD_LINES}"
-    echo "cmd_timeout_sec=${CMD_TIMEOUT_SEC}"
+    echo "cmd_timeout_sec=${HEALTH_TIMEOUT_SEC}"
     echo
   } >"$tmp_output"
 
@@ -456,7 +474,7 @@ cmd_digest() {
 
   cmd=("$digest_script" --date "$report_date" --mode "$mode")
   echo "command: $(display_command "${cmd[@]}")"
-  if run_command "digest_${report_date}_${mode}" "${cmd[@]}"; then
+  if run_command "digest_${report_date}_${mode}" "$DIGEST_TIMEOUT_SEC" "${cmd[@]}"; then
     rc=0
   else
     rc=$?
@@ -527,7 +545,7 @@ cmd_analyze() {
     canonical_report_status="present"
   elif [[ "$auto_build" -eq 1 ]]; then
     cmd=(make report-daily-date "DATE=${report_date}")
-    if run_analyze_step "analyze_report_${report_date}" "${cmd[@]}"; then
+    if run_analyze_step "analyze_report_${report_date}" "$REPORT_TIMEOUT_SEC" "${cmd[@]}"; then
       if canonical_daily_report_present "$report_date"; then
         canonical_report_status="generated"
       else
@@ -550,14 +568,14 @@ cmd_analyze() {
 
   if [[ "$daily_compare_status" != "present" ]]; then
     cmd=(make daily-compare "DATE=${report_date}")
-    if run_analyze_step "analyze_daily_compare_${report_date}" "${cmd[@]}"; then
+    if run_analyze_step "analyze_daily_compare_${report_date}" "$REPORT_TIMEOUT_SEC" "${cmd[@]}"; then
       if daily_compare_present "$report_date"; then
         daily_compare_status="generated"
       elif [[ "$auto_build" -eq 1 ]]; then
         cmd=(make daily-compare-rebuild "DATE=${report_date}")
         rebuild_performed="true"
         echo "rebuild_performed=true"
-        if run_analyze_step "analyze_daily_compare_rebuild_${report_date}" "${cmd[@]}"; then
+        if run_analyze_step "analyze_daily_compare_rebuild_${report_date}" "$REPORT_TIMEOUT_SEC" "${cmd[@]}"; then
           if daily_compare_present "$report_date"; then
             daily_compare_status="generated"
           else
@@ -573,7 +591,7 @@ cmd_analyze() {
       cmd=(make daily-compare-rebuild "DATE=${report_date}")
       rebuild_performed="true"
       echo "rebuild_performed=true"
-      if run_analyze_step "analyze_daily_compare_rebuild_${report_date}" "${cmd[@]}"; then
+      if run_analyze_step "analyze_daily_compare_rebuild_${report_date}" "$REPORT_TIMEOUT_SEC" "${cmd[@]}"; then
         if daily_compare_present "$report_date"; then
           daily_compare_status="generated"
         else
@@ -588,7 +606,7 @@ cmd_analyze() {
   fi
 
   cmd=("$digest_script" --date "$report_date" --mode "$mode")
-  if run_analyze_step "analyze_digest_${report_date}_${mode}" "${cmd[@]}"; then
+  if run_analyze_step "analyze_digest_${report_date}_${mode}" "$DIGEST_TIMEOUT_SEC" "${cmd[@]}"; then
     rc=0
   else
     rc=$?
@@ -642,15 +660,28 @@ cleanup() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 MAX_CMD_BYTES="${HERMES_OPS_MAX_CMD_BYTES:-80000}"
 MAX_CMD_LINES="${HERMES_OPS_MAX_CMD_LINES:-400}"
+
+# Generic fallback timeout.
 CMD_TIMEOUT_SEC="${HERMES_OPS_CMD_TIMEOUT_SEC:-120}"
+
+# Command-specific timeouts.
+# If HERMES_OPS_CMD_TIMEOUT_SEC is explicitly set, it acts as the fallback for
+# command-specific values that are not explicitly set.
+REPORT_TIMEOUT_SEC="${HERMES_OPS_REPORT_TIMEOUT_SEC:-${HERMES_OPS_CMD_TIMEOUT_SEC:-900}}"
+CLOSE_TIMEOUT_SEC="${HERMES_OPS_CLOSE_TIMEOUT_SEC:-${HERMES_OPS_CMD_TIMEOUT_SEC:-900}}"
+HEALTH_TIMEOUT_SEC="${HERMES_OPS_HEALTH_TIMEOUT_SEC:-${HERMES_OPS_CMD_TIMEOUT_SEC:-180}}"
+DIGEST_TIMEOUT_SEC="${HERMES_OPS_DIGEST_TIMEOUT_SEC:-${HERMES_OPS_CMD_TIMEOUT_SEC:-300}}"
+
 TMP_DIR=""
 HEALTH_TMP_OUTPUT=""
 RUN_OUTPUT=""
 RUN_RAW_BYTES=0
 RUN_RAW_LINES=0
 RUN_TRUNCATED=0
+RUN_TIMEOUT_SEC="$CMD_TIMEOUT_SEC"
 HEALTH_PARTIAL=0
 HEALTH_SUMMARY=()
 
