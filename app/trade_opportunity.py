@@ -34,6 +34,16 @@ from config import (
     OPPORTUNITY_REQUIRE_LIVE_CONTEXT,
     OPPORTUNITY_REQUIRE_OUTCOME_HISTORY,
     OPPORTUNITY_SCHEMA_VERSION,
+    SHADOW_CANDIDATE_MIN_SCORE,
+    SHADOW_MAX_60S_ADVERSE_RATE,
+    SHADOW_MIN_60S_FOLLOWTHROUGH_RATE,
+    SHADOW_MIN_HISTORY_SAMPLES,
+    SHADOW_MIN_OUTCOME_COMPLETION_RATE,
+    SHADOW_OPPORTUNITY_ENABLE,
+    SHADOW_REQUIRE_BROADER_CONFIRM,
+    SHADOW_REQUIRE_LIVE_CONTEXT,
+    SHADOW_REQUIRE_OUTCOME_HISTORY,
+    SHADOW_VERIFIED_MIN_SCORE,
     TELEGRAM_SUPPRESS_REPEAT_STATE_SEC,
     TRADE_ACTION_MAX_LONG_BASIS_BPS,
     TRADE_ACTION_MIN_ASSET_QUALITY_FOR_CHASE,
@@ -46,6 +56,7 @@ from persistence_utils import read_json_file, resolve_persistence_path, write_js
 
 
 ACTIVE_STATUSES = {"CANDIDATE", "VERIFIED", "BLOCKED"}
+SHADOW_STATUSES = {"SHADOW_CANDIDATE", "SHADOW_VERIFIED"}
 OPPORTUNITY_TERMINAL_STATUSES = {"EXPIRED", "INVALIDATED"}
 HIGH_VALUE_STATUSES = ACTIVE_STATUSES | OPPORTUNITY_TERMINAL_STATUSES
 LONG_KEYS = {"LONG_CHASE_ALLOWED", "DO_NOT_CHASE_LONG", "LONG_CANDIDATE", "TRADEABLE_LONG"}
@@ -118,6 +129,10 @@ OPPORTUNITY_LABELS = {
     ("EXPIRED", "SHORT"): "空头机会过期",
     ("INVALIDATED", "LONG"): "多头机会失效",
     ("INVALIDATED", "SHORT"): "空头机会失效",
+    ("SHADOW_CANDIDATE", "LONG"): "影子多头候选",
+    ("SHADOW_CANDIDATE", "SHORT"): "影子空头候选",
+    ("SHADOW_VERIFIED", "LONG"): "影子多头验证",
+    ("SHADOW_VERIFIED", "SHORT"): "影子空头验证",
 }
 
 BLOCKER_PRIORITY = [
@@ -187,6 +202,8 @@ def canonical_final_trading_output_label(
         return _blocked_output_label(normalized_side, str(primary_blocker or ""))
     if normalized_status in OPPORTUNITY_TERMINAL_STATUSES:
         return "状态变化"
+    if normalized_status in SHADOW_STATUSES:
+        return ""
     return ""
 
 
@@ -347,6 +364,31 @@ def _side_cn(side: str) -> str:
 
 def _label_for(status: str, side: str) -> str:
     return OPPORTUNITY_LABELS.get((status, side), OPPORTUNITY_LABELS.get((status, "NONE"), "无机会"))
+
+
+def _determine_shadow_none_reason(
+    *,
+    candidate_ready: bool,
+    verified_ready: bool,
+    hard_blockers: list[str],
+    verification_gate: dict[str, Any],
+) -> str:
+    """Determine why production scored NONE but shadow sees an opportunity."""
+    verification_blockers = list(verification_gate.get("blockers") or [])
+    if not candidate_ready and not verified_ready:
+        if "outcome_history_insufficient" in verification_blockers:
+            return "outcome_history_insufficient"
+        if "profile_sample_count_insufficient" in verification_blockers:
+            return "profile_sample_count_low"
+        if verification_blockers:
+            return verification_blockers[0]
+        if hard_blockers:
+            return "production_gate_blocked"
+    if not verified_ready:
+        if verification_blockers:
+            return verification_blockers[0]
+        return "verified_maturity_immature"
+    return "blocker_research_candidate"
 
 
 def _blocked_output_label(side: str, blocker: str) -> str:
@@ -1814,6 +1856,8 @@ class TradeOpportunityManager:
 
     def _evaluate(self, *, summary: dict[str, Any], history: dict[str, Any], score_payload: dict[str, Any]) -> dict[str, Any]:
         status = "NONE"
+        candidate_ready = False
+        verified_ready = False
         side = str(summary.get("trade_opportunity_side") or "NONE")
         raw_score = float(score_payload.get("opportunity_raw_score") or score_payload.get("trade_opportunity_raw_score") or 0.0)
         calibrated_score = float(
@@ -1886,6 +1930,23 @@ class TradeOpportunityManager:
                 risk_flags.append("low_quality")
             else:
                 status = "NONE"
+
+        # ── Shadow opportunity evaluation (research-only) ──
+        shadow = self._evaluate_shadow_opportunity(
+            summary=summary,
+            history=history,
+            side=side,
+            calibrated_score=calibrated_score,
+            candidate_ready=candidate_ready,
+            verified_ready=verified_ready,
+            production_status=status,
+            hard_blockers=hard_blockers,
+            verification_gate=verification_gate,
+            strong_directional=strong_directional,
+            preliminary_quality_pass=preliminary_quality_pass,
+            live_context=live_context,
+            broader_confirm=broader_confirm,
+        )
 
         primary_hard_blocker = self._primary_blocker(hard_blockers)
         primary_verification_blocker = self._primary_blocker(verification_blockers)
@@ -2039,6 +2100,117 @@ class TradeOpportunityManager:
             "adverse_after_block": None,
             "blocker_saved_trade": None,
             "blocker_false_block_possible": None,
+            "trade_opportunity_shadow_status": shadow["shadow_status"],
+            "trade_opportunity_shadow_reason": shadow["shadow_reason"],
+            "trade_opportunity_shadow_score": round(shadow["shadow_score"], 4),
+        }
+
+    def _evaluate_shadow_opportunity(
+        self,
+        *,
+        summary: dict[str, Any],
+        history: dict[str, Any],
+        side: str,
+        calibrated_score: float,
+        candidate_ready: bool,
+        verified_ready: bool,
+        production_status: str,
+        hard_blockers: list[str],
+        verification_gate: dict[str, Any],
+        strong_directional: bool,
+        preliminary_quality_pass: bool,
+        live_context: bool,
+        broader_confirm: bool,
+    ) -> dict[str, Any]:
+        """Evaluate shadow opportunity with relaxed thresholds for research/learning.
+
+        Shadow opportunities NEVER trigger Telegram sends. They are research-only.
+        """
+        if not bool(SHADOW_OPPORTUNITY_ENABLE):
+            return {"shadow_status": "NONE", "shadow_reason": "shadow_disabled", "shadow_score": 0.0}
+
+        shadow_status = "NONE"
+        shadow_reason = ""
+        shadow_score = calibrated_score
+
+        # ── Shadow candidate check ──
+        shadow_candidate_ready = bool(
+            strong_directional
+            and calibrated_score >= float(SHADOW_CANDIDATE_MIN_SCORE)
+            and preliminary_quality_pass
+            and (live_context or not bool(SHADOW_REQUIRE_LIVE_CONTEXT))
+            and (broader_confirm or not bool(SHADOW_REQUIRE_BROADER_CONFIRM))
+        )
+
+        # ── Shadow history gate (relaxed) ──
+        shadow_history_blockers: list[str] = []
+        if bool(SHADOW_REQUIRE_OUTCOME_HISTORY):
+            sample_size = int(history.get("sample_size") or 0)
+            completion_rate = float(history.get("completion_rate") or 0.0)
+            followthrough_rate = float(history.get("followthrough_rate") or 0.0)
+            adverse_rate = _float(history.get("adverse_rate"), default=1.0)
+            if sample_size <= 0:
+                shadow_history_blockers.append("outcome_history_insufficient")
+            elif sample_size < int(SHADOW_MIN_HISTORY_SAMPLES):
+                shadow_history_blockers.append("profile_sample_count_insufficient")
+            elif completion_rate < float(SHADOW_MIN_OUTCOME_COMPLETION_RATE):
+                shadow_history_blockers.append("profile_completion_too_low")
+            elif adverse_rate > float(SHADOW_MAX_60S_ADVERSE_RATE):
+                shadow_history_blockers.append("profile_adverse_too_high")
+            elif followthrough_rate < float(SHADOW_MIN_60S_FOLLOWTHROUGH_RATE):
+                shadow_history_blockers.append("profile_followthrough_too_low")
+
+        shadow_history_ready = len(shadow_history_blockers) == 0
+
+        # ── Shadow verified check ──
+        shadow_verified_ready = bool(
+            shadow_candidate_ready
+            and calibrated_score >= float(SHADOW_VERIFIED_MIN_SCORE)
+            and shadow_history_ready
+        )
+
+        # ── Determine shadow status ──
+        if production_status == "CANDIDATE":
+            # Production already captured as CANDIDATE — check if shadow can promote to VERIFIED
+            if shadow_verified_ready and not verified_ready:
+                shadow_status = "SHADOW_VERIFIED"
+                shadow_reason = "verified_maturity_immature"
+            else:
+                shadow_status = "NONE"
+        elif production_status == "VERIFIED":
+            # Already production VERIFIED, no need for shadow
+            shadow_status = "NONE"
+        elif production_status == "BLOCKED":
+            # Production blocked — see if shadow would have been CANDIDATE or VERIFIED
+            if shadow_verified_ready:
+                shadow_status = "SHADOW_VERIFIED"
+                shadow_reason = "production_gate_blocked"
+            elif shadow_candidate_ready:
+                shadow_status = "SHADOW_CANDIDATE"
+                shadow_reason = "production_gate_blocked"
+        elif production_status == "NONE":
+            # Production NONE — see if shadow would have seen something
+            if shadow_verified_ready:
+                shadow_status = "SHADOW_VERIFIED"
+                shadow_reason = _determine_shadow_none_reason(
+                    candidate_ready=candidate_ready,
+                    verified_ready=verified_ready,
+                    hard_blockers=hard_blockers,
+                    verification_gate=verification_gate,
+                )
+            elif shadow_candidate_ready:
+                shadow_status = "SHADOW_CANDIDATE"
+                shadow_reason = _determine_shadow_none_reason(
+                    candidate_ready=candidate_ready,
+                    verified_ready=verified_ready,
+                    hard_blockers=hard_blockers,
+                    verification_gate=verification_gate,
+                )
+
+        return {
+            "shadow_status": shadow_status,
+            "shadow_reason": shadow_reason,
+            "shadow_score": shadow_score,
         }
 
     def _hard_blockers(

@@ -60,6 +60,9 @@ from config import (
     SQLITE_WRITE_PARSED_EVENTS,
     SQLITE_WRITE_QUALITY_STATS,
     SQLITE_WRITE_RAW_EVENTS,
+    SQLITE_WRITE_REPLAY_EXAMPLES,
+    SQLITE_WRITE_REPLAY_PROFILES,
+    SQLITE_WRITE_SHADOW_OPPORTUNITIES,
     SQLITE_WRITE_SIGNALS,
     SQLITE_WRITE_TRADE_OPPORTUNITIES,
 )
@@ -92,6 +95,9 @@ REQUIRED_TABLES = (
     "prealert_lifecycle",
     "delivery_audit",
     "case_followups",
+    "trade_replay_examples",
+    "trade_replay_profile_stats",
+    "runtime_heartbeats",
 )
 
 ARCHIVE_CATEGORY_TABLES = {
@@ -1134,6 +1140,9 @@ def migrate_schema() -> bool:
                 created_at REAL,
                 expires_at REAL,
                 telegram_sent INTEGER,
+                shadow_status TEXT DEFAULT 'NONE',
+                shadow_reason TEXT,
+                shadow_score REAL,
                 opportunity_json TEXT,
                 updated_at REAL
             );
@@ -1301,6 +1310,87 @@ def migrate_schema() -> bool:
             CREATE INDEX IF NOT EXISTS idx_case_followups_case_id ON case_followups(case_id);
             CREATE INDEX IF NOT EXISTS idx_case_followups_signal_id ON case_followups(signal_id);
             CREATE INDEX IF NOT EXISTS idx_case_followups_archive_written_at ON case_followups(archive_written_at);
+
+            CREATE TABLE IF NOT EXISTS trade_replay_examples (
+                replay_id TEXT PRIMARY KEY,
+                logical_date TEXT NOT NULL,
+                signal_id TEXT,
+                trade_opportunity_id TEXT,
+                delivery_audit_id TEXT,
+                asset TEXT NOT NULL,
+                pair TEXT,
+                side TEXT NOT NULL,
+                opportunity_status TEXT,
+                shadow_status TEXT DEFAULT 'NONE',
+                signal_stage TEXT,
+                lp_stage TEXT,
+                sweep_phase TEXT,
+                profile_key TEXT,
+                signal_ts INTEGER NOT NULL,
+                entry_ts INTEGER,
+                exit_ts INTEGER,
+                entry_delay_sec INTEGER DEFAULT 5,
+                max_hold_sec INTEGER DEFAULT 60,
+                entry_price REAL,
+                exit_price REAL,
+                stop_loss_bps INTEGER DEFAULT 30,
+                take_profit_bps INTEGER DEFAULT 50,
+                fee_bps INTEGER DEFAULT 6,
+                slippage_bps INTEGER DEFAULT 5,
+                gross_pnl_bps REAL,
+                net_pnl_bps REAL,
+                mfe_bps REAL,
+                mae_bps REAL,
+                label TEXT,
+                close_reason TEXT,
+                price_source TEXT,
+                data_valid INTEGER DEFAULT 1,
+                invalid_reason TEXT,
+                blockers_json TEXT,
+                features_json TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS trade_replay_profile_stats (
+                profile_key TEXT PRIMARY KEY,
+                asset TEXT,
+                side TEXT,
+                sample_count INTEGER DEFAULT 0,
+                valid_sample_count INTEGER DEFAULT 0,
+                win_rate REAL,
+                avg_net_pnl_bps REAL,
+                median_net_pnl_bps REAL,
+                clean_followthrough_rate REAL,
+                bad_entry_rate REAL,
+                absorption_reversal_rate REAL,
+                chop_rate REAL,
+                data_invalid_rate REAL,
+                avg_mfe_bps REAL,
+                avg_mae_bps REAL,
+                recommended_action TEXT,
+                confidence_level TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS runtime_heartbeats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                check_ts INTEGER NOT NULL,
+                last_raw_event_ts INTEGER,
+                last_parsed_event_ts INTEGER,
+                last_signal_ts INTEGER,
+                last_market_context_success_ts INTEGER,
+                last_block_seen INTEGER,
+                process_heartbeat_ts INTEGER,
+                active_hours REAL,
+                raw_events_count INTEGER,
+                signals_count INTEGER,
+                max_raw_event_gap_sec REAL,
+                max_signal_gap_sec REAL,
+                data_gap_warnings TEXT,
+                zero_activity_day INTEGER DEFAULT 0,
+                data_quality_status TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
             """
         )
         _ensure_columns(
@@ -1456,6 +1546,9 @@ def migrate_schema() -> bool:
                 "opportunity_gate_required": "INTEGER",
                 "opportunity_gate_passed": "INTEGER",
                 "opportunity_gate_failure_reason": "TEXT",
+                "shadow_status": "TEXT",
+                "shadow_reason": "TEXT",
+                "shadow_score": "REAL",
             },
         )
         _ensure_columns(
@@ -2031,6 +2124,9 @@ def upsert_trade_opportunity(record: Any) -> bool:
             "opportunity_gate_required": _bool_int(_first(data, "opportunity_gate_required")),
             "opportunity_gate_passed": _bool_int(_first(data, "opportunity_gate_passed")),
             "opportunity_gate_failure_reason": _text(_first(data, "opportunity_gate_failure_reason")),
+            "shadow_status": _text(_first(data, "trade_opportunity_shadow_status", "shadow_status")),
+            "shadow_reason": _text(_first(data, "trade_opportunity_shadow_reason", "shadow_reason")),
+            "shadow_score": _real(_first(data, "trade_opportunity_shadow_score", "shadow_score")),
             "opportunity_json": _json(data),
             "updated_at": now,
         },

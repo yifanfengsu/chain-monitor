@@ -632,6 +632,78 @@ smoke-fast:
 	$(MAKE) health
 	$(MAKE) coverage
 
+# --- Trade Replay ---
+
+trade-replay:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE)
+
+trade-replay-summary:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-summary DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --format json
+
+trade-replay-dry-run:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-dry-run DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --dry-run
+
+trade-replay-suppressed:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-suppressed DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-suppressed
+
+trade-replay-blocked:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-blocked DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-blocked --include-suppressed
+
+trade-replay-full:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-full DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-suppressed --include-blocked
+
+# --- Shadow Opportunity ---
+
+shadow-opportunity-summary:
+	$(RUN_PY) -m app.quality_reports --shadow-opportunity-summary
+
+# --- Runtime Health ---
+
+runtime-health:
+	$(RUN_PY) -m app.runtime_health --summary
+
+runtime-health-date:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make runtime-health-date DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.runtime_health --date $(DATE)
+
+# --- Data Quality ---
+
+data-quality:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make data-quality DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.quality_reports --data-quality-summary --date $(DATE)
+
+# --- Market Context KPI ---
+
+market-context-kpi:
+	$(RUN_PY) -m app.quality_reports --market-context-kpi
+
+# --- DB Reconcile ---
+
+db-reconcile-dry-run:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make db-reconcile-dry-run DATE=YYYY-MM-DD"; exit 1; fi
+	$(RUN_PY) -m app.quality_reports --report-source-summary --fast --fail-on-mismatch
+
+db-reconcile-date:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to reconcile. Use make db-reconcile-date DATE=YYYY-MM-DD CONFIRM=YES"; exit 2; fi
+	@echo "db-reconcile execute not yet implemented. Dry-run only for now."
+	$(MAKE) db-reconcile-dry-run DATE=$(DATE)
+
+# --- Test Trade Replay ---
+
+TEST_REPLAY_MODULES := \
+	$(APP).test_trade_replay \
+
+test-replay:
+	@$(call run_existing_tests,$(TEST_REPLAY_MODULES))
+
+test-all: test-replay
+
 smoke-full:
 	$(MAKE) smoke-fast
 	$(MAKE) db-report

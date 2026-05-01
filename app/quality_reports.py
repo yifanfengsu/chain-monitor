@@ -39,6 +39,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-source-fast", action="store_true", help="输出轻量 report source 摘要，不扫描 archive 行数")
     parser.add_argument("--fast", action="store_true", help="与 --report-source-summary 搭配使用，跳过 archive/gzip 全量行数扫描")
     parser.add_argument("--fail-on-mismatch", action="store_true", help="DB/archive mirror mismatch 时返回非零")
+    parser.add_argument("--market-context-kpi", action="store_true", help="market context KPI summary")
+    parser.add_argument("--data-quality-summary", action="store_true", help="data quality summary")
+    parser.add_argument("--trade-replay-summary", action="store_true", help="trade replay summary")
+    parser.add_argument("--shadow-opportunity-summary", action="store_true", help="shadow opportunity summary")
+    parser.add_argument("--runtime-health-summary", action="store_true", help="runtime health summary")
     parser.add_argument("--days", type=int, default=None, help="仅统计最近 N 天")
     parser.add_argument("--limit", type=int, default=None, help="仅统计最近 N 条 outcome")
     parser.add_argument("--top-n", type=int, default=None, help="top/bottom 行数")
@@ -739,6 +744,100 @@ def main(argv: list[str] | None = None) -> int:
         import report_data_loader
 
         payload = report_data_loader.report_source_summary(fast=bool(args.fast or args.report_source_fast))
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.market_context_kpi:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        conn = sqlite_store.get_connection()
+        payload: dict = {}
+        if conn is None:
+            payload["error"] = "no_sqlite_connection"
+        else:
+            total = conn.execute("SELECT COUNT(*) FROM market_context_attempts").fetchone()
+            success = conn.execute("SELECT COUNT(*) FROM market_context_attempts WHERE success=1").fetchone()
+            failure = conn.execute("SELECT COUNT(*) FROM market_context_attempts WHERE success=0").fetchone()
+            attempt_count = int(total[0]) if total else 0
+            success_count = int(success[0]) if success else 0
+            failure_count = int(failure[0]) if failure else 0
+            if attempt_count == 0:
+                success_rate = None
+                success_rate_reason = "no_attempts"
+            else:
+                success_rate = round(success_count / attempt_count, 4)
+                success_rate_reason = None
+            fixture_rows = conn.execute(
+                "SELECT COUNT(DISTINCT signal_id) FROM market_context_attempts WHERE failure_reason LIKE '%fixture%'"
+            ).fetchone()
+            live_rows = conn.execute(
+                "SELECT COUNT(DISTINCT signal_id) FROM market_context_attempts WHERE endpoint LIKE '%okx%' OR endpoint LIKE '%kraken%' OR endpoint LIKE '%binance%' OR endpoint LIKE '%bybit%'"
+            ).fetchone()
+            payload = {
+                "attempt_count": attempt_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "success_rate": success_rate,
+                "success_rate_reason": success_rate_reason,
+                "fixture_mode_detected": int(fixture_rows[0]) if fixture_rows else 0,
+                "live_mode_detected": int(live_rows[0]) if live_rows else 0,
+            }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.data_quality_summary or args.runtime_health_summary:
+        import runtime_health
+
+        payload = runtime_health.build_runtime_health_report()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.trade_replay_summary:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        conn = sqlite_store.get_connection()
+        payload: dict = {}
+        if conn is None:
+            payload["error"] = "no_sqlite_connection"
+        else:
+            examples = conn.execute("SELECT COUNT(*) FROM trade_replay_examples").fetchone()
+            profiles = conn.execute("SELECT COUNT(*) FROM trade_replay_profile_stats").fetchone()
+            payload = {
+                "trade_replay_examples_count": int(examples[0]) if examples else 0,
+                "trade_replay_profile_stats_count": int(profiles[0]) if profiles else 0,
+            }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.shadow_opportunity_summary:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        conn = sqlite_store.get_connection()
+        payload: dict = {}
+        if conn is None:
+            payload["error"] = "no_sqlite_connection"
+        else:
+            shadow_total = conn.execute(
+                "SELECT COUNT(*) FROM trade_opportunities WHERE status LIKE '%SHADOW%'"
+            ).fetchone()
+            shadow_candidate = conn.execute(
+                "SELECT COUNT(*) FROM trade_opportunities WHERE status='SHADOW_CANDIDATE'"
+            ).fetchone()
+            shadow_verified = conn.execute(
+                "SELECT COUNT(*) FROM trade_opportunities WHERE status='SHADOW_VERIFIED'"
+            ).fetchone()
+            payload = {
+                "shadow_total": int(shadow_total[0]) if shadow_total else 0,
+                "shadow_candidate": int(shadow_candidate[0]) if shadow_candidate else 0,
+                "shadow_verified": int(shadow_verified[0]) if shadow_verified else 0,
+            }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0
