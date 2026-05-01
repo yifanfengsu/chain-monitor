@@ -15,6 +15,7 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,41 @@ DEFAULT_FEE_BPS = 6
 DEFAULT_SLIPPAGE_BPS = 5
 MIN_PROFILE_REPLAY_SAMPLES = 10
 REPLAY_SAMPLE_INSUFFICIENT = 5
+BJ_TZ = timezone(timedelta(hours=8))
+
+INPUT_SOURCE_KEYS = (
+    "signals",
+    "trade_opportunities",
+    "delivery_audit",
+    "telegram_deliveries",
+    "shadow_opportunities",
+    "suppressed",
+    "blocked",
+)
+REPLAY_ELIGIBLE_STATUSES = {"CANDIDATE", "VERIFIED", "BLOCKED"}
+REPLAY_ELIGIBLE_SHADOW_STATUSES = {"SHADOW_CANDIDATE", "SHADOW_VERIFIED"}
+REPLAY_ELIGIBLE_ACTIONS = {
+    "LONG_CANDIDATE",
+    "SHORT_CANDIDATE",
+    "LONG_CHASE_ALLOWED",
+    "SHORT_CHASE_ALLOWED",
+    "DO_NOT_CHASE_LONG",
+    "DO_NOT_CHASE_SHORT",
+    "NO_TRADE",
+    "NO_TRADE_LOCK",
+    "CONFLICT_NO_TRADE",
+    "WAIT_CONFIRMATION",
+    "BLOCKED",
+}
+REPLAY_ELIGIBLE_PHASES = {"LOCAL_ABSORPTION", "SWEEP_EXHAUSTION_RISK"}
+BLOCKED_ACTIONS = {
+    "BLOCKED",
+    "DO_NOT_CHASE_LONG",
+    "DO_NOT_CHASE_SHORT",
+    "NO_TRADE",
+    "NO_TRADE_LOCK",
+    "CONFLICT_NO_TRADE",
+}
 
 
 class ReplayDiagnostics:
@@ -621,11 +657,701 @@ def get_price_at_ts(
             conn.close()
 
 
+def _fmt_utc(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt_bj(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), BJ_TZ).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+
+
+def _logical_window(logical_date: str) -> dict[str, Any]:
+    parsed = date.fromisoformat(logical_date)
+    start_bj = datetime(parsed.year, parsed.month, parsed.day, tzinfo=BJ_TZ)
+    start_ts = int(start_bj.timestamp())
+    end_ts = start_ts + 24 * 3600 - 1
+    return {
+        "logical_date": logical_date,
+        "timezone": "Asia/Shanghai",
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "logical_window_start_utc": _fmt_utc(start_ts),
+        "logical_window_end_utc": _fmt_utc(end_ts),
+        "logical_window_start_beijing": _fmt_bj(start_ts),
+        "logical_window_end_beijing": _fmt_bj(end_ts),
+    }
+
+
+def _empty_input_source_counts() -> dict[str, int]:
+    return {key: 0 for key in INPUT_SOURCE_KEYS}
+
+
+def _empty_eligibility_summary() -> dict[str, Any]:
+    return {"eligible_count": 0, "ineligible_count": 0, "ineligible_reasons": {}}
+
+
+def _from_json(value: Any, default: Any = None) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "sent", "delivered", "completed"}
+
+
+def _none_if_blank(value: Any) -> Any:
+    if value in (None, "", [], {}, ()):
+        return None
+    return value
+
+
+def _row_payloads(row: dict[str, Any], json_columns: tuple[str, ...]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for column in json_columns:
+        payload = _from_json(row.get(column), {})
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _first_payload_value(row: dict[str, Any], payloads: list[dict[str, Any]], *keys: str) -> Any:
+    for key in keys:
+        value = _none_if_blank(row.get(key))
+        if value is not None:
+            return value
+    for payload in payloads:
+        for key in keys:
+            value = _none_if_blank(payload.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _coerce_replay_eligible(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    return _is_truthy(value)
+
+
+def _coerce_blockers(value: Any) -> list[str]:
+    payload = _from_json(value, value)
+    if isinstance(payload, dict):
+        return [str(key) for key, item in payload.items() if _is_truthy(item) or item not in (None, "", [], {})]
+    if isinstance(payload, list):
+        return [str(item) for item in payload if str(item or "").strip()]
+    text = str(payload or "").strip()
+    return [text] if text else []
+
+
+def _merge_non_empty(target: dict[str, Any], source: dict[str, Any], *, overwrite: bool = False) -> None:
+    for key, value in source.items():
+        if key == "input_source":
+            continue
+        if value in (None, "", [], {}):
+            continue
+        if overwrite or target.get(key) in (None, "", [], {}):
+            target[key] = value
+
+
+def _select_rows_for_window(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    select_candidates: tuple[str, ...],
+    time_candidates: tuple[str, ...],
+    start_ts: int,
+    end_ts: int,
+    replay_diagnostics: ReplayDiagnostics,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not _table_exists(conn, table):
+        return [], []
+    columns = _table_columns(conn, table, replay_diagnostics)
+    time_column = next((column for column in time_candidates if column in columns), "")
+    if not time_column:
+        replay_diagnostics.warning(f"input_source_missing_time_column:{table}")
+        return [], []
+    select_columns = list(dict.fromkeys([column for column in (*select_candidates, time_column) if column in columns]))
+    if not select_columns:
+        select_columns = [time_column]
+    select_sql = ", ".join(select_columns)
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT {select_sql} FROM {table} "
+                f"WHERE CAST({time_column} AS REAL) >= ? AND CAST({time_column} AS REAL) <= ? "
+                f"ORDER BY CAST({time_column} AS REAL) ASC",
+                (start_ts, end_ts),
+            ).fetchall()
+        ]
+        missing_ts_rows: list[dict[str, Any]] = []
+        if not rows:
+            missing_ts_rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"SELECT {select_sql} FROM {table} WHERE {time_column} IS NULL LIMIT 100"
+                ).fetchall()
+            ]
+        return rows, missing_ts_rows
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"input_source_query_failed:{table}:{exc}")
+        return [], []
+
+
+def _canonical_upper(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _direction_from_values(*values: Any) -> str:
+    for value in values:
+        raw = _canonical_upper(value)
+        if not raw:
+            continue
+        if raw in {"LONG", "BUY", "BUY_PRESSURE", "LONG_CANDIDATE", "LONG_CHASE_ALLOWED", "LONG_BIAS_OBSERVE", "DO_NOT_CHASE_LONG"}:
+            return "LONG"
+        if raw in {"SHORT", "SELL", "SELL_PRESSURE", "SHORT_CANDIDATE", "SHORT_CHASE_ALLOWED", "SHORT_BIAS_OBSERVE", "DO_NOT_CHASE_SHORT"}:
+            return "SHORT"
+        if "LONG" in raw or raw.endswith("_BUY") or raw.startswith("BUY_"):
+            return "LONG"
+        if "SHORT" in raw or raw.endswith("_SELL") or raw.startswith("SELL_"):
+            return "SHORT"
+    return ""
+
+
+def _has_replay_eligible_marker(candidate: dict[str, Any]) -> bool:
+    if candidate.get("replay_eligible") is True:
+        return True
+    status = _canonical_upper(candidate.get("opportunity_status"))
+    shadow_status = _canonical_upper(candidate.get("shadow_status"))
+    action = _canonical_upper(candidate.get("trade_action_key") or candidate.get("trade_action"))
+    delivery_decision = _canonical_upper(candidate.get("delivery_decision"))
+    final_label = _canonical_upper(candidate.get("final_trading_output_label"))
+    lp_stage = _canonical_upper(candidate.get("lp_stage"))
+    sweep_phase = _canonical_upper(candidate.get("sweep_phase"))
+    if status in REPLAY_ELIGIBLE_STATUSES:
+        return True
+    if shadow_status in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+        return True
+    if action in REPLAY_ELIGIBLE_ACTIONS or delivery_decision in REPLAY_ELIGIBLE_ACTIONS:
+        return True
+    if lp_stage in REPLAY_ELIGIBLE_PHASES or sweep_phase in REPLAY_ELIGIBLE_PHASES:
+        return True
+    return any(marker in final_label for marker in REPLAY_ELIGIBLE_ACTIONS | REPLAY_ELIGIBLE_STATUSES | REPLAY_ELIGIBLE_SHADOW_STATUSES | REPLAY_ELIGIBLE_PHASES)
+
+
+def _is_blocked_candidate(candidate: dict[str, Any]) -> bool:
+    status = _canonical_upper(candidate.get("opportunity_status"))
+    action = _canonical_upper(candidate.get("trade_action_key") or candidate.get("trade_action"))
+    delivery_decision = _canonical_upper(candidate.get("delivery_decision"))
+    suppression_reason = _canonical_upper(candidate.get("suppression_reason") or candidate.get("blocked_reason"))
+    return (
+        status == "BLOCKED"
+        or action in BLOCKED_ACTIONS
+        or delivery_decision in BLOCKED_ACTIONS
+        or "NO_TRADE" in suppression_reason
+        or "DO_NOT_CHASE" in suppression_reason
+        or "BLOCK" in suppression_reason
+    )
+
+
+def _candidate_timestamp(candidate: dict[str, Any]) -> int:
+    return _to_int(
+        candidate.get("archive_ts")
+        or candidate.get("timestamp")
+        or candidate.get("created_at")
+        or candidate.get("sent_at")
+        or candidate.get("notifier_sent_at")
+    )
+
+
+def _candidate_to_signal_row(candidate: dict[str, Any]) -> dict[str, Any]:
+    direction = _direction_from_values(
+        candidate.get("side"),
+        candidate.get("direction"),
+        candidate.get("trade_action_key"),
+        candidate.get("trade_action"),
+        candidate.get("final_trading_output_label"),
+    )
+    signal_ts = _candidate_timestamp(candidate)
+    return {
+        "signal_id": str(candidate.get("signal_id") or ""),
+        "trade_opportunity_id": str(candidate.get("trade_opportunity_id") or ""),
+        "asset": str(candidate.get("asset") or ""),
+        "asset_symbol": str(candidate.get("asset") or ""),
+        "pair": str(candidate.get("pair") or ""),
+        "pair_label": str(candidate.get("pair") or ""),
+        "direction": direction,
+        "trade_opportunity_side": direction,
+        "archive_ts": signal_ts,
+        "timestamp": signal_ts,
+        "created_at": signal_ts,
+        "opportunity_profile_key": str(candidate.get("profile_key") or candidate.get("opportunity_profile_key") or ""),
+        "trade_opportunity_status": str(candidate.get("opportunity_status") or ""),
+        "trade_opportunity_shadow_status": str(candidate.get("shadow_status") or "NONE"),
+        "input_source": list(candidate.get("input_source") or []),
+    }
+
+
+def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "source": source,
+        "signal_id": _first_payload_value(row, payloads, "signal_id"),
+        "trade_opportunity_id": _first_payload_value(row, payloads, "trade_opportunity_id"),
+        "asset": _first_payload_value(row, payloads, "asset", "asset_symbol"),
+        "pair": _first_payload_value(row, payloads, "pair", "pair_label"),
+        "side": _first_payload_value(row, payloads, "side", "opportunity_profile_side", "trade_opportunity_side", "would_have_been_direction"),
+        "direction": _first_payload_value(row, payloads, "direction", "trade_opportunity_side", "side", "would_have_been_direction"),
+        "trade_action_key": _first_payload_value(row, payloads, "trade_action_key", "trade_action"),
+        "trade_action": _first_payload_value(row, payloads, "trade_action", "trade_action_key"),
+        "final_trading_output_label": _first_payload_value(row, payloads, "final_trading_output_label", "action_label", "headline"),
+        "opportunity_status": _first_payload_value(row, payloads, "status", "trade_opportunity_status", "opportunity_status"),
+        "shadow_status": _first_payload_value(row, payloads, "shadow_status", "trade_opportunity_shadow_status") or "NONE",
+        "profile_key": _first_payload_value(row, payloads, "profile_key", "opportunity_profile_key"),
+        "lp_stage": _first_payload_value(row, payloads, "lp_stage", "lp_alert_stage"),
+        "sweep_phase": _first_payload_value(row, payloads, "sweep_phase"),
+        "delivery_decision": _first_payload_value(row, payloads, "delivery_decision", "delivery_reason", "delivery_class"),
+        "suppression_reason": _first_payload_value(row, payloads, "suppression_reason", "telegram_suppression_reason", "reason", "gate_reason"),
+        "blocked_reason": _first_payload_value(row, payloads, "blocked_reason", "primary_blocker", "primary_hard_blocker"),
+        "replay_eligible": _coerce_replay_eligible(_first_payload_value(row, payloads, "replay_eligible", "trade_opportunity_replay_eligible")),
+        "archive_ts": _first_payload_value(row, payloads, "archive_ts", "archive_written_at"),
+        "timestamp": _first_payload_value(row, payloads, "timestamp"),
+        "created_at": _first_payload_value(row, payloads, "created_at"),
+        "updated_at": _first_payload_value(row, payloads, "updated_at"),
+        "sent_at": _first_payload_value(row, payloads, "sent_at", "notifier_sent_at"),
+        "notifier_sent_at": _first_payload_value(row, payloads, "notifier_sent_at"),
+        "suppressed": _is_truthy(_first_payload_value(row, payloads, "suppressed")),
+        "sent_to_telegram": _is_truthy(_first_payload_value(row, payloads, "sent_to_telegram", "sent", "delivered")),
+        "blockers": _coerce_blockers(_first_payload_value(row, payloads, "blockers_json", "hard_blockers_json", "verification_blockers_json", "blockers")),
+    }
+
+
+def _add_candidate(
+    candidates: dict[str, dict[str, Any]],
+    candidate: dict[str, Any],
+    *,
+    source: str,
+    fallback_key: str,
+) -> None:
+    signal_id = str(candidate.get("signal_id") or "").strip()
+    key = signal_id or fallback_key
+    target = candidates.setdefault(key, {"signal_id": signal_id, "input_source": []})
+    if source not in target["input_source"]:
+        target["input_source"].append(source)
+    overwrite = source == "trade_opportunities"
+    _merge_non_empty(target, candidate, overwrite=overwrite)
+    target["signal_id"] = target.get("signal_id") or signal_id
+    target["suppressed"] = bool(target.get("suppressed")) or bool(candidate.get("suppressed"))
+    target["blocked"] = bool(target.get("blocked")) or _is_blocked_candidate(candidate)
+    if _canonical_upper(candidate.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+        target["shadow_status"] = candidate.get("shadow_status")
+
+
+def _collect_trade_replay_inputs(
+    conn: sqlite3.Connection,
+    *,
+    window: dict[str, Any],
+    include_suppressed: bool,
+    include_blocked: bool,
+    replay_diagnostics: ReplayDiagnostics,
+) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, Any]]:
+    del include_suppressed, include_blocked
+    start_ts = int(window["start_ts"])
+    end_ts = int(window["end_ts"])
+    counts = _empty_input_source_counts()
+    candidates: dict[str, dict[str, Any]] = {}
+
+    source_specs = (
+        (
+            "trade_opportunities",
+            "trade_opportunities",
+            (
+                "signal_id",
+                "trade_opportunity_id",
+                "asset",
+                "pair",
+                "opportunity_profile_key",
+                "side",
+                "status",
+                "primary_blocker",
+                "primary_hard_blocker",
+                "primary_verification_blocker",
+                "blockers_json",
+                "hard_blockers_json",
+                "verification_blockers_json",
+                "would_have_been_direction",
+                "replay_eligible",
+                "created_at",
+                "updated_at",
+                "shadow_status",
+                "opportunity_json",
+            ),
+            ("created_at", "updated_at"),
+            ("opportunity_json", "blockers_json", "hard_blockers_json", "verification_blockers_json"),
+        ),
+        (
+            "signals",
+            "signals",
+            (
+                "signal_id",
+                "trade_opportunity_id",
+                "asset",
+                "pair",
+                "timestamp",
+                "archive_written_at",
+                "created_at",
+                "direction",
+                "trade_action_key",
+                "trade_opportunity_status",
+                "trade_opportunity_shadow_status",
+                "opportunity_profile_key",
+                "lp_alert_stage",
+                "delivery_decision",
+                "sent_to_telegram",
+                "replay_eligible",
+                "signal_json",
+            ),
+            ("archive_written_at", "timestamp", "created_at"),
+            ("signal_json",),
+        ),
+        (
+            "delivery_audit",
+            "delivery_audit",
+            (
+                "audit_id",
+                "signal_id",
+                "trade_opportunity_id",
+                "asset",
+                "opportunity_status",
+                "shadow_status",
+                "blocked_reason",
+                "profile_key",
+                "replay_eligible",
+                "delivery_decision",
+                "reason",
+                "sent_to_telegram",
+                "suppressed",
+                "timestamp",
+                "stage",
+                "gate_reason",
+                "delivered",
+                "notifier_sent_at",
+                "suppression_reason",
+                "audit_json",
+                "archive_written_at",
+                "created_at",
+            ),
+            ("archive_written_at", "timestamp", "created_at"),
+            ("audit_json",),
+        ),
+        (
+            "telegram_deliveries",
+            "telegram_deliveries",
+            (
+                "telegram_delivery_id",
+                "signal_id",
+                "trade_opportunity_id",
+                "asset",
+                "sent",
+                "sent_at",
+                "suppressed",
+                "suppression_reason",
+                "telegram_update_kind",
+                "message_json",
+                "created_at",
+            ),
+            ("sent_at", "created_at"),
+            ("message_json",),
+        ),
+    )
+
+    for count_key, table, columns, time_columns, json_columns in source_specs:
+        rows, missing_ts_rows = _select_rows_for_window(
+            conn,
+            table,
+            select_candidates=columns,
+            time_candidates=time_columns,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            replay_diagnostics=replay_diagnostics,
+        )
+        counts[count_key] = len(rows)
+        for index, row in enumerate([*rows, *missing_ts_rows]):
+            payloads = _row_payloads(row, json_columns)
+            candidate = _source_row_base(count_key, row, payloads)
+            if count_key == "trade_opportunities":
+                candidate["opportunity_status"] = _first_payload_value(row, payloads, "status", "trade_opportunity_status", "opportunity_status")
+                candidate["profile_key"] = _first_payload_value(row, payloads, "opportunity_profile_key", "profile_key")
+            elif count_key == "signals":
+                candidate["opportunity_status"] = _first_payload_value(row, payloads, "trade_opportunity_status", "opportunity_status")
+                candidate["shadow_status"] = _first_payload_value(row, payloads, "trade_opportunity_shadow_status", "shadow_status") or "NONE"
+            elif count_key == "telegram_deliveries":
+                candidate["sent_at"] = _first_payload_value(row, payloads, "sent_at", "created_at")
+            _add_candidate(candidates, candidate, source=count_key, fallback_key=f"{count_key}:{index}")
+
+    merged = list(candidates.values())
+    counts["shadow_opportunities"] = sum(1 for item in merged if _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES)
+    counts["suppressed"] = sum(1 for item in merged if bool(item.get("suppressed")))
+    counts["blocked"] = sum(1 for item in merged if bool(item.get("blocked")) or _is_blocked_candidate(item))
+    return merged, counts, _empty_eligibility_summary()
+
+
+def _evaluate_replay_inputs(
+    candidates: list[dict[str, Any]],
+    *,
+    include_suppressed: bool,
+    include_blocked: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    eligible: list[dict[str, Any]] = []
+    reasons: Counter[str] = Counter()
+    for candidate in candidates:
+        row_reasons: list[str] = []
+        if not str(candidate.get("signal_id") or "").strip():
+            row_reasons.append("signal_id_missing")
+        if not _candidate_timestamp(candidate):
+            row_reasons.append("timestamp_missing")
+        if bool(candidate.get("suppressed")) and not include_suppressed:
+            row_reasons.append("filter_excluded_suppressed")
+        blocked = bool(candidate.get("blocked")) or _is_blocked_candidate(candidate)
+        if blocked and not include_blocked:
+            row_reasons.append("filter_excluded_blocked")
+        if not _has_replay_eligible_marker(candidate):
+            row_reasons.append("not_replay_eligible")
+        direction = _direction_from_values(
+            candidate.get("side"),
+            candidate.get("direction"),
+            candidate.get("trade_action_key"),
+            candidate.get("trade_action"),
+            candidate.get("final_trading_output_label"),
+        )
+        if direction not in {"LONG", "SHORT"}:
+            row_reasons.append("direction_ambiguous")
+        else:
+            candidate["direction"] = direction
+            candidate["side"] = direction
+
+        if row_reasons:
+            for reason in row_reasons:
+                reasons[reason] += 1
+            candidate["ineligible_reasons"] = row_reasons
+            continue
+        eligible.append(candidate)
+
+    return eligible, {
+        "eligible_count": len(eligible),
+        "ineligible_count": len(candidates) - len(eligible),
+        "ineligible_reasons": dict(sorted(reasons.items())),
+    }
+
+
+def _trade_replay_missing_reasons(
+    *,
+    input_source_counts: dict[str, int],
+    eligibility_summary: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    replay_results: list[dict[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+    if int(input_source_counts.get("signals") or 0) == 0:
+        reasons.append("no_signals_in_window")
+    if int(input_source_counts.get("trade_opportunities") or 0) == 0:
+        reasons.append("no_trade_opportunities_in_window")
+    if candidates and int(eligibility_summary.get("eligible_count") or 0) == 0:
+        reasons.append("no_replay_eligible_rows")
+    ineligible = eligibility_summary.get("ineligible_reasons") if isinstance(eligibility_summary.get("ineligible_reasons"), dict) else {}
+    ineligible_count = int(eligibility_summary.get("ineligible_count") or 0)
+    if ineligible_count > 0 and int(ineligible.get("direction_ambiguous") or 0) >= ineligible_count:
+        reasons.append("all_rows_missing_direction")
+    if ineligible_count > 0 and int(ineligible.get("timestamp_missing") or 0) >= ineligible_count:
+        reasons.append("all_rows_missing_timestamp")
+    if ineligible_count > 0 and int(ineligible.get("signal_id_missing") or 0) >= ineligible_count:
+        reasons.append("all_rows_missing_signal_id")
+    if int(ineligible.get("filter_excluded_suppressed") or 0) > 0:
+        reasons.append("filter_excluded_suppressed")
+    if int(ineligible.get("filter_excluded_blocked") or 0) > 0:
+        reasons.append("filter_excluded_blocked")
+    invalid_reasons = Counter(str(item.get("invalid_reason") or "") for item in replay_results if not item.get("data_valid"))
+    if invalid_reasons and sum(invalid_reasons.values()) == len(replay_results) and any(
+        key in invalid_reasons for key in ("no_price_for_signal_id", "no_entry_price", "no_exit_price", "market_context_unavailable", "schema_error")
+    ):
+        reasons.append("no_price_source")
+    return sorted(set(reasons or ["no_replay_eligible_rows"]))
+
+
+def _replay_dynamic_inputs(
+    conn: sqlite3.Connection,
+    eligible_inputs: list[dict[str, Any]],
+    *,
+    replay_diagnostics: ReplayDiagnostics,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+
+    def price_source_fn(**kwargs) -> dict[str, Any]:
+        return get_price_at_ts(
+            asset=str(kwargs.get("asset") or ""),
+            pair=str(kwargs.get("pair") or ""),
+            ts=_to_int(kwargs.get("ts")),
+            prefer_source=str(kwargs.get("prefer_source") or ""),
+            signal_id=str(kwargs.get("signal_id") or ""),
+            trade_opportunity_id=str(kwargs.get("trade_opportunity_id") or ""),
+            conn=conn,
+            replay_diagnostics=replay_diagnostics,
+        )
+
+    for candidate in eligible_inputs:
+        signal_row = _candidate_to_signal_row(candidate)
+        result = replay_single_signal(signal_row, price_source_fn=price_source_fn, replay_diagnostics=replay_diagnostics)
+        result["input_source"] = list(candidate.get("input_source") or [])
+        result["opportunity_status"] = str(candidate.get("opportunity_status") or result.get("opportunity_status") or "")
+        result["shadow_status"] = str(candidate.get("shadow_status") or result.get("shadow_status") or "NONE")
+        result["signal_stage"] = "SUPPRESSED" if bool(candidate.get("suppressed")) else str(candidate.get("signal_stage") or "")
+        result["profile_key"] = str(candidate.get("profile_key") or result.get("profile_key") or "")
+        results.append(result)
+    return results
+
+
+def _load_persisted_replay_rows(
+    conn: sqlite3.Connection,
+    logical_date: str,
+    replay_diagnostics: ReplayDiagnostics,
+) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "trade_replay_examples"):
+        replay_diagnostics.warning("trade_replay_examples_table_missing")
+        return []
+    columns = _table_columns(conn, "trade_replay_examples", replay_diagnostics)
+    required = {"logical_date", "data_valid", "signal_id", "trade_opportunity_id", "asset", "pair", "signal_ts", "entry_ts", "exit_ts", "entry_price", "exit_price", "net_pnl_bps", "label"}
+    missing = sorted(required - columns)
+    if missing:
+        replay_diagnostics.schema_error(f"schema_error:missing_columns:trade_replay_examples:{','.join(missing)}")
+        return []
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM trade_replay_examples WHERE logical_date = ? ORDER BY signal_ts ASC",
+                (logical_date,),
+            ).fetchall()
+        ]
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"trade_replay_query_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:trade_replay_query_failed:{exc}")
+        return []
+
+
+def _profile_rows(conn: sqlite3.Connection, replay_diagnostics: ReplayDiagnostics) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "trade_replay_profile_stats"):
+        replay_diagnostics.warning("trade_replay_profile_stats_table_missing")
+        return []
+    columns = _table_columns(conn, "trade_replay_profile_stats", replay_diagnostics)
+    required = {"profile_key", "valid_sample_count", "avg_net_pnl_bps", "win_rate", "recommended_action"}
+    missing = sorted(required - columns)
+    if missing:
+        replay_diagnostics.schema_error(f"schema_error:missing_columns:trade_replay_profile_stats:{','.join(missing)}")
+        return []
+    try:
+        return [dict(row) for row in conn.execute("SELECT * FROM trade_replay_profile_stats").fetchall()]
+    except sqlite3.Error as exc:
+        replay_diagnostics.query_error(f"trade_replay_profile_stats_query_failed:{exc}")
+        return []
+
+
+def _profile_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "profile_key": row.get("profile_key"),
+        "valid_sample_count": int(row.get("valid_sample_count") or row.get("valid_count") or 0),
+        "avg_net_pnl_bps": float(row.get("avg_net_pnl_bps") or 0.0),
+        "win_rate": float(row.get("win_rate") or 0.0),
+        "recommended_action": row.get("recommended_action"),
+    }
+
+
+def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dict[str, Any]], profile_rows: list[dict[str, Any]]) -> None:
+    total = len(replay_rows)
+    valid_rows = [row for row in replay_rows if _is_truthy(row.get("data_valid", 1))]
+    valid = len(valid_rows)
+    label_counts = Counter(str(row.get("label") or "") for row in replay_rows)
+    net_values = [_to_signed_float(row.get("net_pnl_bps")) for row in valid_rows]
+    net_values = [value for value in net_values if value is not None]
+    wins = sum(1 for value in net_values if value > 0.0)
+    valid_den = max(valid, 1)
+    suppressed_rows = [row for row in replay_rows if str(row.get("signal_stage") or "") == "SUPPRESSED"]
+    suppressed_valid = [row for row in suppressed_rows if _is_truthy(row.get("data_valid", 1))]
+    suppressed_net = [_to_signed_float(row.get("net_pnl_bps")) for row in suppressed_valid]
+    suppressed_net = [value for value in suppressed_net if value is not None]
+    blocked_rows = [row for row in replay_rows if _canonical_upper(row.get("opportunity_status")) == "BLOCKED"]
+    blocked_valid = [row for row in blocked_rows if _is_truthy(row.get("data_valid", 1))]
+    shadow_count = sum(1 for row in replay_rows if _canonical_upper(row.get("shadow_status")) not in {"", "NONE"})
+
+    if not profile_rows:
+        stats = aggregate_profile_stats(replay_rows)
+        profile_rows = [
+            {
+                "profile_key": key,
+                "valid_sample_count": value.get("valid_count", 0),
+                "avg_net_pnl_bps": value.get("avg_net_pnl_bps", 0.0),
+                "win_rate": value.get("win_rate", 0.0),
+                "recommended_action": value.get("recommended_action"),
+            }
+            for key, value in stats.items()
+        ]
+    positive = [
+        _profile_payload(row)
+        for row in sorted(profile_rows, key=lambda item: (-float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0), str(item.get("profile_key") or "")))
+        if float(row.get("avg_net_pnl_bps") or 0.0) > 0.0
+    ][:5]
+    negative = [
+        _profile_payload(row)
+        for row in sorted(profile_rows, key=lambda item: (float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0), str(item.get("profile_key") or "")))
+        if float(row.get("avg_net_pnl_bps") or 0.0) < 0.0
+    ][:5]
+
+    summary.update(
+        {
+            "replay_count": total,
+            "trade_replay_available": total > 0,
+            "valid_replay_count": valid,
+            "valid_count": valid,
+            "sample_insufficient": valid < REPLAY_SAMPLE_INSUFFICIENT,
+            "win_rate": round(wins / valid_den, 4),
+            "avg_net_pnl_bps": round(sum(net_values) / len(net_values), 2) if net_values else 0.0,
+            "clean_followthrough_rate": round(int(label_counts.get("clean_followthrough") or 0) / valid_den, 4),
+            "bad_entry_rate": round((int(label_counts.get("bad_entry") or 0) + int(label_counts.get("followthrough_but_bad_entry") or 0)) / valid_den, 4),
+            "absorption_reversal_rate": round(int(label_counts.get("absorption_reversal") or 0) / valid_den, 4),
+            "chop_rate": round(int(label_counts.get("chop_no_edge") or 0) / valid_den, 4),
+            "data_invalid_rate": round((total - valid) / max(total, 1), 4),
+            "suppressed_replay_count": len(suppressed_rows),
+            "suppressed_profitable_rate": round(sum(1 for value in suppressed_net if value > 0.0) / max(len(suppressed_net), 1), 4),
+            "suppressed_clean_followthrough_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "clean_followthrough") / max(len(suppressed_valid), 1), 4),
+            "suppressed_absorption_reversal_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "absorption_reversal") / max(len(suppressed_valid), 1), 4),
+            "blocked_saved_rate_estimate": round(sum(1 for row in blocked_valid if row.get("label") == "absorption_reversal") / max(len(blocked_valid), 1), 4),
+            "blocked_false_block_rate_estimate": round(sum(1 for row in blocked_valid if (_to_signed_float(row.get("net_pnl_bps")) or 0.0) > 0.0) / max(len(blocked_valid), 1), 4),
+            "shadow_replay_count": shadow_count,
+            "top_positive_profiles": positive,
+            "top_negative_profiles": negative,
+            "recommended_profile_actions": [
+                {"profile_key": row.get("profile_key"), "recommended_action": row.get("recommended_action")}
+                for row in profile_rows[:10]
+            ],
+        }
+    )
+
+
 def run_trade_replay(
     date_str: str,
     *,
     db_path: str | Path | None = None,
     dry_run: bool = False,
+    include_suppressed: bool = False,
+    include_blocked: bool = True,
 ) -> dict[str, Any]:
     """Read-only DATE-scoped replay summary for closure validation."""
     diagnostics = ReplayDiagnostics()
@@ -633,24 +1359,68 @@ def run_trade_replay(
     resolved_path = Path(db_path) if db_path else _resolve_db_path()
     summary: dict[str, Any] = {
         "logical_date": logical_date,
+        "timezone": "Asia/Shanghai",
+        "logical_window_start_utc": "",
+        "logical_window_end_utc": "",
+        "logical_window_start_beijing": "",
+        "logical_window_end_beijing": "",
         "status": "ok",
         "replay_count": 0,
         "valid_replay_count": 0,
+        "valid_count": 0,
         "sample_insufficient": True,
         "trade_replay_available": False,
         "warnings": [],
         "query_errors": [],
         "price_errors": [],
         "schema_errors": [],
+        "input_source_counts": _empty_input_source_counts(),
+        "eligibility_summary": _empty_eligibility_summary(),
         "results": [],
         "dry_run": bool(dry_run),
+        "include_suppressed": bool(include_suppressed),
+        "include_blocked": bool(include_blocked),
         "db_path": str(resolved_path),
+        "win_rate": 0.0,
+        "avg_net_pnl_bps": 0.0,
+        "clean_followthrough_rate": 0.0,
+        "bad_entry_rate": 0.0,
+        "absorption_reversal_rate": 0.0,
+        "chop_rate": 0.0,
+        "data_invalid_rate": 0.0,
+        "suppressed_replay_count": 0,
+        "suppressed_profitable_rate": 0.0,
+        "suppressed_clean_followthrough_rate": 0.0,
+        "suppressed_absorption_reversal_rate": 0.0,
+        "blocked_saved_rate_estimate": 0.0,
+        "blocked_false_block_rate_estimate": 0.0,
+        "shadow_replay_count": 0,
+        "top_positive_profiles": [],
+        "top_negative_profiles": [],
+        "recommended_profile_actions": [],
     }
     if not logical_date:
         diagnostics.query_error("missing_date")
         summary["status"] = "error"
         summary.update(diagnostics.as_dict())
         return summary
+    try:
+        window = _logical_window(logical_date)
+        summary.update(
+            {
+                "timezone": window["timezone"],
+                "logical_window_start_utc": window["logical_window_start_utc"],
+                "logical_window_end_utc": window["logical_window_end_utc"],
+                "logical_window_start_beijing": window["logical_window_start_beijing"],
+                "logical_window_end_beijing": window["logical_window_end_beijing"],
+            }
+        )
+    except ValueError as exc:
+        diagnostics.query_error(f"invalid_date:{logical_date}:{exc}")
+        summary["status"] = "error"
+        summary.update(diagnostics.as_dict())
+        return summary
+
     if not resolved_path.exists():
         diagnostics.query_error(f"sqlite_db_missing:{resolved_path}")
         summary["status"] = "error"
@@ -667,55 +1437,62 @@ def run_trade_replay(
         return summary
 
     try:
-        required = {
-            "trade_replay_examples": {"logical_date", "data_valid", "invalid_reason", "signal_id", "trade_opportunity_id", "asset", "pair", "signal_ts", "entry_ts", "exit_ts", "entry_price", "exit_price", "net_pnl_bps", "label"},
-            "trade_replay_profile_stats": {"profile_key", "valid_sample_count", "avg_net_pnl_bps", "win_rate", "recommended_action"},
-        }
-        for table, columns in required.items():
-            if not _table_exists(conn, table):
-                diagnostics.schema_error(f"schema_error:missing_table:{table}")
-                continue
-            missing = sorted(columns - _table_columns(conn, table, diagnostics))
-            if missing:
-                diagnostics.schema_error(f"schema_error:missing_columns:{table}:{','.join(missing)}")
+        candidates, input_source_counts, _ = _collect_trade_replay_inputs(
+            conn,
+            window=window,
+            include_suppressed=include_suppressed,
+            include_blocked=include_blocked,
+            replay_diagnostics=diagnostics,
+        )
+        eligible_inputs, eligibility_summary = _evaluate_replay_inputs(
+            candidates,
+            include_suppressed=include_suppressed,
+            include_blocked=include_blocked,
+        )
+        summary["input_source_counts"] = input_source_counts
+        summary["eligibility_summary"] = eligibility_summary
 
-        if diagnostics.schema_errors:
-            summary["status"] = "degraded"
-            summary.update(diagnostics.as_dict())
-            return summary
+        persisted_rows = _load_persisted_replay_rows(conn, logical_date, diagnostics)
+        profile_rows = _profile_rows(conn, diagnostics)
+        replay_rows = persisted_rows
+        if not replay_rows:
+            replay_rows = _replay_dynamic_inputs(conn, eligible_inputs, replay_diagnostics=diagnostics)
 
-        rows = conn.execute(
-            "SELECT replay_id, logical_date, signal_id, trade_opportunity_id, asset, pair, signal_ts, entry_ts, exit_ts, "
-            "entry_price, exit_price, net_pnl_bps, data_valid, invalid_reason, label "
-            "FROM trade_replay_examples WHERE logical_date = ? ORDER BY signal_ts ASC",
-            (logical_date,),
-        ).fetchall()
-        summary["replay_count"] = len(rows)
-        summary["trade_replay_available"] = len(rows) > 0
-        summary["valid_replay_count"] = sum(1 for row in rows if int(row["data_valid"] or 0) == 1)
-        summary["sample_insufficient"] = summary["valid_replay_count"] < REPLAY_SAMPLE_INSUFFICIENT
+        _augment_summary_from_replays(summary, replay_rows, profile_rows)
 
         preview: list[dict[str, Any]] = []
-        for row in rows[:10]:
+        for row in replay_rows[:10]:
             item = {
-                "signal_id": str(row["signal_id"] or ""),
-                "trade_opportunity_id": str(row["trade_opportunity_id"] or ""),
-                "asset": str(row["asset"] or ""),
-                "pair": str(row["pair"] or ""),
-                "signal_ts": _to_int(row["signal_ts"]),
-                "data_valid": bool(int(row["data_valid"] or 0)),
-                "invalid_reason": row["invalid_reason"],
-                "label": row["label"],
-                "entry_price": _to_float(row["entry_price"]),
-                "exit_price": _to_float(row["exit_price"]),
-                "net_pnl_bps": _to_float(row["net_pnl_bps"]),
+                "signal_id": str(row.get("signal_id") or ""),
+                "trade_opportunity_id": str(row.get("trade_opportunity_id") or ""),
+                "asset": str(row.get("asset") or ""),
+                "pair": str(row.get("pair") or ""),
+                "direction": str(row.get("direction") or row.get("side") or ""),
+                "input_source": list(row.get("input_source") or []),
+                "signal_ts": _to_int(row.get("signal_ts") or row.get("archive_ts") or row.get("timestamp")),
+                "data_valid": _is_truthy(row.get("data_valid", 1)),
+                "invalid_reason": row.get("invalid_reason"),
+                "label": row.get("label"),
+                "entry_price": _to_float(row.get("entry_price")),
+                "exit_price": _to_float(row.get("exit_price")),
+                "net_pnl_bps": _to_signed_float(row.get("net_pnl_bps")),
             }
             if not item["data_valid"]:
                 item["invalid_reason"] = _normalize_invalid_reason(item.get("invalid_reason"), stage="entry")
             preview.append(item)
         summary["results"] = preview
-        if not rows:
+
+        if not replay_rows:
             diagnostics.warning("trade_replay_missing")
+            for reason in _trade_replay_missing_reasons(
+                input_source_counts=input_source_counts,
+                eligibility_summary=eligibility_summary,
+                candidates=candidates,
+                replay_results=replay_rows,
+            ):
+                diagnostics.warning(f"trade_replay_missing:{reason}")
+            summary["status"] = "degraded"
+        elif diagnostics.schema_errors or diagnostics.query_errors or diagnostics.price_errors:
             summary["status"] = "degraded"
         summary.update(diagnostics.as_dict())
         return summary
@@ -1185,24 +1962,36 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _to_signed_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trade replay closure summary")
     parser.add_argument("--date", required=True, help="Logical date YYYY-MM-DD")
     parser.add_argument("--format", default="text", choices=("text", "json"), help="Output format")
     parser.add_argument("--dry-run", action="store_true", help="Read summary only")
-    parser.add_argument("--include-suppressed", action="store_true", help="Compatibility flag; no-op in summary mode")
-    parser.add_argument("--include-blocked", action="store_true", help="Compatibility flag; no-op in summary mode")
+    parser.add_argument("--include-suppressed", action="store_true", help="Include suppressed replay-eligible research signals")
+    parser.add_argument("--include-blocked", action="store_true", default=True, help="Include blocked/no-trade replay-eligible research signals")
     return parser
 
 
 def _render_text(summary: dict[str, Any]) -> str:
     lines = [
         f"trade_replay logical_date={summary.get('logical_date')}",
+        f"timezone={summary.get('timezone')}",
+        f"logical_window_start_utc={summary.get('logical_window_start_utc')}",
+        f"logical_window_end_utc={summary.get('logical_window_end_utc')}",
         f"status={summary.get('status')}",
         f"trade_replay_available={summary.get('trade_replay_available')}",
         f"replay_count={summary.get('replay_count')}",
         f"valid_replay_count={summary.get('valid_replay_count')}",
         f"sample_insufficient={summary.get('sample_insufficient')}",
+        f"input_source_counts={json.dumps(summary.get('input_source_counts') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"eligibility_summary={json.dumps(summary.get('eligibility_summary') or {}, ensure_ascii=False, sort_keys=True)}",
         f"warnings={json.dumps(summary.get('warnings') or [], ensure_ascii=False)}",
         f"query_errors={json.dumps(summary.get('query_errors') or [], ensure_ascii=False)}",
         f"price_errors={json.dumps(summary.get('price_errors') or [], ensure_ascii=False)}",
@@ -1213,7 +2002,12 @@ def _render_text(summary: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    summary = run_trade_replay(args.date, dry_run=bool(args.dry_run))
+    summary = run_trade_replay(
+        args.date,
+        dry_run=bool(args.dry_run),
+        include_suppressed=bool(args.include_suppressed),
+        include_blocked=bool(args.include_blocked),
+    )
     if args.format == "json":
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:

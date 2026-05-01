@@ -1246,6 +1246,8 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
         "previous_available": False,
         "today_data_quality_status": None,
         "previous_data_quality_status": None,
+        "input_source_counts": {"today": {}, "previous": {}},
+        "eligibility_summary": {"today": {}, "previous": {}},
         "metrics": {},
         "warnings": [],
     }
@@ -1267,10 +1269,23 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
     result["previous_available"] = previous_available
     result["today_data_quality_status"] = today_quality.get("data_quality_status")
     result["previous_data_quality_status"] = previous_quality.get("data_quality_status")
+    result["input_source_counts"] = {
+        "today": today_replay.get("input_source_counts") if isinstance(today_replay.get("input_source_counts"), dict) else {},
+        "previous": previous_replay.get("input_source_counts") if isinstance(previous_replay.get("input_source_counts"), dict) else {},
+    }
+    result["eligibility_summary"] = {
+        "today": today_replay.get("eligibility_summary") if isinstance(today_replay.get("eligibility_summary"), dict) else {},
+        "previous": previous_replay.get("eligibility_summary") if isinstance(previous_replay.get("eligibility_summary"), dict) else {},
+    }
 
     if not today_available or not previous_available:
         result["warnings"].append("replay_compare_insufficient:missing_replay")
         result["warnings"].append("missing_replay")
+        for replay in (today_replay, previous_replay):
+            warnings = replay.get("warnings")
+            if isinstance(warnings, list):
+                result["warnings"].extend(str(item) for item in warnings if str(item).startswith("trade_replay_missing:"))
+        result["warnings"] = sorted(set(str(item) for item in result["warnings"] if item))
         return result
 
     if str(today_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"} or str(previous_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"}:
@@ -2069,6 +2084,8 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     lines.append(f"- replay_compare_summary: `{replay_compare.get('summary')}`")
     lines.append(f"- replay_sample_insufficient: `{replay_compare.get('sample_insufficient')}`")
     lines.append(f"- replay_data_quality_gate: `{replay_compare.get('data_quality_gate')}`")
+    lines.append(f"- replay_input_source_counts: `{json.dumps(replay_compare.get('input_source_counts') or {}, ensure_ascii=False, sort_keys=True)}`")
+    lines.append(f"- replay_eligibility_summary: `{json.dumps(replay_compare.get('eligibility_summary') or {}, ensure_ascii=False, sort_keys=True)}`")
     for metric_name in (
         "replay_count",
         "valid_replay_count",

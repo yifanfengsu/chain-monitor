@@ -701,6 +701,8 @@ db-reconcile-date:
 
 TEST_REPLAY_MODULES := \
 	$(APP).test_trade_replay \
+	$(APP).test_trade_replay_sqlite \
+	$(APP).test_trade_replay_reports \
 	$(APP).test_shadow_opportunity \
 	$(APP).test_runtime_health \
 	$(APP).test_daily_report_trade_replay \

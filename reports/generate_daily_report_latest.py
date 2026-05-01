@@ -1135,23 +1135,14 @@ def _major_coverage_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _read_trade_replay_summary(logical_date: str) -> dict[str, Any]:
-    path = _db_path()
-    if not path.exists():
-        return _default_trade_replay_summary(logical_date, reason="sqlite_db_missing")
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        from trade_replay import run_trade_replay  # noqa: PLC0415
     except Exception as exc:
-        return _default_trade_replay_summary(logical_date, reason=f"sqlite_open_failed:{exc}")
+        return _default_trade_replay_summary(logical_date, reason=f"trade_replay_import_failed:{exc}")
     try:
-        tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "trade_replay_examples" not in tables or "trade_replay_profile_stats" not in tables:
-            return _default_trade_replay_summary(logical_date, reason="trade_replay_tables_missing")
-        return _normalize_trade_replay_summary(_trade_replay_summary_from_sqlite(conn, logical_date), logical_date)
+        return _normalize_trade_replay_summary(run_trade_replay(logical_date, db_path=_db_path()), logical_date)
     except Exception as exc:
         return _default_trade_replay_summary(logical_date, reason=f"trade_replay_summary_failed:{exc}")
-    finally:
-        conn.close()
 
 
 def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_replay_missing") -> dict[str, Any]:
@@ -1176,6 +1167,23 @@ def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_rep
         "blocked_saved_rate_estimate": 0.0,
         "blocked_false_block_rate_estimate": 0.0,
         "shadow_replay_count": 0,
+        "input_source_counts": {
+            "signals": 0,
+            "trade_opportunities": 0,
+            "delivery_audit": 0,
+            "telegram_deliveries": 0,
+            "shadow_opportunities": 0,
+            "suppressed": 0,
+            "blocked": 0,
+        },
+        "eligibility_summary": {
+            "eligible_count": 0,
+            "ineligible_count": 0,
+            "ineligible_reasons": {},
+        },
+        "query_errors": [],
+        "price_errors": [],
+        "schema_errors": [],
         "top_positive_profiles": [],
         "top_negative_profiles": [],
         "recommended_profile_actions": [],
@@ -1211,9 +1219,30 @@ def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) 
         "blocked_false_block_rate_estimate",
     ):
         normalized[key] = float(normalized.get(key) or 0.0)
-    for key in ("top_positive_profiles", "top_negative_profiles", "recommended_profile_actions", "warnings"):
+    for key in ("top_positive_profiles", "top_negative_profiles", "recommended_profile_actions", "warnings", "query_errors", "price_errors", "schema_errors"):
         value = normalized.get(key)
         normalized[key] = value if isinstance(value, list) else []
+    input_counts = normalized.get("input_source_counts")
+    if not isinstance(input_counts, dict):
+        input_counts = {}
+    normalized["input_source_counts"] = {
+        "signals": int(input_counts.get("signals") or 0),
+        "trade_opportunities": int(input_counts.get("trade_opportunities") or 0),
+        "delivery_audit": int(input_counts.get("delivery_audit") or 0),
+        "telegram_deliveries": int(input_counts.get("telegram_deliveries") or 0),
+        "shadow_opportunities": int(input_counts.get("shadow_opportunities") or 0),
+        "suppressed": int(input_counts.get("suppressed") or 0),
+        "blocked": int(input_counts.get("blocked") or 0),
+    }
+    eligibility = normalized.get("eligibility_summary")
+    if not isinstance(eligibility, dict):
+        eligibility = {}
+    reasons = eligibility.get("ineligible_reasons")
+    normalized["eligibility_summary"] = {
+        "eligible_count": int(eligibility.get("eligible_count") or 0),
+        "ineligible_count": int(eligibility.get("ineligible_count") or 0),
+        "ineligible_reasons": reasons if isinstance(reasons, dict) else {},
+    }
     if not normalized["trade_replay_available"] and "trade_replay_missing" not in normalized["warnings"]:
         normalized["warnings"].append("trade_replay_missing")
     normalized["warnings"] = sorted(set(str(item) for item in normalized["warnings"] if item))
@@ -1780,6 +1809,12 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         key_risks.append("VERIFIED maturity is unknown because supporting maturity data is insufficient")
     if not replay_summary.get("trade_replay_available"):
         limitations.append("trade_replay_missing")
+        replay_warnings = replay_summary.get("warnings") if isinstance(replay_summary.get("warnings"), list) else []
+        limitations.extend(
+            str(item)
+            for item in replay_warnings
+            if str(item).startswith("trade_replay_missing:") and str(item) != "trade_replay_missing"
+        )
     if data_quality.get("data_quality_status") in {"degraded", "invalid_or_no_activity"}:
         limitations.append(f"data_quality={data_quality.get('data_quality_status')}")
     if data_quality.get("data_quality_status") == "invalid_or_no_activity":

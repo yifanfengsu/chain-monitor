@@ -119,6 +119,21 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
                 "trade_replay_available": replay_available,
                 "replay_count": replay_count,
                 "valid_replay_count": valid_replay_count,
+                "input_source_counts": {
+                    "signals": 10,
+                    "trade_opportunities": replay_count,
+                    "delivery_audit": 3,
+                    "telegram_deliveries": 2,
+                    "shadow_opportunities": shadow_candidate_count + shadow_verified_count,
+                    "suppressed": 1,
+                    "blocked": 1,
+                },
+                "eligibility_summary": {
+                    "eligible_count": replay_count if replay_available else 0,
+                    "ineligible_count": 0 if replay_available else 2,
+                    "ineligible_reasons": {} if replay_available else {"no_replay_eligible_rows": 2},
+                },
+                "warnings": [] if replay_available else ["trade_replay_missing:no_replay_eligible_rows"],
                 "avg_net_pnl_bps": avg_net_pnl_bps,
                 "clean_followthrough_rate": clean_followthrough_rate,
                 "bad_entry_rate": bad_entry_rate,
@@ -272,6 +287,8 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
             self.assertEqual(0, exit_code)
             self.assertEqual("insufficient", payload["replay_compare"]["status"])
             self.assertIn("replay_compare_insufficient:missing_replay", payload["replay_compare"]["warnings"])
+            self.assertEqual(0, payload["replay_compare"]["eligibility_summary"]["previous"]["eligible_count"])
+            self.assertIn("trade_replay_missing:no_replay_eligible_rows", payload["replay_compare"]["warnings"])
 
     def test_daily_compare_degrades_when_data_quality_is_degraded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

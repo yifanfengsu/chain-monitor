@@ -41,6 +41,20 @@ class DailyReportTradeReplayTests(unittest.TestCase):
             "trade_replay_available": True,
             "replay_count": 8,
             "valid_replay_count": 6,
+            "input_source_counts": {
+                "signals": 3,
+                "trade_opportunities": 2,
+                "delivery_audit": 1,
+                "telegram_deliveries": 1,
+                "shadow_opportunities": 2,
+                "suppressed": 1,
+                "blocked": 1,
+            },
+            "eligibility_summary": {
+                "eligible_count": 6,
+                "ineligible_count": 1,
+                "ineligible_reasons": {"direction_ambiguous": 1},
+            },
             "win_rate": 0.5,
             "avg_net_pnl_bps": 12.3,
             "clean_followthrough_rate": 0.33,
@@ -76,6 +90,8 @@ class DailyReportTradeReplayTests(unittest.TestCase):
             payload = _summary_for(trade_opportunities=opportunity_rows)
 
         self.assertEqual(8, payload["trade_replay_summary"]["replay_count"])
+        self.assertEqual(3, payload["trade_replay_summary"]["input_source_counts"]["signals"])
+        self.assertEqual(1, payload["trade_replay_summary"]["eligibility_summary"]["ineligible_reasons"]["direction_ambiguous"])
         self.assertIn("trade_replay_profile_summary", payload)
         self.assertEqual(1, payload["shadow_opportunity_summary"]["shadow_candidate_count"])
         self.assertEqual(1, payload["shadow_opportunity_summary"]["shadow_verified_count"])
