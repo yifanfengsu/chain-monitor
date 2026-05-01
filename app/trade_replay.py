@@ -11,6 +11,7 @@ It does not change production trade semantics.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import time
@@ -22,6 +23,7 @@ from typing import Any
 from config import (
     OUTCOME_PREFER_OKX_MARK,
     OUTCOME_USE_MARKET_CONTEXT_PRICE,
+    SHADOW_OPPORTUNITY_ENABLE,
     SQLITE_DB_PATH,
 )
 
@@ -36,6 +38,7 @@ DEFAULT_SLIPPAGE_BPS = 5
 MIN_PROFILE_REPLAY_SAMPLES = 10
 REPLAY_SAMPLE_INSUFFICIENT = 5
 BJ_TZ = timezone(timedelta(hours=8))
+REPLAY_SCOPES = {"default", "full", "suppressed", "blocked"}
 
 INPUT_SOURCE_KEYS = (
     "signals",
@@ -55,6 +58,8 @@ REPLAY_ELIGIBLE_ACTIONS = {
     "SHORT_CHASE_ALLOWED",
     "DO_NOT_CHASE_LONG",
     "DO_NOT_CHASE_SHORT",
+    "LONG_BIAS_OBSERVE",
+    "SHORT_BIAS_OBSERVE",
     "NO_TRADE",
     "NO_TRADE_LOCK",
     "CONFLICT_NO_TRADE",
@@ -69,6 +74,31 @@ BLOCKED_ACTIONS = {
     "NO_TRADE",
     "NO_TRADE_LOCK",
     "CONFLICT_NO_TRADE",
+}
+REPLAY_DIRECTED_ACTIONS = {
+    "LONG_CANDIDATE",
+    "SHORT_CANDIDATE",
+    "LONG_CHASE_ALLOWED",
+    "SHORT_CHASE_ALLOWED",
+    "DO_NOT_CHASE_LONG",
+    "DO_NOT_CHASE_SHORT",
+    "LONG_BIAS_OBSERVE",
+    "SHORT_BIAS_OBSERVE",
+}
+REPLAY_AMBIGUOUS_ACTIONS = {
+    "WAIT_CONFIRMATION",
+    "CONFLICT_NO_TRADE",
+    "NO_TRADE_LOCK",
+}
+LOW_VALUE_AUDIT_REASONS = {
+    "stable_non_swap_filtered",
+    "below_min_usd",
+    "pure_transfer",
+    "pricing_unavailable_no_proxy",
+    "internal_housekeeping",
+    "housekeeping",
+    "internal_rebalance",
+    "stable_non_swap",
 }
 
 
@@ -692,11 +722,73 @@ def _empty_eligibility_summary() -> dict[str, Any]:
         "ineligible_count": 0,
         "ineligible_reasons": {},
         "ineligible_reason_by_source": {},
+        "ineligible_reason_by_action": {},
         "ineligible_top_examples": {},
         "suppressed_ineligible_reasons": {},
+        "eligible_by_action": {},
+        "replay_count_by_action": {},
+        "ambiguous_by_action": {},
+        "action_classification_counts": {},
+        "top_ineligible_actions": [],
+        "ambiguous_actions": {},
+        "replayable_action_coverage": 0.0,
+        "raw_audit_universe_count": 0,
+        "replay_candidate_universe_count": 0,
+        "eligible_replay_universe_count": 0,
+        "not_replay_candidate_count": 0,
+        "not_replay_candidate_reasons": {},
+        "replay_coverage_rate_raw": 0.0,
+        "replay_coverage_rate_candidate": 0.0,
+        "replay_coverage_rate_eligible": 0.0,
         "replay_coverage_rate": 0.0,
         "replay_coverage_warning": "",
     }
+
+
+def _normalize_replay_scope(replay_scope: str | None, *, include_suppressed: bool, include_blocked: bool) -> str:
+    if replay_scope:
+        scope = str(replay_scope).strip().lower()
+    elif include_suppressed and include_blocked:
+        scope = "full"
+    elif include_suppressed:
+        scope = "suppressed"
+    else:
+        scope = "default"
+    if scope not in REPLAY_SCOPES:
+        return "default"
+    return scope
+
+
+def _strategy_config_payload(
+    *,
+    replay_scope: str,
+    include_suppressed: bool,
+    include_blocked: bool,
+    entry_delay_sec: int = DEFAULT_ENTRY_DELAY_SEC,
+    max_hold_sec: int = DEFAULT_MAX_HOLD_SEC,
+    stop_loss_bps: float = DEFAULT_STOP_LOSS_BPS,
+    take_profit_bps: float = DEFAULT_TAKE_PROFIT_BPS,
+    fee_bps: float = DEFAULT_FEE_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "replay_scope": replay_scope,
+        "include_suppressed": bool(include_suppressed),
+        "include_blocked": bool(include_blocked),
+        "entry_delay_sec": int(entry_delay_sec),
+        "max_hold_sec": int(max_hold_sec),
+        "stop_loss_bps": float(stop_loss_bps),
+        "take_profit_bps": float(take_profit_bps),
+        "fee_bps": float(fee_bps),
+        "slippage_bps": float(slippage_bps),
+    }
+
+
+def _strategy_config_hash(**kwargs: Any) -> str:
+    payload = _strategy_config_payload(**kwargs)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def _from_json(value: Any, default: Any = None) -> Any:
@@ -837,6 +929,93 @@ def _direction_from_values(*values: Any) -> str:
     return ""
 
 
+def _candidate_action_key(candidate: dict[str, Any]) -> str:
+    for value in (
+        candidate.get("trade_action_key"),
+        candidate.get("trade_action"),
+        candidate.get("delivery_decision"),
+        candidate.get("final_trading_output_label"),
+        candidate.get("opportunity_status"),
+        candidate.get("shadow_status"),
+    ):
+        raw = _canonical_upper(value)
+        if not raw:
+            continue
+        for action in REPLAY_ELIGIBLE_ACTIONS | REPLAY_ELIGIBLE_STATUSES | REPLAY_ELIGIBLE_SHADOW_STATUSES:
+            if raw == action or action in raw:
+                return action
+        return raw[:80]
+    return "unknown"
+
+
+def _candidate_reason_text(candidate: dict[str, Any]) -> str:
+    parts = [
+        candidate.get("delivery_decision"),
+        candidate.get("suppression_reason"),
+        candidate.get("blocked_reason"),
+        candidate.get("gate_reason"),
+        candidate.get("final_trading_output_label"),
+        candidate.get("stage"),
+    ]
+    return " ".join(str(item or "").strip().lower() for item in parts if str(item or "").strip())
+
+
+def _low_value_audit_reason(candidate: dict[str, Any]) -> str:
+    sources = set(str(item) for item in list(candidate.get("input_source") or []))
+    if sources and sources - {"delivery_audit"}:
+        return ""
+    reason_text = _candidate_reason_text(candidate)
+    action = _candidate_action_key(candidate)
+    has_core_identity = bool(str(candidate.get("signal_id") or "").strip() and str(candidate.get("asset") or "").strip())
+    has_action = action != "unknown"
+    for reason in sorted(LOW_VALUE_AUDIT_REASONS, key=len, reverse=True):
+        if reason in reason_text:
+            if reason == "pricing_unavailable_no_proxy" and (has_core_identity or has_action):
+                return ""
+            return reason
+    return ""
+
+
+def _candidate_action_classification(candidate: dict[str, Any]) -> str:
+    low_value_reason = _low_value_audit_reason(candidate)
+    if low_value_reason:
+        return "not_replay_candidate"
+    action = _candidate_action_key(candidate)
+    direction = _direction_from_values(
+        candidate.get("side"),
+        candidate.get("direction"),
+        candidate.get("trade_action_key"),
+        candidate.get("trade_action"),
+        candidate.get("delivery_decision"),
+        candidate.get("final_trading_output_label"),
+    )
+    if action in REPLAY_DIRECTED_ACTIONS or direction in {"LONG", "SHORT"}:
+        return "replay_directed"
+    if action in REPLAY_AMBIGUOUS_ACTIONS:
+        return "replay_ambiguous"
+    if _has_replay_eligible_marker(candidate):
+        return "replay_ambiguous" if direction not in {"LONG", "SHORT"} else "replay_directed"
+    return "not_replay_candidate"
+
+
+def _is_replay_candidate_universe(candidate: dict[str, Any]) -> bool:
+    if _low_value_audit_reason(candidate):
+        return False
+    sources = set(str(item) for item in list(candidate.get("input_source") or []))
+    has_signal_id = bool(str(candidate.get("signal_id") or "").strip())
+    has_asset = bool(str(candidate.get("asset") or "").strip())
+    action = _candidate_action_key(candidate)
+    if "trade_opportunities" in sources:
+        return True
+    if "signals" in sources and has_asset:
+        return True
+    if "telegram_deliveries" in sources and has_signal_id:
+        return True
+    if "delivery_audit" in sources and has_signal_id and (has_asset or action != "unknown"):
+        return True
+    return _has_replay_eligible_marker(candidate)
+
+
 def _has_replay_eligible_marker(candidate: dict[str, Any]) -> bool:
     if candidate.get("replay_eligible") is True:
         return True
@@ -889,6 +1068,7 @@ def _candidate_to_signal_row(candidate: dict[str, Any]) -> dict[str, Any]:
         candidate.get("direction"),
         candidate.get("trade_action_key"),
         candidate.get("trade_action"),
+        candidate.get("delivery_decision"),
         candidate.get("final_trading_output_label"),
     )
     signal_ts = _candidate_timestamp(candidate)
@@ -915,6 +1095,11 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
     raw_shadow_status = _first_payload_value(row, payloads, "shadow_status", "trade_opportunity_shadow_status")
     shadow_reason = _first_payload_value(row, payloads, "shadow_reason", "trade_opportunity_shadow_reason")
     shadow_score = _first_payload_value(row, payloads, "shadow_score", "trade_opportunity_shadow_score")
+    score = _first_payload_value(row, payloads, "calibrated_score", "raw_score", "opportunity_score", "score", "shadow_score", "trade_opportunity_shadow_score")
+    quality_snapshot = _first_payload_value(row, payloads, "quality_snapshot_json", "quality_snapshot")
+    profile_features = _first_payload_value(row, payloads, "profile_features_json", "profile_features")
+    score_components = _first_payload_value(row, payloads, "score_components_json", "score_components")
+    opportunity_features = _first_payload_value(row, payloads, "opportunity_features", "opportunity_json", "features_json")
     return {
         "source": source,
         "signal_id": _first_payload_value(row, payloads, "signal_id"),
@@ -927,15 +1112,23 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "trade_action": _first_payload_value(row, payloads, "trade_action", "trade_action_key"),
         "final_trading_output_label": _first_payload_value(row, payloads, "final_trading_output_label", "action_label", "headline"),
         "opportunity_status": _first_payload_value(row, payloads, "status", "trade_opportunity_status", "opportunity_status"),
+        "score": score,
         "shadow_status": raw_shadow_status or "NONE",
         "shadow_status_present": raw_shadow_status is not None,
         "shadow_reason": shadow_reason,
         "shadow_score": shadow_score,
         "shadow_evaluated": raw_shadow_status is not None or shadow_reason is not None or shadow_score is not None,
         "profile_key": _first_payload_value(row, payloads, "profile_key", "opportunity_profile_key"),
+        "quality_snapshot": quality_snapshot,
+        "profile_features": profile_features,
+        "score_components": score_components,
+        "opportunity_features": opportunity_features,
+        "market_context_source": _first_payload_value(row, payloads, "market_context_source", "market_context_adapter_source", "context_source"),
         "lp_stage": _first_payload_value(row, payloads, "lp_stage", "lp_alert_stage"),
         "sweep_phase": _first_payload_value(row, payloads, "sweep_phase"),
         "delivery_decision": _first_payload_value(row, payloads, "delivery_decision", "delivery_reason", "delivery_class"),
+        "stage": _first_payload_value(row, payloads, "stage"),
+        "gate_reason": _first_payload_value(row, payloads, "gate_reason", "opportunity_gate_failure_reason"),
         "suppression_reason": _first_payload_value(row, payloads, "suppression_reason", "telegram_suppression_reason", "reason", "gate_reason"),
         "blocked_reason": _first_payload_value(row, payloads, "blocked_reason", "primary_blocker", "primary_hard_blocker"),
         "replay_eligible": _coerce_replay_eligible(_first_payload_value(row, payloads, "replay_eligible", "trade_opportunity_replay_eligible")),
@@ -1008,6 +1201,12 @@ def _collect_trade_replay_inputs(
                 "verification_blockers_json",
                 "would_have_been_direction",
                 "replay_eligible",
+                "raw_score",
+                "calibrated_score",
+                "market_context_source",
+                "quality_snapshot_json",
+                "score_components_json",
+                "profile_features_json",
                 "created_at",
                 "updated_at",
                 "shadow_status",
@@ -1016,7 +1215,7 @@ def _collect_trade_replay_inputs(
                 "opportunity_json",
             ),
             ("created_at", "updated_at"),
-            ("opportunity_json", "blockers_json", "hard_blockers_json", "verification_blockers_json"),
+            ("opportunity_json", "blockers_json", "hard_blockers_json", "verification_blockers_json", "quality_snapshot_json", "score_components_json", "profile_features_json"),
         ),
         (
             "signals",
@@ -1036,6 +1235,7 @@ def _collect_trade_replay_inputs(
                 "trade_opportunity_shadow_reason",
                 "trade_opportunity_shadow_score",
                 "opportunity_profile_key",
+                "market_context_source",
                 "lp_alert_stage",
                 "delivery_decision",
                 "sent_to_telegram",
@@ -1065,6 +1265,8 @@ def _collect_trade_replay_inputs(
                 "timestamp",
                 "stage",
                 "gate_reason",
+                "final_trading_output_label",
+                "opportunity_gate_failure_reason",
                 "delivered",
                 "notifier_sent_at",
                 "suppression_reason",
@@ -1132,16 +1334,38 @@ def _evaluate_replay_inputs(
     *,
     include_suppressed: bool,
     include_blocked: bool,
+    raw_audit_universe_count: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     eligible: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
     reason_by_source: dict[str, Counter[str]] = defaultdict(Counter)
+    reason_by_action: dict[str, Counter[str]] = defaultdict(Counter)
     examples: dict[str, list[dict[str, Any]]] = defaultdict(list)
     suppressed_reasons: Counter[str] = Counter()
+    eligible_by_action: Counter[str] = Counter()
+    ambiguous_by_action: Counter[str] = Counter()
+    action_classification_counts: Counter[str] = Counter()
+    not_candidate_reasons: Counter[str] = Counter()
+    universe_candidates: list[dict[str, Any]] = []
+
     for candidate in candidates:
+        action = _candidate_action_key(candidate)
+        action_class = _candidate_action_classification(candidate)
+        action_classification_counts[action_class] += 1
+        if not _is_replay_candidate_universe(candidate):
+            not_candidate_reasons[_low_value_audit_reason(candidate) or action_class or "not_replay_candidate"] += 1
+            continue
+        universe_candidates.append(candidate)
+        if action_class == "replay_ambiguous":
+            ambiguous_by_action[action] += 1
+
+    for candidate in universe_candidates:
         row_reasons: list[str] = []
+        action = _candidate_action_key(candidate)
         if not str(candidate.get("signal_id") or "").strip():
             row_reasons.append("signal_id_missing")
+        if not str(candidate.get("asset") or "").strip():
+            row_reasons.append("asset_missing")
         if not _candidate_timestamp(candidate):
             row_reasons.append("timestamp_missing")
         if bool(candidate.get("suppressed")) and not include_suppressed:
@@ -1153,11 +1377,12 @@ def _evaluate_replay_inputs(
             row_reasons.append("not_replay_eligible")
         direction = _direction_from_values(
             candidate.get("side"),
-            candidate.get("direction"),
-            candidate.get("trade_action_key"),
-            candidate.get("trade_action"),
-            candidate.get("final_trading_output_label"),
-        )
+        candidate.get("direction"),
+        candidate.get("trade_action_key"),
+        candidate.get("trade_action"),
+        candidate.get("delivery_decision"),
+        candidate.get("final_trading_output_label"),
+    )
         if direction not in {"LONG", "SHORT"}:
             row_reasons.append("direction_ambiguous")
         else:
@@ -1167,6 +1392,7 @@ def _evaluate_replay_inputs(
         if row_reasons:
             for reason in row_reasons:
                 reasons[reason] += 1
+                reason_by_action[reason][action] += 1
                 for source in list(candidate.get("input_source") or ["unknown"]):
                     reason_by_source[reason][str(source or "unknown")] += 1
                 if bool(candidate.get("suppressed")):
@@ -1178,30 +1404,67 @@ def _evaluate_replay_inputs(
                             "signal_id": str(candidate.get("signal_id") or ""),
                             "asset": str(candidate.get("asset") or ""),
                             "opportunity_status": str(candidate.get("opportunity_status") or ""),
-                            "trade_action": str(candidate.get("trade_action_key") or candidate.get("trade_action") or ""),
+                            "trade_action": str(candidate.get("trade_action_key") or candidate.get("trade_action") or action or ""),
                             "suppression_reason": str(candidate.get("suppression_reason") or "")[:120],
                         }
                     )
             candidate["ineligible_reasons"] = row_reasons
             continue
+        eligible_by_action[action] += 1
         eligible.append(candidate)
 
-    total = len(candidates)
-    coverage_rate = round(len(eligible) / total, 4) if total else 0.0
-    coverage_warning = f"replay_coverage_low:{coverage_rate}" if total >= 10 and coverage_rate < 0.25 else ""
+    candidate_universe_count = len(universe_candidates)
+    raw_count = int(raw_audit_universe_count or 0)
+    eligible_count = len(eligible)
+    raw_rate = round(eligible_count / raw_count, 4) if raw_count else 0.0
+    candidate_rate = round(eligible_count / candidate_universe_count, 4) if candidate_universe_count else 0.0
+    eligible_rate = 1.0 if eligible_count else 0.0
+    coverage_warning = (
+        f"replay_coverage_candidate_low:{candidate_rate}"
+        if candidate_universe_count >= 10 and candidate_rate < 0.25
+        else ""
+    )
+    top_ineligible_actions = [
+        {"action": action, "count": count}
+        for action, count in Counter(
+            action
+            for reason_counts in reason_by_action.values()
+            for action, count in reason_counts.items()
+            for _ in range(int(count))
+        ).most_common(10)
+    ]
     return eligible, {
         "eligible_count": len(eligible),
-        "ineligible_count": len(candidates) - len(eligible),
+        "ineligible_count": candidate_universe_count - len(eligible),
         "ineligible_reasons": dict(sorted(reasons.items())),
         "ineligible_reason_by_source": {
             reason: dict(sorted(source_counts.items()))
             for reason, source_counts in sorted(reason_by_source.items())
         },
+        "ineligible_reason_by_action": {
+            reason: dict(sorted(action_counts.items()))
+            for reason, action_counts in sorted(reason_by_action.items())
+        },
         "ineligible_top_examples": {
             reason: values for reason, values in sorted(examples.items())
         },
         "suppressed_ineligible_reasons": dict(sorted(suppressed_reasons.items())),
-        "replay_coverage_rate": coverage_rate,
+        "eligible_by_action": dict(sorted(eligible_by_action.items())),
+        "replay_count_by_action": dict(sorted(eligible_by_action.items())),
+        "ambiguous_by_action": dict(sorted(ambiguous_by_action.items())),
+        "action_classification_counts": dict(sorted(action_classification_counts.items())),
+        "top_ineligible_actions": top_ineligible_actions,
+        "ambiguous_actions": dict(sorted(ambiguous_by_action.items())),
+        "replayable_action_coverage": candidate_rate,
+        "raw_audit_universe_count": raw_count,
+        "replay_candidate_universe_count": candidate_universe_count,
+        "eligible_replay_universe_count": eligible_count,
+        "not_replay_candidate_count": len(candidates) - candidate_universe_count,
+        "not_replay_candidate_reasons": dict(sorted(not_candidate_reasons.items())),
+        "replay_coverage_rate_raw": raw_rate,
+        "replay_coverage_rate_candidate": candidate_rate,
+        "replay_coverage_rate_eligible": eligible_rate,
+        "replay_coverage_rate": candidate_rate,
         "replay_coverage_warning": coverage_warning,
     }
 
@@ -1247,6 +1510,12 @@ def _shadow_funnel_summary(
 ) -> dict[str, Any]:
     status_counts = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in candidates)
     replay_shadow_statuses = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in replay_rows)
+    shadow_inputs = [
+        item for item in candidates
+        if "trade_opportunities" in list(item.get("input_source") or [])
+        or bool(item.get("shadow_evaluated"))
+        or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES
+    ]
     evaluated = [
         item for item in candidates
         if bool(item.get("shadow_evaluated")) or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES
@@ -1265,6 +1534,63 @@ def _shadow_funnel_summary(
             reason = str(blockers[0]) if blockers else "shadow_status_none"
         blocked_reasons[reason] += 1
 
+    def present(value: Any) -> bool:
+        return value not in (None, "", [], {}, ())
+
+    feature_keys = {
+        "score": "score",
+        "side": "side",
+        "market_context": "market_context_source",
+        "opportunity_features": "opportunity_features",
+        "profile_key": "profile_key",
+        "quality_snapshot": "quality_snapshot",
+    }
+    feature_counts: Counter[str] = Counter()
+    missing_reasons: Counter[str] = Counter()
+    for item in shadow_inputs:
+        if not SHADOW_OPPORTUNITY_ENABLE:
+            missing_reasons["shadow_disabled"] += 1
+            continue
+        item_missing: list[str] = []
+        if not present(item.get("score")):
+            item_missing.append("missing_score")
+        if _direction_from_values(item.get("side"), item.get("direction"), item.get("trade_action_key"), item.get("trade_action")) not in {"LONG", "SHORT"}:
+            item_missing.append("missing_side")
+        if not present(item.get("market_context_source")):
+            item_missing.append("missing_market_context")
+        if not any(present(item.get(key)) for key in ("opportunity_features", "profile_features", "score_components")):
+            item_missing.append("missing_opportunity_features")
+        if not present(item.get("profile_key")):
+            item_missing.append("missing_profile_key")
+        if not present(item.get("quality_snapshot")):
+            item_missing.append("missing_quality_snapshot")
+        if not bool(item.get("shadow_evaluated")) and not _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+            item_missing.append("no_shadow_evaluation_fields")
+        if not item_missing:
+            item_missing.append("gate_not_configured")
+        if item in evaluated:
+            item_missing = [reason for reason in item_missing if reason != "no_shadow_evaluation_fields"]
+        for reason in item_missing:
+            missing_reasons[reason] += 1
+        for label, key in feature_keys.items():
+            if label == "side":
+                if _direction_from_values(item.get("side"), item.get("direction"), item.get("trade_action_key"), item.get("trade_action")) in {"LONG", "SHORT"}:
+                    feature_counts[label] += 1
+            elif label == "opportunity_features":
+                if any(present(item.get(candidate_key)) for candidate_key in ("opportunity_features", "profile_features", "score_components")):
+                    feature_counts[label] += 1
+            elif present(item.get(key)):
+                feature_counts[label] += 1
+
+    shadow_input_count = len(shadow_inputs)
+    feature_coverage = {
+        key: {
+            "present_count": int(feature_counts.get(key) or 0),
+            "coverage_rate": round(int(feature_counts.get(key) or 0) / max(shadow_input_count, 1), 4) if shadow_input_count else 0.0,
+        }
+        for key in sorted(feature_keys)
+    }
+
     zero_reasons: list[str] = []
     if not evaluated:
         if not candidates:
@@ -1272,17 +1598,20 @@ def _shadow_funnel_summary(
         elif not any("trade_opportunities" in list(item.get("input_source") or []) for item in candidates):
             zero_reasons.append("no_trade_opportunities_in_window")
         else:
-            zero_reasons.append("no_shadow_evaluation_fields")
+            zero_reasons.extend(str(reason) for reason in missing_reasons)
     if evaluated and gate_passed == 0 and not blocked_reasons:
         zero_reasons.append("shadow_evaluated_but_no_gate_pass")
 
     return {
+        "shadow_input_count": shadow_input_count,
         "shadow_evaluated_count": len(evaluated),
         "shadow_gate_passed_count": gate_passed,
         "shadow_candidate_count": candidate_count,
         "shadow_verified_count": verified_count,
         "shadow_blocked_count": max(len(evaluated) - gate_passed, 0),
         "shadow_blocked_reasons": dict(sorted(blocked_reasons.items())),
+        "shadow_missing_field_reasons": dict(sorted(missing_reasons.items())),
+        "shadow_feature_coverage": feature_coverage,
         "shadow_replay_count": sum(
             1 for item in replay_rows
             if _canonical_upper(item.get("shadow_status")) not in {"", "NONE"}
@@ -1347,6 +1676,7 @@ def _replay_dynamic_inputs(
         result["signal_stage"] = "SUPPRESSED" if bool(candidate.get("suppressed")) else str(candidate.get("signal_stage") or "")
         result["profile_key"] = str(candidate.get("profile_key") or result.get("profile_key") or "")
         result["shadow_reason"] = str(candidate.get("shadow_reason") or "")
+        result["trade_action"] = _candidate_action_key(candidate)
         results.append(result)
     return results
 
@@ -1366,6 +1696,10 @@ def _ensure_replay_persistence_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS trade_replay_examples (
             replay_id TEXT PRIMARY KEY,
             logical_date TEXT NOT NULL,
+            replay_scope TEXT DEFAULT 'default',
+            strategy_config_hash TEXT,
+            include_suppressed INTEGER DEFAULT 0,
+            include_blocked INTEGER DEFAULT 0,
             signal_id TEXT,
             trade_opportunity_id TEXT,
             delivery_audit_id TEXT,
@@ -1426,6 +1760,30 @@ def _ensure_replay_persistence_schema(conn: sqlite3.Connection) -> None:
             confidence_level TEXT,
             updated_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS trade_replay_profile_daily_stats (
+            logical_date TEXT NOT NULL,
+            replay_scope TEXT NOT NULL DEFAULT 'default',
+            strategy_config_hash TEXT NOT NULL DEFAULT '',
+            profile_key TEXT NOT NULL,
+            asset TEXT,
+            side TEXT,
+            sample_count INTEGER DEFAULT 0,
+            valid_sample_count INTEGER DEFAULT 0,
+            win_rate REAL,
+            avg_net_pnl_bps REAL,
+            median_net_pnl_bps REAL,
+            clean_followthrough_rate REAL,
+            bad_entry_rate REAL,
+            absorption_reversal_rate REAL,
+            chop_rate REAL,
+            data_invalid_rate REAL,
+            avg_mfe_bps REAL,
+            avg_mae_bps REAL,
+            recommended_action TEXT,
+            confidence_level TEXT,
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY(logical_date, replay_scope, strategy_config_hash, profile_key)
+        );
         """
     )
     _ensure_columns_for_writer(
@@ -1433,6 +1791,10 @@ def _ensure_replay_persistence_schema(conn: sqlite3.Connection) -> None:
         "trade_replay_examples",
         {
             "logical_date": "TEXT",
+            "replay_scope": "TEXT DEFAULT 'default'",
+            "strategy_config_hash": "TEXT",
+            "include_suppressed": "INTEGER DEFAULT 0",
+            "include_blocked": "INTEGER DEFAULT 0",
             "signal_id": "TEXT",
             "trade_opportunity_id": "TEXT",
             "delivery_audit_id": "TEXT",
@@ -1497,17 +1859,55 @@ def _ensure_replay_persistence_schema(conn: sqlite3.Connection) -> None:
             "updated_at": "TEXT",
         },
     )
+    _ensure_columns_for_writer(
+        conn,
+        "trade_replay_profile_daily_stats",
+        {
+            "logical_date": "TEXT",
+            "replay_scope": "TEXT DEFAULT 'default'",
+            "strategy_config_hash": "TEXT",
+            "profile_key": "TEXT",
+            "asset": "TEXT",
+            "side": "TEXT",
+            "sample_count": "INTEGER",
+            "valid_sample_count": "INTEGER",
+            "win_rate": "REAL",
+            "avg_net_pnl_bps": "REAL",
+            "median_net_pnl_bps": "REAL",
+            "clean_followthrough_rate": "REAL",
+            "bad_entry_rate": "REAL",
+            "absorption_reversal_rate": "REAL",
+            "chop_rate": "REAL",
+            "data_invalid_rate": "REAL",
+            "avg_mfe_bps": "REAL",
+            "avg_mae_bps": "REAL",
+            "recommended_action": "TEXT",
+            "confidence_level": "TEXT",
+            "updated_at": "TEXT",
+        },
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_logical_date ON trade_replay_examples(logical_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_scope ON trade_replay_examples(logical_date, replay_scope, strategy_config_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_signal_id ON trade_replay_examples(signal_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_profile_key ON trade_replay_examples(profile_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_profile_daily_date_scope ON trade_replay_profile_daily_stats(logical_date, replay_scope, strategy_config_hash)")
 
 
-def _deterministic_replay_id(logical_date: str, row: dict[str, Any], index: int) -> str:
+def _deterministic_replay_id(
+    logical_date: str,
+    row: dict[str, Any],
+    index: int,
+    *,
+    replay_scope: str,
+    strategy_config_hash: str,
+) -> str:
     signal_id = str(row.get("signal_id") or "").strip()
     opportunity_id = str(row.get("trade_opportunity_id") or "").strip()
     key = signal_id or opportunity_id or f"row_{index}"
     safe_key = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in key)
-    return f"replay_{logical_date}_{safe_key}"
+    safe_scope = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in replay_scope)
+    safe_hash = "".join(ch if ch.isalnum() else "_" for ch in strategy_config_hash)
+    return f"replay_{logical_date}_{safe_scope}_{safe_key}_{safe_hash}"
 
 
 def _median(values: list[float]) -> float | None:
@@ -1543,29 +1943,59 @@ def _persist_trade_replay_rows(
     logical_date: str,
     replay_rows: list[dict[str, Any]],
     replay_diagnostics: ReplayDiagnostics,
+    *,
+    replay_scope: str,
+    strategy_config_hash: str,
+    include_suppressed: bool,
+    include_blocked: bool,
 ) -> dict[str, Any]:
     summary = {
         "enabled": True,
-        "profile_stats_scope": "profile_key_latest",
-        "idempotent_key": "trade_replay_examples.replay_id=logical_date+signal_id_or_trade_opportunity_id",
+        "replay_scope": replay_scope,
+        "strategy_config_hash": strategy_config_hash,
+        "include_suppressed": bool(include_suppressed),
+        "include_blocked": bool(include_blocked),
+        "profile_stats_scope": "profile_key_latest_and_daily",
+        "idempotent_key": "trade_replay_examples.replay_id=logical_date+replay_scope+signal_id_or_trade_opportunity_id+strategy_config_hash",
+        "delete_scope": "logical_date+replay_scope+strategy_config_hash",
         "examples_written": 0,
         "profile_stats_written": 0,
+        "profile_daily_stats_written": 0,
     }
     if not replay_rows:
         return summary
     try:
         _ensure_replay_persistence_schema(conn)
         now_text = datetime.now(UTC).isoformat()
-        if {"logical_date", "replay_id"}.issubset(_table_columns(conn, "trade_replay_examples")):
-            conn.execute("DELETE FROM trade_replay_examples WHERE logical_date = ?", (logical_date,))
+        example_columns = _table_columns(conn, "trade_replay_examples")
+        if {"logical_date", "replay_scope", "strategy_config_hash"}.issubset(example_columns):
+            conn.execute(
+                """
+                DELETE FROM trade_replay_examples
+                WHERE logical_date = ?
+                  AND COALESCE(replay_scope, 'default') = ?
+                  AND (strategy_config_hash = ? OR strategy_config_hash IS NULL OR strategy_config_hash = '')
+                """,
+                (logical_date, replay_scope, strategy_config_hash),
+            )
         for index, row in enumerate(replay_rows):
-            replay_id = _deterministic_replay_id(logical_date, row, index)
+            replay_id = _deterministic_replay_id(
+                logical_date,
+                row,
+                index,
+                replay_scope=replay_scope,
+                strategy_config_hash=strategy_config_hash,
+            )
             signal_id = str(row.get("signal_id") or "")
             net_pnl = _to_signed_float(row.get("net_pnl_bps"))
             close_reason = str(row.get("close_reason") or "")
             record = {
                 "replay_id": replay_id,
                 "logical_date": logical_date,
+                "replay_scope": replay_scope,
+                "strategy_config_hash": strategy_config_hash,
+                "include_suppressed": 1 if include_suppressed else 0,
+                "include_blocked": 1 if include_blocked else 0,
                 "signal_id": signal_id,
                 "trade_opportunity_id": str(row.get("trade_opportunity_id") or ""),
                 "delivery_audit_id": str(row.get("delivery_audit_id") or ""),
@@ -1640,6 +2070,9 @@ def _persist_trade_replay_rows(
             ]
             first_sample = samples[0] if samples else {}
             record = {
+                "logical_date": logical_date,
+                "replay_scope": replay_scope,
+                "strategy_config_hash": strategy_config_hash,
                 "profile_key": profile_key,
                 "asset": str(first_sample.get("asset") or ""),
                 "side": str(first_sample.get("direction") or first_sample.get("side") or ""),
@@ -1659,8 +2092,16 @@ def _persist_trade_replay_rows(
                 "confidence_level": str(stat.get("confidence") or ""),
                 "updated_at": now_text,
             }
-            _insert_or_update(conn, "trade_replay_profile_stats", record, ("profile_key",))
+            latest_record = {key: value for key, value in record.items() if key not in {"logical_date", "replay_scope", "strategy_config_hash"}}
+            _insert_or_update(conn, "trade_replay_profile_stats", latest_record, ("profile_key",))
+            _insert_or_update(
+                conn,
+                "trade_replay_profile_daily_stats",
+                record,
+                ("logical_date", "replay_scope", "strategy_config_hash", "profile_key"),
+            )
             summary["profile_stats_written"] += 1
+            summary["profile_daily_stats_written"] += 1
         conn.commit()
         if summary["profile_stats_written"] == 0:
             replay_diagnostics.warning("trade_replay_profile_stats_no_profile_keys")
@@ -1682,6 +2123,9 @@ def _load_persisted_replay_rows(
     conn: sqlite3.Connection,
     logical_date: str,
     replay_diagnostics: ReplayDiagnostics,
+    *,
+    replay_scope: str = "default",
+    strategy_config_hash: str = "",
 ) -> list[dict[str, Any]]:
     if not _table_exists(conn, "trade_replay_examples"):
         replay_diagnostics.warning("trade_replay_examples_table_missing")
@@ -1693,6 +2137,21 @@ def _load_persisted_replay_rows(
         replay_diagnostics.schema_error(f"schema_error:missing_columns:trade_replay_examples:{','.join(missing)}")
         return []
     try:
+        if {"replay_scope", "strategy_config_hash"}.issubset(columns):
+            return [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM trade_replay_examples
+                    WHERE logical_date = ?
+                      AND COALESCE(replay_scope, 'default') = ?
+                      AND strategy_config_hash = ?
+                    ORDER BY signal_ts ASC
+                    """,
+                    (logical_date, replay_scope, strategy_config_hash),
+                ).fetchall()
+            ]
+        replay_diagnostics.warning("schema_warning:trade_replay_examples.scope_columns_missing")
         return [
             dict(row)
             for row in conn.execute(
@@ -1706,7 +2165,38 @@ def _load_persisted_replay_rows(
         return []
 
 
-def _profile_rows(conn: sqlite3.Connection, replay_diagnostics: ReplayDiagnostics) -> list[dict[str, Any]]:
+def _profile_rows(
+    conn: sqlite3.Connection,
+    replay_diagnostics: ReplayDiagnostics,
+    *,
+    logical_date: str | None = None,
+    replay_scope: str = "default",
+    strategy_config_hash: str = "",
+) -> list[dict[str, Any]]:
+    if logical_date and _table_exists(conn, "trade_replay_profile_daily_stats"):
+        daily_columns = _table_columns(conn, "trade_replay_profile_daily_stats", replay_diagnostics)
+        daily_required = {"logical_date", "replay_scope", "strategy_config_hash", "profile_key", "valid_sample_count", "avg_net_pnl_bps", "win_rate", "recommended_action"}
+        daily_missing = sorted(daily_required - daily_columns)
+        if not daily_missing:
+            try:
+                rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT * FROM trade_replay_profile_daily_stats
+                        WHERE logical_date = ?
+                          AND replay_scope = ?
+                          AND strategy_config_hash = ?
+                        """,
+                        (logical_date, replay_scope, strategy_config_hash),
+                    ).fetchall()
+                ]
+                if rows:
+                    return rows
+            except sqlite3.Error as exc:
+                replay_diagnostics.query_error(f"trade_replay_profile_daily_stats_query_failed:{exc}")
+        else:
+            replay_diagnostics.schema_error(f"schema_error:missing_columns:trade_replay_profile_daily_stats:{','.join(daily_missing)}")
     if not _table_exists(conn, "trade_replay_profile_stats"):
         replay_diagnostics.warning("trade_replay_profile_stats_table_missing")
         return []
@@ -1789,6 +2279,7 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
             "data_invalid_rate": round((total - valid) / max(total, 1), 4),
             "suppressed_replay_count": len(suppressed_rows),
             "suppressed_profitable_rate": round(sum(1 for value in suppressed_net if value > 0.0) / max(len(suppressed_net), 1), 4),
+            "suppressed_avg_net_pnl_bps": round(sum(suppressed_net) / len(suppressed_net), 2) if suppressed_net else 0.0,
             "suppressed_clean_followthrough_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "clean_followthrough") / max(len(suppressed_valid), 1), 4),
             "suppressed_bad_entry_rate": round(
                 sum(1 for row in suppressed_valid if row.get("label") in {"bad_entry", "followthrough_but_bad_entry"})
@@ -1809,6 +2300,43 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
     )
 
 
+def _finalize_replay_coverage(summary: dict[str, Any], replay_rows: list[dict[str, Any]]) -> None:
+    eligibility = summary.get("eligibility_summary")
+    if not isinstance(eligibility, dict):
+        eligibility = _empty_eligibility_summary()
+    replay_count = len(replay_rows)
+    raw_count = int(eligibility.get("raw_audit_universe_count") or 0)
+    candidate_count = int(eligibility.get("replay_candidate_universe_count") or 0)
+    eligible_count = int(eligibility.get("eligible_replay_universe_count") or eligibility.get("eligible_count") or 0)
+    raw_rate = round(replay_count / raw_count, 4) if raw_count else 0.0
+    candidate_rate = round(replay_count / candidate_count, 4) if candidate_count else 0.0
+    eligible_rate = round(replay_count / eligible_count, 4) if eligible_count else 0.0
+    warning = ""
+    if candidate_count >= 10 and candidate_rate < 0.25:
+        warning = f"replay_coverage_candidate_low:{candidate_rate}"
+    eligibility.update(
+        {
+            "raw_audit_universe_count": raw_count,
+            "replay_candidate_universe_count": candidate_count,
+            "eligible_replay_universe_count": eligible_count,
+            "replay_coverage_rate_raw": raw_rate,
+            "replay_coverage_rate_candidate": candidate_rate,
+            "replay_coverage_rate_eligible": eligible_rate,
+            "replay_coverage_rate": candidate_rate,
+            "replay_coverage_warning": warning,
+        }
+    )
+    summary["eligibility_summary"] = eligibility
+    summary["raw_audit_universe_count"] = raw_count
+    summary["replay_candidate_universe_count"] = candidate_count
+    summary["eligible_replay_universe_count"] = eligible_count
+    summary["replay_coverage_rate_raw"] = raw_rate
+    summary["replay_coverage_rate_candidate"] = candidate_rate
+    summary["replay_coverage_rate_eligible"] = eligible_rate
+    summary["replay_coverage_rate"] = candidate_rate
+    summary["replay_coverage_warning"] = warning
+
+
 def run_trade_replay(
     date_str: str,
     *,
@@ -1816,13 +2344,28 @@ def run_trade_replay(
     dry_run: bool = False,
     include_suppressed: bool = False,
     include_blocked: bool = True,
+    replay_scope: str | None = None,
 ) -> dict[str, Any]:
     """Read-only DATE-scoped replay summary for closure validation."""
     diagnostics = ReplayDiagnostics()
     logical_date = str(date_str or "").strip()
     resolved_path = Path(db_path) if db_path else _resolve_db_path()
+    normalized_scope = _normalize_replay_scope(
+        replay_scope,
+        include_suppressed=include_suppressed,
+        include_blocked=include_blocked,
+    )
+    strategy_hash = _strategy_config_hash(
+        replay_scope=normalized_scope,
+        include_suppressed=include_suppressed,
+        include_blocked=include_blocked,
+    )
     summary: dict[str, Any] = {
         "logical_date": logical_date,
+        "replay_scope": normalized_scope,
+        "strategy_config_hash": strategy_hash,
+        "replay_source": "missing",
+        "persisted_rows_found": 0,
         "timezone": "Asia/Shanghai",
         "logical_window_start_utc": "",
         "logical_window_end_utc": "",
@@ -1854,6 +2397,7 @@ def run_trade_replay(
         "data_invalid_rate": 0.0,
         "suppressed_replay_count": 0,
         "suppressed_profitable_rate": 0.0,
+        "suppressed_avg_net_pnl_bps": 0.0,
         "suppressed_clean_followthrough_rate": 0.0,
         "suppressed_bad_entry_rate": 0.0,
         "suppressed_absorption_reversal_rate": 0.0,
@@ -1867,10 +2411,13 @@ def run_trade_replay(
         "recommended_profile_actions": [],
         "persistence_summary": {
             "enabled": False,
-            "profile_stats_scope": "profile_key_latest",
-            "idempotent_key": "trade_replay_examples.replay_id=logical_date+signal_id_or_trade_opportunity_id",
+            "replay_scope": normalized_scope,
+            "strategy_config_hash": strategy_hash,
+            "profile_stats_scope": "profile_key_latest_and_daily",
+            "idempotent_key": "trade_replay_examples.replay_id=logical_date+replay_scope+signal_id_or_trade_opportunity_id+strategy_config_hash",
             "examples_written": 0,
             "profile_stats_written": 0,
+            "profile_daily_stats_written": 0,
         },
     }
     if not logical_date:
@@ -1928,22 +2475,61 @@ def run_trade_replay(
             candidates,
             include_suppressed=include_suppressed,
             include_blocked=include_blocked,
+            raw_audit_universe_count=int(input_source_counts.get("delivery_audit") or 0),
         )
         summary["input_source_counts"] = input_source_counts
         summary["eligibility_summary"] = eligibility_summary
 
-        persisted_rows = _load_persisted_replay_rows(conn, logical_date, diagnostics)
+        persisted_rows = _load_persisted_replay_rows(
+            conn,
+            logical_date,
+            diagnostics,
+            replay_scope=normalized_scope,
+            strategy_config_hash=strategy_hash,
+        )
+        summary["persisted_rows_found"] = len(persisted_rows)
         replay_rows = persisted_rows
         if not dry_run and eligible_inputs:
             replay_rows = _replay_dynamic_inputs(conn, eligible_inputs, replay_diagnostics=diagnostics)
-            summary["persistence_summary"] = _persist_trade_replay_rows(conn, logical_date, replay_rows, diagnostics)
+            summary["persistence_summary"] = _persist_trade_replay_rows(
+                conn,
+                logical_date,
+                replay_rows,
+                diagnostics,
+                replay_scope=normalized_scope,
+                strategy_config_hash=strategy_hash,
+                include_suppressed=include_suppressed,
+                include_blocked=include_blocked,
+            )
+            summary["persisted_rows_found"] = int(summary["persistence_summary"].get("examples_written") or 0)
+            summary["replay_source"] = "persisted" if replay_rows else "missing"
         elif not replay_rows:
             replay_rows = _replay_dynamic_inputs(conn, eligible_inputs, replay_diagnostics=diagnostics)
+            summary["replay_source"] = "dry_run" if replay_rows else "missing"
         elif not dry_run:
-            summary["persistence_summary"] = _persist_trade_replay_rows(conn, logical_date, replay_rows, diagnostics)
-        profile_rows = _profile_rows(conn, diagnostics)
+            summary["persistence_summary"] = _persist_trade_replay_rows(
+                conn,
+                logical_date,
+                replay_rows,
+                diagnostics,
+                replay_scope=normalized_scope,
+                strategy_config_hash=strategy_hash,
+                include_suppressed=include_suppressed,
+                include_blocked=include_blocked,
+            )
+            summary["replay_source"] = "persisted"
+        else:
+            summary["replay_source"] = "persisted"
+        profile_rows = _profile_rows(
+            conn,
+            diagnostics,
+            logical_date=logical_date,
+            replay_scope=normalized_scope,
+            strategy_config_hash=strategy_hash,
+        )
 
         _augment_summary_from_replays(summary, replay_rows, profile_rows)
+        _finalize_replay_coverage(summary, replay_rows)
         summary["shadow_funnel_summary"] = _shadow_funnel_summary(candidates=candidates, replay_rows=replay_rows)
         summary["suppressed_replay_zero_reasons"] = _suppressed_replay_zero_reasons(
             include_suppressed=include_suppressed,
@@ -2466,6 +3052,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", required=True, help="Logical date YYYY-MM-DD")
     parser.add_argument("--format", default="text", choices=("text", "json"), help="Output format")
     parser.add_argument("--dry-run", action="store_true", help="Read summary only")
+    parser.add_argument("--replay-scope", choices=tuple(sorted(REPLAY_SCOPES)), help="Replay persistence scope")
     parser.add_argument("--include-suppressed", action="store_true", help="Include suppressed replay-eligible research signals")
     parser.add_argument("--include-blocked", action="store_true", default=True, help="Include blocked/no-trade replay-eligible research signals")
     return parser
@@ -2474,6 +3061,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def _render_text(summary: dict[str, Any]) -> str:
     lines = [
         f"trade_replay logical_date={summary.get('logical_date')}",
+        f"replay_scope={summary.get('replay_scope')}",
+        f"replay_source={summary.get('replay_source')}",
+        f"strategy_config_hash={summary.get('strategy_config_hash')}",
+        f"persisted_rows_found={summary.get('persisted_rows_found')}",
         f"timezone={summary.get('timezone')}",
         f"logical_window_start_utc={summary.get('logical_window_start_utc')}",
         f"logical_window_end_utc={summary.get('logical_window_end_utc')}",
@@ -2502,6 +3093,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=bool(args.dry_run),
         include_suppressed=bool(args.include_suppressed),
         include_blocked=bool(args.include_blocked),
+        replay_scope=args.replay_scope,
     )
     if args.format == "json":
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

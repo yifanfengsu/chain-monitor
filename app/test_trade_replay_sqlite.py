@@ -93,11 +93,14 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
             """
         )
         start = _ts("2026-04-29T16:00:00+00:00")
+        self._insert_market_context_pair(start)
+
+    def _insert_market_context_pair(self, start: int, *, entry_price: float = 2000.0, exit_price: float = 2010.0) -> None:
         self.conn.executemany(
             "INSERT INTO market_context_snapshots VALUES (?,?,?,?,?,?)",
             [
-                ("ctx-entry", "ETH", "ETH/USDT", "okx_perp", 2000.0, start + 5),
-                ("ctx-exit", "ETH", "ETH/USDT", "okx_perp", 2010.0, start + 65),
+                (f"ctx-entry-{start}", "ETH", "ETH/USDT", "okx_perp", entry_price, start + 5),
+                (f"ctx-exit-{start}", "ETH", "ETH/USDT", "okx_perp", exit_price, start + 65),
             ],
         )
 
@@ -302,6 +305,304 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
         self.assertEqual(0, summary["replay_count"])
         self.assertEqual(1, summary["input_source_counts"]["blocked"])
         self.assertEqual(1, summary["eligibility_summary"]["ineligible_reasons"]["direction_ambiguous"])
+
+    def test_full_and_default_scopes_do_not_overwrite_each_other(self) -> None:
+        self._create_signals()
+        self._create_delivery_audit()
+        self._create_market_context()
+        start = _ts("2026-04-29T16:00:00+00:00")
+        self.conn.execute(
+            "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "sig-shared",
+                "",
+                "ETH",
+                "ETH/USDT",
+                start,
+                start,
+                start,
+                "LONG",
+                "LONG_CANDIDATE",
+                "CANDIDATE",
+                "NONE",
+                "ETH|LONG|shared",
+                "confirm",
+                "",
+                0,
+                1,
+                "{}",
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO delivery_audit VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "audit-suppressed-scope",
+                "sig-suppressed-scope",
+                "",
+                "ETH",
+                "CANDIDATE",
+                "NONE",
+                "",
+                "ETH|LONG|suppressed",
+                1,
+                "LONG_CANDIDATE",
+                "",
+                0,
+                1,
+                start,
+                "confirm",
+                "",
+                0,
+                None,
+                "same_asset_state_repeat",
+                '{"direction":"LONG","pair":"ETH/USDT"}',
+                start,
+                start,
+            ),
+        )
+        self.conn.commit()
+
+        full_summary = run_trade_replay("2026-04-30", db_path=self.db_path, include_suppressed=True, replay_scope="full")
+        default_summary = run_trade_replay("2026-04-30", db_path=self.db_path, replay_scope="default")
+
+        self.assertEqual("full", full_summary["replay_scope"])
+        self.assertEqual("default", default_summary["replay_scope"])
+        counts = {
+            row["replay_scope"]: int(row["count"])
+            for row in self.conn.execute(
+                """
+                SELECT replay_scope, COUNT(*) AS count
+                FROM trade_replay_examples
+                WHERE logical_date='2026-04-30'
+                GROUP BY replay_scope
+                """
+            ).fetchall()
+        }
+        self.assertEqual(2, counts["full"])
+        self.assertEqual(1, counts["default"])
+        replay_ids = [
+            str(row["replay_id"])
+            for row in self.conn.execute(
+                "SELECT replay_id FROM trade_replay_examples WHERE signal_id='sig-shared' ORDER BY replay_scope"
+            ).fetchall()
+        ]
+        self.assertEqual(2, len(replay_ids))
+        self.assertTrue(any("_full_" in replay_id for replay_id in replay_ids))
+        self.assertTrue(any("_default_" in replay_id for replay_id in replay_ids))
+
+    def test_profile_daily_stats_keep_date_and_scope_history(self) -> None:
+        self._create_signals()
+        self._create_market_context()
+        start_0430 = _ts("2026-04-29T16:00:00+00:00")
+        start_0429 = _ts("2026-04-28T16:00:00+00:00")
+        self._insert_market_context_pair(start_0429, entry_price=1900.0, exit_price=1910.0)
+        for signal_id, start in (("sig-0430", start_0430), ("sig-0429", start_0429)):
+            self.conn.execute(
+                "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    signal_id,
+                    "",
+                    "ETH",
+                    "ETH/USDT",
+                    start,
+                    start,
+                    start,
+                    "LONG",
+                    "LONG_CANDIDATE",
+                    "CANDIDATE",
+                    "NONE",
+                    "ETH|LONG|daily",
+                    "confirm",
+                    "",
+                    0,
+                    1,
+                    "{}",
+                ),
+            )
+        self.conn.commit()
+
+        run_trade_replay("2026-04-29", db_path=self.db_path, replay_scope="default")
+        run_trade_replay("2026-04-30", db_path=self.db_path, replay_scope="default")
+        run_trade_replay("2026-04-30", db_path=self.db_path, include_suppressed=True, replay_scope="full")
+
+        daily_rows = [
+            (row["logical_date"], row["replay_scope"], row["profile_key"])
+            for row in self.conn.execute(
+                """
+                SELECT logical_date, replay_scope, profile_key
+                FROM trade_replay_profile_daily_stats
+                WHERE profile_key='ETH|LONG|daily'
+                ORDER BY logical_date, replay_scope
+                """
+            ).fetchall()
+        ]
+        self.assertIn(("2026-04-29", "default", "ETH|LONG|daily"), daily_rows)
+        self.assertIn(("2026-04-30", "default", "ETH|LONG|daily"), daily_rows)
+        self.assertIn(("2026-04-30", "full", "ETH|LONG|daily"), daily_rows)
+        latest_count = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM trade_replay_profile_stats WHERE profile_key='ETH|LONG|daily'"
+        ).fetchone()["count"]
+        self.assertEqual(1, int(latest_count))
+
+    def test_coverage_universe_excludes_low_value_audit_rows_and_keeps_actions(self) -> None:
+        self._create_delivery_audit()
+        self._create_market_context()
+        start = _ts("2026-04-29T16:00:00+00:00")
+        rows = [
+            (
+                "audit-low",
+                "",
+                "",
+                "",
+                "",
+                "NONE",
+                "",
+                "",
+                0,
+                "",
+                "stable_non_swap_filtered",
+                0,
+                0,
+                start,
+                "filter",
+                "",
+                0,
+                None,
+                "stable_non_swap_filtered",
+                "{}",
+                start,
+                start,
+            ),
+            (
+                "audit-do-not-chase",
+                "sig-dnc",
+                "",
+                "ETH",
+                "BLOCKED",
+                "NONE",
+                "",
+                "ETH|LONG|dnc",
+                1,
+                "DO_NOT_CHASE_LONG",
+                "",
+                0,
+                0,
+                start,
+                "confirm",
+                "",
+                0,
+                None,
+                "do_not_chase",
+                '{"direction":"LONG","pair":"ETH/USDT"}',
+                start,
+                start,
+            ),
+            (
+                "audit-wait",
+                "sig-wait",
+                "",
+                "ETH",
+                "CANDIDATE",
+                "NONE",
+                "",
+                "ETH|WAIT|ambiguous",
+                1,
+                "WAIT_CONFIRMATION",
+                "",
+                0,
+                0,
+                start,
+                "confirm",
+                "",
+                0,
+                None,
+                "wait_confirmation",
+                '{"pair":"ETH/USDT"}',
+                start,
+                start,
+            ),
+        ]
+        self.conn.executemany(
+            "INSERT INTO delivery_audit VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        self.conn.commit()
+
+        summary = run_trade_replay("2026-04-30", db_path=self.db_path, replay_scope="default")
+        eligibility = summary["eligibility_summary"]
+
+        self.assertEqual(3, eligibility["raw_audit_universe_count"])
+        self.assertEqual(2, eligibility["replay_candidate_universe_count"])
+        self.assertEqual(1, eligibility["not_replay_candidate_reasons"]["stable_non_swap_filtered"])
+        self.assertEqual(1, eligibility["eligible_by_action"]["DO_NOT_CHASE_LONG"])
+        self.assertEqual(1, eligibility["ambiguous_by_action"]["WAIT_CONFIRMATION"])
+        self.assertGreater(eligibility["replay_coverage_rate_candidate"], eligibility["replay_coverage_rate_raw"])
+
+    def test_short_bias_observe_is_directed_and_wait_confirmation_is_ambiguous(self) -> None:
+        self._create_delivery_audit()
+        self._create_market_context()
+        start = _ts("2026-04-29T16:00:00+00:00")
+        self.conn.executemany(
+            "INSERT INTO delivery_audit VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "audit-short-bias",
+                    "sig-short-bias",
+                    "",
+                    "ETH",
+                    "CANDIDATE",
+                    "NONE",
+                    "",
+                    "ETH|SHORT|bias",
+                    1,
+                    "SHORT_BIAS_OBSERVE",
+                    "",
+                    0,
+                    0,
+                    start,
+                    "confirm",
+                    "",
+                    0,
+                    None,
+                    "",
+                    '{"pair":"ETH/USDT"}',
+                    start,
+                    start,
+                ),
+                (
+                    "audit-wait-ambiguous",
+                    "sig-wait-ambiguous",
+                    "",
+                    "ETH",
+                    "CANDIDATE",
+                    "NONE",
+                    "",
+                    "ETH|WAIT|ambiguous",
+                    1,
+                    "WAIT_CONFIRMATION",
+                    "",
+                    0,
+                    0,
+                    start,
+                    "confirm",
+                    "",
+                    0,
+                    None,
+                    "",
+                    '{"pair":"ETH/USDT"}',
+                    start,
+                    start,
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        summary = run_trade_replay("2026-04-30", db_path=self.db_path, replay_scope="default")
+        eligibility = summary["eligibility_summary"]
+
+        self.assertEqual(1, eligibility["eligible_by_action"]["SHORT_BIAS_OBSERVE"])
+        self.assertEqual(1, eligibility["ambiguous_by_action"]["WAIT_CONFIRMATION"])
+        self.assertEqual(1, eligibility["ineligible_reason_by_action"]["direction_ambiguous"]["WAIT_CONFIRMATION"])
 
 
 if __name__ == "__main__":

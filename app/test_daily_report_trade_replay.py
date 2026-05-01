@@ -8,6 +8,98 @@ from app.test_daily_canonical_report import _summary_for
 
 
 class DailyReportTradeReplayTests(unittest.TestCase):
+    def test_read_trade_replay_summary_prefers_full_persisted(self) -> None:
+        def fake_run(*_args, **kwargs):
+            scope = kwargs.get("replay_scope")
+            if scope == "full":
+                return {
+                    "trade_replay_available": True,
+                    "replay_source": "persisted",
+                    "replay_scope": "full",
+                    "persisted_rows_found": 104,
+                    "strategy_config_hash": "hashfull",
+                    "replay_count": 104,
+                    "valid_replay_count": 104,
+                }
+            return {
+                "trade_replay_available": True,
+                "replay_source": "persisted",
+                "replay_scope": "default",
+                "persisted_rows_found": 48,
+                "strategy_config_hash": "hashdefault",
+                "replay_count": 48,
+                "valid_replay_count": 48,
+            }
+
+        with mock.patch("trade_replay.run_trade_replay", side_effect=fake_run):
+            summary = report._read_trade_replay_summary("2026-04-30")
+
+        self.assertEqual("persisted", summary["replay_source"])
+        self.assertEqual("full", summary["replay_scope"])
+        self.assertEqual(104, summary["persisted_rows_found"])
+
+    def test_read_trade_replay_summary_falls_back_to_default_persisted(self) -> None:
+        def fake_run(*_args, **kwargs):
+            scope = kwargs.get("replay_scope")
+            if scope == "full":
+                return {
+                    "trade_replay_available": True,
+                    "replay_source": "dry_run",
+                    "replay_scope": "full",
+                    "persisted_rows_found": 0,
+                    "replay_count": 104,
+                    "valid_replay_count": 104,
+                }
+            return {
+                "trade_replay_available": True,
+                "replay_source": "persisted",
+                "replay_scope": "default",
+                "persisted_rows_found": 48,
+                "strategy_config_hash": "hashdefault",
+                "replay_count": 48,
+                "valid_replay_count": 48,
+            }
+
+        with mock.patch("trade_replay.run_trade_replay", side_effect=fake_run):
+            summary = report._read_trade_replay_summary("2026-04-30")
+
+        self.assertEqual("persisted", summary["replay_source"])
+        self.assertEqual("default", summary["replay_scope"])
+        self.assertEqual(48, summary["replay_count"])
+
+    def test_dry_run_replay_adds_limitation(self) -> None:
+        with mock.patch.object(
+            report,
+            "_read_trade_replay_summary",
+            return_value={
+                "trade_replay_available": True,
+                "replay_source": "dry_run",
+                "replay_scope": "full",
+                "persisted_rows_found": 0,
+                "replay_count": 2,
+                "valid_replay_count": 2,
+                "warnings": [],
+            },
+        ), mock.patch.object(
+            report,
+            "_runtime_health_summary",
+            return_value={
+                "active_hours": 1.0,
+                "raw_events_count": 1,
+                "parsed_events_count": 1,
+                "signals_count": 1,
+                "max_raw_event_gap_sec": 0,
+                "max_signal_gap_sec": 0,
+                "zero_activity_day": 0,
+                "data_quality_status": "valid",
+                "data_gap_warnings": [],
+            },
+        ):
+            payload = _summary_for(signals=[])
+
+        self.assertEqual("dry_run", payload["trade_replay_summary"]["replay_source"])
+        self.assertIn("replay_dry_run_used", payload["limitations"])
+
     def test_daily_report_without_replay_adds_limitation(self) -> None:
         with mock.patch.object(
             report,
@@ -67,6 +159,9 @@ class DailyReportTradeReplayTests(unittest.TestCase):
             "data_invalid_rate": 0.25,
             "shadow_replay_count": 2,
             "suppressed_replay_count": 1,
+            "suppressed_profitable_rate": 1.0,
+            "suppressed_avg_net_pnl_bps": 8.5,
+            "suppressed_clean_followthrough_rate": 1.0,
             "suppressed_bad_entry_rate": 0.0,
             "suppressed_replay_zero_reasons": [],
             "shadow_funnel_summary": {
@@ -106,6 +201,7 @@ class DailyReportTradeReplayTests(unittest.TestCase):
             payload = _summary_for(trade_opportunities=opportunity_rows)
 
         self.assertEqual(8, payload["trade_replay_summary"]["replay_count"])
+        self.assertEqual(8.5, payload["trade_replay_summary"]["suppressed_avg_net_pnl_bps"])
         self.assertEqual(3, payload["trade_replay_summary"]["input_source_counts"]["signals"])
         self.assertEqual(1, payload["trade_replay_summary"]["eligibility_summary"]["ineligible_reasons"]["direction_ambiguous"])
         self.assertIn("trade_replay_profile_summary", payload)

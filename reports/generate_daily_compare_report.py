@@ -1224,13 +1224,22 @@ def _compare_metric(spec: MetricSpec, today_bundle: dict[str, SummaryRecord], pr
 
 def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundle: dict[str, SummaryRecord]) -> dict[str, Any]:
     metrics = {
+        "replay_scope": "object",
+        "replay_source": "object",
         "replay_count": "count_only",
         "valid_replay_count": "count_only",
         "avg_net_pnl_bps": "higher_better",
         "clean_followthrough_rate": "higher_better",
         "bad_entry_rate": "lower_better",
         "absorption_reversal_rate": "lower_better",
+        "chop_rate": "lower_better",
         "data_invalid_rate": "lower_better",
+        "suppressed_avg_net_pnl_bps": "higher_better",
+        "suppressed_profitable_rate": "higher_better",
+        "suppressed_clean_followthrough_rate": "higher_better",
+        "replay_coverage_rate_candidate": "higher_better",
+        "replay_coverage_rate_eligible": "higher_better",
+        "shadow_evaluated_count": "count_only",
         "shadow_candidate_count": "count_only",
         "shadow_verified_count": "count_only",
         "data_quality_status": "object",
@@ -1288,6 +1297,17 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
         result["warnings"] = sorted(set(str(item) for item in result["warnings"] if item))
         return result
 
+    today_scope = today_replay.get("replay_scope")
+    previous_scope = previous_replay.get("replay_scope")
+    if today_scope != previous_scope:
+        result["warnings"].append("scope_mismatch")
+        result["warnings"].append(f"replay_compare_scope_mismatch:{previous_scope}->{today_scope}")
+    today_source = today_replay.get("replay_source")
+    previous_source = previous_replay.get("replay_source")
+    if today_source != previous_source:
+        result["warnings"].append("source_mismatch")
+        result["warnings"].append(f"replay_compare_source_mismatch:{previous_source}->{today_source}")
+
     if str(today_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"} or str(previous_quality.get("data_quality_status") or "") in {"degraded", "invalid", "invalid_or_no_activity"}:
         result["status"] = "evidence_insufficient"
         result["summary"] = "evidence_insufficient"
@@ -1307,12 +1327,21 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
 
     source_map = {
         "replay_count": (today_replay, previous_replay),
+        "replay_scope": (today_replay, previous_replay),
+        "replay_source": (today_replay, previous_replay),
         "valid_replay_count": (today_replay, previous_replay),
         "avg_net_pnl_bps": (today_replay, previous_replay),
         "clean_followthrough_rate": (today_replay, previous_replay),
         "bad_entry_rate": (today_replay, previous_replay),
         "absorption_reversal_rate": (today_replay, previous_replay),
+        "chop_rate": (today_replay, previous_replay),
         "data_invalid_rate": (today_replay, previous_replay),
+        "suppressed_avg_net_pnl_bps": (today_replay, previous_replay),
+        "suppressed_profitable_rate": (today_replay, previous_replay),
+        "suppressed_clean_followthrough_rate": (today_replay, previous_replay),
+        "replay_coverage_rate_candidate": (today_replay, previous_replay),
+        "replay_coverage_rate_eligible": (today_replay, previous_replay),
+        "shadow_evaluated_count": (today_shadow, previous_shadow),
         "shadow_candidate_count": (today_shadow, previous_shadow),
         "shadow_verified_count": (today_shadow, previous_shadow),
         "data_quality_status": (today_quality, previous_quality),
@@ -1362,6 +1391,8 @@ def _build_replay_compare(today_bundle: dict[str, SummaryRecord], previous_bundl
     if result["status"] == "insufficient":
         result["status"] = "ok"
         result["summary"] = "ok"
+    if float(today_replay.get("avg_net_pnl_bps") or 0.0) < 0.0:
+        result["warnings"].append("replay_negative_expectancy")
     result["warnings"] = sorted(set(str(item) for item in result["warnings"] if item))
     return result
 
@@ -1812,16 +1843,32 @@ def _build_limitations(
     return sorted(set(item for item in limitations if item))
 
 
-def _build_key_findings(rows: list[dict[str, Any]], answers: dict[str, str]) -> list[str]:
+def _build_key_findings(
+    rows: list[dict[str, Any]],
+    answers: dict[str, str],
+    replay_compare: dict[str, Any] | None = None,
+) -> list[str]:
+    replay_metrics = (replay_compare or {}).get("metrics") if isinstance((replay_compare or {}).get("metrics"), dict) else {}
+    replay_findings: list[str] = []
+    avg_metric = replay_metrics.get("avg_net_pnl_bps") if isinstance(replay_metrics, dict) else None
+    if isinstance(avg_metric, dict) and _is_number(avg_metric.get("today_value")) and float(avg_metric.get("today_value")) < 0.0:
+        replay_findings.append("replay_negative_expectancy: avg_net_pnl_bps 仍为负，不能据此声称系统可交易。")
+    warnings = (replay_compare or {}).get("warnings") if isinstance(replay_compare, dict) else []
+    if isinstance(warnings, list):
+        if any("scope_mismatch" in str(item) for item in warnings):
+            replay_findings.append("scope_mismatch: today/previous replay_scope 不一致，质量指标只能参考。")
+        if any("source_mismatch" in str(item) for item in warnings):
+            replay_findings.append("source_mismatch: today/previous replay_source 不一致，不能做严格同源判断。")
     if "evidence_insufficient" in str(answers.get("1") or ""):
         findings = [
             answers["1"],
             "data quality 降级；key_findings 不判定系统进步。",
+            *replay_findings,
             answers.get("5", ""),
             answers.get("9", ""),
         ]
         return [item for item in findings if item][:8]
-    findings = [answers["1"], answers["3"], answers["4"], answers["5"], answers["8"], answers["9"]]
+    findings = [answers["1"], *replay_findings, answers["3"], answers["4"], answers["5"], answers["8"], answers["9"]]
     return [item for item in findings if item][:8]
 
 
@@ -2087,13 +2134,22 @@ def build_markdown_report(payload: dict[str, Any]) -> str:
     lines.append(f"- replay_input_source_counts: `{json.dumps(replay_compare.get('input_source_counts') or {}, ensure_ascii=False, sort_keys=True)}`")
     lines.append(f"- replay_eligibility_summary: `{json.dumps(replay_compare.get('eligibility_summary') or {}, ensure_ascii=False, sort_keys=True)}`")
     for metric_name in (
+        "replay_scope",
+        "replay_source",
         "replay_count",
         "valid_replay_count",
         "avg_net_pnl_bps",
         "clean_followthrough_rate",
         "bad_entry_rate",
         "absorption_reversal_rate",
+        "chop_rate",
         "data_invalid_rate",
+        "suppressed_avg_net_pnl_bps",
+        "suppressed_profitable_rate",
+        "suppressed_clean_followthrough_rate",
+        "replay_coverage_rate_candidate",
+        "replay_coverage_rate_eligible",
+        "shadow_evaluated_count",
         "shadow_candidate_count",
         "shadow_verified_count",
         "data_quality_status",
@@ -2231,7 +2287,7 @@ def build_compare_payload(
         "improvement_flags": _flag_rows(rows, "improvement"),
         "regression_flags": _flag_rows(rows, "regression"),
         "unchanged_flags": _flag_rows(rows, "unchanged"),
-        "key_findings": _build_key_findings(rows, answers),
+        "key_findings": _build_key_findings(rows, answers, replay_compare=replay_compare),
         "key_risks": _build_key_risks(rows, answers),
         "next_actions": _build_next_actions(rows, answers),
         "limitations": sorted(set(limitations + (["legacy_source_used"] if effective_source_mode != CANONICAL_SOURCE_MODE else []))),

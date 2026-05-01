@@ -24,6 +24,12 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
         shadow_candidate_count: int,
         shadow_verified_count: int,
         data_quality_status: str,
+        replay_scope: str = "full",
+        replay_source: str = "persisted",
+        suppressed_avg_net_pnl_bps: float = 0.0,
+        suppressed_profitable_rate: float = 0.0,
+        replay_coverage_rate_candidate: float = 1.0,
+        replay_coverage_rate_eligible: float = 1.0,
     ) -> dict:
         return {
             "report_type": "daily_canonical",
@@ -117,6 +123,9 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
             },
             "trade_replay_summary": {
                 "trade_replay_available": replay_available,
+                "replay_scope": replay_scope,
+                "replay_source": replay_source,
+                "persisted_rows_found": replay_count if replay_source == "persisted" else 0,
                 "replay_count": replay_count,
                 "valid_replay_count": valid_replay_count,
                 "input_source_counts": {
@@ -138,11 +147,18 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
                 "clean_followthrough_rate": clean_followthrough_rate,
                 "bad_entry_rate": bad_entry_rate,
                 "absorption_reversal_rate": absorption_reversal_rate,
+                "chop_rate": 0.1,
                 "data_invalid_rate": data_invalid_rate,
+                "suppressed_avg_net_pnl_bps": suppressed_avg_net_pnl_bps,
+                "suppressed_profitable_rate": suppressed_profitable_rate,
+                "suppressed_clean_followthrough_rate": 0.25,
+                "replay_coverage_rate_candidate": replay_coverage_rate_candidate,
+                "replay_coverage_rate_eligible": replay_coverage_rate_eligible,
                 "top_positive_profiles": [],
                 "top_negative_profiles": [],
             },
             "shadow_opportunity_summary": {
+                "shadow_evaluated_count": shadow_candidate_count + shadow_verified_count,
                 "shadow_candidate_count": shadow_candidate_count,
                 "shadow_verified_count": shadow_verified_count,
                 "shadow_replay_count": replay_count if replay_available else 0,
@@ -229,6 +245,73 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
                 payload["replay_compare"]["metrics"]["clean_followthrough_rate"]["classification"],
             )
             self.assertIn("Replay / Shadow / Data Quality 对比", payload["markdown"])
+
+    def test_daily_compare_warns_on_scope_mismatch_and_negative_expectancy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_dir = Path(temp_dir) / "reports"
+            daily_dir = reports_dir / "daily"
+            output_dir = reports_dir / "daily_compare"
+            daily_dir.mkdir(parents=True)
+            (daily_dir / "daily_report_2026-04-29.json").write_text(
+                json.dumps(
+                    self._daily_payload(
+                        "2026-04-29",
+                        replay_available=True,
+                        replay_count=8,
+                        valid_replay_count=8,
+                        avg_net_pnl_bps=-25.0,
+                        clean_followthrough_rate=0.20,
+                        bad_entry_rate=0.30,
+                        absorption_reversal_rate=0.10,
+                        data_invalid_rate=0.0,
+                        shadow_candidate_count=1,
+                        shadow_verified_count=0,
+                        data_quality_status="valid",
+                        replay_scope="default",
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (daily_dir / "daily_report_2026-04-30.json").write_text(
+                json.dumps(
+                    self._daily_payload(
+                        "2026-04-30",
+                        replay_available=True,
+                        replay_count=10,
+                        valid_replay_count=10,
+                        avg_net_pnl_bps=-20.0,
+                        clean_followthrough_rate=0.25,
+                        bad_entry_rate=0.25,
+                        absorption_reversal_rate=0.08,
+                        data_invalid_rate=0.0,
+                        shadow_candidate_count=1,
+                        shadow_verified_count=0,
+                        data_quality_status="valid",
+                        replay_scope="full",
+                        suppressed_avg_net_pnl_bps=-15.0,
+                        suppressed_profitable_rate=0.1,
+                        replay_coverage_rate_candidate=0.8,
+                        replay_coverage_rate_eligible=1.0,
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code, payload, _ = generate_daily_compare(
+                reports_dir=reports_dir,
+                output_dir=output_dir,
+                allow_generate=False,
+                requested_date="2026-04-30",
+            )
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("scope_mismatch", payload["replay_compare"]["warnings"])
+            self.assertIn("replay_negative_expectancy", payload["replay_compare"]["warnings"])
+            self.assertIn("replay_negative_expectancy", " ".join(payload["key_findings"]))
+            self.assertIn("suppressed_avg_net_pnl_bps", payload["replay_compare"]["metrics"])
+            self.assertIn("replay_coverage_rate_candidate", payload["replay_compare"]["metrics"])
 
     def test_daily_compare_marks_insufficient_when_one_side_missing_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

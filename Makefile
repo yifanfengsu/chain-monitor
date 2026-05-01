@@ -284,6 +284,14 @@ help:
 	@printf '%s\n' "  make daily-compare-strict               严格模式：缺 canonical daily report 时先 rebuild，仍缺失就 fail-closed。"
 	@printf '%s\n' "  make daily-compare-rebuild              重建缺失 canonical daily report 输入后再 compare。"
 	@printf '%s\n' ""
+	@printf '%s\n' "Trade replay:"
+	@printf '%s\n' "  make trade-replay DATE=YYYY-MM-DD       Persist replay_scope=default."
+	@printf '%s\n' "  make trade-replay-full DATE=YYYY-MM-DD  Persist replay_scope=full with suppressed + blocked included."
+	@printf '%s\n' "  make trade-replay-suppressed DATE=...   Persist replay_scope=suppressed with suppressed rows included."
+	@printf '%s\n' "  make trade-replay-blocked DATE=...      Persist replay_scope=blocked for blocked/no-trade diagnostics."
+	@printf '%s\n' "  make trade-replay-summary DATE=...      Print JSON summary including replay_scope/source/hash."
+	@printf '%s\n' "  make trade-replay-profiles DATE=...     Print profile daily stats top positive/top negative."
+	@printf '%s\n' ""
 	@printf '%s\n' "Hermes:"
 	@printf '%s\n' "  make install-hermes-skill               Install the chain-monitor Hermes report analyst skill."
 	@printf '%s\n' "  make validate-hermes-skill              Validate the Hermes report analyst skill source."
@@ -639,27 +647,31 @@ smoke-fast:
 
 trade-replay:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE)
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope default
 
 trade-replay-summary:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-summary DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE) --format json
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope full --dry-run --format json
 
 trade-replay-dry-run:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-dry-run DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE) --dry-run
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope full --dry-run
 
 trade-replay-suppressed:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-suppressed DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-suppressed
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope suppressed --include-suppressed
 
 trade-replay-blocked:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-blocked DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-blocked --include-suppressed
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope blocked --include-blocked
 
 trade-replay-full:
 	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-full DATE=YYYY-MM-DD"; exit 1; fi
-	$(RUN_PY) -m app.trade_replay --date $(DATE) --include-suppressed --include-blocked
+	$(RUN_PY) -m app.trade_replay --date $(DATE) --replay-scope full --include-suppressed --include-blocked
+
+trade-replay-profiles:
+	@if [ -z "$(DATE)" ]; then echo "Usage: make trade-replay-profiles DATE=YYYY-MM-DD"; exit 1; fi
+	sqlite3 "$(DB_PATH)" "SELECT 'top_positive' AS bucket, profile_key, replay_scope, valid_sample_count, avg_net_pnl_bps, win_rate, recommended_action FROM trade_replay_profile_daily_stats WHERE logical_date='$(DATE)' ORDER BY avg_net_pnl_bps DESC, valid_sample_count DESC LIMIT 10; SELECT 'top_negative' AS bucket, profile_key, replay_scope, valid_sample_count, avg_net_pnl_bps, win_rate, recommended_action FROM trade_replay_profile_daily_stats WHERE logical_date='$(DATE)' ORDER BY avg_net_pnl_bps ASC, valid_sample_count DESC LIMIT 10;"
 
 # --- Shadow Opportunity ---
 

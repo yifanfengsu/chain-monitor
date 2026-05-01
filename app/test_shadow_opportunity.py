@@ -17,6 +17,7 @@ from config import (
     SHADOW_VERIFIED_MIN_SCORE,
 )
 from trade_opportunity import TradeOpportunityManager
+from trade_replay import _shadow_funnel_summary
 
 
 class TestShadowOpportunity(unittest.TestCase):
@@ -60,6 +61,79 @@ class TestShadowOpportunity(unittest.TestCase):
         self.assertIn("shadow_status", result)
         self.assertIn("shadow_reason", result)
         self.assertIn("shadow_score", result)
+
+    def test_shadow_funnel_counts_missing_fields_separately(self):
+        summary = _shadow_funnel_summary(
+            candidates=[
+                {
+                    "input_source": ["trade_opportunities"],
+                    "signal_id": "sig-shadow-missing-score",
+                    "asset": "ETH",
+                    "side": "LONG",
+                    "profile_key": "ETH|LONG|shadow",
+                    "market_context_source": "live_public",
+                    "quality_snapshot": {"ok": True},
+                    "opportunity_features": {"feature": True},
+                    "shadow_status": "NONE",
+                    "shadow_evaluated": False,
+                },
+                {
+                    "input_source": ["trade_opportunities"],
+                    "signal_id": "sig-shadow-missing-side",
+                    "asset": "ETH",
+                    "score": 0.7,
+                    "profile_key": "ETH|LONG|shadow",
+                    "market_context_source": "live_public",
+                    "quality_snapshot": {"ok": True},
+                    "opportunity_features": {"feature": True},
+                    "shadow_status": "NONE",
+                    "shadow_evaluated": False,
+                },
+                {
+                    "input_source": ["trade_opportunities"],
+                    "signal_id": "sig-shadow-missing-market",
+                    "asset": "ETH",
+                    "side": "LONG",
+                    "score": 0.7,
+                    "profile_key": "ETH|LONG|shadow",
+                    "quality_snapshot": {"ok": True},
+                    "opportunity_features": {"feature": True},
+                    "shadow_status": "NONE",
+                    "shadow_evaluated": False,
+                },
+            ],
+            replay_rows=[],
+        )
+
+        self.assertEqual(0, summary["shadow_evaluated_count"])
+        self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_score"])
+        self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_side"])
+        self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_market_context"])
+        self.assertIn("no_shadow_evaluation_fields", summary["zero_shadow_reasons"])
+
+    def test_shadow_funnel_counts_evaluated_fixture(self):
+        summary = _shadow_funnel_summary(
+            candidates=[
+                {
+                    "input_source": ["trade_opportunities"],
+                    "signal_id": "sig-shadow",
+                    "asset": "ETH",
+                    "side": "LONG",
+                    "score": 0.8,
+                    "profile_key": "ETH|LONG|shadow",
+                    "market_context_source": "live_public",
+                    "quality_snapshot": {"ok": True},
+                    "opportunity_features": {"feature": True},
+                    "shadow_status": "SHADOW_CANDIDATE",
+                    "shadow_evaluated": True,
+                }
+            ],
+            replay_rows=[],
+        )
+
+        self.assertEqual(1, summary["shadow_input_count"])
+        self.assertEqual(1, summary["shadow_evaluated_count"])
+        self.assertEqual(1, summary["shadow_candidate_count"])
 
     def test_shadow_candidate_when_production_blocked(self):
         """Test shadow candidate when production is blocked by history."""

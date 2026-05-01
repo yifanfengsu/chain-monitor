@@ -97,6 +97,7 @@ REQUIRED_TABLES = (
     "case_followups",
     "trade_replay_examples",
     "trade_replay_profile_stats",
+    "trade_replay_profile_daily_stats",
     "runtime_heartbeats",
 )
 
@@ -1333,6 +1334,10 @@ def migrate_schema() -> bool:
             CREATE TABLE IF NOT EXISTS trade_replay_examples (
                 replay_id TEXT PRIMARY KEY,
                 logical_date TEXT NOT NULL,
+                replay_scope TEXT DEFAULT 'default',
+                strategy_config_hash TEXT,
+                include_suppressed INTEGER DEFAULT 0,
+                include_blocked INTEGER DEFAULT 0,
                 signal_id TEXT,
                 trade_opportunity_id TEXT,
                 delivery_audit_id TEXT,
@@ -1393,6 +1398,30 @@ def migrate_schema() -> bool:
                 recommended_action TEXT,
                 confidence_level TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS trade_replay_profile_daily_stats (
+                logical_date TEXT NOT NULL,
+                replay_scope TEXT NOT NULL DEFAULT 'default',
+                strategy_config_hash TEXT NOT NULL DEFAULT '',
+                profile_key TEXT NOT NULL,
+                asset TEXT,
+                side TEXT,
+                sample_count INTEGER DEFAULT 0,
+                valid_sample_count INTEGER DEFAULT 0,
+                win_rate REAL,
+                avg_net_pnl_bps REAL,
+                median_net_pnl_bps REAL,
+                clean_followthrough_rate REAL,
+                bad_entry_rate REAL,
+                absorption_reversal_rate REAL,
+                chop_rate REAL,
+                data_invalid_rate REAL,
+                avg_mfe_bps REAL,
+                avg_mae_bps REAL,
+                recommended_action TEXT,
+                confidence_level TEXT,
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY(logical_date, replay_scope, strategy_config_hash, profile_key)
             );
 
             CREATE TABLE IF NOT EXISTS runtime_heartbeats (
@@ -1598,10 +1627,41 @@ def migrate_schema() -> bool:
             conn,
             "trade_replay_examples",
             {
+                "replay_scope": "TEXT DEFAULT 'default'",
+                "strategy_config_hash": "TEXT",
+                "include_suppressed": "INTEGER DEFAULT 0",
+                "include_blocked": "INTEGER DEFAULT 0",
                 "was_profitable": "INTEGER",
                 "was_stopped": "INTEGER",
                 "was_late": "INTEGER",
                 "price_points_seen": "INTEGER",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "trade_replay_profile_daily_stats",
+            {
+                "logical_date": "TEXT",
+                "replay_scope": "TEXT DEFAULT 'default'",
+                "strategy_config_hash": "TEXT",
+                "profile_key": "TEXT",
+                "asset": "TEXT",
+                "side": "TEXT",
+                "sample_count": "INTEGER",
+                "valid_sample_count": "INTEGER",
+                "win_rate": "REAL",
+                "avg_net_pnl_bps": "REAL",
+                "median_net_pnl_bps": "REAL",
+                "clean_followthrough_rate": "REAL",
+                "bad_entry_rate": "REAL",
+                "absorption_reversal_rate": "REAL",
+                "chop_rate": "REAL",
+                "data_invalid_rate": "REAL",
+                "avg_mfe_bps": "REAL",
+                "avg_mae_bps": "REAL",
+                "recommended_action": "TEXT",
+                "confidence_level": "TEXT",
+                "updated_at": "TEXT",
             },
         )
         _ensure_columns(
@@ -1632,6 +1692,8 @@ def migrate_schema() -> bool:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_delivery_audit_archive_date ON delivery_audit(archive_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_telegram_deliveries_archive_date ON telegram_deliveries(archive_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_case_followups_archive_date ON case_followups(archive_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_scope ON trade_replay_examples(logical_date, replay_scope, strategy_config_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_profile_daily_scope ON trade_replay_profile_daily_stats(logical_date, replay_scope, strategy_config_hash)")
         conn.execute(
             """
             INSERT INTO schema_meta(key, value, updated_at)
