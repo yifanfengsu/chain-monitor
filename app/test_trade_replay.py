@@ -693,7 +693,7 @@ class TestTradeReplaySqlLookups(unittest.TestCase):
         broken.commit()
         broken.close()
 
-        summary = run_trade_replay("2026-04-30", db_path=Path(self.temp_dir.name) / "broken.sqlite")
+        summary = run_trade_replay("2026-04-30", db_path=Path(self.temp_dir.name) / "broken.sqlite", dry_run=True)
 
         self.assertEqual("degraded", summary["status"])
         self.assertTrue(summary["schema_errors"])

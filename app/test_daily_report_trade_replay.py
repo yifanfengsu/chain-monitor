@@ -54,6 +54,9 @@ class DailyReportTradeReplayTests(unittest.TestCase):
                 "eligible_count": 6,
                 "ineligible_count": 1,
                 "ineligible_reasons": {"direction_ambiguous": 1},
+                "ineligible_reason_by_source": {"direction_ambiguous": {"signals": 1}},
+                "replay_coverage_rate": 0.8571,
+                "replay_coverage_warning": "",
             },
             "win_rate": 0.5,
             "avg_net_pnl_bps": 12.3,
@@ -63,6 +66,19 @@ class DailyReportTradeReplayTests(unittest.TestCase):
             "chop_rate": 0.17,
             "data_invalid_rate": 0.25,
             "shadow_replay_count": 2,
+            "suppressed_replay_count": 1,
+            "suppressed_bad_entry_rate": 0.0,
+            "suppressed_replay_zero_reasons": [],
+            "shadow_funnel_summary": {
+                "shadow_evaluated_count": 2,
+                "shadow_gate_passed_count": 2,
+                "shadow_candidate_count": 1,
+                "shadow_verified_count": 1,
+                "shadow_blocked_count": 0,
+                "shadow_blocked_reasons": {},
+                "shadow_replay_count": 2,
+                "zero_shadow_reasons": [],
+            },
             "top_positive_profiles": [{"profile_key": "ETH|LONG|SHADOW_A", "avg_net_pnl_bps": 15.0}],
             "top_negative_profiles": [{"profile_key": "ETH|SHORT|SHADOW_B", "avg_net_pnl_bps": -8.0}],
             "recommended_profile_actions": [],
@@ -95,6 +111,7 @@ class DailyReportTradeReplayTests(unittest.TestCase):
         self.assertIn("trade_replay_profile_summary", payload)
         self.assertEqual(1, payload["shadow_opportunity_summary"]["shadow_candidate_count"])
         self.assertEqual(1, payload["shadow_opportunity_summary"]["shadow_verified_count"])
+        self.assertEqual(2, payload["shadow_funnel_summary"]["shadow_gate_passed_count"])
         self.assertEqual(2, payload["shadow_opportunity_summary"]["shadow_replay_count"])
         self.assertEqual("valid", payload["data_quality_summary"]["data_quality_status"])
         self.assertEqual(runtime["active_hours"], payload["runtime_health"]["active_hours"])

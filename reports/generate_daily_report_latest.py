@@ -1140,7 +1140,10 @@ def _read_trade_replay_summary(logical_date: str) -> dict[str, Any]:
     except Exception as exc:
         return _default_trade_replay_summary(logical_date, reason=f"trade_replay_import_failed:{exc}")
     try:
-        return _normalize_trade_replay_summary(run_trade_replay(logical_date, db_path=_db_path()), logical_date)
+        return _normalize_trade_replay_summary(
+            run_trade_replay(logical_date, db_path=_db_path(), dry_run=True, include_suppressed=True, include_blocked=True),
+            logical_date,
+        )
     except Exception as exc:
         return _default_trade_replay_summary(logical_date, reason=f"trade_replay_summary_failed:{exc}")
 
@@ -1163,10 +1166,22 @@ def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_rep
         "suppressed_replay_count": 0,
         "suppressed_profitable_rate": 0.0,
         "suppressed_clean_followthrough_rate": 0.0,
+        "suppressed_bad_entry_rate": 0.0,
         "suppressed_absorption_reversal_rate": 0.0,
+        "suppressed_replay_zero_reasons": ["no_suppressed_rows"],
         "blocked_saved_rate_estimate": 0.0,
         "blocked_false_block_rate_estimate": 0.0,
         "shadow_replay_count": 0,
+        "shadow_funnel_summary": {
+            "shadow_evaluated_count": 0,
+            "shadow_gate_passed_count": 0,
+            "shadow_candidate_count": 0,
+            "shadow_verified_count": 0,
+            "shadow_blocked_count": 0,
+            "shadow_blocked_reasons": {},
+            "shadow_replay_count": 0,
+            "zero_shadow_reasons": ["no_replay_input_rows"],
+        },
         "input_source_counts": {
             "signals": 0,
             "trade_opportunities": 0,
@@ -1180,6 +1195,11 @@ def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_rep
             "eligible_count": 0,
             "ineligible_count": 0,
             "ineligible_reasons": {},
+            "ineligible_reason_by_source": {},
+            "ineligible_top_examples": {},
+            "suppressed_ineligible_reasons": {},
+            "replay_coverage_rate": 0.0,
+            "replay_coverage_warning": "",
         },
         "query_errors": [],
         "price_errors": [],
@@ -1214,12 +1234,22 @@ def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) 
         "data_invalid_rate",
         "suppressed_profitable_rate",
         "suppressed_clean_followthrough_rate",
+        "suppressed_bad_entry_rate",
         "suppressed_absorption_reversal_rate",
         "blocked_saved_rate_estimate",
         "blocked_false_block_rate_estimate",
     ):
         normalized[key] = float(normalized.get(key) or 0.0)
-    for key in ("top_positive_profiles", "top_negative_profiles", "recommended_profile_actions", "warnings", "query_errors", "price_errors", "schema_errors"):
+    for key in (
+        "top_positive_profiles",
+        "top_negative_profiles",
+        "recommended_profile_actions",
+        "warnings",
+        "query_errors",
+        "price_errors",
+        "schema_errors",
+        "suppressed_replay_zero_reasons",
+    ):
         value = normalized.get(key)
         normalized[key] = value if isinstance(value, list) else []
     input_counts = normalized.get("input_source_counts")
@@ -1238,10 +1268,35 @@ def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) 
     if not isinstance(eligibility, dict):
         eligibility = {}
     reasons = eligibility.get("ineligible_reasons")
+    reason_by_source = eligibility.get("ineligible_reason_by_source")
+    top_examples = eligibility.get("ineligible_top_examples")
+    suppressed_reasons = eligibility.get("suppressed_ineligible_reasons")
+    coverage_rate = _to_float(eligibility.get("replay_coverage_rate"))
+    coverage_warning = str(eligibility.get("replay_coverage_warning") or "")
     normalized["eligibility_summary"] = {
         "eligible_count": int(eligibility.get("eligible_count") or 0),
         "ineligible_count": int(eligibility.get("ineligible_count") or 0),
         "ineligible_reasons": reasons if isinstance(reasons, dict) else {},
+        "ineligible_reason_by_source": reason_by_source if isinstance(reason_by_source, dict) else {},
+        "ineligible_top_examples": top_examples if isinstance(top_examples, dict) else {},
+        "suppressed_ineligible_reasons": suppressed_reasons if isinstance(suppressed_reasons, dict) else {},
+        "replay_coverage_rate": float(coverage_rate or 0.0),
+        "replay_coverage_warning": coverage_warning,
+    }
+    normalized["replay_coverage_rate"] = normalized["eligibility_summary"]["replay_coverage_rate"]
+    normalized["replay_coverage_warning"] = coverage_warning
+    shadow_funnel = normalized.get("shadow_funnel_summary")
+    if not isinstance(shadow_funnel, dict):
+        shadow_funnel = {}
+    normalized["shadow_funnel_summary"] = {
+        "shadow_evaluated_count": int(shadow_funnel.get("shadow_evaluated_count") or 0),
+        "shadow_gate_passed_count": int(shadow_funnel.get("shadow_gate_passed_count") or 0),
+        "shadow_candidate_count": int(shadow_funnel.get("shadow_candidate_count") or 0),
+        "shadow_verified_count": int(shadow_funnel.get("shadow_verified_count") or 0),
+        "shadow_blocked_count": int(shadow_funnel.get("shadow_blocked_count") or 0),
+        "shadow_blocked_reasons": shadow_funnel.get("shadow_blocked_reasons") if isinstance(shadow_funnel.get("shadow_blocked_reasons"), dict) else {},
+        "shadow_replay_count": int(shadow_funnel.get("shadow_replay_count") or normalized.get("shadow_replay_count") or 0),
+        "zero_shadow_reasons": shadow_funnel.get("zero_shadow_reasons") if isinstance(shadow_funnel.get("zero_shadow_reasons"), list) else [],
     }
     if not normalized["trade_replay_available"] and "trade_replay_missing" not in normalized["warnings"]:
         normalized["warnings"].append("trade_replay_missing")
@@ -1332,7 +1387,13 @@ def _trade_replay_summary_from_sqlite(conn: sqlite3.Connection, logical_date: st
         "suppressed_replay_count": len(suppressed_rows),
         "suppressed_profitable_rate": round(sum(1 for value in suppressed_net if value > 0.0) / max(len(suppressed_net), 1), 4),
         "suppressed_clean_followthrough_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "clean_followthrough") / max(len(suppressed_valid), 1), 4),
+        "suppressed_bad_entry_rate": round(
+            sum(1 for row in suppressed_valid if row.get("label") in {"bad_entry", "followthrough_but_bad_entry"})
+            / max(len(suppressed_valid), 1),
+            4,
+        ),
         "suppressed_absorption_reversal_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "absorption_reversal") / max(len(suppressed_valid), 1), 4),
+        "suppressed_replay_zero_reasons": ["no_suppressed_rows"] if not suppressed_rows else [],
         "blocked_saved_rate_estimate": round(sum(1 for row in blocked_valid if row.get("label") == "absorption_reversal") / max(len(blocked_valid), 1), 4),
         "blocked_false_block_rate_estimate": round(
             sum(1 for row in blocked_valid if (_to_float(row.get("net_pnl_bps")) or 0.0) > 0.0) / max(len(blocked_valid), 1),
@@ -1352,12 +1413,21 @@ def _trade_replay_summary_from_sqlite(conn: sqlite3.Connection, logical_date: st
 def _shadow_opportunity_summary(opportunity_rows: list[dict[str, Any]], replay_summary: dict[str, Any]) -> dict[str, Any]:
     shadow_candidate = 0
     shadow_verified = 0
+    shadow_evaluated = 0
+    shadow_blocked_reasons: Counter[str] = Counter()
     for row in opportunity_rows:
-        shadow_status = str(_first(row, "trade_opportunity_shadow_status", "shadow_status") or "NONE")
+        raw_shadow_status = _first(row, "trade_opportunity_shadow_status", "shadow_status")
+        shadow_reason = _first(row, "trade_opportunity_shadow_reason", "shadow_reason")
+        shadow_score = _first(row, "trade_opportunity_shadow_score", "shadow_score")
+        shadow_status = str(raw_shadow_status or "NONE")
+        if raw_shadow_status not in (None, "") or shadow_reason not in (None, "") or shadow_score not in (None, ""):
+            shadow_evaluated += 1
         if shadow_status == "SHADOW_CANDIDATE":
             shadow_candidate += 1
         elif shadow_status == "SHADOW_VERIFIED":
             shadow_verified += 1
+        elif raw_shadow_status not in (None, "") or shadow_reason not in (None, ""):
+            shadow_blocked_reasons[str(shadow_reason or "shadow_status_none")] += 1
     positive_profiles = [
         item for item in replay_summary.get("top_positive_profiles", [])
         if "SHADOW_" in str(item.get("profile_key") or "")
@@ -1366,12 +1436,30 @@ def _shadow_opportunity_summary(opportunity_rows: list[dict[str, Any]], replay_s
         item for item in replay_summary.get("top_negative_profiles", [])
         if "SHADOW_" in str(item.get("profile_key") or "")
     ]
+    replay_funnel = replay_summary.get("shadow_funnel_summary")
+    replay_funnel = replay_funnel if isinstance(replay_funnel, dict) else {}
+    evaluated_count = max(shadow_evaluated, int(replay_funnel.get("shadow_evaluated_count") or 0))
+    candidate_count = max(shadow_candidate, int(replay_funnel.get("shadow_candidate_count") or 0))
+    verified_count = max(shadow_verified, int(replay_funnel.get("shadow_verified_count") or 0))
+    gate_passed = max(candidate_count + verified_count, int(replay_funnel.get("shadow_gate_passed_count") or 0))
+    replay_reasons = replay_funnel.get("shadow_blocked_reasons")
+    if isinstance(replay_reasons, dict):
+        for reason, count in replay_reasons.items():
+            shadow_blocked_reasons[str(reason)] += int(count or 0)
+    zero_reasons = replay_funnel.get("zero_shadow_reasons") if isinstance(replay_funnel.get("zero_shadow_reasons"), list) else []
+    if evaluated_count == 0 and not zero_reasons:
+        zero_reasons = ["no_shadow_evaluation_fields" if opportunity_rows else "no_trade_opportunities_in_window"]
     return {
-        "shadow_candidate_count": shadow_candidate,
-        "shadow_verified_count": shadow_verified,
+        "shadow_evaluated_count": evaluated_count,
+        "shadow_gate_passed_count": gate_passed,
+        "shadow_candidate_count": candidate_count,
+        "shadow_verified_count": verified_count,
+        "shadow_blocked_count": max(evaluated_count - gate_passed, int(replay_funnel.get("shadow_blocked_count") or 0)),
+        "shadow_blocked_reasons": dict(sorted(shadow_blocked_reasons.items())),
         "shadow_replay_count": int(replay_summary.get("shadow_replay_count") or 0),
         "shadow_positive_profile_count": len(positive_profiles),
         "shadow_negative_profile_count": len(negative_profiles),
+        "zero_shadow_reasons": sorted(set(str(item) for item in zero_reasons if item)),
     }
 
 
@@ -1646,7 +1734,15 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- absorption_reversal_rate: `{replay.get('absorption_reversal_rate')}`",
             f"- chop_rate: `{replay.get('chop_rate')}`",
             f"- data_invalid_rate: `{replay.get('data_invalid_rate')}`",
+            f"- replay_coverage_rate: `{replay.get('replay_coverage_rate')}`",
+            f"- replay_coverage_warning: `{replay.get('replay_coverage_warning')}`",
+            f"- suppressed_replay_count: `{replay.get('suppressed_replay_count')}`",
             f"- suppressed_profitable_rate: `{replay.get('suppressed_profitable_rate')}`",
+            f"- suppressed_clean_followthrough_rate: `{replay.get('suppressed_clean_followthrough_rate')}`",
+            f"- suppressed_bad_entry_rate: `{replay.get('suppressed_bad_entry_rate')}`",
+            f"- suppressed_absorption_reversal_rate: `{replay.get('suppressed_absorption_reversal_rate')}`",
+            f"- suppressed_replay_zero_reasons: `{json.dumps(replay.get('suppressed_replay_zero_reasons', []), ensure_ascii=False, sort_keys=True)}`",
+            f"- eligibility_summary: `{json.dumps(replay.get('eligibility_summary', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- blocked_saved_rate_estimate: `{replay.get('blocked_saved_rate_estimate')}`",
             f"- top_positive_profiles: `{json.dumps(replay.get('top_positive_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
             f"- top_negative_profiles: `{json.dumps(replay.get('top_negative_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
@@ -1655,6 +1751,11 @@ def _markdown(payload: dict[str, Any]) -> str:
             "",
             f"- shadow_candidate_count: `{shadow.get('shadow_candidate_count', 0)}`",
             f"- shadow_verified_count: `{shadow.get('shadow_verified_count', 0)}`",
+            f"- shadow_evaluated_count: `{shadow.get('shadow_evaluated_count', 0)}`",
+            f"- shadow_gate_passed_count: `{shadow.get('shadow_gate_passed_count', 0)}`",
+            f"- shadow_blocked_count: `{shadow.get('shadow_blocked_count', 0)}`",
+            f"- shadow_blocked_reasons: `{json.dumps(shadow.get('shadow_blocked_reasons', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- zero_shadow_reasons: `{json.dumps(shadow.get('zero_shadow_reasons', []), ensure_ascii=False, sort_keys=True)}`",
             f"- shadow_replay_count: `{shadow.get('shadow_replay_count', 0)}`",
             f"- shadow_positive_profile_count: `{shadow.get('shadow_positive_profile_count', 0)}`",
             f"- shadow_negative_profile_count: `{shadow.get('shadow_negative_profile_count', 0)}`",
@@ -1705,8 +1806,17 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("trade_replay", "clean_followthrough_rate", payload.get("trade_replay_summary", {}).get("clean_followthrough_rate")),
         ("trade_replay", "bad_entry_rate", payload.get("trade_replay_summary", {}).get("bad_entry_rate")),
         ("trade_replay", "absorption_reversal_rate", payload.get("trade_replay_summary", {}).get("absorption_reversal_rate")),
+        ("trade_replay", "suppressed_replay_count", payload.get("trade_replay_summary", {}).get("suppressed_replay_count")),
+        ("trade_replay", "suppressed_bad_entry_rate", payload.get("trade_replay_summary", {}).get("suppressed_bad_entry_rate")),
+        ("trade_replay", "replay_coverage_rate", payload.get("trade_replay_summary", {}).get("replay_coverage_rate")),
+        ("trade_replay", "replay_coverage_warning", payload.get("trade_replay_summary", {}).get("replay_coverage_warning")),
+        ("trade_replay", "suppressed_replay_zero_reasons", payload.get("trade_replay_summary", {}).get("suppressed_replay_zero_reasons")),
         ("shadow", "shadow_candidate_count", payload.get("shadow_opportunity_summary", {}).get("shadow_candidate_count")),
         ("shadow", "shadow_verified_count", payload.get("shadow_opportunity_summary", {}).get("shadow_verified_count")),
+        ("shadow", "shadow_evaluated_count", payload.get("shadow_funnel_summary", {}).get("shadow_evaluated_count")),
+        ("shadow", "shadow_gate_passed_count", payload.get("shadow_funnel_summary", {}).get("shadow_gate_passed_count")),
+        ("shadow", "shadow_blocked_count", payload.get("shadow_funnel_summary", {}).get("shadow_blocked_count")),
+        ("shadow", "shadow_blocked_reasons", payload.get("shadow_funnel_summary", {}).get("shadow_blocked_reasons")),
         ("data_quality", "data_quality_status", payload.get("data_quality_summary", {}).get("data_quality_status")),
     ]
     for group, name, value in rows:
@@ -1815,6 +1925,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             for item in replay_warnings
             if str(item).startswith("trade_replay_missing:") and str(item) != "trade_replay_missing"
         )
+    if replay_summary.get("replay_coverage_warning"):
+        limitations.append(str(replay_summary.get("replay_coverage_warning")))
     if data_quality.get("data_quality_status") in {"degraded", "invalid_or_no_activity"}:
         limitations.append(f"data_quality={data_quality.get('data_quality_status')}")
     if data_quality.get("data_quality_status") == "invalid_or_no_activity":
@@ -1870,6 +1982,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "recommended_profile_actions": replay_summary.get("recommended_profile_actions", []),
         },
         "shadow_opportunity_summary": shadow_summary,
+        "shadow_funnel_summary": shadow_summary,
         "candidate_verified_summary": _candidate_verified_summary(trade_summary),
         "candidate_tradeable_summary": _candidate_verified_summary(trade_summary),
         "blocker_summary": blocker_summary,

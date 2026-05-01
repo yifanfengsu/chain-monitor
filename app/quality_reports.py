@@ -780,6 +780,7 @@ def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
     suppressed_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1", params).fetchone()[0])
     suppressed_profit = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
     suppressed_clean = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='clean_followthrough'", params).fetchone()[0])
+    suppressed_bad = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label IN ('bad_entry','followthrough_but_bad_entry')", params).fetchone()[0])
     suppressed_absorb = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='absorption_reversal'", params).fetchone()[0])
     blocked_where = f"{where + (' AND' if where else 'WHERE')} opportunity_status='BLOCKED'"
     blocked_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1", params).fetchone()[0])
@@ -831,7 +832,9 @@ def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
         "suppressed_replay_count": suppressed_total,
         "suppressed_profitable_rate": round(suppressed_profit / max(suppressed_valid, 1), 4),
         "suppressed_clean_followthrough_rate": round(suppressed_clean / max(suppressed_valid, 1), 4),
+        "suppressed_bad_entry_rate": round(suppressed_bad / max(suppressed_valid, 1), 4),
         "suppressed_absorption_reversal_rate": round(suppressed_absorb / max(suppressed_valid, 1), 4),
+        "suppressed_replay_zero_reasons": ["no_suppressed_rows"] if suppressed_total == 0 else [],
         "blocked_saved_rate_estimate": round(blocked_saved / max(blocked_valid, 1), 4),
         "blocked_false_block_rate_estimate": round(blocked_false / max(blocked_valid, 1), 4),
         "shadow_replay_count": shadow_count,
@@ -846,6 +849,18 @@ def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
 
 def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
     where, params = _where_for_date("created_at", date_str)
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(trade_opportunities)").fetchall()}
+    shadow_reason_expr = "shadow_reason" if "shadow_reason" in columns else "''"
+    shadow_score_expr = "shadow_score" if "shadow_score" in columns else "NULL"
+    evaluated_expr = (
+        "(shadow_status IS NOT NULL AND shadow_status != '' "
+        f"OR {shadow_reason_expr} IS NOT NULL AND {shadow_reason_expr} != '' "
+        f"OR {shadow_score_expr} IS NOT NULL)"
+    )
+    evaluated = conn.execute(
+        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} {evaluated_expr}",
+        params,
+    ).fetchone()
     candidate = conn.execute(
         f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status='SHADOW_CANDIDATE'",
         params,
@@ -858,11 +873,23 @@ def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
         f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != '' AND shadow_status != 'NONE'",
         params,
     ).fetchone()
+    blocked_rows = conn.execute(
+        f"SELECT COALESCE(NULLIF({shadow_reason_expr}, ''), 'shadow_status_none') AS reason, COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} COALESCE(shadow_status, 'NONE') NOT IN ('SHADOW_CANDIDATE','SHADOW_VERIFIED') AND {evaluated_expr} GROUP BY reason",
+        params,
+    ).fetchall()
+    candidate_count = int(candidate[0]) if candidate else 0
+    verified_count = int(verified[0]) if verified else 0
+    evaluated_count = int(evaluated[0]) if evaluated else 0
     return {
         "logical_date": date_str,
         "shadow_total": int(total[0]) if total else 0,
-        "shadow_candidate_count": int(candidate[0]) if candidate else 0,
-        "shadow_verified_count": int(verified[0]) if verified else 0,
+        "shadow_evaluated_count": evaluated_count,
+        "shadow_gate_passed_count": candidate_count + verified_count,
+        "shadow_candidate_count": candidate_count,
+        "shadow_verified_count": verified_count,
+        "shadow_blocked_count": max(evaluated_count - candidate_count - verified_count, 0),
+        "shadow_blocked_reasons": {str(row[0] or ""): int(row[1]) for row in blocked_rows},
+        "zero_shadow_reasons": ["no_shadow_evaluation_fields"] if evaluated_count == 0 else [],
     }
 
 

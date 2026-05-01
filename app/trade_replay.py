@@ -687,7 +687,16 @@ def _empty_input_source_counts() -> dict[str, int]:
 
 
 def _empty_eligibility_summary() -> dict[str, Any]:
-    return {"eligible_count": 0, "ineligible_count": 0, "ineligible_reasons": {}}
+    return {
+        "eligible_count": 0,
+        "ineligible_count": 0,
+        "ineligible_reasons": {},
+        "ineligible_reason_by_source": {},
+        "ineligible_top_examples": {},
+        "suppressed_ineligible_reasons": {},
+        "replay_coverage_rate": 0.0,
+        "replay_coverage_warning": "",
+    }
 
 
 def _from_json(value: Any, default: Any = None) -> Any:
@@ -903,6 +912,9 @@ def _candidate_to_signal_row(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    raw_shadow_status = _first_payload_value(row, payloads, "shadow_status", "trade_opportunity_shadow_status")
+    shadow_reason = _first_payload_value(row, payloads, "shadow_reason", "trade_opportunity_shadow_reason")
+    shadow_score = _first_payload_value(row, payloads, "shadow_score", "trade_opportunity_shadow_score")
     return {
         "source": source,
         "signal_id": _first_payload_value(row, payloads, "signal_id"),
@@ -915,7 +927,11 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "trade_action": _first_payload_value(row, payloads, "trade_action", "trade_action_key"),
         "final_trading_output_label": _first_payload_value(row, payloads, "final_trading_output_label", "action_label", "headline"),
         "opportunity_status": _first_payload_value(row, payloads, "status", "trade_opportunity_status", "opportunity_status"),
-        "shadow_status": _first_payload_value(row, payloads, "shadow_status", "trade_opportunity_shadow_status") or "NONE",
+        "shadow_status": raw_shadow_status or "NONE",
+        "shadow_status_present": raw_shadow_status is not None,
+        "shadow_reason": shadow_reason,
+        "shadow_score": shadow_score,
+        "shadow_evaluated": raw_shadow_status is not None or shadow_reason is not None or shadow_score is not None,
         "profile_key": _first_payload_value(row, payloads, "profile_key", "opportunity_profile_key"),
         "lp_stage": _first_payload_value(row, payloads, "lp_stage", "lp_alert_stage"),
         "sweep_phase": _first_payload_value(row, payloads, "sweep_phase"),
@@ -952,6 +968,8 @@ def _add_candidate(
     target["signal_id"] = target.get("signal_id") or signal_id
     target["suppressed"] = bool(target.get("suppressed")) or bool(candidate.get("suppressed"))
     target["blocked"] = bool(target.get("blocked")) or _is_blocked_candidate(candidate)
+    target["shadow_evaluated"] = bool(target.get("shadow_evaluated")) or bool(candidate.get("shadow_evaluated"))
+    target["shadow_status_present"] = bool(target.get("shadow_status_present")) or bool(candidate.get("shadow_status_present"))
     if _canonical_upper(candidate.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES:
         target["shadow_status"] = candidate.get("shadow_status")
 
@@ -993,6 +1011,8 @@ def _collect_trade_replay_inputs(
                 "created_at",
                 "updated_at",
                 "shadow_status",
+                "shadow_reason",
+                "shadow_score",
                 "opportunity_json",
             ),
             ("created_at", "updated_at"),
@@ -1013,6 +1033,8 @@ def _collect_trade_replay_inputs(
                 "trade_action_key",
                 "trade_opportunity_status",
                 "trade_opportunity_shadow_status",
+                "trade_opportunity_shadow_reason",
+                "trade_opportunity_shadow_score",
                 "opportunity_profile_key",
                 "lp_alert_stage",
                 "delivery_decision",
@@ -1113,6 +1135,9 @@ def _evaluate_replay_inputs(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     eligible: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
+    reason_by_source: dict[str, Counter[str]] = defaultdict(Counter)
+    examples: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    suppressed_reasons: Counter[str] = Counter()
     for candidate in candidates:
         row_reasons: list[str] = []
         if not str(candidate.get("signal_id") or "").strip():
@@ -1142,14 +1167,42 @@ def _evaluate_replay_inputs(
         if row_reasons:
             for reason in row_reasons:
                 reasons[reason] += 1
+                for source in list(candidate.get("input_source") or ["unknown"]):
+                    reason_by_source[reason][str(source or "unknown")] += 1
+                if bool(candidate.get("suppressed")):
+                    suppressed_reasons[reason] += 1
+                if len(examples[reason]) < 5:
+                    examples[reason].append(
+                        {
+                            "source": list(candidate.get("input_source") or []),
+                            "signal_id": str(candidate.get("signal_id") or ""),
+                            "asset": str(candidate.get("asset") or ""),
+                            "opportunity_status": str(candidate.get("opportunity_status") or ""),
+                            "trade_action": str(candidate.get("trade_action_key") or candidate.get("trade_action") or ""),
+                            "suppression_reason": str(candidate.get("suppression_reason") or "")[:120],
+                        }
+                    )
             candidate["ineligible_reasons"] = row_reasons
             continue
         eligible.append(candidate)
 
+    total = len(candidates)
+    coverage_rate = round(len(eligible) / total, 4) if total else 0.0
+    coverage_warning = f"replay_coverage_low:{coverage_rate}" if total >= 10 and coverage_rate < 0.25 else ""
     return eligible, {
         "eligible_count": len(eligible),
         "ineligible_count": len(candidates) - len(eligible),
         "ineligible_reasons": dict(sorted(reasons.items())),
+        "ineligible_reason_by_source": {
+            reason: dict(sorted(source_counts.items()))
+            for reason, source_counts in sorted(reason_by_source.items())
+        },
+        "ineligible_top_examples": {
+            reason: values for reason, values in sorted(examples.items())
+        },
+        "suppressed_ineligible_reasons": dict(sorted(suppressed_reasons.items())),
+        "replay_coverage_rate": coverage_rate,
+        "replay_coverage_warning": coverage_warning,
     }
 
 
@@ -1187,6 +1240,84 @@ def _trade_replay_missing_reasons(
     return sorted(set(reasons or ["no_replay_eligible_rows"]))
 
 
+def _shadow_funnel_summary(
+    *,
+    candidates: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    status_counts = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in candidates)
+    replay_shadow_statuses = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in replay_rows)
+    evaluated = [
+        item for item in candidates
+        if bool(item.get("shadow_evaluated")) or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES
+    ]
+    candidate_count = int(status_counts.get("SHADOW_CANDIDATE") or 0)
+    verified_count = int(status_counts.get("SHADOW_VERIFIED") or 0)
+    gate_passed = candidate_count + verified_count
+    blocked_reasons: Counter[str] = Counter()
+    for item in evaluated:
+        status = _canonical_upper(item.get("shadow_status") or "NONE")
+        if status in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+            continue
+        reason = str(item.get("shadow_reason") or item.get("blocked_reason") or item.get("suppression_reason") or "").strip()
+        if not reason:
+            blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+            reason = str(blockers[0]) if blockers else "shadow_status_none"
+        blocked_reasons[reason] += 1
+
+    zero_reasons: list[str] = []
+    if not evaluated:
+        if not candidates:
+            zero_reasons.append("no_replay_input_rows")
+        elif not any("trade_opportunities" in list(item.get("input_source") or []) for item in candidates):
+            zero_reasons.append("no_trade_opportunities_in_window")
+        else:
+            zero_reasons.append("no_shadow_evaluation_fields")
+    if evaluated and gate_passed == 0 and not blocked_reasons:
+        zero_reasons.append("shadow_evaluated_but_no_gate_pass")
+
+    return {
+        "shadow_evaluated_count": len(evaluated),
+        "shadow_gate_passed_count": gate_passed,
+        "shadow_candidate_count": candidate_count,
+        "shadow_verified_count": verified_count,
+        "shadow_blocked_count": max(len(evaluated) - gate_passed, 0),
+        "shadow_blocked_reasons": dict(sorted(blocked_reasons.items())),
+        "shadow_replay_count": sum(
+            1 for item in replay_rows
+            if _canonical_upper(item.get("shadow_status")) not in {"", "NONE"}
+        ),
+        "shadow_replay_status_counts": dict(sorted(replay_shadow_statuses.items())),
+        "zero_shadow_reasons": sorted(set(zero_reasons)),
+    }
+
+
+def _suppressed_replay_zero_reasons(
+    *,
+    include_suppressed: bool,
+    input_source_counts: dict[str, int],
+    eligibility_summary: dict[str, Any],
+    suppressed_replay_count: int,
+) -> list[str]:
+    if suppressed_replay_count > 0:
+        return []
+    suppressed_input_count = int(input_source_counts.get("suppressed") or 0)
+    if suppressed_input_count <= 0:
+        return ["no_suppressed_rows"]
+    if not include_suppressed:
+        return ["suppressed_excluded_by_mode"]
+    reasons = eligibility_summary.get("suppressed_ineligible_reasons")
+    reasons = reasons if isinstance(reasons, dict) else {}
+    zero_reasons: list[str] = []
+    if int(reasons.get("direction_ambiguous") or 0) > 0:
+        zero_reasons.append("suppressed_missing_direction")
+    if int(reasons.get("signal_id_missing") or 0) > 0:
+        zero_reasons.append("suppressed_missing_signal_id")
+    if int(reasons.get("not_replay_eligible") or 0) > 0:
+        zero_reasons.append("suppressed_not_replay_eligible")
+    return sorted(set(zero_reasons or ["no_suppressed_rows"]))
+
+
 def _replay_dynamic_inputs(
     conn: sqlite3.Connection,
     eligible_inputs: list[dict[str, Any]],
@@ -1215,8 +1346,336 @@ def _replay_dynamic_inputs(
         result["shadow_status"] = str(candidate.get("shadow_status") or result.get("shadow_status") or "NONE")
         result["signal_stage"] = "SUPPRESSED" if bool(candidate.get("suppressed")) else str(candidate.get("signal_stage") or "")
         result["profile_key"] = str(candidate.get("profile_key") or result.get("profile_key") or "")
+        result["shadow_reason"] = str(candidate.get("shadow_reason") or "")
         results.append(result)
     return results
+
+
+def _ensure_columns_for_writer(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = _table_columns(conn, table)
+    for column, column_type in columns.items():
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        existing.add(column)
+
+
+def _ensure_replay_persistence_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS trade_replay_examples (
+            replay_id TEXT PRIMARY KEY,
+            logical_date TEXT NOT NULL,
+            signal_id TEXT,
+            trade_opportunity_id TEXT,
+            delivery_audit_id TEXT,
+            asset TEXT NOT NULL,
+            pair TEXT,
+            side TEXT NOT NULL,
+            opportunity_status TEXT,
+            shadow_status TEXT DEFAULT 'NONE',
+            signal_stage TEXT,
+            lp_stage TEXT,
+            sweep_phase TEXT,
+            profile_key TEXT,
+            signal_ts INTEGER NOT NULL,
+            entry_ts INTEGER,
+            exit_ts INTEGER,
+            entry_delay_sec INTEGER DEFAULT 5,
+            max_hold_sec INTEGER DEFAULT 60,
+            entry_price REAL,
+            exit_price REAL,
+            stop_loss_bps INTEGER DEFAULT 30,
+            take_profit_bps INTEGER DEFAULT 50,
+            fee_bps INTEGER DEFAULT 6,
+            slippage_bps INTEGER DEFAULT 5,
+            gross_pnl_bps REAL,
+            net_pnl_bps REAL,
+            mfe_bps REAL,
+            mae_bps REAL,
+            label TEXT,
+            close_reason TEXT,
+            price_source TEXT,
+            data_valid INTEGER DEFAULT 1,
+            invalid_reason TEXT,
+            was_profitable INTEGER,
+            was_stopped INTEGER,
+            was_late INTEGER,
+            price_points_seen INTEGER,
+            blockers_json TEXT,
+            features_json TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS trade_replay_profile_stats (
+            profile_key TEXT PRIMARY KEY,
+            asset TEXT,
+            side TEXT,
+            sample_count INTEGER DEFAULT 0,
+            valid_sample_count INTEGER DEFAULT 0,
+            win_rate REAL,
+            avg_net_pnl_bps REAL,
+            median_net_pnl_bps REAL,
+            clean_followthrough_rate REAL,
+            bad_entry_rate REAL,
+            absorption_reversal_rate REAL,
+            chop_rate REAL,
+            data_invalid_rate REAL,
+            avg_mfe_bps REAL,
+            avg_mae_bps REAL,
+            recommended_action TEXT,
+            confidence_level TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+    )
+    _ensure_columns_for_writer(
+        conn,
+        "trade_replay_examples",
+        {
+            "logical_date": "TEXT",
+            "signal_id": "TEXT",
+            "trade_opportunity_id": "TEXT",
+            "delivery_audit_id": "TEXT",
+            "asset": "TEXT",
+            "pair": "TEXT",
+            "side": "TEXT",
+            "opportunity_status": "TEXT",
+            "shadow_status": "TEXT",
+            "signal_stage": "TEXT",
+            "lp_stage": "TEXT",
+            "sweep_phase": "TEXT",
+            "profile_key": "TEXT",
+            "signal_ts": "INTEGER",
+            "entry_ts": "INTEGER",
+            "exit_ts": "INTEGER",
+            "entry_delay_sec": "INTEGER",
+            "max_hold_sec": "INTEGER",
+            "entry_price": "REAL",
+            "exit_price": "REAL",
+            "stop_loss_bps": "INTEGER",
+            "take_profit_bps": "INTEGER",
+            "fee_bps": "INTEGER",
+            "slippage_bps": "INTEGER",
+            "gross_pnl_bps": "REAL",
+            "net_pnl_bps": "REAL",
+            "mfe_bps": "REAL",
+            "mae_bps": "REAL",
+            "label": "TEXT",
+            "close_reason": "TEXT",
+            "price_source": "TEXT",
+            "data_valid": "INTEGER",
+            "invalid_reason": "TEXT",
+            "was_profitable": "INTEGER",
+            "was_stopped": "INTEGER",
+            "was_late": "INTEGER",
+            "price_points_seen": "INTEGER",
+            "blockers_json": "TEXT",
+            "features_json": "TEXT",
+            "created_at": "TEXT",
+        },
+    )
+    _ensure_columns_for_writer(
+        conn,
+        "trade_replay_profile_stats",
+        {
+            "asset": "TEXT",
+            "side": "TEXT",
+            "sample_count": "INTEGER",
+            "valid_sample_count": "INTEGER",
+            "win_rate": "REAL",
+            "avg_net_pnl_bps": "REAL",
+            "median_net_pnl_bps": "REAL",
+            "clean_followthrough_rate": "REAL",
+            "bad_entry_rate": "REAL",
+            "absorption_reversal_rate": "REAL",
+            "chop_rate": "REAL",
+            "data_invalid_rate": "REAL",
+            "avg_mfe_bps": "REAL",
+            "avg_mae_bps": "REAL",
+            "recommended_action": "TEXT",
+            "confidence_level": "TEXT",
+            "updated_at": "TEXT",
+        },
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_logical_date ON trade_replay_examples(logical_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_signal_id ON trade_replay_examples(signal_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_replay_examples_profile_key ON trade_replay_examples(profile_key)")
+
+
+def _deterministic_replay_id(logical_date: str, row: dict[str, Any], index: int) -> str:
+    signal_id = str(row.get("signal_id") or "").strip()
+    opportunity_id = str(row.get("trade_opportunity_id") or "").strip()
+    key = signal_id or opportunity_id or f"row_{index}"
+    safe_key = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in key)
+    return f"replay_{logical_date}_{safe_key}"
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return round(ordered[mid], 2)
+    return round((ordered[mid - 1] + ordered[mid]) / 2, 2)
+
+
+def _insert_or_update(conn: sqlite3.Connection, table: str, record: dict[str, Any], key_columns: tuple[str, ...]) -> None:
+    columns = [column for column in record.keys() if column in _table_columns(conn, table)]
+    if not columns:
+        return
+    placeholders = ", ".join("?" for _ in columns)
+    update_columns = [column for column in columns if column not in key_columns]
+    assignments = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
+    conflict = ", ".join(key_columns)
+    if assignments:
+        sql = (
+            f"INSERT INTO {table}({', '.join(columns)}) VALUES({placeholders}) "
+            f"ON CONFLICT({conflict}) DO UPDATE SET {assignments}"
+        )
+    else:
+        sql = f"INSERT OR IGNORE INTO {table}({', '.join(columns)}) VALUES({placeholders})"
+    conn.execute(sql, tuple(record[column] for column in columns))
+
+
+def _persist_trade_replay_rows(
+    conn: sqlite3.Connection,
+    logical_date: str,
+    replay_rows: list[dict[str, Any]],
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, Any]:
+    summary = {
+        "enabled": True,
+        "profile_stats_scope": "profile_key_latest",
+        "idempotent_key": "trade_replay_examples.replay_id=logical_date+signal_id_or_trade_opportunity_id",
+        "examples_written": 0,
+        "profile_stats_written": 0,
+    }
+    if not replay_rows:
+        return summary
+    try:
+        _ensure_replay_persistence_schema(conn)
+        now_text = datetime.now(UTC).isoformat()
+        if {"logical_date", "replay_id"}.issubset(_table_columns(conn, "trade_replay_examples")):
+            conn.execute("DELETE FROM trade_replay_examples WHERE logical_date = ?", (logical_date,))
+        for index, row in enumerate(replay_rows):
+            replay_id = _deterministic_replay_id(logical_date, row, index)
+            signal_id = str(row.get("signal_id") or "")
+            net_pnl = _to_signed_float(row.get("net_pnl_bps"))
+            close_reason = str(row.get("close_reason") or "")
+            record = {
+                "replay_id": replay_id,
+                "logical_date": logical_date,
+                "signal_id": signal_id,
+                "trade_opportunity_id": str(row.get("trade_opportunity_id") or ""),
+                "delivery_audit_id": str(row.get("delivery_audit_id") or ""),
+                "asset": str(row.get("asset") or row.get("asset_symbol") or ""),
+                "pair": str(row.get("pair") or row.get("pair_label") or ""),
+                "side": str(row.get("direction") or row.get("side") or ""),
+                "opportunity_status": str(row.get("opportunity_status") or ""),
+                "shadow_status": str(row.get("shadow_status") or "NONE"),
+                "signal_stage": str(row.get("signal_stage") or ""),
+                "lp_stage": str(row.get("lp_stage") or ""),
+                "sweep_phase": str(row.get("sweep_phase") or ""),
+                "profile_key": str(row.get("profile_key") or ""),
+                "signal_ts": _to_int(row.get("signal_ts") or row.get("archive_ts") or row.get("timestamp")),
+                "entry_ts": _to_int(row.get("entry_ts")),
+                "exit_ts": _to_int(row.get("exit_ts")),
+                "entry_delay_sec": _to_int(row.get("entry_delay_sec")) or DEFAULT_ENTRY_DELAY_SEC,
+                "max_hold_sec": _to_int(row.get("hold_duration_sec")) or DEFAULT_MAX_HOLD_SEC,
+                "entry_price": _to_float(row.get("entry_price")),
+                "exit_price": _to_float(row.get("exit_price")),
+                "stop_loss_bps": _to_int(row.get("stop_loss_bps")) or DEFAULT_STOP_LOSS_BPS,
+                "take_profit_bps": _to_int(row.get("take_profit_bps")) or DEFAULT_TAKE_PROFIT_BPS,
+                "fee_bps": _to_float(row.get("fee_bps")) or DEFAULT_FEE_BPS,
+                "slippage_bps": _to_float(row.get("slippage_bps")) or DEFAULT_SLIPPAGE_BPS,
+                "gross_pnl_bps": _to_signed_float(row.get("gross_pnl_bps")),
+                "net_pnl_bps": net_pnl,
+                "mfe_bps": _to_signed_float(row.get("mfe_bps")),
+                "mae_bps": _to_signed_float(row.get("mae_bps")),
+                "label": str(row.get("label") or ""),
+                "close_reason": close_reason,
+                "price_source": str(row.get("entry_source") or row.get("exit_source") or row.get("price_source") or ""),
+                "data_valid": 1 if _is_truthy(row.get("data_valid", 1)) else 0,
+                "invalid_reason": str(row.get("invalid_reason") or ""),
+                "was_profitable": 1 if net_pnl is not None and net_pnl > 0.0 else 0,
+                "was_stopped": 1 if close_reason == "stop_loss" else 0,
+                "was_late": 0,
+                "price_points_seen": 2 if row.get("entry_price") is not None and row.get("exit_price") is not None else 0,
+                "blockers_json": json.dumps(row.get("blockers") or [], ensure_ascii=False, sort_keys=True),
+                "features_json": json.dumps(
+                    {
+                        "input_source": list(row.get("input_source") or []),
+                        "shadow_reason": str(row.get("shadow_reason") or ""),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "created_at": now_text,
+            }
+            _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
+            summary["examples_written"] += 1
+
+        stats: dict[str, dict[str, Any]] = {}
+        _update_profile_stats(stats, replay_rows)
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in replay_rows:
+            profile_key = str(row.get("profile_key") or "")
+            if profile_key:
+                grouped[profile_key].append(row)
+        for profile_key, stat in stats.items():
+            samples = grouped.get(profile_key, [])
+            valid_samples = [item for item in samples if _is_truthy(item.get("data_valid", 1))]
+            net_values = [
+                value for value in (_to_signed_float(item.get("net_pnl_bps")) for item in valid_samples)
+                if value is not None
+            ]
+            mfe_values = [
+                value for value in (_to_signed_float(item.get("mfe_bps")) for item in valid_samples)
+                if value is not None
+            ]
+            mae_values = [
+                value for value in (_to_signed_float(item.get("mae_bps")) for item in valid_samples)
+                if value is not None
+            ]
+            first_sample = samples[0] if samples else {}
+            record = {
+                "profile_key": profile_key,
+                "asset": str(first_sample.get("asset") or ""),
+                "side": str(first_sample.get("direction") or first_sample.get("side") or ""),
+                "sample_count": int(stat.get("sample_count") or 0),
+                "valid_sample_count": int(stat.get("valid_sample_count") or stat.get("valid_count") or 0),
+                "win_rate": float(stat.get("win_rate") or 0.0),
+                "avg_net_pnl_bps": float(stat.get("avg_net_pnl_bps") or 0.0),
+                "median_net_pnl_bps": _median(net_values),
+                "clean_followthrough_rate": float(stat.get("clean_followthrough_rate") or 0.0),
+                "bad_entry_rate": float(stat.get("bad_entry_rate") or 0.0),
+                "absorption_reversal_rate": float(stat.get("absorption_reversal_rate") or 0.0),
+                "chop_rate": float(stat.get("chop_rate") or 0.0),
+                "data_invalid_rate": float(stat.get("data_invalid_rate") or 0.0),
+                "avg_mfe_bps": round(sum(mfe_values) / len(mfe_values), 2) if mfe_values else None,
+                "avg_mae_bps": round(sum(mae_values) / len(mae_values), 2) if mae_values else None,
+                "recommended_action": str(stat.get("recommended_action") or ""),
+                "confidence_level": str(stat.get("confidence") or ""),
+                "updated_at": now_text,
+            }
+            _insert_or_update(conn, "trade_replay_profile_stats", record, ("profile_key",))
+            summary["profile_stats_written"] += 1
+        conn.commit()
+        if summary["profile_stats_written"] == 0:
+            replay_diagnostics.warning("trade_replay_profile_stats_no_profile_keys")
+        return summary
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        replay_diagnostics.query_error(f"trade_replay_persist_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:trade_replay_persist_failed:{exc}")
+        summary["enabled"] = False
+        summary["error"] = str(exc)
+        return summary
+
 
 
 def _load_persisted_replay_rows(
@@ -1331,6 +1790,11 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
             "suppressed_replay_count": len(suppressed_rows),
             "suppressed_profitable_rate": round(sum(1 for value in suppressed_net if value > 0.0) / max(len(suppressed_net), 1), 4),
             "suppressed_clean_followthrough_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "clean_followthrough") / max(len(suppressed_valid), 1), 4),
+            "suppressed_bad_entry_rate": round(
+                sum(1 for row in suppressed_valid if row.get("label") in {"bad_entry", "followthrough_but_bad_entry"})
+                / max(len(suppressed_valid), 1),
+                4,
+            ),
             "suppressed_absorption_reversal_rate": round(sum(1 for row in suppressed_valid if row.get("label") == "absorption_reversal") / max(len(suppressed_valid), 1), 4),
             "blocked_saved_rate_estimate": round(sum(1 for row in blocked_valid if row.get("label") == "absorption_reversal") / max(len(blocked_valid), 1), 4),
             "blocked_false_block_rate_estimate": round(sum(1 for row in blocked_valid if (_to_signed_float(row.get("net_pnl_bps")) or 0.0) > 0.0) / max(len(blocked_valid), 1), 4),
@@ -1391,13 +1855,23 @@ def run_trade_replay(
         "suppressed_replay_count": 0,
         "suppressed_profitable_rate": 0.0,
         "suppressed_clean_followthrough_rate": 0.0,
+        "suppressed_bad_entry_rate": 0.0,
         "suppressed_absorption_reversal_rate": 0.0,
+        "suppressed_replay_zero_reasons": [],
         "blocked_saved_rate_estimate": 0.0,
         "blocked_false_block_rate_estimate": 0.0,
         "shadow_replay_count": 0,
+        "shadow_funnel_summary": _shadow_funnel_summary(candidates=[], replay_rows=[]),
         "top_positive_profiles": [],
         "top_negative_profiles": [],
         "recommended_profile_actions": [],
+        "persistence_summary": {
+            "enabled": False,
+            "profile_stats_scope": "profile_key_latest",
+            "idempotent_key": "trade_replay_examples.replay_id=logical_date+signal_id_or_trade_opportunity_id",
+            "examples_written": 0,
+            "profile_stats_written": 0,
+        },
     }
     if not logical_date:
         diagnostics.query_error("missing_date")
@@ -1428,7 +1902,10 @@ def run_trade_replay(
         return summary
 
     try:
-        conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
+        if dry_run:
+            conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(str(resolved_path))
         conn.row_factory = sqlite3.Row
     except sqlite3.Error as exc:
         diagnostics.query_error(f"sqlite_open_failed:{exc}")
@@ -1437,6 +1914,9 @@ def run_trade_replay(
         return summary
 
     try:
+        if not dry_run:
+            _ensure_replay_persistence_schema(conn)
+            conn.commit()
         candidates, input_source_counts, _ = _collect_trade_replay_inputs(
             conn,
             window=window,
@@ -1453,12 +1933,24 @@ def run_trade_replay(
         summary["eligibility_summary"] = eligibility_summary
 
         persisted_rows = _load_persisted_replay_rows(conn, logical_date, diagnostics)
-        profile_rows = _profile_rows(conn, diagnostics)
         replay_rows = persisted_rows
-        if not replay_rows:
+        if not dry_run and eligible_inputs:
             replay_rows = _replay_dynamic_inputs(conn, eligible_inputs, replay_diagnostics=diagnostics)
+            summary["persistence_summary"] = _persist_trade_replay_rows(conn, logical_date, replay_rows, diagnostics)
+        elif not replay_rows:
+            replay_rows = _replay_dynamic_inputs(conn, eligible_inputs, replay_diagnostics=diagnostics)
+        elif not dry_run:
+            summary["persistence_summary"] = _persist_trade_replay_rows(conn, logical_date, replay_rows, diagnostics)
+        profile_rows = _profile_rows(conn, diagnostics)
 
         _augment_summary_from_replays(summary, replay_rows, profile_rows)
+        summary["shadow_funnel_summary"] = _shadow_funnel_summary(candidates=candidates, replay_rows=replay_rows)
+        summary["suppressed_replay_zero_reasons"] = _suppressed_replay_zero_reasons(
+            include_suppressed=include_suppressed,
+            input_source_counts=input_source_counts,
+            eligibility_summary=eligibility_summary,
+            suppressed_replay_count=int(summary.get("suppressed_replay_count") or 0),
+        )
 
         preview: list[dict[str, Any]] = []
         for row in replay_rows[:10]:
@@ -1992,6 +2484,9 @@ def _render_text(summary: dict[str, Any]) -> str:
         f"sample_insufficient={summary.get('sample_insufficient')}",
         f"input_source_counts={json.dumps(summary.get('input_source_counts') or {}, ensure_ascii=False, sort_keys=True)}",
         f"eligibility_summary={json.dumps(summary.get('eligibility_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"shadow_funnel_summary={json.dumps(summary.get('shadow_funnel_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"suppressed_replay_zero_reasons={json.dumps(summary.get('suppressed_replay_zero_reasons') or [], ensure_ascii=False)}",
+        f"persistence_summary={json.dumps(summary.get('persistence_summary') or {}, ensure_ascii=False, sort_keys=True)}",
         f"warnings={json.dumps(summary.get('warnings') or [], ensure_ascii=False)}",
         f"query_errors={json.dumps(summary.get('query_errors') or [], ensure_ascii=False)}",
         f"price_errors={json.dumps(summary.get('price_errors') or [], ensure_ascii=False)}",

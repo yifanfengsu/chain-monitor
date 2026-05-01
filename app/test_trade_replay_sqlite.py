@@ -142,6 +142,14 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
         self.assertEqual(0, summary["input_source_counts"]["trade_opportunities"])
         self.assertEqual(1, summary["eligibility_summary"]["eligible_count"])
         self.assertEqual(1, summary["replay_count"])
+        profile_row = self.conn.execute(
+            "SELECT valid_sample_count, avg_net_pnl_bps, recommended_action FROM trade_replay_profile_stats WHERE profile_key=?",
+            ("ETH|LONG|profile",),
+        ).fetchone()
+        self.assertIsNotNone(profile_row)
+        self.assertEqual(1, int(profile_row["valid_sample_count"]))
+        self.assertIsNotNone(profile_row["avg_net_pnl_bps"])
+        self.assertTrue(profile_row["recommended_action"])
 
     def test_blocked_do_not_chase_replays_by_default(self) -> None:
         self._create_signals()
@@ -215,7 +223,9 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, default_summary["replay_count"])
         self.assertEqual(1, default_summary["eligibility_summary"]["ineligible_reasons"]["filter_excluded_suppressed"])
+        self.assertEqual(["suppressed_excluded_by_mode"], default_summary["suppressed_replay_zero_reasons"])
         self.assertEqual(1, full_summary["replay_count"])
+        self.assertEqual(1, full_summary["suppressed_replay_count"])
 
     def test_zero_replay_outputs_counts_and_specific_reason(self) -> None:
         summary = run_trade_replay("2026-04-30", db_path=self.db_path)
@@ -256,6 +266,8 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, summary["replay_count"])
         self.assertEqual(1, summary["eligibility_summary"]["ineligible_reasons"]["direction_ambiguous"])
+        self.assertEqual(1, summary["eligibility_summary"]["ineligible_reason_by_source"]["direction_ambiguous"]["signals"])
+        self.assertTrue(summary["eligibility_summary"]["ineligible_top_examples"]["direction_ambiguous"])
         self.assertIn("trade_replay_missing:all_rows_missing_direction", summary["warnings"])
 
     def test_no_trade_lock_ambiguous_direction_is_not_silent(self) -> None:
