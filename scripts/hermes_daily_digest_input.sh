@@ -11,8 +11,9 @@ Usage:
   scripts/hermes_daily_digest_input.sh --help
 
 Environment:
-  HERMES_DIGEST_WORKDIR=/run-project/chain-monitor
+  HERMES_DIGEST_WORKDIR=<script repository root>
   HERMES_DIGEST_MODE=fast|deep
+  HERMES_DIGEST_REDACT=0|1            # default 1
   HERMES_DIGEST_MAX_LINES=220
   HERMES_DIGEST_MAX_FILE_BYTES=120000
   HERMES_DIGEST_MAX_CMD_BYTES=60000
@@ -42,8 +43,38 @@ validate_date() {
   [[ "$normalized" == "$value" ]]
 }
 
-WORKDIR="${HERMES_DIGEST_WORKDIR:-/run-project/chain-monitor}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+redact_stream() {
+  if [[ "$REDACTION_ENABLED" != "1" ]]; then
+    cat
+    return
+  fi
+
+  perl -pe 's{0x[0-9A-Fa-f]{64}}{0xTX_REDACTED}g;
+    s{0x[0-9A-Fa-f]{40}}{0xADDR_REDACTED}g;
+    s{[0-9]{6,12}:[A-Za-z0-9_-]{25,}}{[REDACTED_TELEGRAM_TOKEN]}g;
+    s{https?://\S*(?:alchemy|infura|quicknode|ankr|blast|drpc|getblock|chainstack|nodereal)\S*}{[REDACTED_RPC_URL]}gi;
+    s!(^|[^A-Za-z0-9_])((?:export\s+)?[A-Za-z0-9_]*(?:TELEGRAM_BOT_TOKEN|RPC_URL|API_KEY|CHAT_ID|PASSWORD|SECRET|TOKEN)[A-Za-z0-9_]*=)[^\s;,"}\]]+!${1}${2}[REDACTED_SECRET]!gi;
+    s{/(?:root|home|run-project)(?:/[^\s<>"'\''`;,)]*)*}{[PRIVATE_PATH]}g;'
+}
+
+redact_value() {
+  printf '%s' "$1" | redact_stream
+}
+
+redaction_enabled_label() {
+  if [[ "$REDACTION_ENABLED" == "1" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+WORKDIR="${HERMES_DIGEST_WORKDIR:-$REPO_ROOT}"
 MODE="${HERMES_DIGEST_MODE:-fast}"
+REDACTION_ENABLED="${HERMES_DIGEST_REDACT:-1}"
 MAX_LINES="${HERMES_DIGEST_MAX_LINES:-220}"
 MAX_FILE_BYTES="${HERMES_DIGEST_MAX_FILE_BYTES:-120000}"
 MAX_CMD_BYTES="${HERMES_DIGEST_MAX_CMD_BYTES:-60000}"
@@ -83,12 +114,16 @@ REPORT_DATE="${REPORT_DATE:-$(TZ=Asia/Shanghai date -d 'yesterday' +%F)}"
 
 validate_date "$REPORT_DATE" || die "invalid report date: ${REPORT_DATE}"
 [[ "$MODE" == "fast" || "$MODE" == "deep" ]] || die "invalid mode: ${MODE}"
+[[ "$REDACTION_ENABLED" == "0" || "$REDACTION_ENABLED" == "1" ]] || die "HERMES_DIGEST_REDACT must be 0 or 1"
 is_positive_int "$MAX_LINES" || die "HERMES_DIGEST_MAX_LINES must be a positive integer"
 is_positive_int "$MAX_FILE_BYTES" || die "HERMES_DIGEST_MAX_FILE_BYTES must be a positive integer"
 is_positive_int "$MAX_CMD_BYTES" || die "HERMES_DIGEST_MAX_CMD_BYTES must be a positive integer"
 is_positive_int "$CMD_TIMEOUT_SEC" || die "HERMES_DIGEST_CMD_TIMEOUT_SEC must be a positive integer"
 [[ -z "$INCLUDE_DB" || "$INCLUDE_DB" == "0" || "$INCLUDE_DB" == "1" ]] || die "HERMES_DIGEST_INCLUDE_DB must be 0 or 1"
 [[ -z "$INCLUDE_COVERAGE" || "$INCLUDE_COVERAGE" == "0" || "$INCLUDE_COVERAGE" == "1" ]] || die "HERMES_DIGEST_INCLUDE_COVERAGE must be 0 or 1"
+if [[ "$REDACTION_ENABLED" == "1" ]]; then
+  command -v perl >/dev/null 2>&1 || die "perl command not found; required when HERMES_DIGEST_REDACT=1"
+fi
 
 RUN_DB=0
 RUN_COVERAGE=0
@@ -97,6 +132,7 @@ if [[ "$MODE" == "deep" ]]; then
   RUN_COVERAGE="${INCLUDE_COVERAGE:-1}"
 fi
 
+[[ -d "$WORKDIR" ]] || die "workdir not found: $(redact_value "$WORKDIR")"
 cd "$WORKDIR"
 mkdir -p reports/hermes
 
@@ -340,7 +376,7 @@ run_with_timeout() {
 
 emit_limited_file_body() {
   local path="$1"
-  head -c "$MAX_FILE_BYTES" "$path" | sed -n "1,${MAX_LINES}p" || true
+  head -c "$MAX_FILE_BYTES" "$path" | sed -n "1,${MAX_LINES}p" | redact_stream || true
 }
 
 emit_file() {
@@ -352,12 +388,12 @@ emit_file() {
   local declared_date=""
 
   echo "## ${title}"
-  echo "source_path=${path:-missing}"
+  echo "source_path=$(redact_value "${path:-missing}")"
   echo "source_origin=${origin}"
   if [[ -n "$path" && -f "$path" ]]; then
     echo "source_status=present"
     if resolved="$(readlink -f "$path" 2>/dev/null)"; then
-      echo "resolved_path=${resolved}"
+      echo "resolved_path=$(redact_value "$resolved")"
     fi
     declared_date="$(extract_declared_date "$path" "$role")"
     echo "declared_date=${declared_date:-unknown}"
@@ -384,7 +420,7 @@ emit_quality_sample() {
   if [[ -f "$path" ]]; then
     echo "source_status=present"
     if resolved="$(readlink -f "$path" 2>/dev/null)"; then
-      echo "resolved_path=${resolved}"
+      echo "resolved_path=$(redact_value "$resolved")"
     fi
     echo "sample_strategy=header_plus_first_rows"
     echo "source_limit=max_bytes=${MAX_FILE_BYTES} max_lines=${MAX_LINES}"
@@ -398,20 +434,20 @@ emit_quality_sample() {
 
 emit_inventory() {
   echo "## Selected canonical sources"
-  echo "daily_report_json=${DAILY_JSON_SOURCE:-missing} origin=${DAILY_JSON_ORIGIN}"
-  echo "daily_report_md=${DAILY_MD_SOURCE:-missing} origin=${DAILY_MD_ORIGIN}"
-  echo "daily_compare_json=${COMPARE_JSON_SOURCE:-missing} origin=${COMPARE_JSON_ORIGIN}"
-  echo "daily_compare_md=${COMPARE_MD_SOURCE:-missing} origin=${COMPARE_MD_ORIGIN}"
-  echo "quality_rows=${QUALITY_SOURCE}"
+  echo "daily_report_json=$(redact_value "${DAILY_JSON_SOURCE:-missing}") origin=${DAILY_JSON_ORIGIN}"
+  echo "daily_report_md=$(redact_value "${DAILY_MD_SOURCE:-missing}") origin=${DAILY_MD_ORIGIN}"
+  echo "daily_compare_json=$(redact_value "${COMPARE_JSON_SOURCE:-missing}") origin=${COMPARE_JSON_ORIGIN}"
+  echo "daily_compare_md=$(redact_value "${COMPARE_MD_SOURCE:-missing}") origin=${COMPARE_MD_ORIGIN}"
+  echo "quality_rows=$(redact_value "$QUALITY_SOURCE")"
   echo
   echo "## Daily compare date matches"
-  echo "daily_compare_date_matches=$(join_values "${COMPARE_DATE_MATCHES[@]}")"
+  echo "daily_compare_date_matches=$(redact_value "$(join_values "${COMPARE_DATE_MATCHES[@]}")")"
   echo
 }
 
 emit_limited_cmd_output() {
   local path="$1"
-  head -c "$MAX_CMD_BYTES" "$path" | sed -n "1,${MAX_LINES}p" || true
+  head -c "$MAX_CMD_BYTES" "$path" | sed -n "1,${MAX_LINES}p" | redact_stream || true
 }
 
 run_optional_cmd() {
@@ -423,7 +459,7 @@ run_optional_cmd() {
   local output_bytes
 
   echo "## ${title}"
-  echo "command=$*"
+  echo "command=$(redact_value "$*")"
   echo "command_timeout_sec=${CMD_TIMEOUT_SEC}"
   echo "command_limit=max_bytes=${MAX_CMD_BYTES} max_lines=${MAX_LINES}"
 
@@ -453,9 +489,10 @@ run_optional_cmd() {
   echo
   echo "report_date=${REPORT_DATE}"
   echo "mode=${MODE}"
+  echo "redaction_enabled=$(redaction_enabled_label)"
   echo "generated_at_utc=$(TZ=UTC date -Is)"
   echo "generated_at_beijing=$(TZ=Asia/Shanghai date -Is)"
-  echo "workdir=$(pwd)"
+  echo "workdir=$(redact_value "$(pwd)")"
   echo "max_lines=${MAX_LINES}"
   echo "max_file_bytes=${MAX_FILE_BYTES}"
   echo "max_cmd_bytes=${MAX_CMD_BYTES}"
@@ -463,13 +500,13 @@ run_optional_cmd() {
   echo "source_mode=${SOURCE_MODE}"
   echo "source_date_verified=${SOURCE_DATE_VERIFIED}"
   echo "source_fallback_to_latest=${SOURCE_FALLBACK_TO_LATEST}"
-  echo "source_date_warning=$(join_warnings)"
-  echo "source_daily_report_json=${DAILY_JSON_SOURCE:-missing}"
-  echo "source_daily_report_md=${DAILY_MD_SOURCE:-missing}"
-  echo "source_daily_compare_json=${COMPARE_JSON_SOURCE:-missing}"
-  echo "source_daily_compare_md=${COMPARE_MD_SOURCE:-missing}"
-  echo "source_daily_compare_date_matches=$(join_values "${COMPARE_DATE_MATCHES[@]}")"
-  echo "source_declared_dates=$(join_values "${SOURCE_DECLARED_DATES[@]}")"
+  echo "source_date_warning=$(redact_value "$(join_warnings)")"
+  echo "source_daily_report_json=$(redact_value "${DAILY_JSON_SOURCE:-missing}")"
+  echo "source_daily_report_md=$(redact_value "${DAILY_MD_SOURCE:-missing}")"
+  echo "source_daily_compare_json=$(redact_value "${COMPARE_JSON_SOURCE:-missing}")"
+  echo "source_daily_compare_md=$(redact_value "${COMPARE_MD_SOURCE:-missing}")"
+  echo "source_daily_compare_date_matches=$(redact_value "$(join_values "${COMPARE_DATE_MATCHES[@]}")")"
+  echo "source_declared_dates=$(redact_value "$(join_values "${SOURCE_DECLARED_DATES[@]}")")"
   echo
 
   emit_inventory

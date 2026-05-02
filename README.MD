@@ -3,6 +3,22 @@ parsed_events：系统“理解成了什么”
 signals：系统“最终发出的 signal / delivery 决策 / market context 诊断”
 cases：系统“把这件事当成哪条持续故事在跟踪”
 
+## Hermes Telegram 中文控制
+
+- 详细部署验收见 `docs/hermes_telegram_e2e_deployment.md`；日常手册见 `docs/hermes_telegram_daily_ops.md`
+- 安装或更新 skill 后运行 `bash scripts/install_hermes_skill.sh`
+- Telegram 中发送 `/reset`
+- 通过 Hermes gateway 使用 `/chain-monitor-report-analyst`
+- 中文命令实际入口是 `~/.hermes/bin/chain-monitor-cn-router`
+- Telegram 用户命令使用中文，例如：
+  - `/chain-monitor-report-analyst 命令提示`
+  - `/chain-monitor-report-analyst 系统体检`
+  - `/chain-monitor-report-analyst 标准日报流程2026-05-01`
+  - `/chain-monitor-report-analyst 分析报告2026-05-01`
+  - `/chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03`
+- 相对日期会被拒绝；请使用 `YYYY-MM-DD`
+- 审计日志：`reports/hermes/ops_audit.ndjson`
+
 私有 data 文件：
 - 默认读取 `data/addresses.json` 和 `data/lp_pools.json`
 - 可选读取 `data/entities.json` 和 `data/address_aliases.json`

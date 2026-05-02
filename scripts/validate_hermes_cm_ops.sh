@@ -7,42 +7,251 @@ die() {
 }
 
 SCRIPT="scripts/hermes_cm_ops.sh"
-
 [[ -f "$SCRIPT" ]] || die "missing ${SCRIPT}"
 
 bash -n "$SCRIPT"
 
-required_patterns=(
-  "report"
-  "close"
-  "health"
-  "digest"
-  "analyze"
-  "--auto-build"
-  "source_date_verified"
-  "hermes_digest_input_"
-  "--confirm-compress"
-  "--allow-today"
-  "timeout"
-  "mktemp"
-  "trap"
-  "reports/hermes"
-)
-
-for pattern in "${required_patterns[@]}"; do
+require_pattern() {
+  local pattern="$1"
   if ! grep -Fq -- "$pattern" "$SCRIPT"; then
     die "missing required pattern in ${SCRIPT}: ${pattern}"
   fi
+}
+
+for pattern in \
+  "cmd_help()" \
+  "cmd_command_menu()" \
+  "cmd_system_health()" \
+  "cmd_listener_health()" \
+  "cmd_daily_flow()" \
+  "cmd_replay_check()" \
+  "cmd_data_quality()" \
+  "cmd_profile_review()" \
+  "cmd_blocker_review()" \
+  "cmd_shadow_review()" \
+  "cmd_space_check()" \
+  "cmd_archive_compress_check()" \
+  "cmd_weekly_review()" \
+  "cmd_report()" \
+  "cmd_close()" \
+  "cmd_health()" \
+  "cmd_digest()" \
+  "cmd_analyze()" \
+  "HERMES_OPS_AUDIT_LOG" \
+  "ops_audit.ndjson" \
+  "HERMES_OPS_LOCK_PATH" \
+  "flock" \
+  "HERMES_OPS_REQUEST_ID" \
+  "request_id" \
+  "audit_write" \
+  "refused_reason" \
+  "lock_busy" \
+  "runtime_missing_dependency" \
+  "current_utc_date_protected" \
+  "current_beijing_date_protected" \
+  "missing_confirm_compress" \
+  "HERMES_EXEC_ASK" \
+  "HERMES_OPS_REQUIRE_ROUTER" \
+  "HERMES_OPS_ROUTER_OK" \
+  "router_required" \
+  "enforce_router_guard" \
+  "is_router_guarded_command" \
+  "中文命令解析器" \
+  "timeout" \
+  "mktemp" \
+  "trap on_exit EXIT" \
+  "reports/hermes"
+do
+  require_pattern "$pattern"
+done
+
+require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
+require_pattern 'HERMES_DIGEST_REDACT=1'
+require_pattern "case \"\$1\" in"
+require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "refuse unknown_command"
+require_pattern "unknown command"
+require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
+require_pattern "refusing close for current UTC date"
+require_pattern "refuse invalid_date"
+require_pattern "refuse missing_confirm_compress"
+require_pattern "refuse current_utc_date_protected"
+require_pattern "report|digest|analyze|close|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|archive-compress-check|weekly-review"
+require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
+
+extract_block() {
+  local start="$1"
+  local end="$2"
+  sed -n "/^${start}/,/^${end}/p" "$SCRIPT"
+}
+
+help_block="$(extract_block 'cmd_help()' 'cmd_command_menu()')"
+menu_block="$(extract_block 'cmd_command_menu()' 'die()')"
+health_block="$(extract_block 'cmd_health()' 'cmd_system_health()')"
+system_health_block="$(extract_block 'cmd_system_health()' 'cmd_listener_health()')"
+listener_block="$(extract_block 'cmd_listener_health()' 'append_flow_step()')"
+daily_flow_block="$(extract_block 'cmd_daily_flow()' 'cmd_replay_check()')"
+space_block="$(extract_block 'cmd_space_check()' 'cmd_archive_compress_check()')"
+archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
+weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
+
+[[ -n "$help_block" ]] || die "could not extract cmd_help"
+[[ -n "$menu_block" ]] || die "could not extract cmd_command_menu"
+[[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
+
+if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
+  die "command-menu must not execute or mention make commands"
+fi
+
+for required in \
+  "命令提示" \
+  "系统体检" \
+  "监听器体检" \
+  "标准日报流程YYYY-MM-DD" \
+  "分析报告YYYY-MM-DD" \
+  "检查回放YYYY-MM-DD" \
+  "数据质量YYYY-MM-DD" \
+  "Profile复盘YYYY-MM-DD" \
+  "Blocker复盘YYYY-MM-DD" \
+  "Shadow复盘YYYY-MM-DD" \
+  "空间检查" \
+  "归档压缩预检YYYY-MM-DD" \
+  "周复盘START到END" \
+  "YYYY-MM-DD" \
+  "今天" \
+  "昨天" \
+  "脱敏" \
+  "不提供交易建议"
+do
+  if ! grep -Fq -- "$required" <<<"$help_block$menu_block"; then
+    die "help/menu missing required Chinese text: ${required}"
+  fi
+done
+
+for required in \
+  "make daily-close" \
+  "make trade-replay-full" \
+  "make report-daily-date" \
+  "make daily-compare" \
+  "make sqlite-checkpoint"
+do
+  grep -Fq -- "$required" <<<"$daily_flow_block" || die "daily-flow missing required command: ${required}"
 done
 
 for forbidden in \
-  "make run" \
-  "make run-research"
+  "archive-compress-date" \
+  "db-compact-execute" \
+  "db-vacuum" \
+  "db-prune-execute" \
+  "report-clean-generated"
 do
-  if grep -Fq -- "$forbidden" "$SCRIPT"; then
-    die "forbidden command reference in ${SCRIPT}: ${forbidden}"
+  if grep -Fq -- "$forbidden" <<<"$daily_flow_block"; then
+    die "daily-flow contains forbidden command: ${forbidden}"
   fi
 done
+
+grep -Fq "archive-compress-dry-run" <<<"$archive_check_block" || die "archive-compress-check missing dry-run"
+if grep -Fq "archive-compress-date" <<<"$archive_check_block"; then
+  die "archive-compress-check must not call archive-compress-date"
+fi
+
+for forbidden in "rm " "db-vacuum" "db-prune-execute" "sqlite_store --vacuum" "sqlite_store --prune --execute"; do
+  if grep -Fqi -- "$forbidden" <<<"$space_block"; then
+    die "space-check contains forbidden maintenance term: ${forbidden}"
+  fi
+done
+
+for forbidden in "systemctl restart" "systemctl stop" "pkill"; do
+  if grep -Fqi -- "$forbidden" <<<"$listener_block"; then
+    die "listener-health contains forbidden listener action: ${forbidden}"
+  fi
+done
+
+for forbidden in "make run" "make run-research" "VERIFIED 阈值"; do
+  if grep -Fqi -- "$forbidden" <<<"$weekly_block"; then
+    die "weekly-review contains forbidden action: ${forbidden}"
+  fi
+done
+
+for guarded in \
+  "daily-flow" \
+  "replay-check" \
+  "data-quality" \
+  "profile-review" \
+  "blocker-review" \
+  "shadow-review" \
+  "archive-compress-check" \
+  "weekly-review"
+do
+  grep -Fq -- "$guarded" <<<"$(extract_block 'is_router_guarded_command()' 'enforce_router_guard()')" || die "router guard missing ${guarded}"
+done
+
+for required in \
+  "make env-check" \
+  "make db-integrity DB_INTEGRITY_FAST=YES" \
+  "make db-summary" \
+  "make opportunity-db" \
+  "make report-source-fast" \
+  "make coverage"
+do
+  grep -Fq -- "$required" <<<"$health_block" || die "cmd_health missing safe command: ${required}"
+done
+
+for required in \
+  "make db-report" \
+  "make report-source-fast" \
+  "make health" \
+  "make coverage"
+do
+  grep -Fq -- "$required" <<<"$system_health_block" || die "cmd_system_health missing command: ${required}"
+done
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes_cm_ops_validate.XXXXXX")"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/ops_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \
+  "$SCRIPT" command-menu >"$TMP_DIR/menu.out"
+
+grep -Fq "系统体检" "$TMP_DIR/menu.out" || die "command-menu output missing 系统体检"
+grep -Fq "标准日报流程YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 标准日报流程YYYY-MM-DD"
+
+mkdir -p "$TMP_DIR/bin"
+cat >"$TMP_DIR/bin/make" <<'MAKE'
+#!/usr/bin/env bash
+echo "fake make ok: $*"
+exit 0
+MAKE
+chmod +x "$TMP_DIR/bin/make"
+
+HERMES_EXEC_ASK=1 \
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/system_health_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/system_health.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" system-health >"$TMP_DIR/system_health.out"
+grep -Fq "Hermes 系统体检摘要" "$TMP_DIR/system_health.out" || die "system-health did not run"
+
+set +e
+HERMES_EXEC_ASK=1 \
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/daily_flow_guard_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/daily_flow_guard.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" daily-flow --date 2026-05-01 >"$TMP_DIR/daily_flow_guard.out" 2>"$TMP_DIR/daily_flow_guard.err"
+guard_rc=$?
+set -e
+[[ "$guard_rc" -ne 0 ]] || die "daily-flow was not protected by router guard"
+grep -Fq "router_required" "$TMP_DIR/daily_flow_guard_audit.ndjson" || die "daily-flow guard audit missing router_required"
+
+HERMES_EXEC_ASK=1 \
+HERMES_OPS_ROUTER_OK=1 \
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/archive_check_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/archive_check.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" archive-compress-check --date 2026-05-01 >"$TMP_DIR/archive_check.out"
+grep -Fq "fake make ok: archive-compress-dry-run DATE=2026-05-01" "$TMP_DIR/archive_check.out" || die "archive-compress-check did not call dry-run"
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "$SCRIPT" "$0"
