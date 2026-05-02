@@ -213,16 +213,18 @@ class TestTradeReplay(unittest.TestCase):
         action = _infer_profile_action(stats)
         self.assertEqual(action, "needs_more_samples")
 
-    def test_infer_profile_action_hard_block(self):
+    def test_infer_profile_action_negative_block_profile(self):
         stats = {
             "valid_count": 20,
             "win_rate": 0.30,
             "avg_net_pnl_bps": -15.0,
             "absorption_rate": 0.60,
             "bad_entry_rate": 0.20,
+            "clean_followthrough_rate": 0.0,
+            "chop_rate": 0.85,
         }
         action = _infer_profile_action(stats)
-        self.assertEqual(action, "hard_block")
+        self.assertEqual(action, "block_profile")
 
     def test_infer_profile_action_eligible_verified(self):
         stats = {

@@ -5,6 +5,7 @@ from unittest import mock
 
 import reports.generate_daily_report_latest as report
 from app.test_daily_canonical_report import _summary_for
+from replay_profile_gate import replay_profile_summary
 
 
 class DailyReportTradeReplayTests(unittest.TestCase):
@@ -215,6 +216,73 @@ class DailyReportTradeReplayTests(unittest.TestCase):
         self.assertIn("交易回放 / Replay 后验", markdown)
         self.assertIn("Shadow Opportunity 学习样本", markdown)
         self.assertIn("数据质量 / Runtime Health", markdown)
+
+    def test_daily_report_profile_layers_negative_low_sample_and_unknown(self) -> None:
+        profiles = [
+            {
+                "profile_key": "ETH|LONG|local_confirm|confirm|leading|local_absorption|major|basis_normal|quality_low",
+                "valid_sample_count": 48,
+                "avg_net_pnl_bps": -21.67,
+                "win_rate": 0.0,
+                "clean_followthrough_rate": 0.0,
+                "chop_rate": 0.9583,
+            },
+            {
+                "profile_key": "ETH|SHORT|local_confirm|confirm|leading|local_absorption|major|basis_normal|quality_low",
+                "valid_sample_count": 18,
+                "avg_net_pnl_bps": -18.49,
+                "win_rate": 0.1111,
+                "clean_followthrough_rate": 0.0,
+                "chop_rate": 0.8889,
+            },
+            {
+                "profile_key": "ETH|LONG|unknown|confirm|leading|no_absorption|major|basis_normal|quality_high",
+                "valid_sample_count": 1,
+                "avg_net_pnl_bps": 70.38,
+                "win_rate": 1.0,
+                "clean_followthrough_rate": 1.0,
+                "chop_rate": 0.0,
+            },
+        ]
+        replay_summary = {
+            "trade_replay_available": True,
+            "replay_source": "persisted",
+            "replay_scope": "full",
+            "persisted_rows_found": 67,
+            "replay_count": 67,
+            "valid_replay_count": 67,
+            "top_positive_profiles": [profiles[2]],
+            "top_negative_profiles": profiles[:2],
+            "recommended_profile_actions": [],
+            **replay_profile_summary(profiles),
+        }
+        runtime = {
+            "active_hours": 12.0,
+            "raw_events_count": 100,
+            "parsed_events_count": 90,
+            "signals_count": 12,
+            "max_raw_event_gap_sec": 120,
+            "max_signal_gap_sec": 300,
+            "zero_activity_day": 0,
+            "data_quality_status": "valid",
+            "data_gap_warnings": [],
+        }
+
+        with mock.patch.object(report, "_read_trade_replay_summary", return_value=replay_summary), mock.patch.object(
+            report,
+            "_runtime_health_summary",
+            return_value=runtime,
+        ):
+            payload = _summary_for(signals=[])
+
+        profile_summary = payload["trade_replay_profile_summary"]
+        self.assertEqual(2, profile_summary["replay_profile_blocker_count"])
+        self.assertEqual(48, profile_summary["high_confidence_negative_profiles"][0]["valid_sample_count"])
+        self.assertEqual(70.38, profile_summary["low_sample_positive_profiles"][0]["avg_net_pnl_bps"])
+        self.assertEqual([], profile_summary["high_confidence_positive_profiles"])
+        self.assertIn("lp_stage", profile_summary["profile_unknown_diagnostics"]["unknown_by_dimension"])
+        self.assertNotEqual("replay_positive_profiles_found", payload["report_conclusion"])
+        self.assertIn("high_confidence_negative_profiles", report._markdown(payload))
 
 
 if __name__ == "__main__":

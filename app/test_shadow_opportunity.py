@@ -16,8 +16,8 @@ from config import (
     SHADOW_REQUIRE_OUTCOME_HISTORY,
     SHADOW_VERIFIED_MIN_SCORE,
 )
-from trade_opportunity import TradeOpportunityManager
-from trade_replay import _shadow_funnel_summary
+from trade_opportunity import TradeOpportunityAssetState, TradeOpportunityManager
+from trade_replay import _shadow_funnel_summary, derive_shadow_evaluation_fields
 
 
 class TestShadowOpportunity(unittest.TestCase):
@@ -89,18 +89,6 @@ class TestShadowOpportunity(unittest.TestCase):
                     "shadow_status": "NONE",
                     "shadow_evaluated": False,
                 },
-                {
-                    "input_source": ["trade_opportunities"],
-                    "signal_id": "sig-shadow-missing-market",
-                    "asset": "ETH",
-                    "side": "LONG",
-                    "score": 0.7,
-                    "profile_key": "ETH|LONG|shadow",
-                    "quality_snapshot": {"ok": True},
-                    "opportunity_features": {"feature": True},
-                    "shadow_status": "NONE",
-                    "shadow_evaluated": False,
-                },
             ],
             replay_rows=[],
         )
@@ -108,8 +96,9 @@ class TestShadowOpportunity(unittest.TestCase):
         self.assertEqual(0, summary["shadow_evaluated_count"])
         self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_score"])
         self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_side"])
-        self.assertEqual(1, summary["shadow_missing_field_reasons"]["missing_market_context"])
-        self.assertIn("no_shadow_evaluation_fields", summary["zero_shadow_reasons"])
+        self.assertNotIn("no_shadow_evaluation_fields", summary["zero_shadow_reasons"])
+        self.assertIn("missing_score", summary["zero_shadow_reasons"])
+        self.assertIn("missing_side", summary["zero_shadow_reasons"])
 
     def test_shadow_funnel_counts_evaluated_fixture(self):
         summary = _shadow_funnel_summary(
@@ -134,6 +123,135 @@ class TestShadowOpportunity(unittest.TestCase):
         self.assertEqual(1, summary["shadow_input_count"])
         self.assertEqual(1, summary["shadow_evaluated_count"])
         self.assertEqual(1, summary["shadow_candidate_count"])
+        self.assertEqual({"persisted_shadow_status": 1}, summary["shadow_reason_distribution"])
+        self.assertEqual(1, summary["shadow_score_distribution"]["count"])
+
+    def test_derived_shadow_candidate_from_soft_blocked_features(self):
+        result = derive_shadow_evaluation_fields(
+            {
+                "input_source": ["trade_opportunities"],
+                "signal_id": "sig-shadow-candidate",
+                "opportunity_status": "BLOCKED",
+                "side": "LONG",
+                "score": float(SHADOW_CANDIDATE_MIN_SCORE) + 0.01,
+                "blockers": ["profile_sample_count_insufficient"],
+                "profile_key": "ETH|LONG|shadow",
+                "market_context_source": "live_public",
+                "quality_snapshot": {"quality_floor": 0.7},
+                "opportunity_features": {"profile": "shadow"},
+            }
+        )
+
+        self.assertTrue(result["shadow_evaluated"])
+        self.assertEqual("SHADOW_CANDIDATE", result["shadow_status"])
+        self.assertEqual("near_candidate_but_blocked", result["shadow_reason"])
+
+    def test_derived_shadow_verified_from_immature_verified_score(self):
+        result = derive_shadow_evaluation_fields(
+            {
+                "input_source": ["trade_opportunities"],
+                "signal_id": "sig-shadow-verified",
+                "opportunity_status": "BLOCKED",
+                "side": "LONG",
+                "score": float(SHADOW_VERIFIED_MIN_SCORE) + 0.01,
+                "blockers": ["outcome_history_insufficient"],
+                "profile_key": "ETH|LONG|shadow",
+                "market_context_source": "live_public",
+                "quality_snapshot": {"quality_floor": 0.7},
+                "opportunity_features": {"profile": "shadow"},
+            }
+        )
+
+        self.assertTrue(result["shadow_evaluated"])
+        self.assertEqual("SHADOW_VERIFIED", result["shadow_status"])
+        self.assertEqual("near_verified_but_immature", result["shadow_reason"])
+
+    def test_derived_shadow_none_for_hard_blocker(self):
+        result = derive_shadow_evaluation_fields(
+            {
+                "input_source": ["trade_opportunities"],
+                "signal_id": "sig-shadow-hard-blocker",
+                "opportunity_status": "BLOCKED",
+                "side": "LONG",
+                "score": float(SHADOW_VERIFIED_MIN_SCORE) + 0.10,
+                "blockers": ["no_trade_lock"],
+                "profile_key": "ETH|LONG|shadow",
+                "market_context_source": "live_public",
+                "quality_snapshot": {"quality_floor": 0.7},
+                "opportunity_features": {"profile": "shadow"},
+            }
+        )
+
+        self.assertTrue(result["shadow_evaluated"])
+        self.assertEqual("NONE", result["shadow_status"])
+        self.assertEqual("hard_blocker:no_trade_lock", result["shadow_reason"])
+
+    def test_derived_shadow_missing_side_and_score(self):
+        missing_side = derive_shadow_evaluation_fields(
+            {
+                "input_source": ["trade_opportunities"],
+                "signal_id": "sig-shadow-missing-side",
+                "opportunity_status": "BLOCKED",
+                "score": float(SHADOW_CANDIDATE_MIN_SCORE) + 0.01,
+            }
+        )
+        missing_score = derive_shadow_evaluation_fields(
+            {
+                "input_source": ["trade_opportunities"],
+                "signal_id": "sig-shadow-missing-score",
+                "opportunity_status": "BLOCKED",
+                "side": "LONG",
+            }
+        )
+
+        self.assertFalse(missing_side["shadow_evaluated"])
+        self.assertIn("missing_side", missing_side["missing_reasons"])
+        self.assertFalse(missing_score["shadow_evaluated"])
+        self.assertIn("missing_score", missing_score["missing_reasons"])
+
+    def test_shadow_does_not_enter_telegram_and_production_status_stays_unchanged(self):
+        asset_state = TradeOpportunityAssetState(asset_symbol="ETH")
+        record = {
+            "trade_opportunity_status": "NONE",
+            "trade_opportunity_side": "LONG",
+            "trade_opportunity_key": "shadow-only",
+            "trade_opportunity_shadow_status": "SHADOW_CANDIDATE",
+            "trade_opportunity_shadow_reason": "near_candidate_but_blocked",
+        }
+
+        decision = self.manager._telegram_decision(
+            record=record,
+            asset_state=asset_state,
+            previous=None,
+            now_ts=1_710_000_000,
+        )
+
+        self.assertEqual("NONE", record["trade_opportunity_status"])
+        self.assertFalse(decision["telegram_should_send"])
+        self.assertEqual("suppressed", decision["telegram_update_kind"])
+
+    def test_daily_report_derives_shadow_evaluation_from_feature_fixture(self):
+        from reports import generate_daily_report_latest as report
+
+        summary = report._shadow_opportunity_summary(
+            [
+                {
+                    "trade_opportunity_status": "BLOCKED",
+                    "trade_opportunity_side": "LONG",
+                    "trade_opportunity_score": float(SHADOW_CANDIDATE_MIN_SCORE) + 0.02,
+                    "trade_opportunity_blockers": ["profile_sample_count_insufficient"],
+                    "opportunity_profile_key": "ETH|LONG|shadow",
+                    "market_context_source": "live_public",
+                    "trade_opportunity_quality_snapshot": {"quality_floor": 0.7},
+                    "opportunity_profile_features_json": {"profile": "shadow"},
+                }
+            ],
+            {"shadow_funnel_summary": {}},
+        )
+
+        self.assertGreater(summary["shadow_evaluated_count"], 0)
+        self.assertEqual(1, summary["shadow_candidate_count"])
+        self.assertIn("near_candidate_but_blocked", summary["shadow_reason_distribution"])
 
     def test_shadow_candidate_when_production_blocked(self):
         """Test shadow candidate when production is blocked by history."""
@@ -171,7 +289,7 @@ class TestShadowOpportunity(unittest.TestCase):
         # Should be SHADOW_CANDIDATE when production blocked but score sufficient
         if SHADOW_OPPORTUNITY_ENABLE:
             self.assertEqual(result["shadow_status"], "SHADOW_CANDIDATE")
-            self.assertIn("production_gate_blocked", result["shadow_reason"])
+            self.assertEqual("near_candidate_but_blocked", result["shadow_reason"])
 
     def test_shadow_verified_when_production_none_but_history_sufficient(self):
         """Test shadow verified when production is NONE but shadow history gate passes."""

@@ -4,6 +4,8 @@ import atexit
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass, field
 import hashlib
+from pathlib import Path
+import sqlite3
 import time
 from typing import Any
 
@@ -34,6 +36,9 @@ from config import (
     OPPORTUNITY_REQUIRE_LIVE_CONTEXT,
     OPPORTUNITY_REQUIRE_OUTCOME_HISTORY,
     OPPORTUNITY_SCHEMA_VERSION,
+    PROJECT_ROOT,
+    REPLAY_PROFILE_GATE_ENABLE,
+    SQLITE_DB_PATH,
     SHADOW_CANDIDATE_MIN_SCORE,
     SHADOW_MAX_60S_ADVERSE_RATE,
     SHADOW_MIN_60S_FOLLOWTHROUGH_RATE,
@@ -53,6 +58,7 @@ from config import (
 from opportunity_calibration import build_calibration_quality_stats, calibrate_opportunity_score
 from lp_product_helpers import asset_symbol_from_event, is_major_asset_symbol
 from persistence_utils import read_json_file, resolve_persistence_path, write_json_file
+from replay_profile_gate import evaluate_replay_profile_gate, local_absorption_quality_low
 
 
 ACTIVE_STATUSES = {"CANDIDATE", "VERIFIED", "BLOCKED"}
@@ -139,6 +145,7 @@ BLOCKER_PRIORITY = [
     "no_trade_lock",
     "direction_conflict",
     "data_gap",
+    "replay_profile_negative",
     "sweep_exhaustion_risk",
     "late_or_chase",
     "crowded_basis",
@@ -162,6 +169,7 @@ BLOCKER_LABELS = {
     "no_trade_lock": "不交易锁定",
     "direction_conflict": "方向冲突锁定",
     "data_gap": "数据缺口",
+    "replay_profile_negative": "replay profile 历史负收益",
     "sweep_exhaustion_risk": "清扫后回吐/反抽风险",
     "late_or_chase": "确认偏晚 / 追单风险",
     "crowded_basis": "basis / Mark-Index 拥挤",
@@ -392,7 +400,7 @@ def _determine_shadow_none_reason(
 
 
 def _blocked_output_label(side: str, blocker: str) -> str:
-    if blocker in {"sweep_exhaustion_risk", "late_or_chase", "crowded_basis", "local_absorption"}:
+    if blocker in {"sweep_exhaustion_risk", "late_or_chase", "crowded_basis", "local_absorption", "replay_profile_negative"}:
         return "不追多" if side == "LONG" else "不追空" if side == "SHORT" else "不交易"
     return "不交易"
 
@@ -550,6 +558,8 @@ class TradeOpportunityManager:
         self._opportunity_index: dict[str, dict[str, Any]] = {}
         self._asset_states: dict[str, TradeOpportunityAssetState] = {}
         self._profile_stats: dict[str, dict[str, Any]] = {}
+        self._replay_profile_gate_stats: dict[str, dict[str, Any]] = {}
+        self._replay_profile_gate_missing: set[str] = set()
         self._recent_direction_signals: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
         self._dirty = False
         self._last_flush_monotonic = 0.0
@@ -1094,6 +1104,73 @@ class TradeOpportunityManager:
             "opportunity_profile_strategy": strategy,
             "opportunity_profile_features_json": features,
         }
+
+    def _replay_profile_gate(self, *, summary: dict[str, Any]) -> dict[str, Any]:
+        if not bool(REPLAY_PROFILE_GATE_ENABLE):
+            return {"matched": False, "action": "disabled", "blocker": "", "research_hint": "", "profile_stats": {}}
+        profile_key = str(summary.get("opportunity_profile_key") or "").strip()
+        if not profile_key:
+            return {"matched": False, "action": "missing_profile_key", "blocker": "", "research_hint": "", "profile_stats": {}}
+        stat = self._replay_profile_gate_stats.get(profile_key)
+        if stat is None and profile_key not in self._replay_profile_gate_missing:
+            stat = self._load_replay_profile_gate_stat(profile_key)
+            if stat:
+                self._replay_profile_gate_stats[profile_key] = stat
+            else:
+                self._replay_profile_gate_missing.add(profile_key)
+        decision = evaluate_replay_profile_gate(stat)
+        decision["profile_key"] = profile_key
+        return decision
+
+    def _load_replay_profile_gate_stat(self, profile_key: str) -> dict[str, Any]:
+        db_path = Path(str(SQLITE_DB_PATH or ""))
+        if not db_path.is_absolute():
+            db_path = Path(PROJECT_ROOT) / db_path
+        if not db_path.exists():
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            return {}
+        try:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('trade_replay_profile_stats','trade_replay_profile_daily_stats')"
+                ).fetchall()
+            }
+            if "trade_replay_profile_daily_stats" in tables:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM trade_replay_profile_daily_stats
+                    WHERE profile_key = ?
+                    ORDER BY logical_date DESC,
+                             CASE replay_scope WHEN 'full' THEN 0 WHEN 'default' THEN 1 ELSE 2 END,
+                             strategy_config_hash DESC
+                    LIMIT 1
+                    """,
+                    (profile_key,),
+                ).fetchone()
+                if row:
+                    payload = dict(row)
+                    payload["source"] = "trade_replay_profile_daily_stats"
+                    return payload
+            if "trade_replay_profile_stats" in tables:
+                row = conn.execute(
+                    "SELECT * FROM trade_replay_profile_stats WHERE profile_key = ? LIMIT 1",
+                    (profile_key,),
+                ).fetchone()
+                if row:
+                    payload = dict(row)
+                    payload["source"] = "trade_replay_profile_stats"
+                    return payload
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return {}
 
     def _signal_lookup(self, row: dict[str, Any], *keys: str) -> Any:
         signal = row.get("signal") if isinstance(row.get("signal"), dict) else {}
@@ -1896,6 +1973,12 @@ class TradeOpportunityManager:
             summary=summary,
             preliminary_quality_pass=preliminary_quality_pass,
         )
+        replay_profile_gate = self._replay_profile_gate(summary=summary)
+        if str(replay_profile_gate.get("blocker") or "") == "replay_profile_negative":
+            hard_blockers.append("replay_profile_negative")
+            risk_flags.append("replay_profile_negative")
+        if local_absorption_quality_low(summary):
+            risk_flags.append("local_absorption_quality_low")
         verification_gate = self._history_gate(history)
         verification_blockers = list(verification_gate.get("blockers") or [])
         risk_flags.extend(verification_blockers)
@@ -2033,6 +2116,7 @@ class TradeOpportunityManager:
                 "trade_action_key": str(summary.get("trade_action_key") or ""),
                 "asset_market_state_key": str(summary.get("asset_market_state_key") or ""),
                 "calibration": calibration_snapshot,
+                "replay_profile_gate": dict(replay_profile_gate),
                 "non_lp_evidence_context": {
                     "support_score": round(_float(summary.get("non_lp_support_score")), 4),
                     "risk_score": round(_float(summary.get("non_lp_risk_score")), 4),
@@ -2048,6 +2132,9 @@ class TradeOpportunityManager:
                 "history_source": str(history.get("history_source") or "none"),
             },
             "trade_opportunity_calibration_snapshot": calibration_snapshot,
+            "trade_opportunity_replay_profile_gate": dict(replay_profile_gate),
+            "trade_opportunity_replay_profile_action": str(replay_profile_gate.get("action") or ""),
+            "trade_opportunity_replay_profile_research_hint": str(replay_profile_gate.get("research_hint") or ""),
             "trade_opportunity_created_at": created_at,
             "trade_opportunity_expires_at": expires_at,
             "trade_opportunity_source": source,
@@ -2144,16 +2231,32 @@ class TradeOpportunityManager:
         """
         if not bool(SHADOW_OPPORTUNITY_ENABLE):
             return {"shadow_status": "NONE", "shadow_reason": "shadow_disabled", "shadow_score": 0.0}
+        if side not in {"LONG", "SHORT"}:
+            return {
+                "shadow_status": "NONE",
+                "shadow_reason": "missing_side",
+                "shadow_score": calibrated_score,
+                "would_have_been_candidate": False,
+                "would_have_been_verified": False,
+            }
 
         # Hard blockers prevent even shadow opportunities
         # These are fundamental issues that make the signal unreliable
         hard_blocker_keys = {
             "no_trade_lock",
             "direction_conflict",
-            "data_gap",
+            "replay_profile_negative",
             "sweep_exhaustion_risk",
+            "no_trade",
+            "do_not_chase_long",
+            "do_not_chase_short",
         }
         blocking_hard_blockers = [b for b in hard_blockers if b in hard_blocker_keys]
+        trade_action_key = str(summary.get("trade_action_key") or "").strip().upper()
+        if trade_action_key in {"NO_TRADE", "NO_TRADE_LOCK", "DO_NOT_CHASE_LONG", "DO_NOT_CHASE_SHORT"}:
+            blocking_hard_blockers.insert(0, trade_action_key.lower())
+        elif trade_action_key == "CONFLICT_NO_TRADE":
+            blocking_hard_blockers.insert(0, "direction_conflict")
         if blocking_hard_blockers:
             return {
                 "shadow_status": "NONE",
@@ -2164,7 +2267,7 @@ class TradeOpportunityManager:
             }
 
         shadow_status = "NONE"
-        shadow_reason = ""
+        shadow_reason = "score_below_shadow_candidate"
         shadow_score = calibrated_score
 
         # ── Shadow candidate check ──
@@ -2195,43 +2298,51 @@ class TradeOpportunityManager:
                 shadow_history_blockers.append("profile_followthrough_too_low")
 
         shadow_history_ready = len(shadow_history_blockers) == 0
+        verification_blockers = list(verification_gate.get("blockers") or [])
+        immaturity_blockers = {
+            "outcome_history_insufficient",
+            "profile_sample_count_insufficient",
+            "history_samples_insufficient",
+            "sample_count_insufficient",
+            "maturity_insufficient",
+            "profile_completion_too_low",
+        }
+        all_maturity_blockers = _list_dedup(verification_blockers + shadow_history_blockers, limit=8)
+        immature_verified_ready = bool(
+            shadow_candidate_ready
+            and calibrated_score >= float(SHADOW_VERIFIED_MIN_SCORE)
+            and all_maturity_blockers
+            and all(str(item) in immaturity_blockers for item in all_maturity_blockers)
+        )
 
         # ── Shadow verified check ──
         shadow_verified_ready = bool(
             shadow_candidate_ready
             and calibrated_score >= float(SHADOW_VERIFIED_MIN_SCORE)
             and shadow_history_ready
+            and not all_maturity_blockers
         )
 
         # ── Determine shadow status ──
         if production_status == "CANDIDATE":
-            # Production already captured as CANDIDATE — check if shadow can promote to VERIFIED
-            if shadow_verified_ready and not verified_ready:
-                shadow_status = "SHADOW_VERIFIED"
-                shadow_reason = "verified_maturity_immature"
-            else:
-                shadow_status = "NONE"
-        elif production_status == "VERIFIED":
-            # Already production VERIFIED, no need for shadow
             shadow_status = "NONE"
+            shadow_reason = "production_already_candidate"
+        elif production_status == "VERIFIED":
+            shadow_status = "NONE"
+            shadow_reason = "production_already_verified"
         elif production_status == "BLOCKED":
             # Production blocked — see if shadow would have been CANDIDATE or VERIFIED
-            if shadow_verified_ready:
+            if immature_verified_ready:
                 shadow_status = "SHADOW_VERIFIED"
-                shadow_reason = "production_gate_blocked"
+                shadow_reason = "near_verified_but_immature"
             elif shadow_candidate_ready:
                 shadow_status = "SHADOW_CANDIDATE"
-                shadow_reason = "production_gate_blocked"
+                shadow_reason = "near_candidate_but_blocked"
         elif production_status == "NONE":
             # Production NONE — see if shadow would have seen something
-            if shadow_verified_ready:
+            if immature_verified_ready:
                 shadow_status = "SHADOW_VERIFIED"
-                shadow_reason = _determine_shadow_none_reason(
-                    candidate_ready=candidate_ready,
-                    verified_ready=verified_ready,
-                    hard_blockers=hard_blockers,
-                    verification_gate=verification_gate,
-                )
+                shadow_reason = "near_verified_but_immature"
             elif shadow_candidate_ready:
                 shadow_status = "SHADOW_CANDIDATE"
                 shadow_reason = _determine_shadow_none_reason(
@@ -2239,7 +2350,14 @@ class TradeOpportunityManager:
                     verified_ready=verified_ready,
                     hard_blockers=hard_blockers,
                     verification_gate=verification_gate,
-                )
+                ) or "near_candidate_but_blocked"
+        if shadow_status == "NONE" and shadow_reason in {"", "score_below_shadow_candidate"}:
+            if not preliminary_quality_pass and calibrated_score >= float(SHADOW_CANDIDATE_MIN_SCORE):
+                shadow_reason = "low_quality"
+            elif bool(SHADOW_REQUIRE_LIVE_CONTEXT) and not live_context:
+                shadow_reason = "shadow_require_live_context"
+            elif bool(SHADOW_REQUIRE_BROADER_CONFIRM) and not broader_confirm:
+                shadow_reason = "shadow_require_broader_confirm"
 
         return {
             "shadow_status": shadow_status,
@@ -2284,6 +2402,8 @@ class TradeOpportunityManager:
             blockers.append("late_or_chase")
         if absorption.startswith("local_") or absorption == "pool_only_unconfirmed_pressure":
             blockers.append("local_absorption")
+            if not preliminary_quality_pass:
+                risk_flags.append("local_absorption_quality_low")
         if crowded:
             blockers.append("crowded_basis")
         if not preliminary_quality_pass:
@@ -2367,6 +2487,10 @@ class TradeOpportunityManager:
                 return "近期双向强信号冲突，方向未统一，追单风险高。"
             if primary_blocker == "data_gap":
                 return "缺 live market context，无法把链上结构升级成交易机会。"
+            if primary_blocker == "replay_profile_negative":
+                if local_absorption_quality_low(summary):
+                    return "局部买压/卖压被承接，历史 replay 无交易优势，不能把它当作交易机会。"
+                return "当前 profile 的历史 replay 为高置信负收益，禁止升级为 CANDIDATE 或 VERIFIED。"
             if primary_blocker == "sweep_exhaustion_risk":
                 return "当前更像清扫后回吐/反抽风险，而不是干净延续。"
             if primary_blocker == "late_or_chase":
@@ -2430,6 +2554,8 @@ class TradeOpportunityManager:
                 return "等待一方形成更广方向确认并清掉冲突后再评估。"
             if primary_hard_blocker == "data_gap":
                 return "等待 live_public 恢复并给出同向 context 后再评估。"
+            if primary_hard_blocker == "replay_profile_negative":
+                return "等待 replay profile 样本重新证明有 clean followthrough；当前只保留归档和研究观察。"
             if primary_hard_blocker == "crowded_basis":
                 return "等待 basis / Mark-Index 拥挤回落且方向仍成立后再评估。"
             if primary_hard_blocker == "local_absorption":
@@ -2461,6 +2587,8 @@ class TradeOpportunityManager:
             return "机会已失效"
         if primary_blocker == "direction_conflict":
             return "一方形成稳定单边优势"
+        if primary_blocker == "replay_profile_negative":
+            return "profile replay 后验重新变为非负且 clean followthrough 改善"
         return _text(summary.get("trade_action_invalidated_by"), "等待下次独立机会")
 
     def _source(self, *, summary: dict[str, Any]) -> str:
@@ -2489,6 +2617,7 @@ class TradeOpportunityManager:
                 "no_trade_lock",
                 "direction_conflict",
                 "data_gap",
+                "replay_profile_negative",
                 "sweep_exhaustion_risk",
                 "non_lp_evidence_conflict",
                 "non_lp_opposite_smart_money",

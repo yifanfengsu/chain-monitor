@@ -601,6 +601,15 @@ def infer_trade_action(context: dict[str, Any]) -> dict[str, Any]:
     market_source = _text(context.get("market_context_source"), "unavailable")
     conflict_context = _text(context.get("lp_conflict_context"))
     conflict_resolution = _text(context.get("lp_conflict_resolution"))
+    quality_floor = min(
+        _float(context.get("asset_case_quality_score")),
+        _float(context.get("pair_quality_score")),
+        _float(context.get("pool_quality_score")),
+    )
+    local_absorption = absorption_context in {"local_buy_pressure_absorption", "local_sell_pressure_absorption"}
+    local_absorption_low_quality = bool(
+        local_absorption and quality_floor < float(TRADE_ACTION_MIN_PAIR_QUALITY_FOR_CHASE)
+    )
 
     if direction == "neutral":
         return _build_payload(
@@ -695,28 +704,28 @@ def infer_trade_action(context: dict[str, Any]) -> dict[str, Any]:
             blockers=["late_confirm"],
         )
 
-    if absorption_context == "local_buy_pressure_absorption":
+    if absorption_context == "local_buy_pressure_absorption" and local_absorption_low_quality:
         return _build_payload(
             context=context,
             key="DO_NOT_CHASE_LONG",
-            confidence=0.82,
-            reason="局部买压可能被吸收，不宜把单池压力误读成可以追多。",
-            conclusion="局部买压可能被吸收",
+            confidence=0.86,
+            reason="局部买压被承接且质量偏低，历史 replay 显示这类上下文暂无交易优势，不宜把单池压力误读成可以追多。",
+            conclusion="局部买压被承接，无交易优势",
             required_confirmation="继续跨池续买 + live_public broader confirm 后再评估",
             invalidated_by="续买消失 / 出现卖方回补",
-            blockers=["local_buy_pressure_absorption"],
+            blockers=["local_buy_pressure_absorption", "quality_low", "replay_no_edge_context"],
         )
 
-    if absorption_context == "local_sell_pressure_absorption":
+    if absorption_context == "local_sell_pressure_absorption" and local_absorption_low_quality:
         return _build_payload(
             context=context,
             key="DO_NOT_CHASE_SHORT",
-            confidence=0.82,
-            reason="局部卖压可能被承接，不宜把单池卖压误读成可以追空。",
-            conclusion="局部卖压可能被承接",
+            confidence=0.86,
+            reason="局部卖压被承接且质量偏低，历史 replay 显示这类上下文暂无交易优势，不宜把单池卖压误读成可以追空。",
+            conclusion="局部卖压被承接，无交易优势",
             required_confirmation="继续跨池续卖 + live_public broader confirm 后再评估",
             invalidated_by="续卖消失 / 出现买方回补",
-            blockers=["local_sell_pressure_absorption"],
+            blockers=["local_sell_pressure_absorption", "quality_low", "replay_no_edge_context"],
         )
 
     if market_source != "live_public":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import io
 import json
@@ -849,47 +849,106 @@ def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
 
 def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
     where, params = _where_for_date("created_at", date_str)
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(trade_opportunities)").fetchall()}
-    shadow_reason_expr = "shadow_reason" if "shadow_reason" in columns else "''"
-    shadow_score_expr = "shadow_score" if "shadow_score" in columns else "NULL"
-    evaluated_expr = (
-        "(shadow_status IS NOT NULL AND shadow_status != '' "
-        f"OR {shadow_reason_expr} IS NOT NULL AND {shadow_reason_expr} != '' "
-        f"OR {shadow_score_expr} IS NOT NULL)"
-    )
-    evaluated = conn.execute(
-        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} {evaluated_expr}",
-        params,
-    ).fetchone()
-    candidate = conn.execute(
-        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status='SHADOW_CANDIDATE'",
-        params,
-    ).fetchone()
-    verified = conn.execute(
-        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status='SHADOW_VERIFIED'",
-        params,
-    ).fetchone()
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != '' AND shadow_status != 'NONE'",
-        params,
-    ).fetchone()
-    blocked_rows = conn.execute(
-        f"SELECT COALESCE(NULLIF({shadow_reason_expr}, ''), 'shadow_status_none') AS reason, COUNT(*) FROM trade_opportunities {where + (' AND' if where else 'WHERE')} COALESCE(shadow_status, 'NONE') NOT IN ('SHADOW_CANDIDATE','SHADOW_VERIFIED') AND {evaluated_expr} GROUP BY reason",
-        params,
-    ).fetchall()
-    candidate_count = int(candidate[0]) if candidate else 0
-    verified_count = int(verified[0]) if verified else 0
-    evaluated_count = int(evaluated[0]) if evaluated else 0
+    rows = [dict(row) for row in conn.execute(f"SELECT * FROM trade_opportunities {where}", params).fetchall()]
+    try:
+        from trade_replay import derive_shadow_evaluation_fields, _coerce_blockers, _shadow_score_distribution
+    except Exception:
+        derive_shadow_evaluation_fields = None
+        _coerce_blockers = None
+        _shadow_score_distribution = None
+
+    def _json_value(value, default):
+        if isinstance(value, (dict, list)):
+            return value
+        if value in (None, ""):
+            return default
+        try:
+            return json.loads(str(value))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return default
+
+    candidate_count = 0
+    verified_count = 0
+    evaluated_count = 0
+    missing_reasons: Counter[str] = Counter()
+    blocked_reasons: Counter[str] = Counter()
+    reason_distribution: Counter[str] = Counter()
+    scores: list[float] = []
+    for row in rows:
+        opportunity_payload = _json_value(row.get("opportunity_json"), {})
+        blockers: list[str] = []
+        if callable(_coerce_blockers):
+            for key in ("blockers_json", "hard_blockers_json", "verification_blockers_json"):
+                blockers.extend(_coerce_blockers(row.get(key)))
+        else:
+            for key in ("blockers_json", "hard_blockers_json", "verification_blockers_json"):
+                value = _json_value(row.get(key), [])
+                if isinstance(value, list):
+                    blockers.extend(str(item) for item in value if str(item or "").strip())
+                elif isinstance(value, dict):
+                    blockers.extend(str(key) for key, item in value.items() if item)
+        candidate = {
+            "input_source": ["trade_opportunities"],
+            "opportunity_status": row.get("status"),
+            "side": row.get("side") or row.get("opportunity_profile_side") or row.get("would_have_been_direction"),
+            "score": row.get("calibrated_score") or row.get("score") or row.get("raw_score"),
+            "shadow_status": row.get("shadow_status") or "NONE",
+            "shadow_reason": row.get("shadow_reason"),
+            "shadow_score": row.get("shadow_score"),
+            "profile_key": row.get("opportunity_profile_key"),
+            "market_context_source": opportunity_payload.get("market_context_source"),
+            "trade_action_key": opportunity_payload.get("trade_action_key"),
+            "delivery_decision": opportunity_payload.get("delivery_decision"),
+            "final_trading_output_label": opportunity_payload.get("final_trading_output_label"),
+            "quality_snapshot": _json_value(row.get("quality_snapshot_json"), {}),
+            "score_components": _json_value(row.get("score_components_json"), {}),
+            "opportunity_features": _json_value(row.get("profile_features_json"), {}),
+            "blocked_reason": row.get("primary_blocker") or row.get("primary_hard_blocker") or row.get("primary_verification_blocker"),
+            "blockers": blockers,
+        }
+        if derive_shadow_evaluation_fields is None:
+            status = str(candidate.get("shadow_status") or "NONE")
+            evaluated = status not in {"", "NONE"} or bool(candidate.get("shadow_reason")) or candidate.get("shadow_score") is not None
+            derived = {
+                "shadow_evaluated": evaluated,
+                "shadow_status": status,
+                "shadow_reason": str(candidate.get("shadow_reason") or ""),
+                "shadow_score": candidate.get("shadow_score"),
+                "missing_reasons": [] if evaluated else ["shadow_evaluator_unavailable"],
+            }
+        else:
+            derived = derive_shadow_evaluation_fields(candidate)
+        status = str(derived.get("shadow_status") or "NONE")
+        if bool(derived.get("shadow_evaluated")):
+            evaluated_count += 1
+            reason = str(derived.get("shadow_reason") or status.lower() or "shadow_status_none")
+            reason_distribution[reason] += 1
+            score = derived.get("shadow_score")
+            if score is not None:
+                scores.append(float(score))
+            if status == "SHADOW_CANDIDATE":
+                candidate_count += 1
+            elif status == "SHADOW_VERIFIED":
+                verified_count += 1
+            else:
+                blocked_reasons[reason] += 1
+        else:
+            for reason in list(derived.get("missing_reasons") or []):
+                missing_reasons[str(reason)] += 1
+    score_distribution = _shadow_score_distribution(scores) if callable(_shadow_score_distribution) else {}
     return {
         "logical_date": date_str,
-        "shadow_total": int(total[0]) if total else 0,
+        "shadow_total": candidate_count + verified_count,
         "shadow_evaluated_count": evaluated_count,
         "shadow_gate_passed_count": candidate_count + verified_count,
         "shadow_candidate_count": candidate_count,
         "shadow_verified_count": verified_count,
         "shadow_blocked_count": max(evaluated_count - candidate_count - verified_count, 0),
-        "shadow_blocked_reasons": {str(row[0] or ""): int(row[1]) for row in blocked_rows},
-        "zero_shadow_reasons": ["no_shadow_evaluation_fields"] if evaluated_count == 0 else [],
+        "shadow_blocked_reasons": dict(sorted(blocked_reasons.items())),
+        "shadow_missing_field_reasons": dict(sorted(missing_reasons.items())),
+        "shadow_reason_distribution": dict(sorted(reason_distribution.items())),
+        "shadow_score_distribution": score_distribution,
+        "zero_shadow_reasons": sorted(missing_reasons) if evaluated_count == 0 and missing_reasons else [],
     }
 
 

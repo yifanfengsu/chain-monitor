@@ -239,6 +239,22 @@ def compressed_archive_row_counts(base_dir: str | Path | None = None) -> dict[st
     return counts
 
 
+def _compressed_archive_rows_for_category(
+    category: str,
+    *,
+    window: Any = None,
+    base_dir: str | Path | None = None,
+) -> int:
+    root = Path(base_dir or ARCHIVE_BASE_DIR) / category
+    date_keys = _archive_date_keys_for_window(window)
+    total = 0
+    for path in sorted(root.glob("*.ndjson.gz")):
+        if date_keys is not None and _archive_key(path) not in date_keys:
+            continue
+        total += _count_archive_lines(path)
+    return total
+
+
 def _cache_rows(cache_name: str, *, cache_base_dir: str | Path | None = None) -> list[dict[str, Any]]:
     root = Path(cache_base_dir or (PROJECT_ROOT / "data"))
     path = root / cache_name
@@ -356,7 +372,11 @@ def _archive_or_cache_rows(loader_key: str, *, window: Any = None, archive_base_
     cache_name = str(config.get("cache") or "")
     if archive_category:
         rows = iter_archive_payloads(archive_category, window=window, base_dir=archive_base_dir)
-        compressed_count = compressed_archive_row_counts(archive_base_dir).get(archive_category, 0)
+        compressed_count = _compressed_archive_rows_for_category(
+            archive_category,
+            window=window,
+            base_dir=archive_base_dir,
+        )
         return rows, "archive", int(compressed_count or 0)
     if cache_name:
         rows = _cache_rows(cache_name)

@@ -159,8 +159,13 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
             },
             "shadow_opportunity_summary": {
                 "shadow_evaluated_count": shadow_candidate_count + shadow_verified_count,
+                "shadow_gate_passed_count": shadow_candidate_count + shadow_verified_count,
                 "shadow_candidate_count": shadow_candidate_count,
                 "shadow_verified_count": shadow_verified_count,
+                "shadow_blocked_count": 1,
+                "shadow_missing_field_reasons": {"missing_side": 1},
+                "shadow_reason_distribution": {"near_candidate_but_blocked": shadow_candidate_count},
+                "shadow_score_distribution": {"count": shadow_candidate_count + shadow_verified_count},
                 "shadow_replay_count": replay_count if replay_available else 0,
             },
             "data_quality_summary": {
@@ -244,6 +249,8 @@ class DailyCompareTradeReplayTests(unittest.TestCase):
                 "improvement",
                 payload["replay_compare"]["metrics"]["clean_followthrough_rate"]["classification"],
             )
+            self.assertIn("shadow_reason_distribution", payload["replay_compare"]["metrics"])
+            self.assertIn("shadow_score_distribution", payload["replay_compare"]["metrics"])
             self.assertIn("Replay / Shadow / Data Quality 对比", payload["markdown"])
 
     def test_daily_compare_warns_on_scope_mismatch_and_negative_expectancy(self) -> None:

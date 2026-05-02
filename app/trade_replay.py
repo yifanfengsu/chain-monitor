@@ -23,8 +23,19 @@ from typing import Any
 from config import (
     OUTCOME_PREFER_OKX_MARK,
     OUTCOME_USE_MARKET_CONTEXT_PRICE,
+    REPLAY_STRATEGY_NAME,
+    SHADOW_CANDIDATE_MIN_SCORE,
     SHADOW_OPPORTUNITY_ENABLE,
+    SHADOW_REQUIRE_BROADER_CONFIRM,
+    SHADOW_REQUIRE_LIVE_CONTEXT,
+    SHADOW_VERIFIED_MIN_SCORE,
     SQLITE_DB_PATH,
+)
+from replay_profile_gate import (
+    evaluate_replay_profile_gate,
+    profile_payload as replay_profile_payload,
+    repair_profile_key,
+    replay_profile_summary,
 )
 
 
@@ -51,6 +62,26 @@ INPUT_SOURCE_KEYS = (
 )
 REPLAY_ELIGIBLE_STATUSES = {"CANDIDATE", "VERIFIED", "BLOCKED"}
 REPLAY_ELIGIBLE_SHADOW_STATUSES = {"SHADOW_CANDIDATE", "SHADOW_VERIFIED"}
+SHADOW_HARD_BLOCKERS = {
+    "no_trade",
+    "no_trade_lock",
+    "direction_conflict",
+    "replay_profile_negative",
+    "sweep_exhaustion_risk",
+    "do_not_chase_long",
+    "do_not_chase_short",
+    "conflict_no_trade",
+}
+SHADOW_IMMATURITY_BLOCKERS = {
+    "outcome_history_insufficient",
+    "profile_sample_count_insufficient",
+    "history_samples_insufficient",
+    "sample_count_insufficient",
+    "sample_insufficient",
+    "maturity_insufficient",
+    "verified_maturity_immature",
+    "profile_completion_too_low",
+}
 REPLAY_ELIGIBLE_ACTIONS = {
     "LONG_CANDIDATE",
     "SHORT_CANDIDATE",
@@ -764,6 +795,7 @@ def _strategy_config_payload(
     replay_scope: str,
     include_suppressed: bool,
     include_blocked: bool,
+    replay_strategy_name: str = REPLAY_STRATEGY_NAME,
     entry_delay_sec: int = DEFAULT_ENTRY_DELAY_SEC,
     max_hold_sec: int = DEFAULT_MAX_HOLD_SEC,
     stop_loss_bps: float = DEFAULT_STOP_LOSS_BPS,
@@ -773,6 +805,7 @@ def _strategy_config_payload(
 ) -> dict[str, Any]:
     return {
         "version": 1,
+        "replay_strategy_name": str(replay_strategy_name or REPLAY_STRATEGY_NAME),
         "replay_scope": replay_scope,
         "include_suppressed": bool(include_suppressed),
         "include_blocked": bool(include_blocked),
@@ -823,6 +856,44 @@ def _row_payloads(row: dict[str, Any], json_columns: tuple[str, ...]) -> list[di
         if isinstance(payload, dict):
             payloads.append(payload)
     return payloads
+
+
+def _expanded_payloads(row: dict[str, Any], payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        identity = id(value)
+        if identity not in seen:
+            seen.add(identity)
+            expanded.append(value)
+
+    add(row)
+    for payload in payloads:
+        add(payload)
+        for nested_key in ("context", "metadata", "signal_context", "signal_metadata", "event_metadata"):
+            add(payload.get(nested_key))
+        signal = payload.get("signal")
+        if isinstance(signal, dict):
+            add(signal)
+            add(signal.get("context"))
+            add(signal.get("metadata"))
+        event = payload.get("event")
+        if isinstance(event, dict):
+            add(event)
+            add(event.get("metadata"))
+        for nested_key in (
+            "trade_action",
+            "trade_action_debug",
+            "market_context",
+            "profile_features",
+            "opportunity_profile_features_json",
+            "features_json",
+        ):
+            add(payload.get(nested_key))
+    return expanded
 
 
 def _first_payload_value(row: dict[str, Any], payloads: list[dict[str, Any]], *keys: str) -> Any:
@@ -1052,6 +1123,265 @@ def _is_blocked_candidate(candidate: dict[str, Any]) -> bool:
     )
 
 
+def _shadow_score_value(candidate: dict[str, Any]) -> float | None:
+    for key in (
+        "score",
+        "calibrated_score",
+        "opportunity_score",
+        "opportunity_calibrated_score",
+        "trade_opportunity_calibrated_score",
+        "trade_opportunity_score",
+        "raw_score",
+        "opportunity_raw_score",
+        "trade_opportunity_raw_score",
+        "shadow_score",
+        "trade_opportunity_shadow_score",
+    ):
+        value = _to_float(candidate.get(key))
+        if value is not None:
+            return max(0.0, min(1.0, float(value)))
+    return None
+
+
+def _shadow_blocker_tokens(candidate: dict[str, Any]) -> list[str]:
+    tokens: list[str] = []
+    for key in (
+        "blockers",
+        "blocked_reason",
+        "suppression_reason",
+        "gate_reason",
+        "trade_action_key",
+        "trade_action",
+        "delivery_decision",
+        "final_trading_output_label",
+    ):
+        for item in _coerce_blockers(candidate.get(key)):
+            text = str(item or "").strip()
+            if text and text not in tokens:
+                tokens.append(text)
+    return tokens
+
+
+def _shadow_blocker_key(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw.startswith("hard_blocker:"):
+        raw = raw.split(":", 1)[1]
+    if raw in {"no_trade", "no_trade_lock", "direction_conflict", "sweep_exhaustion_risk"}:
+        return raw
+    if raw in {"do_not_chase_long", "do_not_chase_short", "conflict_no_trade"}:
+        return raw
+    if "no_trade_lock" in raw:
+        return "no_trade_lock"
+    if "direction_conflict" in raw or "conflict_no_trade" in raw:
+        return "direction_conflict"
+    if "sweep_exhaustion_risk" in raw:
+        return "sweep_exhaustion_risk"
+    return raw
+
+
+def _shadow_hard_blocker(blockers: list[str]) -> str:
+    for blocker in blockers:
+        key = _shadow_blocker_key(blocker)
+        if key in SHADOW_HARD_BLOCKERS:
+            return key
+    return ""
+
+
+def _shadow_immaturity_blocked(blockers: list[str]) -> bool:
+    keys = [_shadow_blocker_key(item) for item in blockers if str(item or "").strip()]
+    if not keys:
+        return False
+    non_blocker_labels = {
+        str(item).lower()
+        for item in (REPLAY_ELIGIBLE_ACTIONS | REPLAY_ELIGIBLE_STATUSES | REPLAY_ELIGIBLE_SHADOW_STATUSES)
+    } - SHADOW_HARD_BLOCKERS - {"blocked"}
+    keys = [key for key in keys if key not in non_blocker_labels]
+    soft = [key for key in keys if key in SHADOW_IMMATURITY_BLOCKERS or "sample" in key or "maturity" in key]
+    non_soft = [
+        key
+        for key in keys
+        if key not in set(soft)
+        and key not in {"blocked", "production_gate_blocked", "candidate_only", "none"}
+    ]
+    return bool(soft) and not non_soft
+
+
+def _shadow_live_context_ready(candidate: dict[str, Any]) -> bool:
+    source = str(candidate.get("market_context_source") or "").strip().lower()
+    if not source:
+        return False
+    return source not in {"unavailable", "missing", "none", "fixture_unavailable"}
+
+
+def _shadow_broader_confirm_ready(candidate: dict[str, Any]) -> bool:
+    values = (
+        candidate.get("lp_confirm_scope"),
+        candidate.get("lp_broader_alignment"),
+        candidate.get("profile_key"),
+        candidate.get("opportunity_profile_key"),
+    )
+    text = " ".join(str(value or "") for value in values).lower()
+    return "broader_confirm" in text or "broader_alignment" in text or "confirmed" in text
+
+
+def derive_shadow_evaluation_fields(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Derive research-only shadow fields from persisted opportunity features."""
+    if not bool(SHADOW_OPPORTUNITY_ENABLE):
+        return {
+            "shadow_evaluated": False,
+            "shadow_status": "NONE",
+            "shadow_reason": "shadow_disabled",
+            "shadow_score": None,
+            "would_have_been_candidate": False,
+            "would_have_been_verified": False,
+            "missing_reasons": ["shadow_disabled"],
+        }
+
+    existing_status = _canonical_upper(candidate.get("shadow_status") or "NONE") or "NONE"
+    existing_reason = str(candidate.get("shadow_reason") or "").strip()
+    existing_shadow_score = _to_float(candidate.get("shadow_score"))
+    score = _shadow_score_value(candidate)
+    if existing_status in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+        return {
+            "shadow_evaluated": True,
+            "shadow_status": existing_status,
+            "shadow_reason": existing_reason or "persisted_shadow_status",
+            "shadow_score": score if score is not None else existing_shadow_score,
+            "would_have_been_candidate": True,
+            "would_have_been_verified": existing_status == "SHADOW_VERIFIED",
+            "missing_reasons": [],
+        }
+    if existing_reason:
+        return {
+            "shadow_evaluated": True,
+            "shadow_status": "NONE",
+            "shadow_reason": existing_reason,
+            "shadow_score": score if score is not None else existing_shadow_score,
+            "would_have_been_candidate": False,
+            "would_have_been_verified": False,
+            "missing_reasons": [],
+        }
+
+    direction = _direction_from_values(
+        candidate.get("side"),
+        candidate.get("direction"),
+        candidate.get("trade_action_key"),
+        candidate.get("trade_action"),
+        candidate.get("delivery_decision"),
+        candidate.get("final_trading_output_label"),
+    )
+    missing: list[str] = []
+    if direction not in {"LONG", "SHORT"}:
+        missing.append("missing_side")
+    if score is None:
+        missing.append("missing_score")
+    if missing:
+        return {
+            "shadow_evaluated": False,
+            "shadow_status": "NONE",
+            "shadow_reason": "",
+            "shadow_score": score,
+            "would_have_been_candidate": False,
+            "would_have_been_verified": False,
+            "missing_reasons": missing,
+        }
+
+    status = _canonical_upper(
+        candidate.get("opportunity_status")
+        or candidate.get("trade_opportunity_status")
+        or candidate.get("status")
+        or "NONE"
+    ) or "NONE"
+    blockers = _shadow_blocker_tokens(candidate)
+    hard_blocker = _shadow_hard_blocker(blockers)
+    shadow_status = "NONE"
+    shadow_reason = "score_below_shadow_candidate"
+    would_candidate = False
+    would_verified = False
+
+    if status in {"CANDIDATE", "VERIFIED"}:
+        shadow_reason = f"production_already_{status.lower()}"
+    elif hard_blocker:
+        shadow_reason = f"hard_blocker:{hard_blocker}"
+    elif bool(SHADOW_REQUIRE_LIVE_CONTEXT) and not _shadow_live_context_ready(candidate):
+        shadow_reason = "shadow_require_live_context"
+    elif bool(SHADOW_REQUIRE_BROADER_CONFIRM) and not _shadow_broader_confirm_ready(candidate):
+        shadow_reason = "shadow_require_broader_confirm"
+    elif score >= float(SHADOW_VERIFIED_MIN_SCORE) and _shadow_immaturity_blocked(blockers):
+        shadow_status = "SHADOW_VERIFIED"
+        shadow_reason = "near_verified_but_immature"
+        would_candidate = True
+        would_verified = True
+    elif score >= float(SHADOW_CANDIDATE_MIN_SCORE):
+        shadow_status = "SHADOW_CANDIDATE"
+        shadow_reason = "near_candidate_but_blocked" if status in {"BLOCKED", "NONE"} else "near_candidate"
+        would_candidate = True
+
+    return {
+        "shadow_evaluated": True,
+        "shadow_status": shadow_status,
+        "shadow_reason": shadow_reason,
+        "shadow_score": score,
+        "would_have_been_candidate": would_candidate,
+        "would_have_been_verified": would_verified,
+        "missing_reasons": [],
+    }
+
+
+def _apply_derived_shadow_evaluation(candidate: dict[str, Any]) -> dict[str, Any]:
+    derived = derive_shadow_evaluation_fields(candidate)
+    candidate["shadow_missing_reasons"] = list(derived.get("missing_reasons") or [])
+    if not bool(derived.get("shadow_evaluated")):
+        candidate.setdefault("shadow_status", "NONE")
+        return candidate
+    candidate["shadow_evaluated"] = True
+    candidate["shadow_status"] = str(derived.get("shadow_status") or "NONE")
+    candidate["shadow_reason"] = str(derived.get("shadow_reason") or "")
+    if derived.get("shadow_score") is not None:
+        score_value = round(float(derived.get("shadow_score") or 0.0), 4)
+        candidate["shadow_score"] = score_value
+        candidate.setdefault("score", score_value)
+    candidate["would_have_been_candidate"] = bool(derived.get("would_have_been_candidate"))
+    candidate["would_have_been_verified"] = bool(derived.get("would_have_been_verified"))
+    return candidate
+
+
+def _shadow_score_distribution(scores: list[float]) -> dict[str, Any]:
+    if not scores:
+        return {
+            "count": 0,
+            "min": None,
+            "p50": None,
+            "p90": None,
+            "max": None,
+            "avg": None,
+            "buckets": {},
+        }
+    ordered = sorted(float(item) for item in scores)
+
+    def pct(ratio: float) -> float:
+        index = int((len(ordered) - 1) * ratio)
+        return round(ordered[index], 4)
+
+    buckets = {
+        "lt_candidate": sum(1 for item in ordered if item < float(SHADOW_CANDIDATE_MIN_SCORE)),
+        "candidate_to_verified": sum(
+            1 for item in ordered
+            if float(SHADOW_CANDIDATE_MIN_SCORE) <= item < float(SHADOW_VERIFIED_MIN_SCORE)
+        ),
+        "gte_verified": sum(1 for item in ordered if item >= float(SHADOW_VERIFIED_MIN_SCORE)),
+    }
+    return {
+        "count": len(ordered),
+        "min": round(ordered[0], 4),
+        "p50": pct(0.50),
+        "p90": pct(0.90),
+        "max": round(ordered[-1], 4),
+        "avg": round(sum(ordered) / len(ordered), 4),
+        "buckets": buckets,
+    }
+
+
 def _candidate_timestamp(candidate: dict[str, Any]) -> int:
     return _to_int(
         candidate.get("archive_ts")
@@ -1087,24 +1417,46 @@ def _candidate_to_signal_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "opportunity_profile_key": str(candidate.get("profile_key") or candidate.get("opportunity_profile_key") or ""),
         "trade_opportunity_status": str(candidate.get("opportunity_status") or ""),
         "trade_opportunity_shadow_status": str(candidate.get("shadow_status") or "NONE"),
+        "trade_opportunity_shadow_reason": str(candidate.get("shadow_reason") or ""),
+        "trade_opportunity_shadow_score": candidate.get("shadow_score"),
         "input_source": list(candidate.get("input_source") or []),
     }
 
 
 def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    payloads = _expanded_payloads(row, payloads)
     raw_shadow_status = _first_payload_value(row, payloads, "shadow_status", "trade_opportunity_shadow_status")
     shadow_reason = _first_payload_value(row, payloads, "shadow_reason", "trade_opportunity_shadow_reason")
     shadow_score = _first_payload_value(row, payloads, "shadow_score", "trade_opportunity_shadow_score")
-    score = _first_payload_value(row, payloads, "calibrated_score", "raw_score", "opportunity_score", "score", "shadow_score", "trade_opportunity_shadow_score")
+    score = _first_payload_value(
+        row,
+        payloads,
+        "calibrated_score",
+        "opportunity_calibrated_score",
+        "trade_opportunity_calibrated_score",
+        "opportunity_score",
+        "trade_opportunity_score",
+        "score",
+        "raw_score",
+        "opportunity_raw_score",
+        "trade_opportunity_raw_score",
+        "shadow_score",
+        "trade_opportunity_shadow_score",
+    )
     quality_snapshot = _first_payload_value(row, payloads, "quality_snapshot_json", "quality_snapshot")
     profile_features = _first_payload_value(row, payloads, "profile_features_json", "profile_features")
     score_components = _first_payload_value(row, payloads, "score_components_json", "score_components")
     opportunity_features = _first_payload_value(row, payloads, "opportunity_features", "opportunity_json", "features_json")
-    return {
+    feature_fields = {}
+    for value in (profile_features, opportunity_features):
+        parsed = _from_json(value, {})
+        if isinstance(parsed, dict):
+            feature_fields.update(parsed)
+    candidate = {
         "source": source,
         "signal_id": _first_payload_value(row, payloads, "signal_id"),
         "trade_opportunity_id": _first_payload_value(row, payloads, "trade_opportunity_id"),
-        "asset": _first_payload_value(row, payloads, "asset", "asset_symbol"),
+        "asset": _first_payload_value(row, payloads, "asset", "asset_symbol", "token_symbol"),
         "pair": _first_payload_value(row, payloads, "pair", "pair_label"),
         "side": _first_payload_value(row, payloads, "side", "opportunity_profile_side", "trade_opportunity_side", "would_have_been_direction"),
         "direction": _first_payload_value(row, payloads, "direction", "trade_opportunity_side", "side", "would_have_been_direction"),
@@ -1117,7 +1469,11 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "shadow_status_present": raw_shadow_status is not None,
         "shadow_reason": shadow_reason,
         "shadow_score": shadow_score,
-        "shadow_evaluated": raw_shadow_status is not None or shadow_reason is not None or shadow_score is not None,
+        "shadow_evaluated": (
+            _canonical_upper(raw_shadow_status) in REPLAY_ELIGIBLE_SHADOW_STATUSES
+            or shadow_reason is not None
+            or shadow_score is not None
+        ),
         "profile_key": _first_payload_value(row, payloads, "profile_key", "opportunity_profile_key"),
         "quality_snapshot": quality_snapshot,
         "profile_features": profile_features,
@@ -1125,7 +1481,17 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "opportunity_features": opportunity_features,
         "market_context_source": _first_payload_value(row, payloads, "market_context_source", "market_context_adapter_source", "context_source"),
         "lp_stage": _first_payload_value(row, payloads, "lp_stage", "lp_alert_stage"),
-        "sweep_phase": _first_payload_value(row, payloads, "sweep_phase"),
+        "sweep_phase": _first_payload_value(row, payloads, "sweep_phase", "lp_sweep_phase"),
+        "lp_alert_stage": _first_payload_value(row, payloads, "lp_alert_stage", "lp_stage"),
+        "lp_confirm_scope": _first_payload_value(row, payloads, "lp_confirm_scope", "confirm_scope"),
+        "lp_absorption_context": _first_payload_value(row, payloads, "lp_absorption_context", "absorption_context"),
+        "alert_relative_timing": _first_payload_value(row, payloads, "alert_relative_timing", "market_timing"),
+        "basis_bucket": _first_payload_value(row, payloads, "basis_bucket"),
+        "quality_bucket": _first_payload_value(row, payloads, "quality_bucket"),
+        "pool_quality_score": _first_payload_value(row, payloads, "pool_quality_score"),
+        "pair_quality_score": _first_payload_value(row, payloads, "pair_quality_score"),
+        "asset_case_quality_score": _first_payload_value(row, payloads, "asset_case_quality_score"),
+        "major_asset": _first_payload_value(row, payloads, "major_asset"),
         "delivery_decision": _first_payload_value(row, payloads, "delivery_decision", "delivery_reason", "delivery_class"),
         "stage": _first_payload_value(row, payloads, "stage"),
         "gate_reason": _first_payload_value(row, payloads, "gate_reason", "opportunity_gate_failure_reason"),
@@ -1142,6 +1508,10 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "sent_to_telegram": _is_truthy(_first_payload_value(row, payloads, "sent_to_telegram", "sent", "delivered")),
         "blockers": _coerce_blockers(_first_payload_value(row, payloads, "blockers_json", "hard_blockers_json", "verification_blockers_json", "blockers")),
     }
+    repair_fields = dict(feature_fields)
+    repair_fields.update({key: value for key, value in candidate.items() if value not in (None, "", [], {})})
+    candidate["profile_key"] = repair_profile_key(candidate.get("profile_key"), repair_fields)
+    return candidate
 
 
 def _add_candidate(
@@ -1204,6 +1574,11 @@ def _collect_trade_replay_inputs(
                 "raw_score",
                 "calibrated_score",
                 "market_context_source",
+                "lp_alert_stage",
+                "lp_sweep_phase",
+                "lp_confirm_scope",
+                "lp_absorption_context",
+                "alert_relative_timing",
                 "quality_snapshot_json",
                 "score_components_json",
                 "profile_features_json",
@@ -1237,6 +1612,10 @@ def _collect_trade_replay_inputs(
                 "opportunity_profile_key",
                 "market_context_source",
                 "lp_alert_stage",
+                "lp_sweep_phase",
+                "lp_confirm_scope",
+                "lp_absorption_context",
+                "alert_relative_timing",
                 "delivery_decision",
                 "sent_to_telegram",
                 "replay_eligible",
@@ -1322,7 +1701,7 @@ def _collect_trade_replay_inputs(
                 candidate["sent_at"] = _first_payload_value(row, payloads, "sent_at", "created_at")
             _add_candidate(candidates, candidate, source=count_key, fallback_key=f"{count_key}:{index}")
 
-    merged = list(candidates.values())
+    merged = [_apply_derived_shadow_evaluation(item) for item in candidates.values()]
     counts["shadow_opportunities"] = sum(1 for item in merged if _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES)
     counts["suppressed"] = sum(1 for item in merged if bool(item.get("suppressed")))
     counts["blocked"] = sum(1 for item in merged if bool(item.get("blocked")) or _is_blocked_candidate(item))
@@ -1508,27 +1887,36 @@ def _shadow_funnel_summary(
     candidates: list[dict[str, Any]],
     replay_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    status_counts = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in candidates)
+    shadow_candidates = [_apply_derived_shadow_evaluation(dict(item)) for item in candidates]
+    status_counts = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in shadow_candidates)
     replay_shadow_statuses = Counter(_canonical_upper(item.get("shadow_status") or "NONE") for item in replay_rows)
     shadow_inputs = [
-        item for item in candidates
+        item for item in shadow_candidates
         if "trade_opportunities" in list(item.get("input_source") or [])
         or bool(item.get("shadow_evaluated"))
         or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES
     ]
     evaluated = [
-        item for item in candidates
+        item for item in shadow_inputs
         if bool(item.get("shadow_evaluated")) or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES
     ]
     candidate_count = int(status_counts.get("SHADOW_CANDIDATE") or 0)
     verified_count = int(status_counts.get("SHADOW_VERIFIED") or 0)
     gate_passed = candidate_count + verified_count
     blocked_reasons: Counter[str] = Counter()
+    reason_distribution: Counter[str] = Counter()
+    evaluated_scores: list[float] = []
     for item in evaluated:
         status = _canonical_upper(item.get("shadow_status") or "NONE")
+        score = _to_float(item.get("shadow_score"))
+        if score is not None:
+            evaluated_scores.append(float(score))
+        reason = str(item.get("shadow_reason") or "").strip()
+        reason_distribution[reason or status.lower() or "shadow_status_none"] += 1
         if status in REPLAY_ELIGIBLE_SHADOW_STATUSES:
             continue
-        reason = str(item.get("shadow_reason") or item.get("blocked_reason") or item.get("suppression_reason") or "").strip()
+        if not reason:
+            reason = str(item.get("blocked_reason") or item.get("suppression_reason") or "").strip()
         if not reason:
             blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
             reason = str(blockers[0]) if blockers else "shadow_status_none"
@@ -1550,26 +1938,18 @@ def _shadow_funnel_summary(
     for item in shadow_inputs:
         if not SHADOW_OPPORTUNITY_ENABLE:
             missing_reasons["shadow_disabled"] += 1
-            continue
         item_missing: list[str] = []
         if not present(item.get("score")):
             item_missing.append("missing_score")
         if _direction_from_values(item.get("side"), item.get("direction"), item.get("trade_action_key"), item.get("trade_action")) not in {"LONG", "SHORT"}:
             item_missing.append("missing_side")
-        if not present(item.get("market_context_source")):
-            item_missing.append("missing_market_context")
-        if not any(present(item.get(key)) for key in ("opportunity_features", "profile_features", "score_components")):
-            item_missing.append("missing_opportunity_features")
-        if not present(item.get("profile_key")):
-            item_missing.append("missing_profile_key")
-        if not present(item.get("quality_snapshot")):
-            item_missing.append("missing_quality_snapshot")
-        if not bool(item.get("shadow_evaluated")) and not _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES:
-            item_missing.append("no_shadow_evaluation_fields")
-        if not item_missing:
-            item_missing.append("gate_not_configured")
-        if item in evaluated:
-            item_missing = [reason for reason in item_missing if reason != "no_shadow_evaluation_fields"]
+        for reason in list(item.get("shadow_missing_reasons") or []):
+            if reason not in item_missing:
+                item_missing.append(str(reason))
+        if bool(item.get("shadow_evaluated")) or _canonical_upper(item.get("shadow_status")) in REPLAY_ELIGIBLE_SHADOW_STATUSES:
+            item_missing = []
+        elif not item_missing:
+            item_missing.append("no_shadow_candidates")
         for reason in item_missing:
             missing_reasons[reason] += 1
         for label, key in feature_keys.items():
@@ -1593,9 +1973,9 @@ def _shadow_funnel_summary(
 
     zero_reasons: list[str] = []
     if not evaluated:
-        if not candidates:
+        if not shadow_candidates:
             zero_reasons.append("no_replay_input_rows")
-        elif not any("trade_opportunities" in list(item.get("input_source") or []) for item in candidates):
+        elif not any("trade_opportunities" in list(item.get("input_source") or []) for item in shadow_candidates):
             zero_reasons.append("no_trade_opportunities_in_window")
         else:
             zero_reasons.extend(str(reason) for reason in missing_reasons)
@@ -1611,6 +1991,8 @@ def _shadow_funnel_summary(
         "shadow_blocked_count": max(len(evaluated) - gate_passed, 0),
         "shadow_blocked_reasons": dict(sorted(blocked_reasons.items())),
         "shadow_missing_field_reasons": dict(sorted(missing_reasons.items())),
+        "shadow_reason_distribution": dict(sorted(reason_distribution.items())),
+        "shadow_score_distribution": _shadow_score_distribution(evaluated_scores),
         "shadow_feature_coverage": feature_coverage,
         "shadow_replay_count": sum(
             1 for item in replay_rows
@@ -2138,7 +2520,7 @@ def _load_persisted_replay_rows(
         return []
     try:
         if {"replay_scope", "strategy_config_hash"}.issubset(columns):
-            return [
+            rows = [
                 dict(row)
                 for row in conn.execute(
                     """
@@ -2151,6 +2533,37 @@ def _load_persisted_replay_rows(
                     (logical_date, replay_scope, strategy_config_hash),
                 ).fetchall()
             ]
+            if rows:
+                return rows
+            fallback = conn.execute(
+                """
+                SELECT strategy_config_hash, COUNT(*) AS row_count
+                FROM trade_replay_examples
+                WHERE logical_date = ?
+                  AND COALESCE(replay_scope, 'default') = ?
+                GROUP BY strategy_config_hash
+                ORDER BY row_count DESC, strategy_config_hash DESC
+                LIMIT 1
+                """,
+                (logical_date, replay_scope),
+            ).fetchone()
+            fallback_hash = str(fallback["strategy_config_hash"] or "") if fallback else ""
+            if fallback_hash:
+                replay_diagnostics.warning(f"strategy_config_hash_fallback:{fallback_hash}")
+                return [
+                    dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT * FROM trade_replay_examples
+                        WHERE logical_date = ?
+                          AND COALESCE(replay_scope, 'default') = ?
+                          AND strategy_config_hash = ?
+                        ORDER BY signal_ts ASC
+                        """,
+                        (logical_date, replay_scope, fallback_hash),
+                    ).fetchall()
+                ]
+            return rows
         replay_diagnostics.warning("schema_warning:trade_replay_examples.scope_columns_missing")
         return [
             dict(row)
@@ -2214,13 +2627,7 @@ def _profile_rows(
 
 
 def _profile_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "profile_key": row.get("profile_key"),
-        "valid_sample_count": int(row.get("valid_sample_count") or row.get("valid_count") or 0),
-        "avg_net_pnl_bps": float(row.get("avg_net_pnl_bps") or 0.0),
-        "win_rate": float(row.get("win_rate") or 0.0),
-        "recommended_action": row.get("recommended_action"),
-    }
+    return replay_profile_payload(row)
 
 
 def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dict[str, Any]], profile_rows: list[dict[str, Any]]) -> None:
@@ -2248,6 +2655,8 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
                 "valid_sample_count": value.get("valid_count", 0),
                 "avg_net_pnl_bps": value.get("avg_net_pnl_bps", 0.0),
                 "win_rate": value.get("win_rate", 0.0),
+                "clean_followthrough_rate": value.get("clean_followthrough_rate", value.get("clean_rate", 0.0)),
+                "chop_rate": value.get("chop_rate", 0.0),
                 "recommended_action": value.get("recommended_action"),
             }
             for key, value in stats.items()
@@ -2296,6 +2705,7 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
                 {"profile_key": row.get("profile_key"), "recommended_action": row.get("recommended_action")}
                 for row in profile_rows[:10]
             ],
+            **replay_profile_summary(profile_rows),
         }
     )
 
@@ -2355,6 +2765,11 @@ def run_trade_replay(
         include_suppressed=include_suppressed,
         include_blocked=include_blocked,
     )
+    strategy_config = _strategy_config_payload(
+        replay_scope=normalized_scope,
+        include_suppressed=include_suppressed,
+        include_blocked=include_blocked,
+    )
     strategy_hash = _strategy_config_hash(
         replay_scope=normalized_scope,
         include_suppressed=include_suppressed,
@@ -2364,6 +2779,7 @@ def run_trade_replay(
         "logical_date": logical_date,
         "replay_scope": normalized_scope,
         "strategy_config_hash": strategy_hash,
+        "current_strategy_config": strategy_config,
         "replay_source": "missing",
         "persisted_rows_found": 0,
         "timezone": "Asia/Shanghai",
@@ -2409,6 +2825,19 @@ def run_trade_replay(
         "top_positive_profiles": [],
         "top_negative_profiles": [],
         "recommended_profile_actions": [],
+        "replay_profile_count": 0,
+        "replay_profile_blocker_count": 0,
+        "high_confidence_negative_profiles": [],
+        "high_confidence_positive_profiles": [],
+        "low_sample_positive_profiles": [],
+        "low_sample_profiles_count": 0,
+        "profile_unknown_diagnostics": {
+            "profile_unknown_field_rate": 0.0,
+            "profile_unknown_field_count": 0,
+            "profile_unknown_profile_count": 0,
+            "unknown_by_dimension": {},
+            "top_unknown_profiles": [],
+        },
         "persistence_summary": {
             "enabled": False,
             "replay_scope": normalized_scope,
@@ -2464,6 +2893,59 @@ def run_trade_replay(
         if not dry_run:
             _ensure_replay_persistence_schema(conn)
             conn.commit()
+        if dry_run:
+            persisted_rows = _load_persisted_replay_rows(
+                conn,
+                logical_date,
+                diagnostics,
+                replay_scope=normalized_scope,
+                strategy_config_hash=strategy_hash,
+            )
+            if persisted_rows:
+                persisted_hash = str(persisted_rows[0].get("strategy_config_hash") or "")
+                if persisted_hash and persisted_hash != strategy_hash:
+                    summary["strategy_config_hash"] = persisted_hash
+                    strategy_hash = persisted_hash
+                summary["persisted_rows_found"] = len(persisted_rows)
+                summary["replay_source"] = "persisted"
+                profile_rows = _profile_rows(
+                    conn,
+                    diagnostics,
+                    logical_date=logical_date,
+                    replay_scope=normalized_scope,
+                    strategy_config_hash=strategy_hash,
+                )
+                _augment_summary_from_replays(summary, persisted_rows, profile_rows)
+                _finalize_replay_coverage(summary, persisted_rows)
+                summary["shadow_funnel_summary"] = _shadow_funnel_summary(candidates=[], replay_rows=persisted_rows)
+                summary["suppressed_replay_zero_reasons"] = _suppressed_replay_zero_reasons(
+                    include_suppressed=include_suppressed,
+                    input_source_counts=summary["input_source_counts"],
+                    eligibility_summary=summary["eligibility_summary"],
+                    suppressed_replay_count=int(summary.get("suppressed_replay_count") or 0),
+                )
+                summary["results"] = [
+                    {
+                        "signal_id": str(row.get("signal_id") or ""),
+                        "trade_opportunity_id": str(row.get("trade_opportunity_id") or ""),
+                        "asset": str(row.get("asset") or ""),
+                        "pair": str(row.get("pair") or ""),
+                        "direction": str(row.get("direction") or row.get("side") or ""),
+                        "input_source": list(row.get("input_source") or []),
+                        "signal_ts": _to_int(row.get("signal_ts") or row.get("archive_ts") or row.get("timestamp")),
+                        "data_valid": _is_truthy(row.get("data_valid", 1)),
+                        "invalid_reason": row.get("invalid_reason"),
+                        "label": row.get("label"),
+                        "entry_price": _to_float(row.get("entry_price")),
+                        "exit_price": _to_float(row.get("exit_price")),
+                        "net_pnl_bps": _to_signed_float(row.get("net_pnl_bps")),
+                    }
+                    for row in persisted_rows[:10]
+                ]
+                if diagnostics.schema_errors or diagnostics.query_errors or diagnostics.price_errors:
+                    summary["status"] = "degraded"
+                summary.update(diagnostics.as_dict())
+                return summary
         candidates, input_source_counts, _ = _collect_trade_replay_inputs(
             conn,
             window=window,
@@ -2487,6 +2969,11 @@ def run_trade_replay(
             replay_scope=normalized_scope,
             strategy_config_hash=strategy_hash,
         )
+        if persisted_rows:
+            persisted_hash = str(persisted_rows[0].get("strategy_config_hash") or "")
+            if persisted_hash and persisted_hash != strategy_hash:
+                summary["strategy_config_hash"] = persisted_hash
+                strategy_hash = persisted_hash
         summary["persisted_rows_found"] = len(persisted_rows)
         replay_rows = persisted_rows
         if not dry_run and eligible_inputs:
@@ -2585,7 +3072,9 @@ def run_trade_replay(
 
 
 def _infer_profile_action(stats: dict[str, Any]) -> str:
-    valid_count = stats["valid_count"]
+    if evaluate_replay_profile_gate(stats).get("blocker") == "replay_profile_negative":
+        return "block_profile"
+    valid_count = int(stats.get("valid_count") or stats.get("valid_sample_count") or 0)
     if valid_count < MIN_PROFILE_REPLAY_SAMPLES:
         return "needs_more_samples"
 
@@ -2608,12 +3097,12 @@ def _infer_profile_action(stats: dict[str, Any]) -> str:
 
 
 def _infer_profile_confidence(stats: dict[str, Any]) -> float:
-    valid_count = stats["valid_count"]
+    valid_count = int(stats.get("valid_count") or stats.get("valid_sample_count") or 0)
     if valid_count < MIN_PROFILE_REPLAY_SAMPLES:
         return 0.0
     sample_confidence = min(1.0, valid_count / 50.0)
-    total_count = stats["sample_count"]
-    data_quality = stats["valid_count"] / total_count if total_count > 0 else 0.0
+    total_count = int(stats.get("sample_count") or valid_count)
+    data_quality = valid_count / total_count if total_count > 0 else 0.0
     return round(sample_confidence * data_quality, 4)
 
 
