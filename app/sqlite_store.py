@@ -526,6 +526,158 @@ def _from_json(value: Any, default: Any = None) -> Any:
         return default
 
 
+def _current_blocker_priority() -> list[str]:
+    try:
+        from trade_opportunity import BLOCKER_PRIORITY
+
+        return list(BLOCKER_PRIORITY)
+    except Exception:
+        return [
+            "no_trade_lock",
+            "direction_conflict",
+            "data_gap",
+            "replay_profile_negative",
+            "sweep_exhaustion_risk",
+            "late_or_chase",
+            "crowded_basis",
+            "local_absorption",
+            "strong_opposite_signal",
+            "non_lp_evidence_conflict",
+            "non_lp_opposite_smart_money",
+            "non_lp_maker_against",
+            "non_lp_exchange_flow_against",
+            "non_lp_clmm_position_against",
+            "non_lp_liquidation_against",
+            "low_quality",
+            "profile_adverse_too_high",
+            "profile_completion_too_low",
+            "profile_sample_count_insufficient",
+            "outcome_history_insufficient",
+            "profile_followthrough_too_low",
+        ]
+
+
+def _blocker_priority_index(blocker: str) -> int:
+    priority = _current_blocker_priority()
+    try:
+        return priority.index(str(blocker or ""))
+    except ValueError:
+        return len(priority) + 1
+
+
+def _choose_primary_blocker(blockers: list[str]) -> str:
+    try:
+        from trade_opportunity import choose_primary_blocker
+
+        return choose_primary_blocker(blockers)
+    except Exception:
+        normalized: list[str] = []
+        for blocker in blockers:
+            text = str(blocker or "").strip()
+            if text and text not in normalized:
+                normalized.append(text)
+        priority = _current_blocker_priority()
+        for item in priority:
+            if item in normalized:
+                return item
+        return normalized[0] if normalized else ""
+
+
+def _coerce_blocker_values(value: Any) -> list[str]:
+    parsed = _from_json(value, value)
+    blockers: list[str] = []
+    if isinstance(parsed, list):
+        for item in parsed:
+            text = str(item or "").strip()
+            if text and text not in blockers:
+                blockers.append(text)
+        return blockers
+    if isinstance(parsed, dict):
+        for key in (
+            "trade_opportunity_blockers",
+            "trade_opportunity_hard_blockers",
+            "trade_opportunity_verification_blockers",
+            "blockers",
+            "hard_blockers",
+            "verification_blockers",
+        ):
+            for item in _coerce_blocker_values(parsed.get(key)):
+                if item not in blockers:
+                    blockers.append(item)
+        if "replay_profile_negative" in json.dumps(parsed, ensure_ascii=False) and "replay_profile_negative" not in blockers:
+            blockers.append("replay_profile_negative")
+        return blockers
+    text = str(parsed or "").strip()
+    if text == "replay_profile_negative":
+        return [text]
+    if "replay_profile_negative" in text:
+        return ["replay_profile_negative"]
+    return []
+
+
+def _replay_profile_negative_row_blockers(row: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for key in ("blockers_json", "hard_blockers_json", "verification_blockers_json", "opportunity_json"):
+        for item in _coerce_blocker_values(row.get(key)):
+            if item not in blockers:
+                blockers.append(item)
+    return blockers
+
+
+def _replay_profile_primary_blocker_audit_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT trade_opportunity_id,
+                   primary_blocker,
+                   blockers_json,
+                   hard_blockers_json,
+                   verification_blockers_json,
+                   opportunity_json
+            FROM trade_opportunities
+            WHERE COALESCE(blockers_json, '') LIKE '%replay_profile_negative%'
+               OR COALESCE(hard_blockers_json, '') LIKE '%replay_profile_negative%'
+               OR COALESCE(opportunity_json, '') LIKE '%replay_profile_negative%'
+            """
+        ).fetchall()
+    ]
+    primary_distribution: Counter[str] = Counter()
+    mismatch_distribution: Counter[str] = Counter()
+    expected_distribution: Counter[str] = Counter()
+    primary_count = 0
+    expected_non_primary_count = 0
+    mismatch_count = 0
+    replay_priority = _blocker_priority_index("replay_profile_negative")
+    for row in rows:
+        primary = str(row.get("primary_blocker") or "").strip()
+        primary_distribution[primary or "(blank)"] += 1
+        blockers = _replay_profile_negative_row_blockers(row)
+        if "replay_profile_negative" not in blockers:
+            blockers.append("replay_profile_negative")
+        expected_primary = _choose_primary_blocker(blockers)
+        if primary != expected_primary:
+            mismatch_count += 1
+            mismatch_distribution[primary or "(blank)"] += 1
+            continue
+        if primary == "replay_profile_negative":
+            primary_count += 1
+        elif expected_primary and _blocker_priority_index(expected_primary) < replay_priority:
+            expected_non_primary_count += 1
+            expected_distribution[expected_primary] += 1
+    total = len(rows)
+    return {
+        "replay_profile_negative_count": total,
+        "replay_profile_negative_primary_count": primary_count,
+        "replay_profile_negative_non_primary_count": max(total - primary_count, 0),
+        "expected_non_primary_count": expected_non_primary_count,
+        "legacy_primary_blocker_mismatch_count": mismatch_count,
+        "primary_blocker_distribution": dict(sorted(primary_distribution.items())),
+        "expected_non_primary_distribution": dict(sorted(expected_distribution.items())),
+        "mismatch_primary_blocker_distribution": dict(sorted(mismatch_distribution.items())),
+    }
+
+
 def _hash(value: Any, prefix: str = "") -> str:
     digest = hashlib.sha1(_json(value).encode("utf-8")).hexdigest()[:24]
     return f"{prefix}{digest}" if prefix else digest
@@ -2910,16 +3062,7 @@ def opportunity_db_summary() -> dict[str, Any]:
             "SELECT primary_blocker, COUNT(*) AS count FROM trade_opportunities WHERE primary_blocker IS NOT NULL AND primary_blocker != '' GROUP BY primary_blocker ORDER BY count DESC"
         ).fetchall()
     }
-    replay_profile_negative_count = int(
-        conn.execute(
-            """
-            SELECT COUNT(*) FROM trade_opportunities
-            WHERE COALESCE(blockers_json, '') LIKE '%replay_profile_negative%'
-               OR COALESCE(hard_blockers_json, '') LIKE '%replay_profile_negative%'
-               OR COALESCE(opportunity_json, '') LIKE '%replay_profile_negative%'
-            """
-        ).fetchone()[0]
-    )
+    replay_profile_negative_summary = _replay_profile_primary_blocker_audit_payload(conn)
     total_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes").fetchone()[0])
     completed_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes WHERE status='completed'").fetchone()[0])
     attempts_total = int(conn.execute("SELECT COUNT(*) FROM market_context_attempts").fetchone()[0])
@@ -2961,7 +3104,11 @@ def opportunity_db_summary() -> dict[str, Any]:
         "blocked_count": int(status_counts.get("BLOCKED", 0)),
         "none_count": int(status_counts.get("NONE", 0)),
         "blocker_counts": blocker_counts,
-        "replay_profile_negative_count": replay_profile_negative_count,
+        "replay_profile_negative_count": replay_profile_negative_summary["replay_profile_negative_count"],
+        "replay_profile_negative_primary_count": replay_profile_negative_summary["replay_profile_negative_primary_count"],
+        "replay_profile_negative_non_primary_count": replay_profile_negative_summary["replay_profile_negative_non_primary_count"],
+        "legacy_primary_blocker_mismatch_count": replay_profile_negative_summary["legacy_primary_blocker_mismatch_count"],
+        "replay_profile_negative_summary": replay_profile_negative_summary,
         "outcome_completion_rate": outcome_completion_rate,
         "market_context_attempt_success_rate": round(attempts_success / attempts_total, 4) if attempts_total else 0.0,
         "opportunity_profile_count": len(profiles),
@@ -3000,6 +3147,20 @@ def opportunity_db_summary() -> dict[str, Any]:
             )[:10]
         ],
         "calibration_summary": calibration_summary,
+    }
+
+
+def replay_profile_primary_blocker_audit() -> dict[str, Any]:
+    conn = get_connection()
+    if conn is None:
+        return {"available": False, "reason": _INIT_FAILED_REASON or "not_initialized", "dry_run": True}
+    payload = _replay_profile_primary_blocker_audit_payload(conn)
+    return {
+        "available": True,
+        "dry_run": True,
+        "would_update": False,
+        "mismatch_rows": payload["legacy_primary_blocker_mismatch_count"],
+        **payload,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -519,6 +520,129 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
             "SELECT COUNT(*) AS count FROM trade_replay_profile_stats WHERE profile_key='ETH|LONG|daily'"
         ).fetchone()["count"]
         self.assertEqual(1, int(latest_count))
+
+    def test_replay_profile_repair_updates_primary_blocker_by_priority(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE trade_opportunities (
+                signal_id TEXT,
+                trade_opportunity_id TEXT PRIMARY KEY,
+                asset TEXT,
+                pair TEXT,
+                opportunity_profile_key TEXT,
+                side TEXT,
+                status TEXT,
+                primary_blocker TEXT,
+                primary_hard_blocker TEXT,
+                primary_verification_blocker TEXT,
+                blockers_json TEXT,
+                hard_blockers_json TEXT,
+                verification_blockers_json TEXT,
+                replay_eligible INTEGER,
+                raw_score REAL,
+                created_at REAL,
+                updated_at REAL,
+                opportunity_json TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE market_context_snapshots (
+                context_id TEXT PRIMARY KEY,
+                asset TEXT,
+                pair TEXT,
+                venue TEXT,
+                perp_mark_price REAL,
+                created_at REAL
+            )
+            """
+        )
+        start = _ts("2026-04-29T16:00:00+00:00")
+        self._insert_market_context_pair(start, entry_price=2000.0, exit_price=1999.0)
+        profile_key = "ETH|LONG|confirm|confirm|leading|local_absorption|major|basis_normal|quality_low"
+
+        def insert_opportunity(index: int, primary: str, blockers: list[str]) -> None:
+            payload = {
+                "trade_opportunity_id": f"opp-repair-{index}",
+                "signal_id": f"sig-repair-{index}",
+                "trade_opportunity_primary_blocker": primary,
+                "primary_blocker": primary,
+                "trade_opportunity_primary_hard_blocker": primary,
+                "primary_hard_blocker": primary,
+                "trade_opportunity_blockers": list(blockers),
+                "trade_opportunity_hard_blockers": list(blockers),
+            }
+            self.conn.execute(
+                """
+                INSERT INTO trade_opportunities VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    f"sig-repair-{index}",
+                    f"opp-repair-{index}",
+                    "ETH",
+                    "ETH/USDT",
+                    profile_key,
+                    "LONG",
+                    "BLOCKED",
+                    primary,
+                    primary,
+                    "",
+                    json.dumps(blockers, sort_keys=True),
+                    json.dumps(blockers, sort_keys=True),
+                    "[]",
+                    1,
+                    0.71,
+                    start,
+                    start,
+                    json.dumps(payload, sort_keys=True),
+                ),
+            )
+
+        insert_opportunity(0, "profile_adverse_too_high", ["profile_adverse_too_high", "replay_profile_negative"])
+        insert_opportunity(1, "no_trade_lock", ["no_trade_lock", "replay_profile_negative"])
+        for index in range(2, 15):
+            insert_opportunity(index, "replay_profile_negative", ["replay_profile_negative"])
+        self.conn.commit()
+
+        summary = run_trade_replay(
+            "2026-04-30",
+            db_path=self.db_path,
+            include_suppressed=True,
+            include_blocked=True,
+            replay_scope="full",
+        )
+
+        repair_summary = summary["persistence_summary"]["trade_opportunity_replay_profile_negative_repair_summary"]
+        self.assertEqual(15, repair_summary["candidates_seen"])
+        self.assertEqual(1, repair_summary["primary_blocker_updated"])
+        self.assertEqual(13, repair_summary["already_correct"])
+        self.assertEqual(1, repair_summary["skipped_higher_priority"])
+
+        repaired = self.conn.execute(
+            """
+            SELECT primary_blocker, blockers_json, hard_blockers_json, opportunity_json
+            FROM trade_opportunities
+            WHERE trade_opportunity_id='opp-repair-0'
+            """
+        ).fetchone()
+        opportunity_json = json.loads(repaired["opportunity_json"])
+        self.assertEqual("replay_profile_negative", repaired["primary_blocker"])
+        self.assertEqual("replay_profile_negative", opportunity_json["trade_opportunity_primary_blocker"])
+        self.assertEqual("replay_profile_negative", opportunity_json["primary_blocker"])
+        self.assertIn("replay_profile_negative", json.loads(repaired["blockers_json"]))
+        self.assertIn("replay_profile_negative", json.loads(repaired["hard_blockers_json"]))
+
+        higher_priority = self.conn.execute(
+            """
+            SELECT primary_blocker, opportunity_json
+            FROM trade_opportunities
+            WHERE trade_opportunity_id='opp-repair-1'
+            """
+        ).fetchone()
+        higher_payload = json.loads(higher_priority["opportunity_json"])
+        self.assertEqual("no_trade_lock", higher_priority["primary_blocker"])
+        self.assertEqual("no_trade_lock", higher_payload["trade_opportunity_primary_blocker"])
 
     def test_coverage_universe_excludes_low_value_audit_rows_and_keeps_actions(self) -> None:
         self._create_delivery_audit()

@@ -28,6 +28,7 @@ import config as app_config  # noqa: E402
 from replay_profile_gate import profile_payload as replay_profile_payload  # noqa: E402
 from replay_profile_gate import repair_profile_rows_with_sources  # noqa: E402
 from replay_profile_gate import replay_profile_summary  # noqa: E402
+from trade_opportunity import BLOCKER_PRIORITY, choose_primary_blocker  # noqa: E402
 from app import report_data_loader  # noqa: E402
 
 
@@ -893,12 +894,7 @@ def _resolve_verified_maturity(
 
 
 def _row_contains_replay_profile_negative(row: dict[str, Any]) -> bool:
-    primary_values = (
-        _first(row, "trade_opportunity_primary_blocker", "primary_blocker"),
-        _first(row, "trade_opportunity_primary_hard_blocker", "primary_hard_blocker"),
-        _first(row, "blocker_type"),
-    )
-    if any(str(value or "") == "replay_profile_negative" for value in primary_values):
+    if _primary_blocker_for_row(row) == "replay_profile_negative":
         return True
     for key in (
         "trade_opportunity_blockers",
@@ -920,6 +916,106 @@ def _row_contains_replay_profile_negative(row: dict[str, Any]) -> bool:
         if isinstance(parsed, str) and "replay_profile_negative" in parsed:
             return True
     return False
+
+
+def _row_blocker_values(row: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for key in (
+        "trade_opportunity_blockers",
+        "trade_opportunity_hard_blockers",
+        "trade_opportunity_verification_blockers",
+        "blockers",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "opportunity_json",
+    ):
+        value = _first(row, key)
+        parsed = _from_json(value, value)
+        items: list[str] = []
+        if isinstance(parsed, list):
+            items = [str(item or "").strip() for item in parsed]
+        elif isinstance(parsed, dict):
+            for nested_key in (
+                "trade_opportunity_blockers",
+                "trade_opportunity_hard_blockers",
+                "trade_opportunity_verification_blockers",
+                "blockers",
+                "hard_blockers",
+                "verification_blockers",
+            ):
+                nested = parsed.get(nested_key)
+                if isinstance(nested, list):
+                    items.extend(str(item or "").strip() for item in nested)
+            if "replay_profile_negative" in json.dumps(parsed, ensure_ascii=False):
+                items.append("replay_profile_negative")
+        elif isinstance(parsed, str) and "replay_profile_negative" in parsed:
+            items.append("replay_profile_negative")
+        for item in items:
+            if item and item not in blockers:
+                blockers.append(item)
+    return blockers
+
+
+def _primary_blocker_for_row(row: dict[str, Any]) -> str:
+    return str(
+        _first(
+            row,
+            "trade_opportunity_primary_blocker",
+            "primary_blocker",
+            "trade_opportunity_primary_hard_blocker",
+            "primary_hard_blocker",
+            "blocker_type",
+        )
+        or ""
+    ).strip()
+
+
+def _blocker_priority(blocker: str) -> int:
+    try:
+        return BLOCKER_PRIORITY.index(str(blocker or ""))
+    except ValueError:
+        return len(BLOCKER_PRIORITY) + 1
+
+
+def _replay_profile_negative_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    primary_distribution: Counter[str] = Counter()
+    expected_distribution: Counter[str] = Counter()
+    mismatch_distribution: Counter[str] = Counter()
+    primary_count = 0
+    expected_non_primary_count = 0
+    mismatch_count = 0
+    replay_priority = _blocker_priority("replay_profile_negative")
+    for row in rows:
+        blockers = _row_blocker_values(row)
+        primary = _primary_blocker_for_row(row)
+        if primary == "replay_profile_negative" and "replay_profile_negative" not in blockers:
+            blockers.append("replay_profile_negative")
+        if "replay_profile_negative" not in blockers:
+            continue
+        if primary and primary not in blockers:
+            blockers.append(primary)
+        primary_distribution[primary or "(blank)"] += 1
+        expected_primary = choose_primary_blocker(blockers)
+        if primary == "replay_profile_negative":
+            primary_count += 1
+        elif primary and primary == expected_primary and _blocker_priority(primary) < replay_priority:
+            expected_non_primary_count += 1
+            expected_distribution[primary] += 1
+        else:
+            mismatch_count += 1
+            mismatch_distribution[primary or "(blank)"] += 1
+    total = sum(primary_distribution.values())
+    return {
+        "replay_profile_negative_count": total,
+        "replay_profile_negative_primary_count": primary_count,
+        "replay_profile_negative_non_primary_count": max(total - primary_count, 0),
+        "expected_non_primary_count": expected_non_primary_count,
+        "legacy_primary_blocker_mismatch_count": mismatch_count,
+        "primary_blocker_distribution": dict(sorted(primary_distribution.items())),
+        "expected_non_primary_distribution": dict(sorted(expected_distribution.items())),
+        "mismatch_primary_blocker_distribution": dict(sorted(mismatch_distribution.items())),
+    }
 
 
 def _trade_opportunity_summary(
@@ -951,7 +1047,8 @@ def _trade_opportunity_summary(
     verified_outcomes = _outcome_for_rows(verified_rows)
     blocker_saved_values = [_first(row, "blocker_saved_trade") for row in blocked_rows if _first(row, "blocker_saved_trade") is not None]
     false_block_values = [_first(row, "blocker_false_block_possible") for row in blocked_rows if _first(row, "blocker_false_block_possible") is not None]
-    replay_profile_negative_count = sum(1 for row in rows if _row_contains_replay_profile_negative(row))
+    replay_profile_summary = _replay_profile_negative_summary(rows)
+    replay_profile_negative_count = replay_profile_summary["replay_profile_negative_count"]
     maturity_reasons = []
     if not verified_rows:
         maturity_reasons.append("no_verified_rows")
@@ -982,6 +1079,10 @@ def _trade_opportunity_summary(
         "hard_blocker_distribution": dict(sorted(hard_blockers.items())),
         "verification_blocker_distribution": dict(sorted(verification_blockers.items())),
         "replay_profile_negative_count": replay_profile_negative_count,
+        "replay_profile_negative_primary_count": replay_profile_summary["replay_profile_negative_primary_count"],
+        "replay_profile_negative_non_primary_count": replay_profile_summary["replay_profile_negative_non_primary_count"],
+        "legacy_primary_blocker_mismatch_count": replay_profile_summary["legacy_primary_blocker_mismatch_count"],
+        "replay_profile_negative_summary": replay_profile_summary,
         "candidate_outcome_30s": candidate_outcomes["30s"],
         "candidate_outcome_60s": candidate_outcomes["60s"],
         "candidate_outcome_300s": candidate_outcomes["300s"],
@@ -2034,6 +2135,7 @@ def _markdown(payload: dict[str, Any]) -> str:
             "",
             f"- verified_maturity: `{payload.get('trade_opportunity_summary', {}).get('verified_maturity', 'unknown')}`",
             f"- replay_profile_negative_count: `{payload.get('trade_opportunity_summary', {}).get('replay_profile_negative_count', 0)}`",
+            f"- legacy_primary_blocker_mismatch_count: `{payload.get('trade_opportunity_summary', {}).get('legacy_primary_blocker_mismatch_count', 0)}`",
             f"- trade_action_distribution_top: `{json.dumps(trade_action_top, ensure_ascii=False, sort_keys=True)}`",
             f"- prealert_lifecycle_available: `{bool(prealert.get('available'))}` source=`{prealert.get('source', 'missing')}`",
         ]
@@ -2263,6 +2365,10 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "verification_blocker_distribution": trade_summary.get("verification_blocker_distribution", {}),
         "top_blockers": trade_summary.get("top_blockers", {}),
         "replay_profile_negative_count": trade_summary.get("replay_profile_negative_count", 0),
+        "replay_profile_negative_primary_count": trade_summary.get("replay_profile_negative_primary_count", 0),
+        "replay_profile_negative_non_primary_count": trade_summary.get("replay_profile_negative_non_primary_count", 0),
+        "legacy_primary_blocker_mismatch_count": trade_summary.get("legacy_primary_blocker_mismatch_count", 0),
+        "replay_profile_negative_summary": trade_summary.get("replay_profile_negative_summary", {}),
         "blocker_saved_rate": trade_summary.get("blocker_saved_rate"),
         "blocker_false_block_rate": trade_summary.get("blocker_false_block_rate"),
     }
@@ -2351,6 +2457,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "runtime_health_summary": runtime_health_summary,
         "market_context_health": market_context,
         "trade_opportunity_summary": trade_summary,
+        "replay_profile_negative_summary": trade_summary.get("replay_profile_negative_summary", {}),
         "trade_replay_summary": replay_summary,
         "trade_replay_profile_summary": {
             "top_positive_profiles": replay_summary.get("top_positive_profiles", []),

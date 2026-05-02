@@ -389,6 +389,28 @@ class DailyReportTradeReplayTests(unittest.TestCase):
         )
 
         self.assertEqual(1, payload["replay_profile_negative_count"])
+        self.assertEqual(0, payload["replay_profile_negative_primary_count"])
+        self.assertEqual(1, payload["replay_profile_negative_non_primary_count"])
+        self.assertEqual(0, payload["legacy_primary_blocker_mismatch_count"])
+        self.assertEqual(1, payload["replay_profile_negative_summary"]["expected_non_primary_count"])
+
+    def test_trade_opportunity_summary_marks_replay_profile_legacy_primary_mismatch(self) -> None:
+        payload = report._trade_opportunity_summary(
+            [
+                {
+                    "trade_opportunity_status": "BLOCKED",
+                    "trade_opportunity_primary_blocker": "profile_followthrough_too_low",
+                    "trade_opportunity_blockers": ["profile_followthrough_too_low", "replay_profile_negative"],
+                }
+            ]
+        )
+
+        self.assertEqual(1, payload["replay_profile_negative_count"])
+        self.assertEqual(1, payload["legacy_primary_blocker_mismatch_count"])
+        self.assertEqual(
+            {"profile_followthrough_too_low": 1},
+            payload["replay_profile_negative_summary"]["mismatch_primary_blocker_distribution"],
+        )
 
 
 if __name__ == "__main__":

@@ -223,6 +223,26 @@ class SQLiteOpportunityMaturitySummaryTests(unittest.TestCase):
         )
         return sqlite_store.opportunity_db_summary()
 
+    def _write_blocked_with_replay(self, opportunity_id: str, primary_blocker: str, blockers: list[str]) -> None:
+        self.assertTrue(
+            sqlite_store.upsert_trade_opportunity(
+                {
+                    "trade_opportunity_id": opportunity_id,
+                    "signal_id": f"sig-{opportunity_id}",
+                    "asset_symbol": "ETH",
+                    "pair_label": "ETH/USDC",
+                    "trade_opportunity_side": "LONG",
+                    "trade_opportunity_status": "BLOCKED",
+                    "trade_opportunity_score": 0.66,
+                    "trade_opportunity_created_at": 1_710_000_000,
+                    "trade_opportunity_primary_blocker": primary_blocker,
+                    "trade_opportunity_primary_hard_blocker": primary_blocker,
+                    "trade_opportunity_blockers": blockers,
+                    "trade_opportunity_hard_blockers": blockers,
+                }
+            )
+        )
+
     def test_db_summary_marks_verified_immature_when_completion_is_low(self) -> None:
         payload = self._write_verified(
             outcome_status="pending",
@@ -250,6 +270,33 @@ class SQLiteOpportunityMaturitySummaryTests(unittest.TestCase):
 
         self.assertEqual("mature", payload["verified_maturity"])
         self.assertEqual([], payload["maturity_reasons"])
+
+    def test_db_summary_reports_replay_profile_primary_alignment(self) -> None:
+        self._write_blocked_with_replay(
+            "opp-replay-primary",
+            "replay_profile_negative",
+            ["replay_profile_negative"],
+        )
+        self._write_blocked_with_replay(
+            "opp-replay-expected-non-primary",
+            "no_trade_lock",
+            ["no_trade_lock", "replay_profile_negative"],
+        )
+        self._write_blocked_with_replay(
+            "opp-replay-legacy-mismatch",
+            "profile_adverse_too_high",
+            ["profile_adverse_too_high", "replay_profile_negative"],
+        )
+
+        payload = sqlite_store.opportunity_db_summary()
+        replay_summary = payload["replay_profile_negative_summary"]
+
+        self.assertEqual(3, payload["replay_profile_negative_count"])
+        self.assertEqual(1, payload["replay_profile_negative_primary_count"])
+        self.assertEqual(2, payload["replay_profile_negative_non_primary_count"])
+        self.assertEqual(1, payload["legacy_primary_blocker_mismatch_count"])
+        self.assertEqual(1, replay_summary["expected_non_primary_count"])
+        self.assertEqual({"profile_adverse_too_high": 1}, replay_summary["mismatch_primary_blocker_distribution"])
 
 
 if __name__ == "__main__":

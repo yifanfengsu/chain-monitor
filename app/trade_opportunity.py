@@ -509,6 +509,18 @@ def _blocker_priority(blocker: str) -> int:
         return len(BLOCKER_PRIORITY) + 1
 
 
+def choose_primary_blocker(blockers: list[str]) -> str:
+    normalized: list[str] = []
+    for blocker in blockers:
+        value = str(blocker or "").strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    for item in BLOCKER_PRIORITY:
+        if item in normalized:
+            return item
+    return normalized[0] if normalized else ""
+
+
 def _insert_blocker_by_priority(blockers: list[str], blocker: str) -> None:
     normalized = str(blocker or "").strip()
     if not normalized or normalized in blockers:
@@ -2301,9 +2313,10 @@ class TradeOpportunityManager:
             broader_confirm=broader_confirm,
         )
 
-        primary_hard_blocker = self._primary_blocker(hard_blockers)
-        primary_verification_blocker = self._primary_blocker(verification_blockers)
-        primary_blocker = primary_hard_blocker if status == "BLOCKED" else primary_verification_blocker
+        combined_blockers = _list_dedup(hard_blockers + verification_blockers, limit=8)
+        primary_hard_blocker = choose_primary_blocker(hard_blockers)
+        primary_verification_blocker = choose_primary_blocker(verification_blockers)
+        primary_blocker = primary_hard_blocker or primary_verification_blocker
         evidence = self._build_evidence(summary=summary, status=status, quality_floor=quality_floor, history=history)
         reason = self._reason(
             summary=summary,
@@ -2369,7 +2382,7 @@ class TradeOpportunityManager:
             "trade_opportunity_time_horizon": time_horizon,
             "trade_opportunity_reason": reason,
             "trade_opportunity_evidence": evidence,
-            "trade_opportunity_blockers": _list_dedup(hard_blockers + verification_blockers, limit=8),
+            "trade_opportunity_blockers": combined_blockers,
             "trade_opportunity_hard_blockers": _list_dedup(hard_blockers, limit=8),
             "trade_opportunity_verification_blockers": _list_dedup(verification_blockers, limit=8),
             "trade_opportunity_required_confirmation": required_confirmation,
@@ -2939,10 +2952,7 @@ class TradeOpportunityManager:
         return _list_dedup(evidence, limit=5)
 
     def _primary_blocker(self, blockers: list[str]) -> str:
-        for item in BLOCKER_PRIORITY:
-            if item in blockers:
-                return item
-        return str(blockers[0]) if blockers else ""
+        return choose_primary_blocker(blockers)
 
     def _key(self, *, summary: dict[str, Any], side: str, status: str, primary_blocker: str) -> str:
         if status == "BLOCKED":
@@ -3228,6 +3238,8 @@ class TradeOpportunityManager:
         status = "EXPIRED" if now_ts >= _int(previous.get("trade_opportunity_expires_at"), default=0) > 0 else "INVALIDATED"
         side = str(previous.get("trade_opportunity_side") or "NONE")
         opportunity_key = f"{str(previous.get('trade_opportunity_key') or '')}:{status.lower()}"
+        blockers = ["alignment_lost"]
+        primary_blocker = choose_primary_blocker(blockers)
         return {
             "trade_opportunity_id": self._id(opportunity_key=opportunity_key, signal_id=str(previous.get("signal_id") or ""), event_ts=now_ts),
             "trade_opportunity_key": opportunity_key,
@@ -3251,12 +3263,12 @@ class TradeOpportunityManager:
             "trade_opportunity_time_horizon": "30s",
             "trade_opportunity_reason": "此前的有效条件已经消失，当前不再保留原判断。",
             "trade_opportunity_evidence": list(previous.get("trade_opportunity_evidence") or []),
-            "trade_opportunity_blockers": ["alignment_lost"],
+            "trade_opportunity_blockers": blockers,
             "trade_opportunity_hard_blockers": [],
             "trade_opportunity_verification_blockers": [],
             "trade_opportunity_required_confirmation": "等待下一次独立有效条件重新建立。",
             "trade_opportunity_invalidated_by": "broader alignment 消失 / 反向结构出现",
-            "trade_opportunity_risk_flags": ["alignment_lost"],
+            "trade_opportunity_risk_flags": blockers,
             "trade_opportunity_primary_hard_blocker": "",
             "trade_opportunity_primary_verification_blocker": "",
             "trade_opportunity_quality_snapshot": dict(previous.get("trade_opportunity_quality_snapshot") or {}),
@@ -3269,7 +3281,7 @@ class TradeOpportunityManager:
             "trade_opportunity_history_snapshot": dict(previous.get("trade_opportunity_history_snapshot") or {}),
             "trade_opportunity_non_lp_evidence_context": dict(previous.get("trade_opportunity_non_lp_evidence_context") or {}),
             "trade_opportunity_non_lp_evidence_summary": str(previous.get("trade_opportunity_non_lp_evidence_summary") or ""),
-            "trade_opportunity_primary_blocker": "alignment_lost",
+            "trade_opportunity_primary_blocker": primary_blocker,
             "trade_opportunity_status_at_creation": status,
             "asset_symbol": str(previous.get("asset_symbol") or ""),
             "pair_label": str(previous.get("pair_label") or ""),

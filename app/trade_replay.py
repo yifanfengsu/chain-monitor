@@ -38,6 +38,7 @@ from replay_profile_gate import (
     repair_profile_rows_with_sources,
     replay_profile_summary,
 )
+from trade_opportunity import BLOCKER_PRIORITY, choose_primary_blocker
 
 
 # Default replay parameters
@@ -132,6 +133,7 @@ LOW_VALUE_AUDIT_REASONS = {
     "internal_rebalance",
     "stable_non_swap",
 }
+REPLAY_PROFILE_NEGATIVE_BLOCKER = "replay_profile_negative"
 
 
 class ReplayDiagnostics:
@@ -921,11 +923,56 @@ def _coerce_replay_eligible(value: Any) -> bool | None:
 def _coerce_blockers(value: Any) -> list[str]:
     payload = _from_json(value, value)
     if isinstance(payload, dict):
+        nested_blockers: list[str] = []
+        for key in (
+            "trade_opportunity_blockers",
+            "trade_opportunity_hard_blockers",
+            "trade_opportunity_verification_blockers",
+            "blockers",
+            "hard_blockers",
+            "verification_blockers",
+        ):
+            for item in _coerce_blockers(payload.get(key)):
+                text = str(item or "").strip()
+                if text and text not in nested_blockers:
+                    nested_blockers.append(text)
+        if nested_blockers:
+            return nested_blockers
         return [str(key) for key, item in payload.items() if _is_truthy(item) or item not in (None, "", [], {})]
     if isinstance(payload, list):
         return [str(item) for item in payload if str(item or "").strip()]
     text = str(payload or "").strip()
     return [text] if text else []
+
+
+def _append_unique_blockers(target: list[str], values: Any) -> list[str]:
+    for item in _coerce_blockers(values):
+        text = str(item or "").strip()
+        if text and text not in target:
+            target.append(text)
+    return target
+
+
+def _blockers_from_payload(
+    row: dict[str, Any],
+    opportunity_payload: dict[str, Any],
+    *,
+    row_keys: tuple[str, ...],
+    payload_keys: tuple[str, ...],
+) -> list[str]:
+    blockers: list[str] = []
+    for key in row_keys:
+        _append_unique_blockers(blockers, row.get(key))
+    for key in payload_keys:
+        _append_unique_blockers(blockers, opportunity_payload.get(key))
+    return blockers
+
+
+def _blocker_priority_index(blocker: str) -> int:
+    try:
+        return BLOCKER_PRIORITY.index(str(blocker or ""))
+    except ValueError:
+        return len(BLOCKER_PRIORITY) + 1
 
 
 def _merge_non_empty(target: dict[str, Any], source: dict[str, Any], *, overwrite: bool = False) -> None:
@@ -2332,9 +2379,20 @@ def _insert_or_update(conn: sqlite3.Connection, table: str, record: dict[str, An
 
 def _blocker_json_with_replay_profile_negative(value: Any) -> str:
     blockers = _coerce_blockers(value)
-    if "replay_profile_negative" not in blockers:
-        blockers.append("replay_profile_negative")
+    if REPLAY_PROFILE_NEGATIVE_BLOCKER not in blockers:
+        blockers.append(REPLAY_PROFILE_NEGATIVE_BLOCKER)
     return json.dumps(blockers, ensure_ascii=False, sort_keys=True)
+
+
+def _empty_replay_profile_negative_repair_summary() -> dict[str, int]:
+    return {
+        "candidates_seen": 0,
+        "primary_blocker_updated": 0,
+        "already_correct": 0,
+        "skipped_higher_priority": 0,
+        "opportunity_json_primary_updated": 0,
+        "rows_updated": 0,
+    }
 
 
 def _repair_trade_opportunity_replay_profile_blockers(
@@ -2342,25 +2400,34 @@ def _repair_trade_opportunity_replay_profile_blockers(
     profile_rows: dict[str, dict[str, Any]],
     *,
     now_text: str,
-) -> int:
+) -> dict[str, int]:
+    summary = _empty_replay_profile_negative_repair_summary()
     columns = _table_columns(conn, "trade_opportunities", ReplayDiagnostics())
     required = {"trade_opportunity_id", "opportunity_profile_key", "opportunity_json"}
     if not required.issubset(columns):
-        return 0
+        return summary
     blocker_profile_keys = sorted(
         profile_key
         for profile_key, row in profile_rows.items()
-        if evaluate_replay_profile_gate(row).get("blocker") == "replay_profile_negative"
+        if evaluate_replay_profile_gate(row).get("blocker") == REPLAY_PROFILE_NEGATIVE_BLOCKER
     )
     if not blocker_profile_keys:
-        return 0
+        return summary
     placeholders = ",".join("?" for _ in blocker_profile_keys)
     select_columns = [
         "trade_opportunity_id",
         "opportunity_profile_key",
         "opportunity_json",
     ]
-    for optional in ("blockers_json", "hard_blockers_json", "quality_snapshot_json"):
+    for optional in (
+        "primary_blocker",
+        "primary_hard_blocker",
+        "primary_verification_blocker",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "quality_snapshot_json",
+    ):
         if optional in columns:
             select_columns.append(optional)
     rows = [
@@ -2374,51 +2441,121 @@ def _repair_trade_opportunity_replay_profile_blockers(
             blocker_profile_keys,
         ).fetchall()
     ]
-    updated = 0
     for row in rows:
         profile_key = str(row.get("opportunity_profile_key") or "")
         gate = evaluate_replay_profile_gate(profile_rows.get(profile_key) or {})
-        if gate.get("blocker") != "replay_profile_negative":
+        if gate.get("blocker") != REPLAY_PROFILE_NEGATIVE_BLOCKER:
             continue
+        summary["candidates_seen"] += 1
         opportunity_payload = _from_json(row.get("opportunity_json"), {})
         if not isinstance(opportunity_payload, dict):
             opportunity_payload = {}
-        blockers = _coerce_blockers(opportunity_payload.get("trade_opportunity_blockers") or row.get("blockers_json"))
-        hard_blockers = _coerce_blockers(opportunity_payload.get("trade_opportunity_hard_blockers") or row.get("hard_blockers_json"))
-        if "replay_profile_negative" not in blockers:
-            blockers.append("replay_profile_negative")
-        if "replay_profile_negative" not in hard_blockers:
-            hard_blockers.append("replay_profile_negative")
+        blockers = _blockers_from_payload(
+            row,
+            opportunity_payload,
+            row_keys=("blockers_json",),
+            payload_keys=("trade_opportunity_blockers", "blockers"),
+        )
+        hard_blockers = _blockers_from_payload(
+            row,
+            opportunity_payload,
+            row_keys=("hard_blockers_json",),
+            payload_keys=("trade_opportunity_hard_blockers", "hard_blockers"),
+        )
+        verification_blockers = _blockers_from_payload(
+            row,
+            opportunity_payload,
+            row_keys=("verification_blockers_json",),
+            payload_keys=("trade_opportunity_verification_blockers", "verification_blockers"),
+        )
+        if REPLAY_PROFILE_NEGATIVE_BLOCKER not in blockers:
+            blockers.append(REPLAY_PROFILE_NEGATIVE_BLOCKER)
+        if REPLAY_PROFILE_NEGATIVE_BLOCKER not in hard_blockers:
+            hard_blockers.append(REPLAY_PROFILE_NEGATIVE_BLOCKER)
+        combined_blockers: list[str] = []
+        _append_unique_blockers(combined_blockers, blockers)
+        _append_unique_blockers(combined_blockers, hard_blockers)
+        _append_unique_blockers(combined_blockers, verification_blockers)
+        expected_primary = choose_primary_blocker(combined_blockers)
+        primary_hard_blocker = choose_primary_blocker(hard_blockers)
+        primary_verification_blocker = choose_primary_blocker(verification_blockers)
+        current_primary = str(
+            row.get("primary_blocker")
+            or opportunity_payload.get("trade_opportunity_primary_blocker")
+            or opportunity_payload.get("primary_blocker")
+            or ""
+        ).strip()
+        current_json_primary = str(
+            opportunity_payload.get("trade_opportunity_primary_blocker")
+            or opportunity_payload.get("primary_blocker")
+            or ""
+        ).strip()
+        if expected_primary and _blocker_priority_index(expected_primary) < _blocker_priority_index(REPLAY_PROFILE_NEGATIVE_BLOCKER):
+            summary["skipped_higher_priority"] += 1
+        elif current_primary == expected_primary and current_json_primary == expected_primary:
+            summary["already_correct"] += 1
+        if current_primary != expected_primary and "primary_blocker" in columns:
+            summary["primary_blocker_updated"] += 1
+        if current_json_primary != expected_primary:
+            summary["opportunity_json_primary_updated"] += 1
         opportunity_payload["trade_opportunity_blockers"] = blockers
         opportunity_payload["trade_opportunity_hard_blockers"] = hard_blockers
+        opportunity_payload["trade_opportunity_verification_blockers"] = verification_blockers
+        opportunity_payload["trade_opportunity_primary_blocker"] = expected_primary
+        opportunity_payload["primary_blocker"] = expected_primary
+        opportunity_payload["trade_opportunity_primary_hard_blocker"] = primary_hard_blocker
+        opportunity_payload["primary_hard_blocker"] = primary_hard_blocker
+        opportunity_payload["trade_opportunity_primary_verification_blocker"] = primary_verification_blocker
+        opportunity_payload["primary_verification_blocker"] = primary_verification_blocker
         opportunity_payload["trade_opportunity_replay_profile_gate"] = dict(gate)
         opportunity_payload["trade_opportunity_replay_profile_action"] = str(gate.get("action") or "")
         opportunity_payload["trade_opportunity_replay_profile_research_hint"] = str(gate.get("research_hint") or "")
         quality_snapshot = opportunity_payload.get("trade_opportunity_quality_snapshot")
         if isinstance(quality_snapshot, dict):
             quality_snapshot["replay_profile_gate"] = dict(gate)
-        updates = {
-            "opportunity_json": json.dumps(opportunity_payload, ensure_ascii=False, sort_keys=True),
-        }
+        updates: dict[str, Any] = {}
+        opportunity_json = json.dumps(opportunity_payload, ensure_ascii=False, sort_keys=True)
+        if str(row.get("opportunity_json") or "") != opportunity_json:
+            updates["opportunity_json"] = opportunity_json
+        if "primary_blocker" in columns and str(row.get("primary_blocker") or "").strip() != expected_primary:
+            updates["primary_blocker"] = expected_primary
+        if "primary_hard_blocker" in columns and str(row.get("primary_hard_blocker") or "").strip() != primary_hard_blocker:
+            updates["primary_hard_blocker"] = primary_hard_blocker
+        if (
+            "primary_verification_blocker" in columns
+            and str(row.get("primary_verification_blocker") or "").strip() != primary_verification_blocker
+        ):
+            updates["primary_verification_blocker"] = primary_verification_blocker
         if "blockers_json" in columns:
-            updates["blockers_json"] = _blocker_json_with_replay_profile_negative(row.get("blockers_json"))
+            blockers_json = json.dumps(blockers, ensure_ascii=False, sort_keys=True)
+            if str(row.get("blockers_json") or "") != blockers_json:
+                updates["blockers_json"] = blockers_json
         if "hard_blockers_json" in columns:
-            updates["hard_blockers_json"] = _blocker_json_with_replay_profile_negative(row.get("hard_blockers_json"))
+            hard_blockers_json = json.dumps(hard_blockers, ensure_ascii=False, sort_keys=True)
+            if str(row.get("hard_blockers_json") or "") != hard_blockers_json:
+                updates["hard_blockers_json"] = hard_blockers_json
+        if "verification_blockers_json" in columns:
+            verification_blockers_json = json.dumps(verification_blockers, ensure_ascii=False, sort_keys=True)
+            if str(row.get("verification_blockers_json") or "") != verification_blockers_json:
+                updates["verification_blockers_json"] = verification_blockers_json
         if "quality_snapshot_json" in columns:
             quality_snapshot_payload = _from_json(row.get("quality_snapshot_json"), {})
             if isinstance(quality_snapshot_payload, dict):
                 quality_snapshot_payload["replay_profile_gate"] = dict(gate)
-                updates["quality_snapshot_json"] = json.dumps(quality_snapshot_payload, ensure_ascii=False, sort_keys=True)
-        if "updated_at" in columns:
+                quality_snapshot_json = json.dumps(quality_snapshot_payload, ensure_ascii=False, sort_keys=True)
+                if str(row.get("quality_snapshot_json") or "") != quality_snapshot_json:
+                    updates["quality_snapshot_json"] = quality_snapshot_json
+        if updates and "updated_at" in columns:
             updates["updated_at"] = now_text
-        assignments = ", ".join(f"{key}=?" for key in updates)
-        params = [*updates.values(), str(row.get("trade_opportunity_id") or "")]
-        conn.execute(
-            f"UPDATE trade_opportunities SET {assignments} WHERE trade_opportunity_id=?",
-            params,
-        )
-        updated += 1
-    return updated
+        if updates:
+            assignments = ", ".join(f"{key}=?" for key in updates)
+            params = [*updates.values(), str(row.get("trade_opportunity_id") or "")]
+            conn.execute(
+                f"UPDATE trade_opportunities SET {assignments} WHERE trade_opportunity_id=?",
+                params,
+            )
+            summary["rows_updated"] += 1
+    return summary
 
 
 def _persist_trade_replay_rows(
@@ -2445,6 +2582,8 @@ def _persist_trade_replay_rows(
         "profile_stats_written": 0,
         "profile_daily_stats_written": 0,
         "trade_opportunity_replay_profile_negative_repaired": 0,
+        "trade_opportunity_replay_profile_negative_primary_blocker_updated": 0,
+        "trade_opportunity_replay_profile_negative_repair_summary": _empty_replay_profile_negative_repair_summary(),
     }
     if not replay_rows:
         return summary
@@ -2586,7 +2725,7 @@ def _persist_trade_replay_rows(
             )
             summary["profile_stats_written"] += 1
             summary["profile_daily_stats_written"] += 1
-        summary["trade_opportunity_replay_profile_negative_repaired"] = _repair_trade_opportunity_replay_profile_blockers(
+        repair_summary = _repair_trade_opportunity_replay_profile_blockers(
             conn,
             {
                 profile_key: {**stat, "profile_key": profile_key}
@@ -2594,6 +2733,11 @@ def _persist_trade_replay_rows(
                 if str(profile_key or "")
             },
             now_text=now_text,
+        )
+        summary["trade_opportunity_replay_profile_negative_repair_summary"] = repair_summary
+        summary["trade_opportunity_replay_profile_negative_repaired"] = int(repair_summary.get("rows_updated") or 0)
+        summary["trade_opportunity_replay_profile_negative_primary_blocker_updated"] = int(
+            repair_summary.get("primary_blocker_updated") or 0
         )
         conn.commit()
         if summary["profile_stats_written"] == 0:
@@ -2975,6 +3119,9 @@ def run_trade_replay(
             "examples_written": 0,
             "profile_stats_written": 0,
             "profile_daily_stats_written": 0,
+            "trade_opportunity_replay_profile_negative_repaired": 0,
+            "trade_opportunity_replay_profile_negative_primary_blocker_updated": 0,
+            "trade_opportunity_replay_profile_negative_repair_summary": _empty_replay_profile_negative_repair_summary(),
         },
     }
     if not logical_date:
@@ -3695,6 +3842,8 @@ def _render_text(summary: dict[str, Any]) -> str:
         f"shadow_funnel_summary={json.dumps(summary.get('shadow_funnel_summary') or {}, ensure_ascii=False, sort_keys=True)}",
         f"suppressed_replay_zero_reasons={json.dumps(summary.get('suppressed_replay_zero_reasons') or [], ensure_ascii=False)}",
         f"persistence_summary={json.dumps(summary.get('persistence_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        "trade_opportunity_replay_profile_negative_repair_summary="
+        f"{json.dumps((summary.get('persistence_summary') or {}).get('trade_opportunity_replay_profile_negative_repair_summary') or {}, ensure_ascii=False, sort_keys=True)}",
         f"warnings={json.dumps(summary.get('warnings') or [], ensure_ascii=False)}",
         f"query_errors={json.dumps(summary.get('query_errors') or [], ensure_ascii=False)}",
         f"price_errors={json.dumps(summary.get('price_errors') or [], ensure_ascii=False)}",

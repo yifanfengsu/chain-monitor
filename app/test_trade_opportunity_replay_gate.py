@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import sqlite_store
-from trade_opportunity import TradeOpportunityManager
+from trade_opportunity import TradeOpportunityManager, choose_primary_blocker
 from trade_opportunity_test_helpers import StubStateManager, make_event, make_outcome_row, make_signal
 
 
@@ -74,6 +74,20 @@ class TradeOpportunityReplayGateTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_choose_primary_blocker_prefers_replay_over_legacy_profile_blockers(self) -> None:
+        self.assertEqual(
+            "replay_profile_negative",
+            choose_primary_blocker(["profile_adverse_too_high", "replay_profile_negative"]),
+        )
+        self.assertEqual(
+            "no_trade_lock",
+            choose_primary_blocker(["no_trade_lock", "replay_profile_negative"]),
+        )
+        self.assertEqual(
+            "replay_profile_negative",
+            choose_primary_blocker(["profile_followthrough_too_low", "replay_profile_negative"]),
+        )
+
     def test_high_confidence_negative_profile_blocks_candidate_and_verified(self) -> None:
         manager = self._manager(records=[make_outcome_row() for _ in range(25)])
         event = make_event(intent_type="pool_buy_pressure")
@@ -94,6 +108,27 @@ class TradeOpportunityReplayGateTests(unittest.TestCase):
         self.assertIn("replay_profile_negative", payload["trade_opportunity_blockers"])
         self.assertEqual("replay_profile_negative", payload["trade_opportunity_primary_hard_blocker"])
         self.assertNotEqual("VERIFIED", payload["trade_opportunity_status"])
+
+    def test_replay_profile_negative_reselects_primary_over_profile_adverse_blocker(self) -> None:
+        manager = self._manager(records=[make_outcome_row(adverse=True) for _ in range(25)])
+        event = make_event(intent_type="pool_buy_pressure")
+        signal = make_signal(event)
+        profile_key = _profile_key(manager, event, signal)
+        manager._replay_profile_gate_stats[profile_key] = {
+            "profile_key": profile_key,
+            "valid_sample_count": 48,
+            "avg_net_pnl_bps": -21.67,
+            "win_rate": 0.0,
+            "clean_followthrough_rate": 0.0,
+            "chop_rate": 0.9583,
+        }
+
+        payload = manager.apply_lp_signal(event, signal)
+
+        self.assertEqual("BLOCKED", payload["trade_opportunity_status"])
+        self.assertIn("profile_adverse_too_high", payload["trade_opportunity_blockers"])
+        self.assertIn("replay_profile_negative", payload["trade_opportunity_blockers"])
+        self.assertEqual("replay_profile_negative", payload["trade_opportunity_primary_blocker"])
 
     def test_replay_profile_negative_remains_when_higher_priority_blocker_exists(self) -> None:
         manager = self._manager(records=[make_outcome_row() for _ in range(25)])
@@ -142,7 +177,7 @@ class TradeOpportunityReplayGateTests(unittest.TestCase):
                 self.assertTrue(sqlite_store.upsert_trade_opportunity(payload))
                 row = conn.execute(
                     """
-                    SELECT opportunity_json, blockers_json
+                    SELECT primary_blocker, opportunity_json, blockers_json, hard_blockers_json
                     FROM trade_opportunities
                     WHERE trade_opportunity_id=?
                     """,
@@ -153,7 +188,11 @@ class TradeOpportunityReplayGateTests(unittest.TestCase):
 
         opportunity_json = json.loads(row["opportunity_json"])
         blockers_json = json.loads(row["blockers_json"])
+        hard_blockers_json = json.loads(row["hard_blockers_json"])
+        self.assertEqual("replay_profile_negative", row["primary_blocker"])
+        self.assertEqual(row["primary_blocker"], opportunity_json["trade_opportunity_primary_blocker"])
         self.assertIn("replay_profile_negative", blockers_json)
+        self.assertIn("replay_profile_negative", hard_blockers_json)
         self.assertIn("replay_profile_negative", opportunity_json["trade_opportunity_blockers"])
 
     def test_low_sample_positive_profile_does_not_promote_verified(self) -> None:

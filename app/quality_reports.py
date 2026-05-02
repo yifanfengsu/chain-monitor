@@ -37,6 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-retention-recommendation", action="store_true", help="输出 SQLite retention/compact 建议")
     parser.add_argument("--opportunity-db-summary", action="store_true", help="输出 SQLite opportunity/profile/outcome/blocker posterior 摘要")
     parser.add_argument("--opportunity-calibration", action="store_true", help="输出 SQLite opportunity score calibration 摘要")
+    parser.add_argument("--replay-profile-primary-blocker-audit", action="store_true", help="dry-run 审计 replay_profile_negative primary blocker legacy mismatch")
     parser.add_argument("--report-source-summary", action="store_true", help="输出 report DB/archive/cache source 摘要")
     parser.add_argument("--report-source-fast", action="store_true", help="输出轻量 report source 摘要，不扫描 archive 行数")
     parser.add_argument("--fast", action="store_true", help="与 --report-source-summary 搭配使用，跳过 archive/gzip 全量行数扫描")
@@ -1024,6 +1025,15 @@ def main(argv: list[str] | None = None) -> int:
 
         sqlite_store.init_sqlite_store()
         payload = sqlite_store.opportunity_calibration_summary()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0
+
+    if args.replay_profile_primary_blocker_audit:
+        import sqlite_store
+
+        sqlite_store.init_sqlite_store()
+        payload = sqlite_store.replay_profile_primary_blocker_audit()
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sys.stdout.write("\n")
         return 0
