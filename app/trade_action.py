@@ -558,6 +558,7 @@ def _build_payload(
         "trade_action_blockers": list(blockers),
         "trade_action_required_confirmation": required_confirmation,
         "trade_action_invalidated_by": invalidated_by or "无",
+        "lp_market_read_evidence": _text(context.get("lp_market_read_evidence"), "none"),
         "trade_action_time_horizon_sec": _int(context.get("lp_followup_window_sec"), default=90),
         "trade_action_source": TRADE_ACTION_SOURCE,
         "trade_action_debug": {
@@ -610,6 +611,9 @@ def infer_trade_action(context: dict[str, Any]) -> dict[str, Any]:
     local_absorption_low_quality = bool(
         local_absorption and quality_floor < float(TRADE_ACTION_MIN_PAIR_QUALITY_FOR_CHASE)
     )
+    if local_absorption_low_quality and not _text(context.get("lp_market_read_evidence")):
+        context = dict(context)
+        context["lp_market_read_evidence"] = "heuristic_quality_low"
 
     if direction == "neutral":
         return _build_payload(
@@ -709,8 +713,8 @@ def infer_trade_action(context: dict[str, Any]) -> dict[str, Any]:
             context=context,
             key="DO_NOT_CHASE_LONG",
             confidence=0.86,
-            reason="局部买压被承接且质量偏低，历史 replay 显示这类上下文暂无交易优势，不宜把单池压力误读成可以追多。",
-            conclusion="局部买压被承接，无交易优势",
+            reason="局部买压被承接且质量偏低；暂不作为交易机会，不宜把单池压力误读成可以追多。",
+            conclusion="局部买压被承接，质量偏低",
             required_confirmation="继续跨池续买 + live_public broader confirm 后再评估",
             invalidated_by="续买消失 / 出现卖方回补",
             blockers=["local_buy_pressure_absorption", "quality_low", "replay_no_edge_context"],
@@ -721,8 +725,8 @@ def infer_trade_action(context: dict[str, Any]) -> dict[str, Any]:
             context=context,
             key="DO_NOT_CHASE_SHORT",
             confidence=0.86,
-            reason="局部卖压被承接且质量偏低，历史 replay 显示这类上下文暂无交易优势，不宜把单池卖压误读成可以追空。",
-            conclusion="局部卖压被承接，无交易优势",
+            reason="局部卖压被承接且质量偏低；暂不作为交易机会，不宜把单池卖压误读成可以追空。",
+            conclusion="局部卖压被承接，质量偏低",
             required_confirmation="继续跨池续卖 + live_public broader confirm 后再评估",
             invalidated_by="续卖消失 / 出现买方回补",
             blockers=["local_sell_pressure_absorption", "quality_low", "replay_no_edge_context"],

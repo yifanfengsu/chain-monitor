@@ -28,6 +28,27 @@ PROFILE_KEY_DIMENSIONS = (
 UNKNOWN_VALUES = {"", "unknown", "UNKNOWN", "none", "NONE", "null", "NULL"}
 LOW_SAMPLE_POSITIVE_MAX_SAMPLES = 5
 HIGH_CONFIDENCE_POSITIVE_MIN_CLEAN_RATE = 0.50
+PROFILE_KEY_EXAMPLE_FORMAT = "|".join(PROFILE_KEY_DIMENSIONS)
+LP_STAGE_SOURCE_KEYS = (
+    "confirm_scope",
+    "lp_confirm_scope",
+    "lp_stage",
+    "lp_alert_stage",
+    "lp_alert_stage_candidate",
+)
+TRADE_ACTION_STAGE_SOURCE_KEYS = (
+    "trade_action_stage",
+    "trade_action_stage_key",
+    "trade_action_stage_label",
+    "stage",
+    "subtype",
+    "final_trading_output_label",
+)
+SWEEP_PHASE_SOURCE_KEYS = (
+    "stage_bucket",
+    "sweep_phase",
+    "lp_sweep_phase",
+)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -59,6 +80,33 @@ def _unknown(value: Any) -> bool:
     return _text(value) in UNKNOWN_VALUES
 
 
+def _field_present(fields: dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        if not _unknown(fields.get(key)):
+            return True
+    return False
+
+
+def _stage_like_value(value: Any) -> str:
+    normalized = _text(value)
+    lowered = normalized.lower()
+    if not normalized or _unknown(normalized):
+        return ""
+    for canonical in (
+        "local_confirm",
+        "broader_confirm",
+        "sweep_confirmed",
+        "sweep_exhaustion_risk",
+        "exhaustion_risk",
+        "prealert",
+        "candidate",
+        "confirm",
+    ):
+        if lowered == canonical or canonical in lowered:
+            return canonical
+    return ""
+
+
 def _profile_valid_count(row: dict[str, Any]) -> int:
     return _to_int(row.get("valid_sample_count"), _to_int(row.get("valid_count")))
 
@@ -79,7 +127,7 @@ def profile_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def is_high_confidence_negative_profile(row: dict[str, Any]) -> bool:
+def is_sampled_negative_profile(row: dict[str, Any]) -> bool:
     return bool(
         _profile_valid_count(row) >= int(REPLAY_PROFILE_BLOCK_MIN_SAMPLES)
         and _to_float(row.get("avg_net_pnl_bps")) < 0.0
@@ -97,8 +145,12 @@ def is_replay_profile_negative_blocker(row: dict[str, Any]) -> bool:
         and _clean_followthrough_rate(row) <= float(REPLAY_PROFILE_BLOCK_MAX_CLEAN_RATE)
         and _to_float(row.get("chop_rate")) >= float(REPLAY_PROFILE_BLOCK_MIN_CHOP_RATE)
     )
-    replay_recommended_negative = _recommended_profile_blocker(row) and is_high_confidence_negative_profile(row)
+    replay_recommended_negative = _recommended_profile_blocker(row) and is_sampled_negative_profile(row)
     return strict_negative or replay_recommended_negative
+
+
+def is_high_confidence_negative_profile(row: dict[str, Any]) -> bool:
+    return is_replay_profile_negative_blocker(row)
 
 
 def is_high_confidence_positive_profile(row: dict[str, Any]) -> bool:
@@ -175,8 +227,27 @@ def profile_key_unknown_dimensions(profile_key: Any) -> list[str]:
     ]
 
 
+def _missing_sources_for_dimension(dimension: str, row: dict[str, Any]) -> list[str]:
+    if dimension == "lp_stage":
+        sources = ["missing_lp_stage"]
+        if not _field_present(row, *LP_STAGE_SOURCE_KEYS):
+            sources.append("missing_lp_alert_stage")
+        if not _field_present(row, *TRADE_ACTION_STAGE_SOURCE_KEYS):
+            sources.append("missing_trade_action_stage")
+        if not _field_present(row, *SWEEP_PHASE_SOURCE_KEYS):
+            sources.append("missing_sweep_phase")
+        return sources
+    if dimension == "sweep_phase":
+        sources = ["missing_sweep_phase"]
+        if not _field_present(row, *SWEEP_PHASE_SOURCE_KEYS):
+            sources.append("missing_lp_sweep_phase")
+        return sources
+    return [f"missing_{dimension}"]
+
+
 def profile_unknown_diagnostics(profile_rows: list[dict[str, Any]]) -> dict[str, Any]:
     unknown_by_dimension: Counter[str] = Counter()
+    missing_sources: Counter[str] = Counter()
     top_unknown_profiles: list[dict[str, Any]] = []
     total_fields = len(profile_rows) * len(PROFILE_KEY_DIMENSIONS)
     unknown_fields = 0
@@ -188,9 +259,14 @@ def profile_unknown_diagnostics(profile_rows: list[dict[str, Any]]) -> dict[str,
         unknown_fields += len(unknown_dimensions)
         for dimension in unknown_dimensions:
             unknown_by_dimension[dimension] += 1
+            for source in _missing_sources_for_dimension(dimension, row):
+                missing_sources[source] += 1
         payload = profile_payload(row)
         payload["unknown_dimensions"] = unknown_dimensions
-        payload["missing_sources"] = [f"profile_key.{dimension}" for dimension in unknown_dimensions]
+        profile_missing_sources: list[str] = []
+        for dimension in unknown_dimensions:
+            profile_missing_sources.extend(_missing_sources_for_dimension(dimension, row))
+        payload["missing_sources"] = sorted(set(profile_missing_sources))
         top_unknown_profiles.append(payload)
     top_unknown_profiles.sort(
         key=lambda item: (
@@ -200,17 +276,24 @@ def profile_unknown_diagnostics(profile_rows: list[dict[str, Any]]) -> dict[str,
         )
     )
     return {
+        "dimension_names": list(PROFILE_KEY_DIMENSIONS),
+        "example_profile_key_format": PROFILE_KEY_EXAMPLE_FORMAT,
         "profile_unknown_field_rate": round(unknown_fields / total_fields, 4) if total_fields else 0.0,
         "profile_unknown_field_count": int(unknown_fields),
         "profile_unknown_profile_count": len(top_unknown_profiles),
         "unknown_by_dimension": dict(sorted(unknown_by_dimension.items())),
+        "unknown_missing_sources": dict(sorted(missing_sources.items())),
+        "unknown_rate_by_dimension": {
+            dimension: round(int(unknown_by_dimension.get(dimension) or 0) / len(profile_rows), 4) if profile_rows else 0.0
+            for dimension in PROFILE_KEY_DIMENSIONS
+        },
         "top_unknown_profiles": top_unknown_profiles[:10],
     }
 
 
 def replay_profile_summary(profile_rows: list[dict[str, Any]]) -> dict[str, Any]:
     normalized = [profile_payload(row) for row in profile_rows]
-    high_negative = [
+    sampled_negative = [
         profile_payload(row)
         for row in sorted(
             profile_rows,
@@ -220,7 +303,19 @@ def replay_profile_summary(profile_rows: list[dict[str, Any]]) -> dict[str, Any]
                 str(item.get("profile_key") or ""),
             ),
         )
-        if is_high_confidence_negative_profile(row)
+        if is_sampled_negative_profile(row)
+    ][:10]
+    blocker_negative = [
+        profile_payload(row)
+        for row in sorted(
+            profile_rows,
+            key=lambda item: (
+                _to_float(item.get("avg_net_pnl_bps")),
+                -_profile_valid_count(item),
+                str(item.get("profile_key") or ""),
+            ),
+        )
+        if is_replay_profile_negative_blocker(row)
     ][:10]
     high_positive = [
         profile_payload(row)
@@ -249,7 +344,9 @@ def replay_profile_summary(profile_rows: list[dict[str, Any]]) -> dict[str, Any]
     return {
         "replay_profile_count": len(normalized),
         "replay_profile_blocker_count": sum(1 for row in profile_rows if is_replay_profile_negative_blocker(row)),
-        "high_confidence_negative_profiles": high_negative,
+        "sampled_negative_profiles": sampled_negative,
+        "blocker_grade_negative_profiles": blocker_negative,
+        "high_confidence_negative_profiles": blocker_negative,
         "high_confidence_positive_profiles": high_positive,
         "low_sample_positive_profiles": low_positive,
         "low_sample_profiles_count": sum(
@@ -306,6 +403,18 @@ def _side_from_fields(fields: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _lp_stage_from_fields(fields: dict[str, Any]) -> str:
+    for key in LP_STAGE_SOURCE_KEYS:
+        value = _text(fields.get(key))
+        if value and not _unknown(value):
+            return value
+    for key in TRADE_ACTION_STAGE_SOURCE_KEYS:
+        value = _stage_like_value(fields.get(key))
+        if value:
+            return value
+    return "unknown"
+
+
 def repair_profile_key(profile_key: Any, fields: dict[str, Any]) -> str:
     raw_key = _text(profile_key)
     if raw_key and len(raw_key.split("|")) != len(PROFILE_KEY_DIMENSIONS):
@@ -314,7 +423,7 @@ def repair_profile_key(profile_key: Any, fields: dict[str, Any]) -> str:
     replacements = {
         "asset": _text(fields.get("asset") or fields.get("asset_symbol") or fields.get("opportunity_profile_asset")).upper(),
         "side": _side_from_fields(fields),
-        "lp_stage": _text(fields.get("confirm_scope") or fields.get("lp_confirm_scope")),
+        "lp_stage": _lp_stage_from_fields(fields),
         "sweep_phase": _text(fields.get("stage_bucket") or fields.get("lp_alert_stage") or fields.get("sweep_phase") or fields.get("lp_sweep_phase")),
         "market_timing": _text(fields.get("market_timing") or fields.get("alert_relative_timing")),
         "absorption_context": _bucket_absorption(fields.get("absorption_bucket") or fields.get("lp_absorption_context") or fields.get("absorption_context")),

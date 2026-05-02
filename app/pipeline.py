@@ -865,9 +865,11 @@ class SignalPipeline:
                     market_read = "先手观察｜结构建立中，先看 30-90s 是否续单 / 跨池共振"
 
         market_read_key = ""
+        lp_market_read_evidence = "none"
         if absorption_context in {"local_buy_pressure_absorption", "local_sell_pressure_absorption"} and quality_floor < 0.58:
             market_read_key = "local_absorption_no_edge"
-            market_read = "局部买压/卖压被承接，历史 replay 暂无交易优势；只保留归档和研究观察，不做反向提示。"
+            lp_market_read_evidence = "heuristic_quality_low"
+            market_read = "局部买压/卖压被承接，质量偏低；暂不作为交易机会，只保留归档和研究观察。"
 
         payload = {
             "lp_confirm_scope": confirm_scope,
@@ -885,6 +887,7 @@ class SignalPipeline:
             "market_state_label": state_label,
             "headline_label": state_label,
             "lp_market_read_key": market_read_key,
+            "lp_market_read_evidence": lp_market_read_evidence,
             "lp_market_read": market_read,
             "lp_meaning_brief": market_read,
         }

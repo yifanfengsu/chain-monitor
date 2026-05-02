@@ -891,6 +891,36 @@ def _resolve_verified_maturity(
     return _unknown_maturity("insufficient_data", "trade_summary")
 
 
+def _row_contains_replay_profile_negative(row: dict[str, Any]) -> bool:
+    primary_values = (
+        _first(row, "trade_opportunity_primary_blocker", "primary_blocker"),
+        _first(row, "trade_opportunity_primary_hard_blocker", "primary_hard_blocker"),
+        _first(row, "blocker_type"),
+    )
+    if any(str(value or "") == "replay_profile_negative" for value in primary_values):
+        return True
+    for key in (
+        "trade_opportunity_blockers",
+        "trade_opportunity_hard_blockers",
+        "trade_opportunity_verification_blockers",
+        "blockers",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "opportunity_json",
+        "trade_opportunity_replay_profile_gate",
+    ):
+        value = _first(row, key)
+        parsed = _from_json(value, value)
+        if isinstance(parsed, list) and any(str(item or "") == "replay_profile_negative" for item in parsed):
+            return True
+        if isinstance(parsed, dict) and "replay_profile_negative" in json.dumps(parsed, ensure_ascii=False):
+            return True
+        if isinstance(parsed, str) and "replay_profile_negative" in parsed:
+            return True
+    return False
+
+
 def _trade_opportunity_summary(
     rows: list[dict[str, Any]],
     *,
@@ -920,6 +950,7 @@ def _trade_opportunity_summary(
     verified_outcomes = _outcome_for_rows(verified_rows)
     blocker_saved_values = [_first(row, "blocker_saved_trade") for row in blocked_rows if _first(row, "blocker_saved_trade") is not None]
     false_block_values = [_first(row, "blocker_false_block_possible") for row in blocked_rows if _first(row, "blocker_false_block_possible") is not None]
+    replay_profile_negative_count = sum(1 for row in rows if _row_contains_replay_profile_negative(row))
     maturity_reasons = []
     if not verified_rows:
         maturity_reasons.append("no_verified_rows")
@@ -949,6 +980,7 @@ def _trade_opportunity_summary(
         "opportunity_hard_blocker_distribution": dict(sorted(hard_blockers.items())),
         "hard_blocker_distribution": dict(sorted(hard_blockers.items())),
         "verification_blocker_distribution": dict(sorted(verification_blockers.items())),
+        "replay_profile_negative_count": replay_profile_negative_count,
         "candidate_outcome_30s": candidate_outcomes["30s"],
         "candidate_outcome_60s": candidate_outcomes["60s"],
         "candidate_outcome_300s": candidate_outcomes["300s"],
@@ -1275,15 +1307,31 @@ def _default_trade_replay_summary(logical_date: str, *, reason: str = "trade_rep
         "recommended_profile_actions": [],
         "replay_profile_count": 0,
         "replay_profile_blocker_count": 0,
+        "sampled_negative_profiles": [],
+        "blocker_grade_negative_profiles": [],
         "high_confidence_negative_profiles": [],
         "high_confidence_positive_profiles": [],
         "low_sample_positive_profiles": [],
         "low_sample_profiles_count": 0,
         "profile_unknown_diagnostics": {
+            "dimension_names": [
+                "asset",
+                "side",
+                "lp_stage",
+                "sweep_phase",
+                "market_timing",
+                "absorption_context",
+                "asset_class",
+                "basis_bucket",
+                "quality_bucket",
+            ],
+            "example_profile_key_format": "asset|side|lp_stage|sweep_phase|market_timing|absorption_context|asset_class|basis_bucket|quality_bucket",
             "profile_unknown_field_rate": 0.0,
             "profile_unknown_field_count": 0,
             "profile_unknown_profile_count": 0,
             "unknown_by_dimension": {},
+            "unknown_missing_sources": {},
+            "unknown_rate_by_dimension": {},
             "top_unknown_profiles": [],
         },
         "warnings": ["trade_replay_missing"] if reason in {"trade_replay_missing", "trade_replay_tables_missing", "sqlite_db_missing"} else [reason],
@@ -1341,6 +1389,8 @@ def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) 
     for key in (
         "top_positive_profiles",
         "top_negative_profiles",
+        "sampled_negative_profiles",
+        "blocker_grade_negative_profiles",
         "high_confidence_negative_profiles",
         "high_confidence_positive_profiles",
         "low_sample_positive_profiles",
@@ -1354,7 +1404,10 @@ def _normalize_trade_replay_summary(payload: dict[str, Any], logical_date: str) 
         value = normalized.get(key)
         normalized[key] = value if isinstance(value, list) else []
     unknown_diagnostics = normalized.get("profile_unknown_diagnostics")
-    normalized["profile_unknown_diagnostics"] = unknown_diagnostics if isinstance(unknown_diagnostics, dict) else {}
+    default_unknown = _default_trade_replay_summary(logical_date)["profile_unknown_diagnostics"]
+    if isinstance(unknown_diagnostics, dict):
+        default_unknown.update(unknown_diagnostics)
+    normalized["profile_unknown_diagnostics"] = default_unknown
     input_counts = normalized.get("input_source_counts")
     if not isinstance(input_counts, dict):
         input_counts = {}
@@ -1978,6 +2031,7 @@ def _markdown(payload: dict[str, Any]) -> str:
             "## Metric Snapshot",
             "",
             f"- verified_maturity: `{payload.get('trade_opportunity_summary', {}).get('verified_maturity', 'unknown')}`",
+            f"- replay_profile_negative_count: `{payload.get('trade_opportunity_summary', {}).get('replay_profile_negative_count', 0)}`",
             f"- trade_action_distribution_top: `{json.dumps(trade_action_top, ensure_ascii=False, sort_keys=True)}`",
             f"- prealert_lifecycle_available: `{bool(prealert.get('available'))}` source=`{prealert.get('source', 'missing')}`",
         ]
@@ -2024,6 +2078,8 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- replayable_action_coverage: `{replay.get('replayable_action_coverage')}`",
             f"- blocked_saved_rate_estimate: `{replay.get('blocked_saved_rate_estimate')}`",
             f"- replay_profile_blocker_count: `{replay.get('replay_profile_blocker_count', 0)}`",
+            f"- sampled_negative_profiles: `{json.dumps(replay.get('sampled_negative_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
+            f"- blocker_grade_negative_profiles: `{json.dumps(replay.get('blocker_grade_negative_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
             f"- high_confidence_negative_profiles: `{json.dumps(replay.get('high_confidence_negative_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
             f"- high_confidence_positive_profiles: `{json.dumps(replay.get('high_confidence_positive_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
             f"- low_sample_positive_profiles: `{json.dumps(replay.get('low_sample_positive_profiles', [])[:3], ensure_ascii=False, sort_keys=True)}`",
@@ -2115,6 +2171,8 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("trade_replay", "suppressed_replay_zero_reasons", payload.get("trade_replay_summary", {}).get("suppressed_replay_zero_reasons")),
         ("trade_replay", "current_strategy_config", payload.get("trade_replay_summary", {}).get("current_strategy_config")),
         ("trade_replay", "replay_profile_blocker_count", payload.get("trade_replay_summary", {}).get("replay_profile_blocker_count")),
+        ("trade_replay", "sampled_negative_profiles", payload.get("trade_replay_summary", {}).get("sampled_negative_profiles")),
+        ("trade_replay", "blocker_grade_negative_profiles", payload.get("trade_replay_summary", {}).get("blocker_grade_negative_profiles")),
         ("trade_replay", "high_confidence_negative_profiles", payload.get("trade_replay_summary", {}).get("high_confidence_negative_profiles")),
         ("trade_replay", "high_confidence_positive_profiles", payload.get("trade_replay_summary", {}).get("high_confidence_positive_profiles")),
         ("trade_replay", "low_sample_positive_profiles", payload.get("trade_replay_summary", {}).get("low_sample_positive_profiles")),
@@ -2202,6 +2260,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "hard_blocker_distribution": trade_summary.get("hard_blocker_distribution", {}),
         "verification_blocker_distribution": trade_summary.get("verification_blocker_distribution", {}),
         "top_blockers": trade_summary.get("top_blockers", {}),
+        "replay_profile_negative_count": trade_summary.get("replay_profile_negative_count", 0),
         "blocker_saved_rate": trade_summary.get("blocker_saved_rate"),
         "blocker_false_block_rate": trade_summary.get("blocker_false_block_rate"),
     }
@@ -2296,6 +2355,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "top_negative_profiles": replay_summary.get("top_negative_profiles", []),
             "recommended_profile_actions": replay_summary.get("recommended_profile_actions", []),
             "replay_profile_blocker_count": replay_summary.get("replay_profile_blocker_count", 0),
+            "sampled_negative_profiles": replay_summary.get("sampled_negative_profiles", []),
+            "blocker_grade_negative_profiles": replay_summary.get("blocker_grade_negative_profiles", []),
             "high_confidence_negative_profiles": replay_summary.get("high_confidence_negative_profiles", []),
             "high_confidence_positive_profiles": replay_summary.get("high_confidence_positive_profiles", []),
             "low_sample_positive_profiles": replay_summary.get("low_sample_positive_profiles", []),
@@ -2307,6 +2368,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "top_negative_profiles": replay_summary.get("top_negative_profiles", []),
             "recommended_profile_actions": replay_summary.get("recommended_profile_actions", []),
             "replay_profile_blocker_count": replay_summary.get("replay_profile_blocker_count", 0),
+            "sampled_negative_profiles": replay_summary.get("sampled_negative_profiles", []),
+            "blocker_grade_negative_profiles": replay_summary.get("blocker_grade_negative_profiles", []),
             "high_confidence_negative_profiles": replay_summary.get("high_confidence_negative_profiles", []),
             "high_confidence_positive_profiles": replay_summary.get("high_confidence_positive_profiles", []),
             "low_sample_positive_profiles": replay_summary.get("low_sample_positive_profiles", []),

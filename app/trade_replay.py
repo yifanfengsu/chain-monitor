@@ -1481,11 +1481,14 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "opportunity_features": opportunity_features,
         "market_context_source": _first_payload_value(row, payloads, "market_context_source", "market_context_adapter_source", "context_source"),
         "lp_stage": _first_payload_value(row, payloads, "lp_stage", "lp_alert_stage"),
+        "lp_alert_stage_candidate": _first_payload_value(row, payloads, "lp_alert_stage_candidate"),
         "sweep_phase": _first_payload_value(row, payloads, "sweep_phase", "lp_sweep_phase"),
         "lp_alert_stage": _first_payload_value(row, payloads, "lp_alert_stage", "lp_stage"),
         "lp_confirm_scope": _first_payload_value(row, payloads, "lp_confirm_scope", "confirm_scope"),
+        "trade_action_stage": _first_payload_value(row, payloads, "trade_action_stage", "trade_action_stage_key", "trade_action_stage_label"),
         "lp_absorption_context": _first_payload_value(row, payloads, "lp_absorption_context", "absorption_context"),
         "alert_relative_timing": _first_payload_value(row, payloads, "alert_relative_timing", "market_timing"),
+        "subtype": _first_payload_value(row, payloads, "subtype"),
         "basis_bucket": _first_payload_value(row, payloads, "basis_bucket"),
         "quality_bucket": _first_payload_value(row, payloads, "quality_bucket"),
         "pool_quality_score": _first_payload_value(row, payloads, "pool_quality_score"),
@@ -2320,6 +2323,97 @@ def _insert_or_update(conn: sqlite3.Connection, table: str, record: dict[str, An
     conn.execute(sql, tuple(record[column] for column in columns))
 
 
+def _blocker_json_with_replay_profile_negative(value: Any) -> str:
+    blockers = _coerce_blockers(value)
+    if "replay_profile_negative" not in blockers:
+        blockers.append("replay_profile_negative")
+    return json.dumps(blockers, ensure_ascii=False, sort_keys=True)
+
+
+def _repair_trade_opportunity_replay_profile_blockers(
+    conn: sqlite3.Connection,
+    profile_rows: dict[str, dict[str, Any]],
+    *,
+    now_text: str,
+) -> int:
+    columns = _table_columns(conn, "trade_opportunities", ReplayDiagnostics())
+    required = {"trade_opportunity_id", "opportunity_profile_key", "opportunity_json"}
+    if not required.issubset(columns):
+        return 0
+    blocker_profile_keys = sorted(
+        profile_key
+        for profile_key, row in profile_rows.items()
+        if evaluate_replay_profile_gate(row).get("blocker") == "replay_profile_negative"
+    )
+    if not blocker_profile_keys:
+        return 0
+    placeholders = ",".join("?" for _ in blocker_profile_keys)
+    select_columns = [
+        "trade_opportunity_id",
+        "opportunity_profile_key",
+        "opportunity_json",
+    ]
+    for optional in ("blockers_json", "hard_blockers_json", "quality_snapshot_json"):
+        if optional in columns:
+            select_columns.append(optional)
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT {','.join(select_columns)}
+            FROM trade_opportunities
+            WHERE opportunity_profile_key IN ({placeholders})
+            """,
+            blocker_profile_keys,
+        ).fetchall()
+    ]
+    updated = 0
+    for row in rows:
+        profile_key = str(row.get("opportunity_profile_key") or "")
+        gate = evaluate_replay_profile_gate(profile_rows.get(profile_key) or {})
+        if gate.get("blocker") != "replay_profile_negative":
+            continue
+        opportunity_payload = _from_json(row.get("opportunity_json"), {})
+        if not isinstance(opportunity_payload, dict):
+            opportunity_payload = {}
+        blockers = _coerce_blockers(opportunity_payload.get("trade_opportunity_blockers") or row.get("blockers_json"))
+        hard_blockers = _coerce_blockers(opportunity_payload.get("trade_opportunity_hard_blockers") or row.get("hard_blockers_json"))
+        if "replay_profile_negative" not in blockers:
+            blockers.append("replay_profile_negative")
+        if "replay_profile_negative" not in hard_blockers:
+            hard_blockers.append("replay_profile_negative")
+        opportunity_payload["trade_opportunity_blockers"] = blockers
+        opportunity_payload["trade_opportunity_hard_blockers"] = hard_blockers
+        opportunity_payload["trade_opportunity_replay_profile_gate"] = dict(gate)
+        opportunity_payload["trade_opportunity_replay_profile_action"] = str(gate.get("action") or "")
+        opportunity_payload["trade_opportunity_replay_profile_research_hint"] = str(gate.get("research_hint") or "")
+        quality_snapshot = opportunity_payload.get("trade_opportunity_quality_snapshot")
+        if isinstance(quality_snapshot, dict):
+            quality_snapshot["replay_profile_gate"] = dict(gate)
+        updates = {
+            "opportunity_json": json.dumps(opportunity_payload, ensure_ascii=False, sort_keys=True),
+        }
+        if "blockers_json" in columns:
+            updates["blockers_json"] = _blocker_json_with_replay_profile_negative(row.get("blockers_json"))
+        if "hard_blockers_json" in columns:
+            updates["hard_blockers_json"] = _blocker_json_with_replay_profile_negative(row.get("hard_blockers_json"))
+        if "quality_snapshot_json" in columns:
+            quality_snapshot_payload = _from_json(row.get("quality_snapshot_json"), {})
+            if isinstance(quality_snapshot_payload, dict):
+                quality_snapshot_payload["replay_profile_gate"] = dict(gate)
+                updates["quality_snapshot_json"] = json.dumps(quality_snapshot_payload, ensure_ascii=False, sort_keys=True)
+        if "updated_at" in columns:
+            updates["updated_at"] = now_text
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        params = [*updates.values(), str(row.get("trade_opportunity_id") or "")]
+        conn.execute(
+            f"UPDATE trade_opportunities SET {assignments} WHERE trade_opportunity_id=?",
+            params,
+        )
+        updated += 1
+    return updated
+
+
 def _persist_trade_replay_rows(
     conn: sqlite3.Connection,
     logical_date: str,
@@ -2343,6 +2437,7 @@ def _persist_trade_replay_rows(
         "examples_written": 0,
         "profile_stats_written": 0,
         "profile_daily_stats_written": 0,
+        "trade_opportunity_replay_profile_negative_repaired": 0,
     }
     if not replay_rows:
         return summary
@@ -2484,6 +2579,15 @@ def _persist_trade_replay_rows(
             )
             summary["profile_stats_written"] += 1
             summary["profile_daily_stats_written"] += 1
+        summary["trade_opportunity_replay_profile_negative_repaired"] = _repair_trade_opportunity_replay_profile_blockers(
+            conn,
+            {
+                profile_key: {**stat, "profile_key": profile_key}
+                for profile_key, stat in stats.items()
+                if str(profile_key or "")
+            },
+            now_text=now_text,
+        )
         conn.commit()
         if summary["profile_stats_written"] == 0:
             replay_diagnostics.warning("trade_replay_profile_stats_no_profile_keys")
@@ -2827,15 +2931,31 @@ def run_trade_replay(
         "recommended_profile_actions": [],
         "replay_profile_count": 0,
         "replay_profile_blocker_count": 0,
+        "sampled_negative_profiles": [],
+        "blocker_grade_negative_profiles": [],
         "high_confidence_negative_profiles": [],
         "high_confidence_positive_profiles": [],
         "low_sample_positive_profiles": [],
         "low_sample_profiles_count": 0,
         "profile_unknown_diagnostics": {
+            "dimension_names": [
+                "asset",
+                "side",
+                "lp_stage",
+                "sweep_phase",
+                "market_timing",
+                "absorption_context",
+                "asset_class",
+                "basis_bucket",
+                "quality_bucket",
+            ],
+            "example_profile_key_format": "asset|side|lp_stage|sweep_phase|market_timing|absorption_context|asset_class|basis_bucket|quality_bucket",
             "profile_unknown_field_rate": 0.0,
             "profile_unknown_field_count": 0,
             "profile_unknown_profile_count": 0,
             "unknown_by_dimension": {},
+            "unknown_missing_sources": {},
+            "unknown_rate_by_dimension": {},
             "top_unknown_profiles": [],
         },
         "persistence_summary": {

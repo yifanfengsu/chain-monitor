@@ -2910,6 +2910,16 @@ def opportunity_db_summary() -> dict[str, Any]:
             "SELECT primary_blocker, COUNT(*) AS count FROM trade_opportunities WHERE primary_blocker IS NOT NULL AND primary_blocker != '' GROUP BY primary_blocker ORDER BY count DESC"
         ).fetchall()
     }
+    replay_profile_negative_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM trade_opportunities
+            WHERE COALESCE(blockers_json, '') LIKE '%replay_profile_negative%'
+               OR COALESCE(hard_blockers_json, '') LIKE '%replay_profile_negative%'
+               OR COALESCE(opportunity_json, '') LIKE '%replay_profile_negative%'
+            """
+        ).fetchone()[0]
+    )
     total_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes").fetchone()[0])
     completed_outcomes = int(conn.execute("SELECT COUNT(*) FROM opportunity_outcomes WHERE status='completed'").fetchone()[0])
     attempts_total = int(conn.execute("SELECT COUNT(*) FROM market_context_attempts").fetchone()[0])
@@ -2951,6 +2961,7 @@ def opportunity_db_summary() -> dict[str, Any]:
         "blocked_count": int(status_counts.get("BLOCKED", 0)),
         "none_count": int(status_counts.get("NONE", 0)),
         "blocker_counts": blocker_counts,
+        "replay_profile_negative_count": replay_profile_negative_count,
         "outcome_completion_rate": outcome_completion_rate,
         "market_context_attempt_success_rate": round(attempts_success / attempts_total, 4) if attempts_total else 0.0,
         "opportunity_profile_count": len(profiles),

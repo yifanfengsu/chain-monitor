@@ -277,12 +277,33 @@ class DailyReportTradeReplayTests(unittest.TestCase):
 
         profile_summary = payload["trade_replay_profile_summary"]
         self.assertEqual(2, profile_summary["replay_profile_blocker_count"])
+        self.assertEqual(2, len(profile_summary["sampled_negative_profiles"]))
+        self.assertEqual(2, len(profile_summary["blocker_grade_negative_profiles"]))
         self.assertEqual(48, profile_summary["high_confidence_negative_profiles"][0]["valid_sample_count"])
         self.assertEqual(70.38, profile_summary["low_sample_positive_profiles"][0]["avg_net_pnl_bps"])
         self.assertEqual([], profile_summary["high_confidence_positive_profiles"])
         self.assertIn("lp_stage", profile_summary["profile_unknown_diagnostics"]["unknown_by_dimension"])
+        self.assertIn("dimension_names", profile_summary["profile_unknown_diagnostics"])
+        self.assertIn("unknown_rate_by_dimension", profile_summary["profile_unknown_diagnostics"])
+        self.assertIn("unknown_missing_sources", profile_summary["profile_unknown_diagnostics"])
+        self.assertIn("missing_lp_stage", profile_summary["profile_unknown_diagnostics"]["unknown_missing_sources"])
         self.assertNotEqual("replay_positive_profiles_found", payload["report_conclusion"])
-        self.assertIn("high_confidence_negative_profiles", report._markdown(payload))
+        markdown = report._markdown(payload)
+        self.assertIn("sampled_negative_profiles", markdown)
+        self.assertIn("blocker_grade_negative_profiles", markdown)
+
+    def test_trade_opportunity_summary_counts_replay_profile_negative_any_blocker(self) -> None:
+        payload = report._trade_opportunity_summary(
+            [
+                {
+                    "trade_opportunity_status": "BLOCKED",
+                    "trade_opportunity_primary_blocker": "no_trade_lock",
+                    "trade_opportunity_blockers": ["no_trade_lock", "replay_profile_negative"],
+                }
+            ]
+        )
+
+        self.assertEqual(1, payload["replay_profile_negative_count"])
 
 
 if __name__ == "__main__":

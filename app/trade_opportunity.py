@@ -38,6 +38,8 @@ from config import (
     OPPORTUNITY_SCHEMA_VERSION,
     PROJECT_ROOT,
     REPLAY_PROFILE_GATE_ENABLE,
+    REPLAY_PROFILE_GATE_MAX_PROFILES,
+    REPLAY_PROFILE_GATE_REFRESH_SEC,
     SQLITE_DB_PATH,
     SHADOW_CANDIDATE_MIN_SCORE,
     SHADOW_MAX_60S_ADVERSE_RATE,
@@ -81,6 +83,7 @@ _PROFILE_VERSION = "v1"
 _NON_LP_STRONG_CONFIDENCE = 0.72
 _NON_LP_TENTATIVE_CONFIDENCE = 0.45
 _NON_LP_SUPPORT_BASELINE = 0.50
+_REPLAY_PROFILE_GATE_DAILY_FALLBACK_DAYS = 30
 
 _NON_LP_FAMILY_LABELS = {
     "smart_money": "smart money",
@@ -499,6 +502,25 @@ def _list_dedup(items: list[str], *, limit: int = 6) -> list[str]:
     return result
 
 
+def _blocker_priority(blocker: str) -> int:
+    try:
+        return BLOCKER_PRIORITY.index(str(blocker or ""))
+    except ValueError:
+        return len(BLOCKER_PRIORITY) + 1
+
+
+def _insert_blocker_by_priority(blockers: list[str], blocker: str) -> None:
+    normalized = str(blocker or "").strip()
+    if not normalized or normalized in blockers:
+        return
+    priority = _blocker_priority(normalized)
+    for index, existing in enumerate(blockers):
+        if _blocker_priority(existing) > priority:
+            blockers.insert(index, normalized)
+            return
+    blockers.append(normalized)
+
+
 def _result_label_from_outcome(status: str, followthrough: Any, adverse: Any) -> str:
     normalized = str(status or "")
     if normalized == "completed":
@@ -560,18 +582,29 @@ class TradeOpportunityManager:
         self._profile_stats: dict[str, dict[str, Any]] = {}
         self._replay_profile_gate_stats: dict[str, dict[str, Any]] = {}
         self._replay_profile_gate_missing: set[str] = set()
+        self._replay_profile_gate_last_refresh_monotonic = 0.0
+        self._replay_profile_gate_diagnostics: dict[str, Any] = {
+            "load_status": "not_loaded",
+            "source": "",
+            "loaded_profile_count": 0,
+            "missing_reason": "not_loaded",
+            "last_error": "",
+        }
         self._recent_direction_signals: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
         self._dirty = False
         self._last_flush_monotonic = 0.0
         self._last_load_status = "not_loaded"
         if self.enabled and self.persistence_enabled and bool(recover_on_start):
             self.load_from_disk()
+        if self.enabled and self.persistence_enabled and bool(REPLAY_PROFILE_GATE_ENABLE):
+            self._refresh_replay_profile_gate_stats_if_needed(force=True)
         if self.enabled and self.persistence_enabled:
             atexit.register(self.flush, True)
 
     def apply_lp_signal(self, event, signal) -> dict[str, Any]:
         if not self.enabled:
             return {}
+        self._refresh_replay_profile_gate_stats_if_needed()
         context = getattr(signal, "context", {}) or {}
         metadata = getattr(signal, "metadata", {}) or {}
         event_metadata = getattr(event, "metadata", {}) or {}
@@ -861,6 +894,8 @@ class TradeOpportunityManager:
                 event_metadata.get("trade_action_invalidated_by"),
             ),
             "trade_action_confidence": _float(context.get("trade_action_confidence"), metadata.get("trade_action_confidence"), event_metadata.get("trade_action_confidence")),
+            "trade_action_stage": _text(context.get("trade_action_stage"), metadata.get("trade_action_stage"), event_metadata.get("trade_action_stage"), trade_action_debug.get("stage")),
+            "subtype": _text(context.get("subtype"), metadata.get("subtype"), event_metadata.get("subtype"), getattr(event, "subtype", "")),
             "strength_score": _float(trade_action_debug.get("strength_score"), default=0.0),
             "asset_market_state_key": _text(context.get("asset_market_state_key"), metadata.get("asset_market_state_key"), event_metadata.get("asset_market_state_key")),
             "asset_market_state_label": _text(context.get("asset_market_state_label"), metadata.get("asset_market_state_label"), event_metadata.get("asset_market_state_label")),
@@ -894,6 +929,12 @@ class TradeOpportunityManager:
             "perp_index_price": context.get("perp_index_price", metadata.get("perp_index_price", event_metadata.get("perp_index_price"))),
             "spot_reference_price": context.get("spot_reference_price", metadata.get("spot_reference_price", event_metadata.get("spot_reference_price"))),
             "lp_alert_stage": _text(context.get("lp_alert_stage"), metadata.get("lp_alert_stage"), event_metadata.get("lp_alert_stage")),
+            "lp_alert_stage_candidate": _text(
+                context.get("lp_alert_stage_candidate"),
+                metadata.get("lp_alert_stage_candidate"),
+                event_metadata.get("lp_alert_stage_candidate"),
+            ),
+            "lp_stage": _text(context.get("lp_stage"), metadata.get("lp_stage"), event_metadata.get("lp_stage")),
             "lp_sweep_phase": _text(context.get("lp_sweep_phase"), metadata.get("lp_sweep_phase"), event_metadata.get("lp_sweep_phase")),
             "lp_confirm_scope": _text(context.get("lp_confirm_scope"), metadata.get("lp_confirm_scope"), event_metadata.get("lp_confirm_scope")),
             "lp_confirm_quality": _text(context.get("lp_confirm_quality"), metadata.get("lp_confirm_quality"), event_metadata.get("lp_confirm_quality")),
@@ -1046,6 +1087,44 @@ class TradeOpportunityManager:
             return "candidate"
         return alert_stage or "candidate"
 
+    def _stage_like_bucket(self, value: Any) -> str:
+        normalized = str(value or "").strip()
+        lowered = normalized.lower()
+        if not normalized or lowered in {"unknown", "none", "null"}:
+            return ""
+        for canonical in (
+            "local_confirm",
+            "broader_confirm",
+            "sweep_confirmed",
+            "sweep_exhaustion_risk",
+            "exhaustion_risk",
+            "prealert",
+            "candidate",
+            "confirm",
+        ):
+            if lowered == canonical or canonical in lowered:
+                return canonical
+        return ""
+
+    def _profile_lp_stage_bucket(self, summary: dict[str, Any]) -> str:
+        for key in (
+            "lp_confirm_scope",
+            "lp_stage",
+            "lp_alert_stage",
+            "lp_alert_stage_candidate",
+        ):
+            value = str(summary.get(key) or "").strip()
+            if value and value.lower() not in {"unknown", "none", "null"}:
+                return value
+        for key in (
+            "trade_action_stage",
+            "subtype",
+        ):
+            value = self._stage_like_bucket(summary.get(key))
+            if value:
+                return value
+        return "unknown"
+
     def _strategy_bucket(self, summary: dict[str, Any], stage_bucket: str) -> str:
         if stage_bucket in {"sweep_confirmed", "broader_confirm", "confirm"}:
             return "lp_continuation"
@@ -1055,7 +1134,7 @@ class TradeOpportunityManager:
 
     def _build_profile(self, *, summary: dict[str, Any], side: str) -> dict[str, Any]:
         asset = str(summary.get("asset_symbol") or "").strip().upper() or "UNKNOWN"
-        confirm_scope = str(summary.get("lp_confirm_scope") or "unknown").strip() or "unknown"
+        confirm_scope = self._profile_lp_stage_bucket(summary)
         timing = str(summary.get("alert_relative_timing") or "unknown").strip() or "unknown"
         absorption_bucket = self._absorption_bucket(str(summary.get("lp_absorption_context") or ""))
         stage_bucket = self._stage_bucket(summary)
@@ -1070,6 +1149,7 @@ class TradeOpportunityManager:
         major_bucket = "major" if bool(summary.get("major_asset")) else "minor"
         features = {
             "confirm_scope": confirm_scope,
+            "lp_stage": confirm_scope,
             "stage_bucket": stage_bucket,
             "market_timing": timing,
             "sweep_phase": str(summary.get("lp_sweep_phase") or ""),
@@ -1108,31 +1188,69 @@ class TradeOpportunityManager:
     def _replay_profile_gate(self, *, summary: dict[str, Any]) -> dict[str, Any]:
         if not bool(REPLAY_PROFILE_GATE_ENABLE):
             return {"matched": False, "action": "disabled", "blocker": "", "research_hint": "", "profile_stats": {}}
+        self._refresh_replay_profile_gate_stats_if_needed()
         profile_key = str(summary.get("opportunity_profile_key") or "").strip()
         if not profile_key:
             return {"matched": False, "action": "missing_profile_key", "blocker": "", "research_hint": "", "profile_stats": {}}
         stat = self._replay_profile_gate_stats.get(profile_key)
-        if stat is None and profile_key not in self._replay_profile_gate_missing:
-            stat = self._load_replay_profile_gate_stat(profile_key)
-            if stat:
-                self._replay_profile_gate_stats[profile_key] = stat
-            else:
-                self._replay_profile_gate_missing.add(profile_key)
+        if stat is None:
+            self._replay_profile_gate_missing.add(profile_key)
         decision = evaluate_replay_profile_gate(stat)
         decision["profile_key"] = profile_key
+        decision["load_diagnostics"] = dict(self._replay_profile_gate_diagnostics)
         return decision
 
-    def _load_replay_profile_gate_stat(self, profile_key: str) -> dict[str, Any]:
-        db_path = Path(str(SQLITE_DB_PATH or ""))
-        if not db_path.is_absolute():
-            db_path = Path(PROJECT_ROOT) / db_path
+    def _refresh_replay_profile_gate_stats_if_needed(self, *, force: bool = False) -> None:
+        if not bool(REPLAY_PROFILE_GATE_ENABLE):
+            return
+        if not self.persistence_enabled:
+            if not self._replay_profile_gate_stats:
+                self._replay_profile_gate_diagnostics = {
+                    "load_status": "disabled",
+                    "source": "",
+                    "loaded_profile_count": 0,
+                    "missing_reason": "persistence_disabled",
+                    "last_error": "",
+                }
+            return
+        now_monotonic = time.monotonic()
+        refresh_sec = max(int(REPLAY_PROFILE_GATE_REFRESH_SEC or 0), 1)
+        if (
+            not force
+            and self._replay_profile_gate_last_refresh_monotonic > 0.0
+            and now_monotonic - self._replay_profile_gate_last_refresh_monotonic < refresh_sec
+        ):
+            return
+        loaded = self._load_replay_profile_gate_stats()
+        self._replay_profile_gate_last_refresh_monotonic = now_monotonic
+        if loaded is None:
+            return
+        self._replay_profile_gate_stats = loaded
+        self._replay_profile_gate_missing.clear()
+
+    def _load_replay_profile_gate_stats(self) -> dict[str, dict[str, Any]] | None:
+        db_path = self._replay_profile_gate_db_path()
         if not db_path.exists():
+            self._replay_profile_gate_diagnostics = {
+                "load_status": "missing",
+                "source": "",
+                "loaded_profile_count": 0,
+                "missing_reason": "sqlite_db_missing",
+                "last_error": "",
+            }
             return {}
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
-        except sqlite3.Error:
-            return {}
+        except sqlite3.Error as exc:
+            self._replay_profile_gate_diagnostics = {
+                "load_status": "error",
+                "source": "",
+                "loaded_profile_count": len(self._replay_profile_gate_stats),
+                "missing_reason": "sqlite_open_failed",
+                "last_error": type(exc).__name__,
+            }
+            return None
         try:
             tables = {
                 str(row[0])
@@ -1140,37 +1258,185 @@ class TradeOpportunityManager:
                     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('trade_replay_profile_stats','trade_replay_profile_daily_stats')"
                 ).fetchall()
             }
-            if "trade_replay_profile_daily_stats" in tables:
-                row = conn.execute(
-                    """
-                    SELECT *
-                    FROM trade_replay_profile_daily_stats
-                    WHERE profile_key = ?
-                    ORDER BY logical_date DESC,
-                             CASE replay_scope WHEN 'full' THEN 0 WHEN 'default' THEN 1 ELSE 2 END,
-                             strategy_config_hash DESC
-                    LIMIT 1
-                    """,
-                    (profile_key,),
-                ).fetchone()
-                if row:
-                    payload = dict(row)
-                    payload["source"] = "trade_replay_profile_daily_stats"
-                    return payload
+            latest_stats: dict[str, dict[str, Any]] = {}
             if "trade_replay_profile_stats" in tables:
-                row = conn.execute(
-                    "SELECT * FROM trade_replay_profile_stats WHERE profile_key = ? LIMIT 1",
-                    (profile_key,),
-                ).fetchone()
-                if row:
-                    payload = dict(row)
-                    payload["source"] = "trade_replay_profile_stats"
-                    return payload
-        except sqlite3.Error:
+                latest_rows = [dict(row) for row in conn.execute("SELECT * FROM trade_replay_profile_stats").fetchall()]
+                latest_stats = self._normalize_replay_profile_gate_rows(latest_rows, source="trade_replay_profile_stats")
+                if latest_stats:
+                    self._replay_profile_gate_diagnostics = {
+                        "load_status": "loaded",
+                        "source": "trade_replay_profile_stats",
+                        "loaded_profile_count": len(latest_stats),
+                        "missing_reason": "",
+                        "last_error": "",
+                    }
+                    return latest_stats
+
+            daily_stats: dict[str, dict[str, Any]] = {}
+            if "trade_replay_profile_daily_stats" in tables:
+                daily_stats = self._load_daily_replay_profile_gate_stats(conn)
+                if daily_stats:
+                    self._replay_profile_gate_diagnostics = {
+                        "load_status": "loaded",
+                        "source": "trade_replay_profile_daily_stats",
+                        "loaded_profile_count": len(daily_stats),
+                        "missing_reason": "",
+                        "last_error": "",
+                    }
+                    return daily_stats
+
+            self._replay_profile_gate_diagnostics = {
+                "load_status": "empty",
+                "source": "",
+                "loaded_profile_count": 0,
+                "missing_reason": "replay_profile_stats_empty",
+                "last_error": "",
+            }
             return {}
+        except sqlite3.Error as exc:
+            self._replay_profile_gate_diagnostics = {
+                "load_status": "error",
+                "source": "",
+                "loaded_profile_count": len(self._replay_profile_gate_stats),
+                "missing_reason": "sqlite_query_failed",
+                "last_error": type(exc).__name__,
+            }
+            return None
         finally:
             conn.close()
-        return {}
+
+    def _load_daily_replay_profile_gate_stats(self, conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+        columns = self._sqlite_table_columns(conn, "trade_replay_profile_daily_stats")
+        if "logical_date" in columns:
+            date_rows = conn.execute(
+                "SELECT DISTINCT logical_date FROM trade_replay_profile_daily_stats ORDER BY logical_date DESC LIMIT ?",
+                (_REPLAY_PROFILE_GATE_DAILY_FALLBACK_DAYS,),
+            ).fetchall()
+            dates = [str(row[0]) for row in date_rows if str(row[0] or "").strip()]
+            if not dates:
+                return {}
+            placeholders = ",".join("?" for _ in dates)
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"SELECT * FROM trade_replay_profile_daily_stats WHERE logical_date IN ({placeholders})",
+                    dates,
+                ).fetchall()
+            ]
+        else:
+            rows = [dict(row) for row in conn.execute("SELECT * FROM trade_replay_profile_daily_stats").fetchall()]
+        aggregated = self._aggregate_daily_replay_profile_gate_rows(rows)
+        return self._normalize_replay_profile_gate_rows(aggregated, source="trade_replay_profile_daily_stats")
+
+    def _aggregate_daily_replay_profile_gate_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        weighted_fields = (
+            "avg_net_pnl_bps",
+            "win_rate",
+            "clean_followthrough_rate",
+            "bad_entry_rate",
+            "absorption_reversal_rate",
+            "chop_rate",
+            "data_invalid_rate",
+            "avg_mfe_bps",
+            "avg_mae_bps",
+        )
+        groups: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            profile_key = str(row.get("profile_key") or "").strip()
+            valid = _int(row.get("valid_sample_count"), row.get("valid_count"))
+            if not profile_key or valid < 1:
+                continue
+            group = groups.setdefault(
+                profile_key,
+                {
+                    "profile_key": profile_key,
+                    "asset": row.get("asset"),
+                    "side": row.get("side"),
+                    "sample_count": 0,
+                    "valid_sample_count": 0,
+                    "recommended_action": "",
+                    "confidence_level": "",
+                    "logical_date_start": str(row.get("logical_date") or ""),
+                    "logical_date_end": str(row.get("logical_date") or ""),
+                    "_weights": {field: 0 for field in weighted_fields},
+                    "_weighted_sums": {field: 0.0 for field in weighted_fields},
+                },
+            )
+            group["sample_count"] = int(group.get("sample_count") or 0) + max(_int(row.get("sample_count")), valid)
+            group["valid_sample_count"] = int(group.get("valid_sample_count") or 0) + valid
+            if not group.get("asset") and row.get("asset"):
+                group["asset"] = row.get("asset")
+            if not group.get("side") and row.get("side"):
+                group["side"] = row.get("side")
+            row_date = str(row.get("logical_date") or "")
+            if row_date:
+                if not group.get("logical_date_start") or row_date < str(group.get("logical_date_start") or ""):
+                    group["logical_date_start"] = row_date
+                if not group.get("logical_date_end") or row_date > str(group.get("logical_date_end") or ""):
+                    group["logical_date_end"] = row_date
+            action = str(row.get("recommended_action") or "").strip()
+            if action == "block_profile":
+                group["recommended_action"] = action
+            elif action and not group.get("recommended_action"):
+                group["recommended_action"] = action
+            confidence = str(row.get("confidence_level") or "").strip()
+            if confidence and not group.get("confidence_level"):
+                group["confidence_level"] = confidence
+            weights = group["_weights"]
+            weighted_sums = group["_weighted_sums"]
+            for field in weighted_fields:
+                if row.get(field) in (None, ""):
+                    continue
+                weights[field] = int(weights.get(field) or 0) + valid
+                weighted_sums[field] = float(weighted_sums.get(field) or 0.0) + _float(row.get(field)) * valid
+        aggregated: list[dict[str, Any]] = []
+        for group in groups.values():
+            weights = dict(group.pop("_weights", {}))
+            weighted_sums = dict(group.pop("_weighted_sums", {}))
+            for field in weighted_fields:
+                weight = int(weights.get(field) or 0)
+                if weight > 0:
+                    group[field] = round(float(weighted_sums.get(field) or 0.0) / weight, 6)
+            aggregated.append(group)
+        return aggregated
+
+    def _normalize_replay_profile_gate_rows(self, rows: list[dict[str, Any]], *, source: str) -> dict[str, dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            profile_key = str(row.get("profile_key") or "").strip()
+            valid = _int(row.get("valid_sample_count"), row.get("valid_count"))
+            if not profile_key or valid < 1:
+                continue
+            payload = dict(row)
+            payload["profile_key"] = profile_key
+            payload["valid_sample_count"] = valid
+            payload["source"] = source
+            normalized.append(payload)
+        normalized.sort(key=self._replay_profile_gate_row_sort_key)
+        limited = normalized[: max(int(REPLAY_PROFILE_GATE_MAX_PROFILES or 0), 1)]
+        return {str(row["profile_key"]): row for row in limited}
+
+    def _replay_profile_gate_row_sort_key(self, row: dict[str, Any]) -> tuple[Any, ...]:
+        action = str(row.get("recommended_action") or "").strip()
+        return (
+            0 if action == "block_profile" else 1,
+            -_int(row.get("valid_sample_count")),
+            _float(row.get("avg_net_pnl_bps"), default=0.0),
+            str(row.get("profile_key") or ""),
+        )
+
+    def _sqlite_table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _replay_profile_gate_db_path(self) -> Path:
+        db_path = Path(str(SQLITE_DB_PATH or ""))
+        if not db_path.is_absolute():
+            db_path = Path(PROJECT_ROOT) / db_path
+        return db_path
+
+    def _load_replay_profile_gate_stat(self, profile_key: str) -> dict[str, Any]:
+        self._refresh_replay_profile_gate_stats_if_needed(force=True)
+        return dict(self._replay_profile_gate_stats.get(str(profile_key or "").strip()) or {})
 
     def _signal_lookup(self, row: dict[str, Any], *keys: str) -> Any:
         signal = row.get("signal") if isinstance(row.get("signal"), dict) else {}
@@ -1975,10 +2241,14 @@ class TradeOpportunityManager:
         )
         replay_profile_gate = self._replay_profile_gate(summary=summary)
         if str(replay_profile_gate.get("blocker") or "") == "replay_profile_negative":
-            hard_blockers.append("replay_profile_negative")
-            risk_flags.append("replay_profile_negative")
+            _insert_blocker_by_priority(hard_blockers, "replay_profile_negative")
+            _insert_blocker_by_priority(risk_flags, "replay_profile_negative")
         if local_absorption_quality_low(summary):
             risk_flags.append("local_absorption_quality_low")
+        lp_market_read_evidence = self._lp_market_read_evidence(
+            summary=summary,
+            replay_profile_gate=replay_profile_gate,
+        )
         verification_gate = self._history_gate(history)
         verification_blockers = list(verification_gate.get("blockers") or [])
         risk_flags.extend(verification_blockers)
@@ -2117,6 +2387,7 @@ class TradeOpportunityManager:
                 "asset_market_state_key": str(summary.get("asset_market_state_key") or ""),
                 "calibration": calibration_snapshot,
                 "replay_profile_gate": dict(replay_profile_gate),
+                "lp_market_read_evidence": lp_market_read_evidence,
                 "non_lp_evidence_context": {
                     "support_score": round(_float(summary.get("non_lp_support_score")), 4),
                     "risk_score": round(_float(summary.get("non_lp_risk_score")), 4),
@@ -2135,6 +2406,7 @@ class TradeOpportunityManager:
             "trade_opportunity_replay_profile_gate": dict(replay_profile_gate),
             "trade_opportunity_replay_profile_action": str(replay_profile_gate.get("action") or ""),
             "trade_opportunity_replay_profile_research_hint": str(replay_profile_gate.get("research_hint") or ""),
+            "lp_market_read_evidence": lp_market_read_evidence,
             "trade_opportunity_created_at": created_at,
             "trade_opportunity_expires_at": expires_at,
             "trade_opportunity_source": source,
@@ -2451,6 +2723,13 @@ class TradeOpportunityManager:
             return {"status": "candidate_only", "blockers": blockers}
         return {"status": "verified_ready", "blockers": blockers}
 
+    def _lp_market_read_evidence(self, *, summary: dict[str, Any], replay_profile_gate: dict[str, Any]) -> str:
+        if str(replay_profile_gate.get("blocker") or "") == "replay_profile_negative":
+            return "replay_profile_negative"
+        if local_absorption_quality_low(summary):
+            return "heuristic_quality_low"
+        return str(summary.get("lp_market_read_evidence") or "none")
+
     def _reason(
         self,
         *,
@@ -2489,7 +2768,7 @@ class TradeOpportunityManager:
                 return "缺 live market context，无法把链上结构升级成交易机会。"
             if primary_blocker == "replay_profile_negative":
                 if local_absorption_quality_low(summary):
-                    return "局部买压/卖压被承接，历史 replay 无交易优势，不能把它当作交易机会。"
+                    return "局部买压/卖压被承接，历史 replay 显示该 profile 无交易优势，不能把它当作交易机会。"
                 return "当前 profile 的历史 replay 为高置信负收益，禁止升级为 CANDIDATE 或 VERIFIED。"
             if primary_blocker == "sweep_exhaustion_risk":
                 return "当前更像清扫后回吐/反抽风险，而不是干净延续。"

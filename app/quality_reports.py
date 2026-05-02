@@ -873,6 +873,7 @@ def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
     missing_reasons: Counter[str] = Counter()
     blocked_reasons: Counter[str] = Counter()
     reason_distribution: Counter[str] = Counter()
+    replay_profile_negative_count = 0
     scores: list[float] = []
     for row in rows:
         opportunity_payload = _json_value(row.get("opportunity_json"), {})
@@ -906,6 +907,8 @@ def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
             "blocked_reason": row.get("primary_blocker") or row.get("primary_hard_blocker") or row.get("primary_verification_blocker"),
             "blockers": blockers,
         }
+        if "replay_profile_negative" in blockers or str(candidate.get("blocked_reason") or "") == "replay_profile_negative":
+            replay_profile_negative_count += 1
         if derive_shadow_evaluation_fields is None:
             status = str(candidate.get("shadow_status") or "NONE")
             evaluated = status not in {"", "NONE"} or bool(candidate.get("shadow_reason")) or candidate.get("shadow_score") is not None
@@ -944,6 +947,7 @@ def _shadow_opportunity_payload(conn, date_str: str | None = None) -> dict:
         "shadow_candidate_count": candidate_count,
         "shadow_verified_count": verified_count,
         "shadow_blocked_count": max(evaluated_count - candidate_count - verified_count, 0),
+        "replay_profile_negative_count": replay_profile_negative_count,
         "shadow_blocked_reasons": dict(sorted(blocked_reasons.items())),
         "shadow_missing_field_reasons": dict(sorted(missing_reasons.items())),
         "shadow_reason_distribution": dict(sorted(reason_distribution.items())),
