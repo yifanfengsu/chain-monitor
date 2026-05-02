@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import unittest
 from unittest import mock
 
@@ -9,6 +10,90 @@ from replay_profile_gate import replay_profile_summary
 
 
 class DailyReportTradeReplayTests(unittest.TestCase):
+    def test_sqlite_trade_replay_summary_repairs_profile_key_from_replay_sources(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute(
+                """
+                CREATE TABLE trade_replay_examples (
+                    logical_date TEXT,
+                    replay_scope TEXT,
+                    strategy_config_hash TEXT,
+                    signal_ts INTEGER,
+                    data_valid INTEGER,
+                    label TEXT,
+                    net_pnl_bps REAL,
+                    signal_stage TEXT,
+                    opportunity_status TEXT,
+                    shadow_status TEXT,
+                    profile_key TEXT,
+                    lp_stage TEXT,
+                    sweep_phase TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE trade_replay_profile_daily_stats (
+                    logical_date TEXT,
+                    replay_scope TEXT,
+                    strategy_config_hash TEXT,
+                    profile_key TEXT,
+                    valid_sample_count INTEGER,
+                    avg_net_pnl_bps REAL,
+                    win_rate REAL,
+                    clean_followthrough_rate REAL,
+                    chop_rate REAL,
+                    recommended_action TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO trade_replay_examples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "2026-04-30",
+                    "full",
+                    "hash",
+                    1_777_000_000,
+                    1,
+                    "clean_followthrough",
+                    12.0,
+                    "",
+                    "CANDIDATE",
+                    "NONE",
+                    "ETH|LONG|unknown|confirm|leading|local_absorption|major|basis_normal|quality_low",
+                    "confirm",
+                    "confirm",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO trade_replay_profile_daily_stats VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "2026-04-30",
+                    "full",
+                    "hash",
+                    "ETH|LONG|unknown|confirm|leading|local_absorption|major|basis_normal|quality_low",
+                    1,
+                    12.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    "needs_more_samples",
+                ),
+            )
+            conn.commit()
+
+            summary = report._trade_replay_summary_from_sqlite(conn, "2026-04-30")
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            "ETH|LONG|confirm|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            summary["top_positive_profiles"][0]["profile_key"],
+        )
+        self.assertNotIn("lp_stage", summary["profile_unknown_diagnostics"]["unknown_by_dimension"])
+
     def test_read_trade_replay_summary_prefers_full_persisted(self) -> None:
         def fake_run(*_args, **kwargs):
             scope = kwargs.get("replay_scope")

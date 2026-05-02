@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from typing import Any
 
@@ -30,11 +31,11 @@ LOW_SAMPLE_POSITIVE_MAX_SAMPLES = 5
 HIGH_CONFIDENCE_POSITIVE_MIN_CLEAN_RATE = 0.50
 PROFILE_KEY_EXAMPLE_FORMAT = "|".join(PROFILE_KEY_DIMENSIONS)
 LP_STAGE_SOURCE_KEYS = (
-    "confirm_scope",
-    "lp_confirm_scope",
-    "lp_stage",
     "lp_alert_stage",
+    "lp_stage",
     "lp_alert_stage_candidate",
+    "lp_confirm_scope",
+    "confirm_scope",
 )
 TRADE_ACTION_STAGE_SOURCE_KEYS = (
     "trade_action_stage",
@@ -48,6 +49,50 @@ SWEEP_PHASE_SOURCE_KEYS = (
     "stage_bucket",
     "sweep_phase",
     "lp_sweep_phase",
+)
+NESTED_FIELD_KEYS = (
+    "context",
+    "metadata",
+    "signal_context",
+    "signal_metadata",
+    "event_metadata",
+    "signal",
+    "event",
+    "lp_stage_context",
+    "trade_action",
+    "trade_action_debug",
+    "profile_features",
+    "profile_features_json",
+    "opportunity_profile_features_json",
+    "opportunity_features",
+    "features_json",
+    "opportunity_json",
+    "signal_json",
+)
+PROFILE_REPAIR_SOURCE_KEYS = (
+    "asset",
+    "asset_symbol",
+    "opportunity_profile_asset",
+    "side",
+    "trade_opportunity_side",
+    "opportunity_profile_side",
+    "direction",
+    *LP_STAGE_SOURCE_KEYS,
+    *TRADE_ACTION_STAGE_SOURCE_KEYS,
+    *SWEEP_PHASE_SOURCE_KEYS,
+    "market_timing",
+    "alert_relative_timing",
+    "absorption_bucket",
+    "lp_absorption_context",
+    "absorption_context",
+    "major_asset",
+    "asset_class",
+    "basis_bucket",
+    "quality_bucket",
+    "pool_quality_score",
+    "pair_quality_score",
+    "asset_case_quality_score",
+    *NESTED_FIELD_KEYS,
 )
 
 
@@ -80,11 +125,50 @@ def _unknown(value: Any) -> bool:
     return _text(value) in UNKNOWN_VALUES
 
 
-def _field_present(fields: dict[str, Any], *keys: str) -> bool:
+def _json_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _field_sources(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    queue: list[Any] = [fields]
+    seen: set[int] = set()
+    while queue and len(sources) < 64:
+        current = _json_dict(queue.pop(0))
+        if not current:
+            continue
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        sources.append(current)
+        for nested_key in NESTED_FIELD_KEYS:
+            nested = current.get(nested_key)
+            if nested not in (None, "", [], {}):
+                queue.append(nested)
+    return sources
+
+
+def _first_known_field(fields: dict[str, Any], *keys: str) -> str:
+    sources = _field_sources(fields)
     for key in keys:
-        if not _unknown(fields.get(key)):
-            return True
-    return False
+        for source in sources:
+            value = _text(source.get(key))
+            if value and not _unknown(value):
+                return value
+    return ""
+
+
+def _field_present(fields: dict[str, Any], *keys: str) -> bool:
+    return bool(_first_known_field(fields, *keys))
 
 
 def _stage_like_value(value: Any) -> str:
@@ -105,6 +189,14 @@ def _stage_like_value(value: Any) -> str:
         if lowered == canonical or canonical in lowered:
             return canonical
     return ""
+
+
+def _row_with_profile_dimensions(row: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    for dimension, value in zip(PROFILE_KEY_DIMENSIONS, profile_key_parts(row.get("profile_key")), strict=False):
+        if _unknown(enriched.get(dimension)):
+            enriched[dimension] = value
+    return enriched
 
 
 def _profile_valid_count(row: dict[str, Any]) -> int:
@@ -229,6 +321,8 @@ def profile_key_unknown_dimensions(profile_key: Any) -> list[str]:
 
 def _missing_sources_for_dimension(dimension: str, row: dict[str, Any]) -> list[str]:
     if dimension == "lp_stage":
+        if _field_present(row, *SWEEP_PHASE_SOURCE_KEYS):
+            return ["missing_lp_stage"]
         sources = ["missing_lp_stage"]
         if not _field_present(row, *LP_STAGE_SOURCE_KEYS):
             sources.append("missing_lp_alert_stage")
@@ -256,16 +350,16 @@ def profile_unknown_diagnostics(profile_rows: list[dict[str, Any]]) -> dict[str,
         unknown_dimensions = profile_key_unknown_dimensions(profile_key)
         if not unknown_dimensions:
             continue
+        diagnostic_row = _row_with_profile_dimensions(row)
         unknown_fields += len(unknown_dimensions)
-        for dimension in unknown_dimensions:
-            unknown_by_dimension[dimension] += 1
-            for source in _missing_sources_for_dimension(dimension, row):
-                missing_sources[source] += 1
-        payload = profile_payload(row)
-        payload["unknown_dimensions"] = unknown_dimensions
         profile_missing_sources: list[str] = []
         for dimension in unknown_dimensions:
-            profile_missing_sources.extend(_missing_sources_for_dimension(dimension, row))
+            unknown_by_dimension[dimension] += 1
+            profile_missing_sources.extend(_missing_sources_for_dimension(dimension, diagnostic_row))
+        for source in set(profile_missing_sources):
+            missing_sources[source] += 1
+        payload = profile_payload(row)
+        payload["unknown_dimensions"] = unknown_dimensions
         payload["missing_sources"] = sorted(set(profile_missing_sources))
         top_unknown_profiles.append(payload)
     top_unknown_profiles.sort(
@@ -404,12 +498,20 @@ def _side_from_fields(fields: dict[str, Any]) -> str:
 
 
 def _lp_stage_from_fields(fields: dict[str, Any]) -> str:
-    for key in LP_STAGE_SOURCE_KEYS:
-        value = _text(fields.get(key))
-        if value and not _unknown(value):
+    alert_stage = _first_known_field(fields, "lp_alert_stage")
+    confirm_scope = _first_known_field(fields, "lp_confirm_scope", "confirm_scope")
+    if alert_stage.lower() == "confirm" and confirm_scope:
+        return confirm_scope
+    if alert_stage:
+        return alert_stage
+    for key in ("lp_stage", "lp_alert_stage_candidate"):
+        value = _first_known_field(fields, key)
+        if value:
             return value
+    if confirm_scope:
+        return confirm_scope
     for key in TRADE_ACTION_STAGE_SOURCE_KEYS:
-        value = _stage_like_value(fields.get(key))
+        value = _stage_like_value(_first_known_field(fields, key))
         if value:
             return value
     return "unknown"
@@ -436,6 +538,46 @@ def repair_profile_key(profile_key: Any, fields: dict[str, Any]) -> str:
         replacement = _text(replacements.get(dimension))
         repaired.append(replacement if _unknown(current) and replacement and not _unknown(replacement) else current)
     return "|".join(repaired)
+
+
+def _repair_source_fields(row: dict[str, Any]) -> dict[str, Any]:
+    source_fields: dict[str, Any] = {}
+    for source in _field_sources(row):
+        for key in PROFILE_REPAIR_SOURCE_KEYS:
+            value = source.get(key)
+            if key not in source_fields and not _unknown(value):
+                source_fields[key] = value
+    return source_fields
+
+
+def repair_profile_rows_with_sources(
+    profile_rows: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    sources_by_profile: dict[str, dict[str, Any]] = {}
+    for row in source_rows:
+        profile_key = _text(row.get("profile_key") or row.get("opportunity_profile_key"))
+        if not profile_key:
+            continue
+        target = sources_by_profile.setdefault(profile_key, {})
+        for key, value in _repair_source_fields(row).items():
+            if key not in target and not _unknown(value):
+                target[key] = value
+
+    repaired_rows: list[dict[str, Any]] = []
+    for row in profile_rows:
+        raw_profile_key = _text(row.get("profile_key"))
+        fields = dict(sources_by_profile.get(raw_profile_key) or {})
+        for key, value in row.items():
+            if not _unknown(value):
+                fields[key] = value
+        repaired = dict(row)
+        for key, value in fields.items():
+            if _unknown(repaired.get(key)):
+                repaired[key] = value
+        repaired["profile_key"] = repair_profile_key(raw_profile_key, fields)
+        repaired_rows.append(repaired)
+    return repaired_rows
 
 
 def local_absorption_quality_low(fields: dict[str, Any]) -> bool:

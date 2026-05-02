@@ -35,6 +35,7 @@ from replay_profile_gate import (
     evaluate_replay_profile_gate,
     profile_payload as replay_profile_payload,
     repair_profile_key,
+    repair_profile_rows_with_sources,
     replay_profile_summary,
 )
 
@@ -887,10 +888,12 @@ def _expanded_payloads(row: dict[str, Any], payloads: list[dict[str, Any]]) -> l
         for nested_key in (
             "trade_action",
             "trade_action_debug",
+            "lp_stage_context",
             "market_context",
             "profile_features",
             "opportunity_profile_features_json",
             "features_json",
+            "signal_json",
         ):
             add(payload.get(nested_key))
     return expanded
@@ -1696,7 +1699,8 @@ def _collect_trade_replay_inputs(
             candidate = _source_row_base(count_key, row, payloads)
             if count_key == "trade_opportunities":
                 candidate["opportunity_status"] = _first_payload_value(row, payloads, "status", "trade_opportunity_status", "opportunity_status")
-                candidate["profile_key"] = _first_payload_value(row, payloads, "opportunity_profile_key", "profile_key")
+                raw_profile_key = _first_payload_value(row, payloads, "opportunity_profile_key", "profile_key")
+                candidate["profile_key"] = repair_profile_key(raw_profile_key, candidate)
             elif count_key == "signals":
                 candidate["opportunity_status"] = _first_payload_value(row, payloads, "trade_opportunity_status", "opportunity_status")
                 candidate["shadow_status"] = _first_payload_value(row, payloads, "trade_opportunity_shadow_status", "shadow_status") or "NONE"
@@ -2062,6 +2066,9 @@ def _replay_dynamic_inputs(
         result["profile_key"] = str(candidate.get("profile_key") or result.get("profile_key") or "")
         result["shadow_reason"] = str(candidate.get("shadow_reason") or "")
         result["trade_action"] = _candidate_action_key(candidate)
+        result["lp_stage"] = str(candidate.get("lp_stage") or candidate.get("lp_alert_stage") or "")
+        result["sweep_phase"] = str(candidate.get("sweep_phase") or candidate.get("lp_sweep_phase") or "")
+        result["trade_action_stage"] = str(candidate.get("trade_action_stage") or candidate.get("stage") or "")
         results.append(result)
     return results
 
@@ -2765,6 +2772,7 @@ def _augment_summary_from_replays(summary: dict[str, Any], replay_rows: list[dic
             }
             for key, value in stats.items()
         ]
+    profile_rows = repair_profile_rows_with_sources(profile_rows, replay_rows)
     positive = [
         _profile_payload(row)
         for row in sorted(profile_rows, key=lambda item: (-float(item.get("avg_net_pnl_bps") or 0.0), -int(item.get("valid_sample_count") or 0), str(item.get("profile_key") or "")))

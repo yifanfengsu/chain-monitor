@@ -49,6 +49,33 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
             """
         )
 
+    def _create_trade_opportunities(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE trade_opportunities (
+                signal_id TEXT,
+                trade_opportunity_id TEXT PRIMARY KEY,
+                asset TEXT,
+                pair TEXT,
+                opportunity_profile_key TEXT,
+                side TEXT,
+                status TEXT,
+                replay_eligible INTEGER,
+                raw_score REAL,
+                market_context_source TEXT,
+                lp_alert_stage TEXT,
+                lp_sweep_phase TEXT,
+                lp_confirm_scope TEXT,
+                lp_absorption_context TEXT,
+                alert_relative_timing TEXT,
+                profile_features_json TEXT,
+                created_at REAL,
+                updated_at REAL,
+                opportunity_json TEXT
+            )
+            """
+        )
+
     def _create_delivery_audit(self) -> None:
         self.conn.execute(
             """
@@ -153,6 +180,55 @@ class TradeReplaySqliteInputCoverageTests(unittest.TestCase):
         self.assertEqual(1, int(profile_row["valid_sample_count"]))
         self.assertIsNotNone(profile_row["avg_net_pnl_bps"])
         self.assertTrue(profile_row["recommended_action"])
+
+    def test_trade_opportunity_profile_key_repairs_lp_stage_before_persisting(self) -> None:
+        self._create_trade_opportunities()
+        self._create_market_context()
+        start = _ts("2026-04-29T16:00:00+00:00")
+        self.conn.execute(
+            """
+            INSERT INTO trade_opportunities VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "sig-opportunity",
+                "opp-profile-repair",
+                "ETH",
+                "ETH/USDT",
+                "ETH|LONG|unknown|confirm|leading|local_absorption|major|basis_normal|quality_low",
+                "LONG",
+                "CANDIDATE",
+                1,
+                0.72,
+                "live_public",
+                "confirm",
+                "",
+                "",
+                "local_buy_pressure_absorption",
+                "leading",
+                "{}",
+                start,
+                start,
+                "{}",
+            ),
+        )
+        self.conn.commit()
+
+        summary = run_trade_replay("2026-04-30", db_path=self.db_path)
+
+        self.assertEqual(1, summary["input_source_counts"]["trade_opportunities"])
+        self.assertEqual(1, summary["replay_count"])
+        profile_keys = [
+            str(row["profile_key"])
+            for row in self.conn.execute("SELECT profile_key FROM trade_replay_profile_stats").fetchall()
+        ]
+        self.assertIn(
+            "ETH|LONG|confirm|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            profile_keys,
+        )
+        self.assertNotIn(
+            "lp_stage",
+            summary["profile_unknown_diagnostics"]["unknown_by_dimension"],
+        )
 
     def test_blocked_do_not_chase_replays_by_default(self) -> None:
         self._create_signals()

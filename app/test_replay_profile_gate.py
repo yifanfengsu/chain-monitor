@@ -141,15 +141,32 @@ class ReplayProfileGateTests(unittest.TestCase):
         self.assertEqual(1, diagnostics["unknown_by_dimension"]["lp_stage"])
         self.assertEqual(1, diagnostics["unknown_by_dimension"]["market_timing"])
         self.assertIn("missing_lp_stage", diagnostics["unknown_missing_sources"])
-        self.assertIn("missing_lp_alert_stage", diagnostics["unknown_missing_sources"])
-        self.assertIn("missing_trade_action_stage", diagnostics["unknown_missing_sources"])
-        self.assertIn("missing_sweep_phase", diagnostics["unknown_missing_sources"])
+        self.assertNotIn("missing_lp_alert_stage", diagnostics["unknown_missing_sources"])
+        self.assertNotIn("missing_trade_action_stage", diagnostics["unknown_missing_sources"])
+        self.assertNotIn("missing_sweep_phase", diagnostics["unknown_missing_sources"])
         self.assertEqual(
             "asset|side|lp_stage|sweep_phase|market_timing|absorption_context|asset_class|basis_bucket|quality_bucket",
             diagnostics["example_profile_key_format"],
         )
         self.assertIn("lp_stage", diagnostics["dimension_names"])
         self.assertEqual(1.0, diagnostics["unknown_rate_by_dimension"]["lp_stage"])
+
+    def test_unknown_diagnostics_reports_all_lp_stage_sources_when_no_stage_or_sweep_exists(self) -> None:
+        diagnostics = profile_unknown_diagnostics(
+            [
+                {
+                    "profile_key": "ETH|LONG|unknown|unknown|leading|local_absorption|major|basis_normal|quality_low",
+                    "valid_sample_count": 2,
+                    "avg_net_pnl_bps": -1.0,
+                }
+            ]
+        )
+
+        missing = diagnostics["unknown_missing_sources"]
+        self.assertEqual(1, missing["missing_lp_stage"])
+        self.assertEqual(1, missing["missing_lp_alert_stage"])
+        self.assertEqual(1, missing["missing_trade_action_stage"])
+        self.assertEqual(1, missing["missing_sweep_phase"])
 
     def test_profile_key_lp_stage_backfills_from_real_lp_alert_stage(self) -> None:
         repaired = repair_profile_key(
@@ -161,6 +178,37 @@ class ReplayProfileGateTests(unittest.TestCase):
 
         self.assertEqual(NEGATIVE_PROFILE_KEY, repaired)
         self.assertNotIn("unknown", repaired.split("|"))
+
+    def test_profile_key_lp_stage_backfills_from_real_lp_stage(self) -> None:
+        repaired = repair_profile_key(
+            "ETH|LONG|unknown|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            {
+                "lp_stage": "prealert",
+            },
+        )
+
+        self.assertEqual(
+            "ETH|LONG|prealert|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            repaired,
+        )
+        self.assertNotIn("lp_stage", profile_key_unknown_dimensions(repaired))
+
+    def test_profile_key_lp_stage_backfills_from_signal_json_lp_stage_context(self) -> None:
+        repaired = repair_profile_key(
+            "ETH|LONG|unknown|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            {
+                "signal_json": {
+                    "lp_stage_context": {
+                        "lp_alert_stage": "prealert",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(
+            "ETH|LONG|prealert|confirm|leading|local_absorption|major|basis_normal|quality_low",
+            repaired,
+        )
 
     def test_unknown_diagnostics_reports_missing_lp_stage_with_sweep_phase_present(self) -> None:
         diagnostics = profile_unknown_diagnostics(
@@ -175,9 +223,22 @@ class ReplayProfileGateTests(unittest.TestCase):
         )
 
         missing = diagnostics["top_unknown_profiles"][0]["missing_sources"]
-        self.assertIn("missing_lp_stage", missing)
-        self.assertNotIn("missing_sweep_phase", missing)
+        self.assertEqual(["missing_lp_stage"], missing)
         self.assertEqual(1, diagnostics["unknown_missing_sources"]["missing_lp_stage"])
+
+    def test_profile_key_repair_does_not_fill_lp_stage_from_only_sweep_phase(self) -> None:
+        repaired = repair_profile_key(
+            "ETH|LONG|unknown|unknown|leading|local_absorption|major|basis_normal|quality_low",
+            {
+                "sweep_phase": "exhaustion_risk",
+            },
+        )
+
+        self.assertEqual(
+            "ETH|LONG|unknown|exhaustion_risk|leading|local_absorption|major|basis_normal|quality_low",
+            repaired,
+        )
+        self.assertIn("lp_stage", profile_key_unknown_dimensions(repaired))
 
     def test_profile_key_repair_does_not_fill_lp_stage_from_empty_fields(self) -> None:
         repaired = repair_profile_key(

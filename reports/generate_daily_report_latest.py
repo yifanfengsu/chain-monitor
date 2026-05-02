@@ -26,6 +26,7 @@ for import_path in (ROOT, APP_DIR):
 
 import config as app_config  # noqa: E402
 from replay_profile_gate import profile_payload as replay_profile_payload  # noqa: E402
+from replay_profile_gate import repair_profile_rows_with_sources  # noqa: E402
 from replay_profile_gate import replay_profile_summary  # noqa: E402
 from app import report_data_loader  # noqa: E402
 
@@ -1575,6 +1576,7 @@ def _trade_replay_summary_from_sqlite(conn: sqlite3.Connection, logical_date: st
         profile_rows = [dict(row) for row in conn.execute("SELECT * FROM trade_replay_profile_stats").fetchall()] if profile_columns else []
     if not profile_rows:
         warnings.append("trade_replay_profile_stats_missing_or_empty")
+    profile_rows = repair_profile_rows_with_sources(profile_rows, rows)
 
     positive = [
         replay_profile_payload(row)
