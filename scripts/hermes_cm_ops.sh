@@ -5,6 +5,7 @@ umask 077
 usage() {
   cat <<'USAGE'
 Usage:
+  # Telegram/user-facing commands for long jobs submit background work:
   ./scripts/hermes_cm_ops.sh help
   ./scripts/hermes_cm_ops.sh --help
   ./scripts/hermes_cm_ops.sh command-menu
@@ -27,12 +28,14 @@ Usage:
   ./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm
   ./scripts/hermes_cm_ops.sh space-fast
   ./scripts/hermes_cm_ops.sh db-size-diagnose
-  ./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
+
+  # Internal job runner only; Telegram users must use submit-* above:
+  ./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh space-check
   ./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
@@ -108,6 +111,8 @@ cmd_help() {
   - 中文 Telegram 请求必须先通过 ./scripts/hermes_cm_cn_router.py。
   - report/analyze/digest/close 在 gateway 场景下不能绕过 router。
   - 标准日报流程、空间检查、归档压缩预检、周复盘在 Telegram 中只提交后台 job。
+  - Telegram 长任务入口只使用 submit-daily-flow、submit-space-check、submit-archive-compress-check、submit-weekly-review。
+  - daily-flow、space-check、archive-compress-check、weekly-review 是 internal job runner only。
   - 输出默认脱敏。
   - 不输出 token、RPC URL、完整地址、交易 hash 或私有路径。
 HELP
@@ -154,6 +159,7 @@ cmd_command_menu() {
 规则：
 - 日期必须用 YYYY-MM-DD
 - 不支持 今天/昨天/前天 自动执行
+- 长任务只通过 submit-daily-flow / submit-space-check / submit-archive-compress-check / submit-weekly-review 提交后台 job
 - 输出默认脱敏
 - 不提供交易建议
 MENU

@@ -258,6 +258,7 @@ OPERATIONAL_PAYLOAD_EXPORT_SPECS: dict[str, dict[str, Any]] = {
         "time_columns": ("archive_written_at", "timestamp", "created_at"),
     },
 }
+OPERATIONAL_PAYLOAD_EXPORT_ALLOWED_TABLES = frozenset(OPERATIONAL_PAYLOAD_EXPORT_SPECS)
 
 OPERATIONAL_PAYLOAD_EXPORT_SCHEMA = "chain_monitor_sqlite_payload_archive_v1"
 OPERATIONAL_PAYLOAD_EXPORT_SOURCE = "sqlite_legacy_payload_export"
@@ -270,6 +271,11 @@ OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES = {
     "trade_opportunities",
     "asset_cases",
     "quality_stats",
+    "signal_features",
+    "outcomes",
+    "opportunity_outcomes",
+    "no_trade_locks",
+    "market_context_snapshots",
 }
 
 TABLE_VALUE_FLAGS = {
@@ -4764,7 +4770,7 @@ def _compactable_tables() -> tuple[str, ...]:
 
 
 def _operational_payload_tables() -> tuple[str, ...]:
-    return tuple(OPERATIONAL_PAYLOAD_EXPORT_SPECS.keys())
+    return tuple(sorted(OPERATIONAL_PAYLOAD_EXPORT_ALLOWED_TABLES))
 
 
 def _resolve_operational_archive_dir(archive_dir: str | Path | None = None) -> Path:
@@ -5016,7 +5022,7 @@ def _operational_export_table(
 ) -> dict[str, Any]:
     if table in OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES:
         return {"ok": False, "reason": "core_table_blocked", "table": table}
-    if table not in OPERATIONAL_PAYLOAD_EXPORT_SPECS:
+    if table not in OPERATIONAL_PAYLOAD_EXPORT_ALLOWED_TABLES:
         return {"ok": False, "reason": "table_not_supported", "table": table}
     if not _table_exists(conn, table):
         return {"ok": False, "reason": "table_missing", "table": table}
@@ -5151,7 +5157,7 @@ def _operational_export_table(
         "skipped_write_failed": skipped_write_failed,
         "json_column_cleared": json_column if updated_rows else "",
         "limit": limit,
-        "vacuum_next_step": "make db-vacuum CONFIRM=YES" if updated_rows else "",
+        "vacuum_executed": False,
     }
     if failed_error:
         result["reason"] = "archive_write_failed"
@@ -5171,7 +5177,7 @@ def export_operational_payloads(
 ) -> dict[str, Any]:
     if table and table in OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES:
         return {"ok": False, "reason": "core_table_blocked", "table": table}
-    if table and table not in OPERATIONAL_PAYLOAD_EXPORT_SPECS:
+    if table and table not in OPERATIONAL_PAYLOAD_EXPORT_ALLOWED_TABLES:
         return {"ok": False, "reason": "table_not_supported", "table": table}
     if limit is not None and int(limit) <= 0:
         return {"ok": False, "reason": "invalid_limit", "limit": limit}
@@ -5261,7 +5267,7 @@ def export_operational_payloads(
             "db_path": open_status.get("db_path"),
             "archive_dir": _display_path(archive_root),
             "backup_recommended": "Back up the SQLite DB before execute.",
-            "vacuum_after_execute": "make db-vacuum CONFIRM=YES",
+            "vacuum_executed": False,
         },
     }
 
@@ -5683,8 +5689,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="export legacy operational diagnostics JSON payloads to gzip NDJSON and slim SQLite",
     )
     parser.add_argument("--vacuum", action="store_true", help="run VACUUM only with CONFIRM=YES")
-    parser.add_argument("--dry-run", action="store_true", help="dry-run retention prune")
-    parser.add_argument("--execute", action="store_true", help="execute retention prune")
+    parser.add_argument("--dry-run", action="store_true", help="dry-run protected action")
+    parser.add_argument("--execute", action="store_true", help="execute protected action")
     parser.add_argument("--confirm", action="store_true", help="confirm protected execute actions")
     return parser
 

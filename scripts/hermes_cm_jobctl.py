@@ -413,9 +413,11 @@ def existing_succeeded_message(meta: dict[str, Any]) -> str:
     job_id = str(meta.get("job_id", ""))
     return "\n".join(
         [
-            "已有成功任务。",
+            "已有成功任务",
+            "created_new_job=false",
+            "status=refused_existing_succeeded",
             f"查看结果{job_id}",
-            f"如需重跑，请使用：重新标准日报流程{meta.get('date', '')} 我确认重跑",
+            f"如需重跑：重新标准日报流程{meta.get('date', '')} 我确认重跑",
         ]
     )
 
@@ -454,7 +456,7 @@ def submit_job(args: argparse.Namespace, request_id: str, original_hash: str) ->
                         job_id=str(meta.get("job_id", "")),
                         kind=kind,
                         allowed=False,
-                        refused_reason="daily_flow_already_succeeded",
+                        refused_reason="refused_existing_succeeded",
                         status=str(meta.get("status", "")),
                         date=date,
                         start=start,
