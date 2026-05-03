@@ -109,13 +109,22 @@ require_output menu_execute '系统体检'
 require_output menu_execute '标准日报流程YYYY-MM-DD'
 
 run_launcher_ok daily_flow --text '标准日报流程2026-05-01' --dry-run --platform telegram
-require_output daily_flow 'daily-flow'
+require_output daily_flow 'submit-daily-flow'
 require_output daily_flow '2026-05-01'
 
 run_launcher_ok weekly_review --text '周复盘2026-04-27到2026-05-03' --dry-run --platform telegram
-require_output weekly_review 'weekly-review'
+require_output weekly_review 'submit-weekly-review'
 require_output weekly_review '2026-04-27'
 require_output weekly_review '2026-05-03'
+
+run_launcher_ok space_fast --text '空间快检' --dry-run --platform telegram
+require_output space_fast 'space-fast'
+
+run_launcher_ok job_status --text '任务状态cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
+require_output job_status 'job-status'
+
+run_launcher_ok job_diagnose --text '诊断任务cmjob_20260503T090349Z_791e8d8ea814' --dry-run --platform telegram
+require_output job_diagnose 'job-diagnose'
 
 run_launcher_fail relative_daily --text '标准日报流程昨天' --dry-run --platform telegram
 require_output relative_daily 'YYYY-MM-DD'
@@ -155,6 +164,8 @@ forbid_output absolute 'auto-build'
 require_text "$INSTALLED_SKILL" "chain-monitor-cn-router"
 require_text "$INSTALLED_SKILL" "不得先运行 date"
 require_text "$INSTALLED_SKILL" "不得把 今天/昨天/前天 转换为具体日期"
+require_text "$INSTALLED_SKILL" "Long Running Commands Must Be Submitted As Jobs"
+require_text "$INSTALLED_SKILL" "job_id"
 
 require_text "$INSTALLED_REF" "所有中文 Telegram 命令必须先经过"
 require_any_text "$INSTALLED_REF" "scripts/hermes_cm_cn_router.py" "chain-monitor-cn-router"

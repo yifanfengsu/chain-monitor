@@ -232,6 +232,46 @@ PAYLOAD_METADATA_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+OPERATIONAL_PAYLOAD_EXPORT_SPECS: dict[str, dict[str, Any]] = {
+    "telegram_deliveries": {
+        "json_column": "message_json",
+        "identity_columns": (
+            "telegram_delivery_id",
+            "signal_id",
+            "trade_opportunity_id",
+            "sent_at",
+            "created_at",
+        ),
+        "time_columns": ("created_at", "sent_at", "archive_written_at"),
+    },
+    "delivery_audit": {
+        "json_column": "audit_json",
+        "identity_columns": (
+            "audit_id",
+            "signal_id",
+            "event_id",
+            "delivery_decision",
+            "sent_to_telegram",
+            "timestamp",
+            "archive_written_at",
+        ),
+        "time_columns": ("archive_written_at", "timestamp", "created_at"),
+    },
+}
+
+OPERATIONAL_PAYLOAD_EXPORT_SCHEMA = "chain_monitor_sqlite_payload_archive_v1"
+OPERATIONAL_PAYLOAD_EXPORT_SOURCE = "sqlite_legacy_payload_export"
+OPERATIONAL_PAYLOAD_EXPORT_DEFAULT_DIR = Path("app/data/archive/sqlite_payloads")
+OPERATIONAL_PAYLOAD_EXPORT_BATCH_SIZE = 1000
+OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES = {
+    "signals",
+    "prealert_lifecycle",
+    "asset_market_states",
+    "trade_opportunities",
+    "asset_cases",
+    "quality_stats",
+}
+
 TABLE_VALUE_FLAGS = {
     "signals": {
         "candidate_to_verified": True,
@@ -506,6 +546,14 @@ def _resolve_db_path(db_path: str | Path | None = None) -> Path:
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path
+
+
+def _active_db_path(db_path: str | Path | None = None) -> Path:
+    if db_path is not None:
+        return _resolve_db_path(db_path)
+    if _DB_PATH is not None:
+        return _DB_PATH
+    return _resolve_db_path(None)
 
 
 def _json(value: Any) -> str:
@@ -3773,12 +3821,18 @@ def table_size_summary() -> dict[str, Any]:
     backfill_needed_rows_by_table: dict[str, int] = {}
     full_payload_rows_by_table: dict[str, int] = {}
     legacy_full_payload_rows_by_table: dict[str, int] = {}
+    operational_payload_export_needed_rows_by_table: dict[str, int] = {}
+    exportable_operational_payload_rows_by_table: dict[str, int] = {}
+    operational_payload_export_estimated_savings_bytes_by_table: dict[str, int] = {}
     for table in REQUIRED_TABLES:
         if not _table_exists(conn, table):
             continue
         row_count = max(int(counts.get(table) or 0), 0)
         payload_stats = _json_payload_stats_for_table(conn, table)
         metadata_stats = _payload_metadata_stats_for_table(conn, table)
+        operational_export_stats = _operational_payload_candidate_stats(conn, table) if table in OPERATIONAL_PAYLOAD_EXPORT_SPECS else {}
+        operational_export_rows = int(operational_export_stats.get("candidate_rows") or 0)
+        operational_export_bytes = int(operational_export_stats.get("payload_bytes") or 0)
         size_bytes = int(dbstat_sizes.get(table) or 0)
         current_mode = _mode_for_table(table)
         recommended_mode = TABLE_RECOMMENDED_MODES.get(table, current_mode)
@@ -3799,6 +3853,10 @@ def table_size_summary() -> dict[str, Any]:
         backfill_needed_rows_by_table[table] = int(metadata_stats.get("backfill_needed_rows") or 0)
         full_payload_rows_by_table[table] = int(metadata_stats.get("full_payload_rows") or 0)
         legacy_full_payload_rows_by_table[table] = int(metadata_stats.get("legacy_full_payload_rows") or 0)
+        if table in OPERATIONAL_PAYLOAD_EXPORT_SPECS:
+            operational_payload_export_needed_rows_by_table[table] = operational_export_rows
+            exportable_operational_payload_rows_by_table[table] = operational_export_rows
+            operational_payload_export_estimated_savings_bytes_by_table[table] = operational_export_bytes
         tables.append(
             {
                 "table": table,
@@ -3815,6 +3873,12 @@ def table_size_summary() -> dict[str, Any]:
                 "critical_for_verified": bool(value_flags.get("candidate_to_verified") or value_flags.get("quality_outcome")),
                 "critical_for_opportunity_score": bool(value_flags.get("opportunity_score")),
                 "archive_only_ok": table in {"raw_events", "parsed_events"},
+                "operational_payload_export_needed_rows": operational_export_rows,
+                "exportable_operational_payload_rows": operational_export_rows,
+                "operational_payload_export_estimated_savings_bytes": operational_export_bytes,
+                "operational_payload_export_estimated_savings_mb": round(operational_export_bytes / (1024 * 1024), 4)
+                if operational_export_bytes
+                else 0.0,
                 **payload_stats,
                 **metadata_stats,
                 **value_flags,
@@ -3843,6 +3907,27 @@ def table_size_summary() -> dict[str, Any]:
         "backfill_needed_rows_by_table": backfill_needed_rows_by_table,
         "full_payload_rows_by_table": full_payload_rows_by_table,
         "legacy_full_payload_rows_by_table": legacy_full_payload_rows_by_table,
+        "operational_payload_export_needed_rows_by_table": operational_payload_export_needed_rows_by_table,
+        "exportable_operational_payload_rows_by_table": exportable_operational_payload_rows_by_table,
+        "operational_payload_export_estimated_savings_bytes_by_table": operational_payload_export_estimated_savings_bytes_by_table,
+        "operational_payload_export_estimated_savings_mb_by_table": {
+            table: round(bytes_value / (1024 * 1024), 4) if bytes_value else 0.0
+            for table, bytes_value in operational_payload_export_estimated_savings_bytes_by_table.items()
+        },
+        "operational_payload_export_estimated_savings_bytes": sum(
+            operational_payload_export_estimated_savings_bytes_by_table.values()
+        ),
+        "operational_payload_export_estimated_savings_mb": round(
+            sum(operational_payload_export_estimated_savings_bytes_by_table.values()) / (1024 * 1024),
+            4,
+        )
+        if operational_payload_export_estimated_savings_bytes_by_table
+        else 0.0,
+        "operational_payload_export_hint": (
+            "Run db-export-operational-payloads-dry-run before compact/vacuum."
+            if any(operational_payload_export_needed_rows_by_table.values())
+            else ""
+        ),
         "estimated_savings_after_backfill_bytes": sum(
             int(item.get("estimated_savings_after_backfill_bytes") or 0) for item in tables
         ),
@@ -3975,6 +4060,8 @@ def db_retention_recommendation() -> dict[str, Any]:
         actions.append(
             f"完成 legacy payload metadata backfill 后，预计可进一步释放约 {round(float(audit['estimated_savings_after_backfill_bytes']) / (1024 * 1024), 2)} MB"
         )
+    if audit.get("operational_payload_export_estimated_savings_bytes"):
+        actions.append("Run db-export-operational-payloads-dry-run before compact/vacuum.")
     return {
         "db_path": audit.get("db_path"),
         "db_size_bytes": audit.get("db_size_bytes"),
@@ -4024,6 +4111,11 @@ def db_retention_recommendation() -> dict[str, Any]:
         "backfill_needed_rows_by_table": audit.get("backfill_needed_rows_by_table") or {},
         "full_payload_rows_by_table": audit.get("full_payload_rows_by_table") or {},
         "legacy_full_payload_rows_by_table": audit.get("legacy_full_payload_rows_by_table") or {},
+        "operational_payload_export_needed_rows_by_table": audit.get("operational_payload_export_needed_rows_by_table") or {},
+        "exportable_operational_payload_rows_by_table": audit.get("exportable_operational_payload_rows_by_table") or {},
+        "operational_payload_export_estimated_savings_bytes": audit.get("operational_payload_export_estimated_savings_bytes"),
+        "operational_payload_export_estimated_savings_mb": audit.get("operational_payload_export_estimated_savings_mb"),
+        "operational_payload_export_hint": audit.get("operational_payload_export_hint") or "",
         "estimated_savings_after_backfill_bytes": audit.get("estimated_savings_after_backfill_bytes"),
         "estimated_savings_after_backfill_mb": audit.get("estimated_savings_after_backfill_mb"),
         "recommended_actions": actions,
@@ -4671,6 +4763,509 @@ def _compactable_tables() -> tuple[str, ...]:
     return tuple(PAYLOAD_METADATA_SPECS.keys())
 
 
+def _operational_payload_tables() -> tuple[str, ...]:
+    return tuple(OPERATIONAL_PAYLOAD_EXPORT_SPECS.keys())
+
+
+def _resolve_operational_archive_dir(archive_dir: str | Path | None = None) -> Path:
+    path = Path(archive_dir or OPERATIONAL_PAYLOAD_EXPORT_DEFAULT_DIR)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _connect_existing_sqlite(
+    db_path: str | Path | None = None,
+    *,
+    readonly: bool = False,
+) -> tuple[sqlite3.Connection | None, dict[str, Any]]:
+    resolved = _active_db_path(db_path)
+    if not resolved.exists():
+        return None, {
+            "ok": False,
+            "reason": "db_missing",
+            "db_path": str(resolved),
+        }
+    try:
+        if readonly:
+            uri = f"file:{resolved}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+        else:
+            conn = sqlite3.connect(
+                str(resolved),
+                timeout=max(float(SQLITE_BUSY_TIMEOUT_MS or 0) / 1000.0, 0.1),
+            )
+            conn.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_MS or 0)}")
+        conn.row_factory = sqlite3.Row
+        return conn, {"ok": True, "db_path": str(resolved)}
+    except sqlite3.Error as exc:
+        return None, {
+            "ok": False,
+            "reason": "db_open_failed",
+            "db_path": str(resolved),
+            "error": str(exc),
+        }
+
+
+def _ensure_operational_payload_metadata_columns(conn: sqlite3.Connection, table: str) -> None:
+    _ensure_columns(
+        conn,
+        table,
+        {
+            "archive_path": "TEXT",
+            "archive_date": "TEXT",
+            "payload_hash": "TEXT",
+            "payload_mode": "TEXT",
+        },
+    )
+
+
+def _operational_payload_candidate_where(columns: set[str], json_column: str) -> str:
+    where = [f"{json_column} IS NOT NULL", f"{json_column} != ''"]
+    if "archive_path" in columns and "payload_hash" in columns:
+        where.append(
+            "("
+            "archive_path IS NULL OR TRIM(archive_path) = '' OR "
+            "payload_hash IS NULL OR TRIM(payload_hash) = ''"
+            ")"
+        )
+    return " AND ".join(where)
+
+
+def _operational_payload_candidate_stats(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    columns: set[str] | None = None,
+) -> dict[str, Any]:
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS.get(table)
+    if spec is None:
+        return {"candidate_rows": 0, "payload_bytes": 0}
+    table_columns = columns if columns is not None else _table_columns(conn, table)
+    json_column = str(spec["json_column"])
+    if json_column not in table_columns:
+        return {"candidate_rows": 0, "payload_bytes": 0}
+    try:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS candidate_rows,
+                   COALESCE(SUM(LENGTH({json_column})), 0) AS payload_bytes
+            FROM {table}
+            WHERE {_operational_payload_candidate_where(table_columns, json_column)}
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        return {"candidate_rows": 0, "payload_bytes": 0}
+    return {
+        "candidate_rows": int(row["candidate_rows"] or 0) if row else 0,
+        "payload_bytes": int(row["payload_bytes"] or 0) if row else 0,
+    }
+
+
+def _operational_payload_selected_columns(
+    table: str,
+    columns: set[str],
+    *,
+    include_payload: bool,
+) -> list[str]:
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
+    json_column = str(spec["json_column"])
+    selected = ["rowid", f"LENGTH({json_column}) AS payload_bytes"]
+    if include_payload:
+        selected.append(json_column)
+    for column in ("archive_path", "archive_date", "payload_hash", "payload_mode"):
+        selected.append(column if column in columns else f"NULL AS {column}")
+    for column in tuple(spec.get("identity_columns") or ()) + tuple(spec.get("time_columns") or ()):
+        if column in columns and column not in selected:
+            selected.append(column)
+    for column in ("updated_at", "compacted_at"):
+        if column in columns and column not in selected:
+            selected.append(column)
+    return selected
+
+
+def _operational_payload_rows_query(
+    table: str,
+    columns: set[str],
+    *,
+    include_payload: bool,
+    limit: int | None,
+) -> tuple[str, tuple[Any, ...]]:
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
+    json_column = str(spec["json_column"])
+    selected = _operational_payload_selected_columns(table, columns, include_payload=include_payload)
+    order_columns = [column for column in tuple(spec.get("time_columns") or ()) if column in columns]
+    order_clause = ", ".join(order_columns + ["rowid"]) if order_columns else "rowid"
+    sql = (
+        f"SELECT {', '.join(selected)} FROM {table} "
+        f"WHERE {_operational_payload_candidate_where(columns, json_column)} "
+        f"ORDER BY {order_clause}"
+    )
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (int(limit),)
+    return sql, params
+
+
+def _archive_date_from_time_value(value: Any) -> str | None:
+    ts_value = _real(value)
+    if ts_value is not None:
+        return _archive_date_from_ts(ts_value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) >= 10:
+        date_part = text[:10]
+        try:
+            datetime.strptime(date_part, "%Y-%m-%d")
+            if len(text) == 10:
+                return date_part
+        except ValueError:
+            pass
+    try:
+        normalized = text.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        bj = timezone(timedelta(hours=8))
+        return parsed.astimezone(bj).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _operational_payload_archive_date(
+    table: str,
+    row: dict[str, Any],
+    payload_value: Any = None,
+) -> str:
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
+    payload_data = _from_json(payload_value, default=None)
+    payload_dict = payload_data if isinstance(payload_data, dict) else {}
+    for column in tuple(spec.get("time_columns") or ()):
+        archive_date = _archive_date_from_time_value(row.get(column))
+        if archive_date:
+            return archive_date
+        archive_date = _archive_date_from_time_value(_first(payload_dict, column))
+        if archive_date:
+            return archive_date
+    for key in ("archive_ts", "timestamp", "ts", "created_at"):
+        archive_date = _archive_date_from_time_value(_first(payload_dict, key))
+        if archive_date:
+            return archive_date
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _sha256_payload_hash(payload_value: Any) -> str:
+    digest = stable_payload_hash(payload_value) or hashlib.sha256(str(payload_value).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _archive_payload_value(payload_value: Any) -> Any:
+    parsed = _from_json(payload_value, default=None)
+    if parsed is not None:
+        return parsed
+    return "" if payload_value is None else str(payload_value)
+
+
+def _operational_row_identity(table: str, row: dict[str, Any], payload_value: Any = None) -> dict[str, Any]:
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
+    payload_data = _from_json(payload_value, default=None)
+    payload_dict = payload_data if isinstance(payload_data, dict) else {}
+    identity: dict[str, Any] = {}
+    for column in tuple(spec.get("identity_columns") or ()):
+        value = row.get(column)
+        if value in (None, "", [], {}, ()):
+            value = _first(payload_dict, column)
+        if value not in (None, "", [], {}, ()):
+            identity[column] = value
+    if not identity:
+        identity["sqlite_rowid"] = int(row.get("rowid") or 0)
+    return identity
+
+
+def _exported_at_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _append_gzip_ndjson_fsynced(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as raw_handle:
+        with gzip.GzipFile(fileobj=raw_handle, mode="ab") as gzip_handle:
+            for line in lines:
+                gzip_handle.write(line.encode("utf-8"))
+                gzip_handle.write(b"\n")
+        raw_handle.flush()
+        os.fsync(raw_handle.fileno())
+
+
+def _operational_export_table(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    dry_run: bool,
+    archive_root: Path,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    if table in OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES:
+        return {"ok": False, "reason": "core_table_blocked", "table": table}
+    if table not in OPERATIONAL_PAYLOAD_EXPORT_SPECS:
+        return {"ok": False, "reason": "table_not_supported", "table": table}
+    if not _table_exists(conn, table):
+        return {"ok": False, "reason": "table_missing", "table": table}
+    if not dry_run:
+        _ensure_operational_payload_metadata_columns(conn, table)
+        conn.commit()
+    columns = _table_columns(conn, table)
+    spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
+    json_column = str(spec["json_column"])
+    if json_column not in columns:
+        return {"ok": False, "reason": "json_column_missing", "table": table}
+
+    candidate_stats = _operational_payload_candidate_stats(conn, table, columns=columns)
+    candidate_rows = int(candidate_stats.get("candidate_rows") or 0)
+    sql, params = _operational_payload_rows_query(
+        table,
+        columns,
+        include_payload=not dry_run,
+        limit=limit,
+    )
+    cursor = conn.execute(sql, params)
+    selected_rows = 0
+    selected_payload_bytes = 0
+    archive_paths: set[str] = set()
+    exported_rows = 0
+    updated_rows = 0
+    skipped_write_failed = 0
+    failed_error = ""
+    batch: list[dict[str, Any]] = []
+
+    def flush_batch(rows: list[dict[str, Any]]) -> bool:
+        nonlocal exported_rows, updated_rows, skipped_write_failed, failed_error
+        if not rows:
+            return True
+        files: dict[Path, list[str]] = {}
+        updates: list[tuple[Any, ...]] = []
+        exported_at = _exported_at_utc()
+        for row in rows:
+            payload_value = row.get(json_column)
+            archive_date = _operational_payload_archive_date(table, row, payload_value)
+            archive_path = archive_root / table / f"{archive_date}.ndjson.gz"
+            archive_path_relative = _display_path(archive_path)
+            payload_hash = _sha256_payload_hash(payload_value)
+            line_payload = {
+                "schema": OPERATIONAL_PAYLOAD_EXPORT_SCHEMA,
+                "table": table,
+                "row_identity": _operational_row_identity(table, row, payload_value),
+                "payload_hash": payload_hash,
+                "payload_column": json_column,
+                "payload": _archive_payload_value(payload_value),
+                "exported_at_utc": exported_at,
+                "source": OPERATIONAL_PAYLOAD_EXPORT_SOURCE,
+            }
+            files.setdefault(archive_path, []).append(
+                json.dumps(line_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
+            set_values: list[Any] = [
+                archive_path_relative,
+                archive_date,
+                payload_hash,
+                "archived",
+            ]
+            if "updated_at" in columns:
+                set_values.append(_now())
+            if "compacted_at" in columns:
+                set_values.append(_now())
+            set_values.append(int(row["rowid"]))
+            updates.append(tuple(set_values))
+        try:
+            for path, lines in files.items():
+                _append_gzip_ndjson_fsynced(path, lines)
+                archive_paths.add(_display_path(path))
+        except Exception as exc:
+            failed_error = str(exc)
+            skipped_write_failed += len(rows)
+            return False
+
+        assignments = [
+            "archive_path=?",
+            "archive_date=?",
+            "payload_hash=?",
+            "payload_mode=?",
+            f"{json_column}=NULL",
+        ]
+        if "updated_at" in columns:
+            assignments.append("updated_at=?")
+        if "compacted_at" in columns:
+            assignments.append("compacted_at=?")
+        conn.executemany(
+            f"UPDATE {table} SET {', '.join(assignments)} WHERE rowid=?",
+            tuple(updates),
+        )
+        conn.commit()
+        exported_rows += len(rows)
+        updated_rows += len(rows)
+        return True
+
+    for raw_row in cursor:
+        row = dict(raw_row)
+        selected_rows += 1
+        selected_payload_bytes += int(row.get("payload_bytes") or 0)
+        archive_date = _operational_payload_archive_date(table, row)
+        archive_paths.add(_display_path(archive_root / table / f"{archive_date}.ndjson.gz"))
+        if dry_run:
+            continue
+        batch.append(row)
+        if len(batch) >= OPERATIONAL_PAYLOAD_EXPORT_BATCH_SIZE:
+            if not flush_batch(batch):
+                break
+            batch = []
+    if not dry_run and not failed_error and batch:
+        flush_batch(batch)
+
+    result = {
+        "ok": not bool(failed_error),
+        "table": table,
+        "dry_run": bool(dry_run),
+        "candidate_rows": candidate_rows,
+        "selected_rows": selected_rows,
+        "payload_bytes": selected_payload_bytes,
+        "estimated_savings_mb": round(selected_payload_bytes / (1024 * 1024), 4)
+        if selected_payload_bytes
+        else 0.0,
+        "archive_dir": _display_path(archive_root),
+        "would_write_files": sorted(archive_paths) if dry_run else [],
+        "archive_files": sorted(archive_paths) if not dry_run else [],
+        "would_update_rows": selected_rows if dry_run else 0,
+        "would_clear_json_column": json_column,
+        "rows_exported": exported_rows,
+        "rows_updated": updated_rows,
+        "rows_cleared": updated_rows,
+        "skipped_write_failed": skipped_write_failed,
+        "json_column_cleared": json_column if updated_rows else "",
+        "limit": limit,
+        "vacuum_next_step": "make db-vacuum CONFIRM=YES" if updated_rows else "",
+    }
+    if failed_error:
+        result["reason"] = "archive_write_failed"
+        result["error"] = failed_error
+    return result
+
+
+def export_operational_payloads(
+    *,
+    dry_run: bool | None = None,
+    execute: bool = False,
+    confirm: bool = False,
+    table: str | None = None,
+    limit: int | None = None,
+    archive_dir: str | Path | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    if table and table in OPERATIONAL_PAYLOAD_EXPORT_BLOCKED_TABLES:
+        return {"ok": False, "reason": "core_table_blocked", "table": table}
+    if table and table not in OPERATIONAL_PAYLOAD_EXPORT_SPECS:
+        return {"ok": False, "reason": "table_not_supported", "table": table}
+    if limit is not None and int(limit) <= 0:
+        return {"ok": False, "reason": "invalid_limit", "limit": limit}
+    dry_run = not bool(execute) if dry_run is None else bool(dry_run)
+    if execute and not dry_run and not confirm:
+        resolved = _active_db_path(db_path)
+        return {
+            "ok": False,
+            "reason": "confirm_required",
+            "db_path": str(resolved),
+            "required": "CONFIRM=YES or --confirm",
+        }
+    archive_root = _resolve_operational_archive_dir(archive_dir)
+    if execute and not dry_run:
+        try:
+            archive_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {
+                "ok": False,
+                "reason": "archive_dir_not_writable",
+                "archive_dir": _display_path(archive_root),
+                "error": str(exc),
+            }
+        if not os.access(archive_root, os.W_OK):
+            return {
+                "ok": False,
+                "reason": "archive_dir_not_writable",
+                "archive_dir": _display_path(archive_root),
+            }
+
+    conn, open_status = _connect_existing_sqlite(db_path, readonly=dry_run)
+    if conn is None:
+        payload = {
+            **open_status,
+            "dry_run": dry_run,
+            "archive_dir": _display_path(archive_root),
+        }
+        if table:
+            payload["table"] = table
+        return payload
+    try:
+        target_tables = [table] if table else list(_operational_payload_tables())
+        summaries = [
+            _operational_export_table(
+                conn,
+                str(name),
+                dry_run=dry_run,
+                archive_root=archive_root,
+                limit=int(limit) if limit is not None else None,
+            )
+            for name in target_tables
+        ]
+    finally:
+        conn.close()
+
+    if table:
+        return summaries[0]
+    total_payload_bytes = sum(int(item.get("payload_bytes") or 0) for item in summaries)
+    archive_files = sorted(
+        {
+            str(path)
+            for item in summaries
+            for path in ((item.get("would_write_files") if dry_run else item.get("archive_files")) or [])
+        }
+    )
+    return {
+        "ok": all(bool(item.get("ok")) for item in summaries),
+        "dry_run": dry_run,
+        "tables": {str(item.get("table")): item for item in summaries},
+        "candidate_rows": sum(int(item.get("candidate_rows") or 0) for item in summaries),
+        "selected_rows": sum(int(item.get("selected_rows") or 0) for item in summaries),
+        "payload_bytes": total_payload_bytes,
+        "estimated_savings_mb": round(total_payload_bytes / (1024 * 1024), 4) if total_payload_bytes else 0.0,
+        "archive_dir": _display_path(archive_root),
+        "would_write_files": archive_files if dry_run else [],
+        "archive_files": archive_files if not dry_run else [],
+        "would_update_rows": sum(int(item.get("would_update_rows") or 0) for item in summaries),
+        "would_clear_json_column": {
+            str(item.get("table")): str(item.get("would_clear_json_column") or "")
+            for item in summaries
+        },
+        "rows_exported": sum(int(item.get("rows_exported") or 0) for item in summaries),
+        "rows_updated": sum(int(item.get("rows_updated") or 0) for item in summaries),
+        "rows_cleared": sum(int(item.get("rows_cleared") or 0) for item in summaries),
+        "limit": limit,
+        "preflight": {
+            "db_path": open_status.get("db_path"),
+            "archive_dir": _display_path(archive_root),
+            "backup_recommended": "Back up the SQLite DB before execute.",
+            "vacuum_after_execute": "make db-vacuum CONFIRM=YES",
+        },
+    }
+
+
 def _backfill_table(table: str, *, dry_run: bool = True, date: str | None = None) -> dict[str, Any]:
     conn = get_connection()
     if conn is None:
@@ -5069,7 +5664,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--migrate-archive", action="store_true", help="mirror archive NDJSON into SQLite")
     parser.add_argument("--date", help="archive date YYYY-MM-DD for --migrate-archive")
     parser.add_argument("--all", action="store_true", help="migrate all archive dates")
-    parser.add_argument("--table", help="table filter for payload metadata backfill")
+    parser.add_argument("--table", help="table filter for payload metadata backfill or operational payload export")
+    parser.add_argument("--limit", type=int, help="limit operational payload export rows per table")
+    parser.add_argument(
+        "--archive-dir",
+        help="archive dir for --export-operational-payloads (default app/data/archive/sqlite_payloads)",
+    )
     parser.add_argument("--integrity-check", action="store_true", help="run schema/count/integrity checks")
     parser.add_argument("--fast", action="store_true", help="skip archive mirror row counts for lightweight integrity checks")
     parser.add_argument("--checkpoint", action="store_true", help="run SQLite WAL checkpoint truncate")
@@ -5077,9 +5677,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compact", action="store_true", help="dry-run or execute compact on compactable tables")
     parser.add_argument("--compact-table", help="dry-run or execute compact on one table")
     parser.add_argument("--backfill-payload-metadata", action="store_true", help="backfill legacy archive_path/archive_date/payload_hash/payload_mode")
+    parser.add_argument(
+        "--export-operational-payloads",
+        action="store_true",
+        help="export legacy operational diagnostics JSON payloads to gzip NDJSON and slim SQLite",
+    )
     parser.add_argument("--vacuum", action="store_true", help="run VACUUM only with CONFIRM=YES")
     parser.add_argument("--dry-run", action="store_true", help="dry-run retention prune")
     parser.add_argument("--execute", action="store_true", help="execute retention prune")
+    parser.add_argument("--confirm", action="store_true", help="confirm protected execute actions")
     return parser
 
 
@@ -5135,6 +5741,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             dry_run = True
         payload = backfill_payload_metadata(dry_run=dry_run, table=args.table, date=args.date)
+        _print_json(payload)
+        return 0 if payload.get("ok") else 1
+    if args.export_operational_payloads:
+        dry_run = not bool(args.execute)
+        if args.dry_run:
+            dry_run = True
+        confirm = bool(args.confirm) or str(os.environ.get("CONFIRM") or "").strip().upper() == "YES"
+        payload = export_operational_payloads(
+            dry_run=dry_run,
+            execute=bool(args.execute),
+            confirm=confirm,
+            table=args.table,
+            limit=args.limit,
+            archive_dir=args.archive_dir,
+        )
         _print_json(payload)
         return 0 if payload.get("ok") else 1
     if args.compact or args.compact_table:

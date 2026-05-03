@@ -74,10 +74,12 @@ require_audit '"refused_reason":"router_required"'
 guarded_commands=(
   "daily_flow_direct daily-flow --date 2026-05-01"
   "replay_check_direct replay-check --date 2026-05-01"
+  "job_diagnose_direct job-diagnose --job-id cmjob_20260503T090349Z_791e8d8ea814"
   "data_quality_direct data-quality --date 2026-05-01"
   "profile_review_direct profile-review --date 2026-05-01"
   "blocker_review_direct blocker-review --date 2026-05-01"
   "shadow_review_direct shadow-review --date 2026-05-01"
+  "space_check_direct space-check"
   "archive_check_direct archive-compress-check --date 2026-05-01"
   "weekly_review_direct weekly-review --start 2026-04-27 --end 2026-05-03"
 )
@@ -87,6 +89,9 @@ for item in "${guarded_commands[@]}"; do
   case "$command" in
     weekly-review)
       run_fail "$name" "$command" "$arg1" "$arg2" "$arg3" "$arg4"
+      ;;
+    space-check)
+      run_fail "$name" "$command"
       ;;
     *)
       run_fail "$name" "$command" "$arg1" "$arg2"
@@ -111,6 +116,10 @@ export HERMES_OPS_ROUTER_OK=1
 
 run_ok report_router_ok report --date 2026-05-01
 require_output report_router_ok 'fake make ok'
+
+run_fail long_router_without_job daily-flow --date 2026-05-01
+require_output long_router_without_job '后台 job'
+require_audit '"refused_reason":"job_runner_required"'
 
 python3 - "$HERMES_OPS_AUDIT_LOG" <<'PY'
 import json

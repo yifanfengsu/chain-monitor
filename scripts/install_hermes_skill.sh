@@ -176,7 +176,13 @@ launcher 已创建：~/.hermes/bin/chain-monitor-cn-router
   预期：拒绝。
 
   /chain-monitor-report-analyst 标准日报流程2026-05-01
-  预期：执行标准日报流程。
+  预期：返回 job_id，不在 Telegram 中同步等待。
+
+长任务现在会返回 job_id，不会在 Telegram 中同步等待。
+请继续测试：
+  /chain-monitor-report-analyst 任务状态cmjob_...
+  /chain-monitor-report-analyst 查看结果cmjob_...
+  /chain-monitor-report-analyst 诊断任务cmjob_...
 
 不会输出 token、RPC、完整 user id 或完整 chat id。
 MESSAGE

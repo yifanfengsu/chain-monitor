@@ -68,9 +68,16 @@ run_ok listener_health --text '监听器体检' --dry-run --platform telegram
 require_out listener_health 'listener-health'
 
 run_ok daily_flow --text '标准日报流程2026-05-01' --dry-run --platform telegram
-require_out daily_flow 'daily-flow'
+require_out daily_flow 'submit-daily-flow'
 require_out daily_flow '--date'
 require_out daily_flow '2026-05-01'
+
+run_fail daily_flow_rerun_missing_confirm --text '重新标准日报流程2026-05-01' --dry-run --platform telegram
+require_out daily_flow_rerun_missing_confirm '我确认重跑'
+
+run_ok daily_flow_rerun --text '重新标准日报流程2026-05-01 我确认重跑' --dry-run --platform telegram
+require_out daily_flow_rerun 'submit-daily-flow'
+require_out daily_flow_rerun '--force-rerun'
 
 run_ok replay_check --text '检查回放2026-05-01' --dry-run --platform telegram
 require_out replay_check 'replay-check'
@@ -98,20 +105,48 @@ require_out shadow_review '--date'
 require_out shadow_review '2026-05-01'
 
 run_ok space_check --text '空间检查' --dry-run --platform telegram
-require_out space_check 'space-check'
+require_out space_check 'submit-space-check'
+
+run_ok space_fast --text '空间快检' --dry-run --platform telegram
+require_out space_fast 'space-fast'
+
+run_ok db_size_diagnose --text '数据库体积诊断' --dry-run --platform telegram
+require_out db_size_diagnose 'db-size-diagnose'
 
 run_ok archive_check --text '归档压缩预检2026-05-01' --dry-run --platform telegram
-require_out archive_check 'archive-compress-check'
+require_out archive_check 'submit-archive-compress-check'
 require_out archive_check '--date'
 require_out archive_check '2026-05-01'
 forbid_out archive_check 'archive-compress-date'
 
 run_ok weekly_review --text '周复盘2026-04-27到2026-05-03' --dry-run --platform telegram
-require_out weekly_review 'weekly-review'
+require_out weekly_review 'submit-weekly-review'
 require_out weekly_review '--start'
 require_out weekly_review '2026-04-27'
 require_out weekly_review '--end'
 require_out weekly_review '2026-05-03'
+
+run_ok job_status --text '任务状态cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
+require_out job_status 'job-status'
+
+run_ok job_result --text '查看结果cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
+require_out job_result 'job-result'
+
+run_ok job_log --text '查看日志cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
+require_out job_log 'job-log'
+
+run_ok job_diagnose --text '诊断任务cmjob_20260503T090349Z_791e8d8ea814' --dry-run --platform telegram
+require_out job_diagnose 'job-diagnose'
+
+run_ok job_list --text '最近任务' --dry-run --platform telegram
+require_out job_list 'job-list'
+
+run_fail job_cancel_missing_confirm --text '取消任务cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
+require_out job_cancel_missing_confirm '我确认取消'
+
+run_ok job_cancel --text '取消任务cmjob_20260501T120000Z_abcdef12 我确认取消' --dry-run --platform telegram
+require_out job_cancel 'job-cancel'
+require_out job_cancel '--confirm'
 
 run_fail relative_daily --text '标准日报流程昨天' --dry-run --platform telegram
 require_out relative_daily 'YYYY-MM-DD'
@@ -139,6 +174,14 @@ HERMES_OPS_LOCK_PATH="$MENU_LOCK" \
 grep -Fq '系统体检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 系统体检"
 grep -Fq '标准日报流程YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 标准日报流程YYYY-MM-DD"
 grep -Fq '周复盘START到END' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 周复盘START到END"
+grep -Fq '任务状态JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 任务状态JOB_ID"
+grep -Fq '查看结果JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 查看结果JOB_ID"
+grep -Fq '查看日志JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 查看日志JOB_ID"
+grep -Fq '诊断任务JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 诊断任务JOB_ID"
+grep -Fq '最近任务' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 最近任务"
+grep -Fq '空间快检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 空间快检"
+grep -Fq '数据库体积诊断' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库体积诊断"
+grep -Fq '重新标准日报流程YYYY-MM-DD 我确认重跑' "$TMP_DIR/menu_execute.out" || fail "menu execute missing rerun command"
 grep -Fq 'command-menu' "$MENU_AUDIT" || grep -Fq 'command-menu' "$HERMES_OPS_AUDIT_LOG" || fail "audit missing command-menu"
 
 echo "OK: Hermes manual menu router test passed"

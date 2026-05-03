@@ -78,6 +78,16 @@ require_out deep '"deep"'
 run_ok autobuild --text '构建并分析报告2026-05-01 快速' --dry-run
 require_out autobuild '"--auto-build"'
 
+run_ok daily_flow_submit --text '标准日报流程2026-05-01' --dry-run
+require_out daily_flow_submit 'submit-daily-flow'
+forbid_out daily_flow_submit '"daily-flow"'
+
+run_ok job_status --text '任务状态cmjob_20260501T120000Z_abcdef12' --dry-run
+require_out job_status 'job-status'
+
+run_ok job_diagnose --text '诊断任务cmjob_20260503T090349Z_791e8d8ea814' --dry-run
+require_out job_diagnose 'job-diagnose'
+
 run_fail relative --text '分析昨天的报告' --dry-run
 require_out relative '绝对日期'
 require_out relative 'YYYY-MM-DD'

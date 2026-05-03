@@ -45,6 +45,7 @@ for pattern in \
   "## When to use / 何时使用" \
   "## Source Priority" \
   "## 中文 Telegram Command Router - Mandatory" \
+  "## Long Running Commands Must Be Submitted As Jobs" \
   "## 中文 Telegram 手动控制菜单" \
   "## Approved Commands" \
   "## Hermes Gateway / Telegram Control Rules" \
@@ -99,6 +100,11 @@ for term in \
   "不得直接调用 hermes_cm_ops.sh 的 dated operations" \
   "Telegram 中文请求不得直接调用 hermes_cm_ops.sh report/analyze/digest/close" \
   "不得从中文 Telegram 请求直接调用 raw shell" \
+  "不得同步执行" \
+  "job_id" \
+  "任务状态" \
+  "查看结果" \
+  "诊断任务" \
   "输出默认脱敏"
 do
   require_text "$term" "Chinese Telegram router term"
@@ -109,6 +115,9 @@ for example in \
   "系统体检" \
   "监听器体检" \
   "标准日报流程2026-05-01" \
+  "任务状态cmjob_" \
+  "查看结果cmjob_" \
+  "诊断任务cmjob_" \
   "分析报告2026-05-01" \
   "检查回放2026-05-01" \
   "数据质量2026-05-01" \
@@ -154,15 +163,22 @@ for command in \
   "./scripts/hermes_cm_ops.sh command-menu" \
   "./scripts/hermes_cm_ops.sh system-health" \
   "./scripts/hermes_cm_ops.sh listener-health" \
-  "./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
-  "./scripts/hermes_cm_ops.sh space-check" \
-  "./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD" \
-  "./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD"
+  "./scripts/hermes_cm_ops.sh submit-space-check" \
+  "./scripts/hermes_cm_ops.sh space-fast" \
+  "./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID" \
+  "./scripts/hermes_cm_ops.sh job-result --job-id JOB_ID" \
+  "./scripts/hermes_cm_ops.sh job-log --job-id JOB_ID" \
+  "./scripts/hermes_cm_ops.sh job-diagnose --job-id JOB_ID" \
+  "./scripts/hermes_cm_ops.sh job-list" \
+  "./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm"
 do
   grep -Fq -- "$command" <<<"$APPROVED_BLOCK" || fail "Approved Commands missing: ${command}"
 done
@@ -224,6 +240,7 @@ for term in \
   "每日收尾是 high-risk" \
   "每日收尾不属于每日默认流程" \
   "我确认压缩" \
+  "每日收尾YYYY-MM-DD 我确认压缩”不是 ordinary daily-flow failure 的修复方法" \
   "不要建议用户使用 \`--allow-today\`"
 do
   require_text "$term" "required safety/control term"

@@ -2377,6 +2377,37 @@ def _insert_or_update(conn: sqlite3.Connection, table: str, record: dict[str, An
     conn.execute(sql, tuple(record[column] for column in columns))
 
 
+def _insert_record(conn: sqlite3.Connection, table: str, record: dict[str, Any]) -> None:
+    columns = [column for column in record.keys() if column in _table_columns(conn, table)]
+    if not columns:
+        return
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO {table}({', '.join(columns)}) VALUES({placeholders})",
+        tuple(record[column] for column in columns),
+    )
+
+
+def _delete_replay_scope_rows(conn: sqlite3.Connection, table: str, logical_date: str, replay_scope: str) -> int:
+    if not _table_exists(conn, table):
+        return 0
+    columns = _table_columns(conn, table)
+    if {"logical_date", "replay_scope"}.issubset(columns):
+        cursor = conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE logical_date = ?
+              AND COALESCE(replay_scope, 'default') = ?
+            """,
+            (logical_date, replay_scope),
+        )
+        return max(int(cursor.rowcount or 0), 0)
+    if "logical_date" in columns:
+        cursor = conn.execute(f"DELETE FROM {table} WHERE logical_date = ?", (logical_date,))
+        return max(int(cursor.rowcount or 0), 0)
+    return 0
+
+
 def _blocker_json_with_replay_profile_negative(value: Any) -> str:
     blockers = _coerce_blockers(value)
     if REPLAY_PROFILE_NEGATIVE_BLOCKER not in blockers:
@@ -2577,7 +2608,9 @@ def _persist_trade_replay_rows(
         "include_blocked": bool(include_blocked),
         "profile_stats_scope": "profile_key_latest_and_daily",
         "idempotent_key": "trade_replay_examples.replay_id=logical_date+replay_scope+signal_id_or_trade_opportunity_id+strategy_config_hash",
-        "delete_scope": "logical_date+replay_scope+strategy_config_hash",
+        "delete_scope": "logical_date+replay_scope",
+        "examples_deleted": 0,
+        "profile_daily_stats_deleted": 0,
         "examples_written": 0,
         "profile_stats_written": 0,
         "profile_daily_stats_written": 0,
@@ -2585,22 +2618,24 @@ def _persist_trade_replay_rows(
         "trade_opportunity_replay_profile_negative_primary_blocker_updated": 0,
         "trade_opportunity_replay_profile_negative_repair_summary": _empty_replay_profile_negative_repair_summary(),
     }
-    if not replay_rows:
-        return summary
     try:
         _ensure_replay_persistence_schema(conn)
         now_text = datetime.now(UTC).isoformat()
-        example_columns = _table_columns(conn, "trade_replay_examples")
-        if {"logical_date", "replay_scope", "strategy_config_hash"}.issubset(example_columns):
-            conn.execute(
-                """
-                DELETE FROM trade_replay_examples
-                WHERE logical_date = ?
-                  AND COALESCE(replay_scope, 'default') = ?
-                  AND (strategy_config_hash = ? OR strategy_config_hash IS NULL OR strategy_config_hash = '')
-                """,
-                (logical_date, replay_scope, strategy_config_hash),
-            )
+        summary["examples_deleted"] = _delete_replay_scope_rows(
+            conn,
+            "trade_replay_examples",
+            logical_date,
+            replay_scope,
+        )
+        summary["profile_daily_stats_deleted"] = _delete_replay_scope_rows(
+            conn,
+            "trade_replay_profile_daily_stats",
+            logical_date,
+            replay_scope,
+        )
+        if not replay_rows:
+            conn.commit()
+            return summary
         for index, row in enumerate(replay_rows):
             replay_id = _deterministic_replay_id(
                 logical_date,
@@ -2717,12 +2752,7 @@ def _persist_trade_replay_rows(
             }
             latest_record = {key: value for key, value in record.items() if key not in {"logical_date", "replay_scope", "strategy_config_hash"}}
             _insert_or_update(conn, "trade_replay_profile_stats", latest_record, ("profile_key",))
-            _insert_or_update(
-                conn,
-                "trade_replay_profile_daily_stats",
-                record,
-                ("logical_date", "replay_scope", "strategy_config_hash", "profile_key"),
-            )
+            _insert_record(conn, "trade_replay_profile_daily_stats", record)
             summary["profile_stats_written"] += 1
             summary["profile_daily_stats_written"] += 1
         repair_summary = _repair_trade_opportunity_replay_profile_blockers(
@@ -3116,6 +3146,9 @@ def run_trade_replay(
             "strategy_config_hash": strategy_hash,
             "profile_stats_scope": "profile_key_latest_and_daily",
             "idempotent_key": "trade_replay_examples.replay_id=logical_date+replay_scope+signal_id_or_trade_opportunity_id+strategy_config_hash",
+            "delete_scope": "logical_date+replay_scope",
+            "examples_deleted": 0,
+            "profile_daily_stats_deleted": 0,
             "examples_written": 0,
             "profile_stats_written": 0,
             "profile_daily_stats_written": 0,

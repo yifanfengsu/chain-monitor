@@ -18,21 +18,28 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 ## 中文输入 -> router intent -> cm_ops wrapper argv
 
-| 中文输入 | router intent | cm_ops wrapper argv | 风险等级 |
-| --- | --- | --- | --- |
-| 命令提示 / 功能列表 / 菜单 / 帮助 / 命令 / 怎么用 / 使用说明 | command-menu | `./scripts/hermes_cm_ops.sh command-menu` | low |
-| 系统体检 / 体检 / 健康检查 / 系统状态 / 状态 | system-health | `./scripts/hermes_cm_ops.sh system-health` | low |
-| 监听器体检 / 监听器检查 / 监听状态 / 监听器状态 / 最近数据 / 零活动排查 | listener-health | `./scripts/hermes_cm_ops.sh listener-health` | low |
-| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | daily-flow | `./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD` | medium |
-| 分析报告YYYY-MM-DD / 快速分析报告YYYY-MM-DD / 日报分析YYYY-MM-DD / 报告分析YYYY-MM-DD | analyze fast | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium |
-| 检查回放YYYY-MM-DD / 回放检查YYYY-MM-DD / 回放摘要YYYY-MM-DD / 检查replayYYYY-MM-DD / Replay检查YYYY-MM-DD | replay-check | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low |
-| 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low |
-| Profile复盘YYYY-MM-DD / profile复盘YYYY-MM-DD / 画像复盘YYYY-MM-DD / 后验画像YYYY-MM-DD | profile-review | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low |
-| Blocker复盘YYYY-MM-DD / blocker复盘YYYY-MM-DD / 阻断复盘YYYY-MM-DD / 风控阻断复盘YYYY-MM-DD | blocker-review | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low |
-| Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low |
-| 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | space-check | `./scripts/hermes_cm_ops.sh space-check` | low |
-| 归档压缩预检YYYY-MM-DD / 压缩预检YYYY-MM-DD / archive压缩预检YYYY-MM-DD / Archive压缩预检YYYY-MM-DD | archive-compress-check | `./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD` | low-medium |
-| 周复盘START到END / 周复盘 START 到 END / 周度复盘START到END / 每周复盘START到END | weekly-review | `./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD` | medium |
+| 中文输入 | router intent | cm_ops wrapper argv | 风险等级 | 执行模式 |
+| --- | --- | --- | --- | --- |
+| 命令提示 / 功能列表 / 菜单 / 帮助 / 命令 / 怎么用 / 使用说明 | command-menu | `./scripts/hermes_cm_ops.sh command-menu` | low | sync quick |
+| 系统体检 / 体检 / 健康检查 / 系统状态 / 状态 | system-health | `./scripts/hermes_cm_ops.sh system-health` | low | sync |
+| 监听器体检 / 监听器检查 / 监听状态 / 监听器状态 / 最近数据 / 零活动排查 | listener-health | `./scripts/hermes_cm_ops.sh listener-health` | low | sync |
+| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job |
+| 分析报告YYYY-MM-DD / 快速分析报告YYYY-MM-DD / 日报分析YYYY-MM-DD / 报告分析YYYY-MM-DD | analyze fast | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium | sync |
+| 检查回放YYYY-MM-DD / 回放检查YYYY-MM-DD / 回放摘要YYYY-MM-DD / 检查replayYYYY-MM-DD / Replay检查YYYY-MM-DD | replay-check | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | sync quick |
+| 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | sync quick |
+| Profile复盘YYYY-MM-DD / profile复盘YYYY-MM-DD / 画像复盘YYYY-MM-DD / 后验画像YYYY-MM-DD | profile-review | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | sync quick |
+| Blocker复盘YYYY-MM-DD / blocker复盘YYYY-MM-DD / 阻断复盘YYYY-MM-DD / 风控阻断复盘YYYY-MM-DD | blocker-review | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | sync quick |
+| Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
+| 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
+| 空间快检 / 快速空间检查 / 快速磁盘检查 | space-fast | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick |
+| 归档压缩预检YYYY-MM-DD / 压缩预检YYYY-MM-DD / archive压缩预检YYYY-MM-DD / Archive压缩预检YYYY-MM-DD | submit-archive-compress-check | `./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD` | low-medium | async job |
+| 周复盘START到END / 周复盘 START 到 END / 周度复盘START到END / 每周复盘START到END | submit-weekly-review | `./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD` | medium | async job |
+| 任务状态JOB_ID / 查询任务JOB_ID / 任务进度JOB_ID | job-status | `./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID` | low | sync quick |
+| 查看结果JOB_ID / 任务结果JOB_ID / 读取结果JOB_ID | job-result | `./scripts/hermes_cm_ops.sh job-result --job-id JOB_ID` | low | sync quick |
+| 查看日志JOB_ID / 任务日志JOB_ID | job-log | `./scripts/hermes_cm_ops.sh job-log --job-id JOB_ID` | low | sync quick |
+| 诊断任务JOB_ID / 任务诊断JOB_ID | job-diagnose | `./scripts/hermes_cm_ops.sh job-diagnose --job-id JOB_ID` | low | sync quick |
+| 最近任务 / 任务列表 / 查看任务 | job-list | `./scripts/hermes_cm_ops.sh job-list` | low | sync quick |
+| 取消任务JOB_ID 我确认取消 | job-cancel | `./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm` | medium | sync quick |
 
 ## 保留 grammar
 
@@ -48,6 +55,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 “每日收尾”如果绑定压缩，不在新菜单中列为每日默认流程。新增“标准日报流程”才是推荐手动流程。
 
+兼容说明：`daily-flow`、`space-check`、`archive-compress-check`、`weekly-review` 仍是 wrapper 内部/local CLI 逻辑名称，但 Telegram grammar 必须映射到 `submit-*` 后台任务，不得同步执行。
+
 ## Grammar Details
 
 - 所有可执行命令必须使用绝对日期 `YYYY-MM-DD`。
@@ -56,10 +65,13 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 支持日期与中文命令之间有空格，例如 `分析报告 2026-05-01`。
 - 周复盘使用 `START到END`，例如 `周复盘2026-04-27到2026-05-03`。
 - 周复盘 START / END 必须是 `YYYY-MM-DD`，START <= END，范围最多 14 天。
+- job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。
+- 取消任务必须包含“我确认取消”。
 - `生成摘要2026-05-01` 没有 快速/深度，必须拒绝并要求指定模式。
 - 普通“分析报告YYYY-MM-DD”不得自动生成日报，不得自动 auto-build。
 - 只有“构建并分析报告YYYY-MM-DD 快速/深度”才允许 auto-build。
 - close 只能由“每日收尾YYYY-MM-DD 我确认压缩”触发。
+- “每日收尾YYYY-MM-DD 我确认压缩”不是 ordinary daily-flow failure 的修复方法。
 
 ## Forbidden Relative Date Examples
 
@@ -115,6 +127,18 @@ request_id：{request_id}
 输出已脱敏。
 ```
 
+后台任务提交成功：
+
+```text
+✅ 已提交后台任务：标准日报流程
+job_id：cmjob_...
+查询进度：任务状态cmjob_...
+查看结果：查看结果cmjob_...
+查看日志：查看日志cmjob_...
+失败诊断：诊断任务cmjob_...
+说明：该任务会在 VPS 后台继续执行，Telegram 不需要等待。
+```
+
 拒绝：
 
 ```text
@@ -145,10 +169,11 @@ request_id：{request_id}
 【每日检查】
 - 系统体检：检查 DB / report source / market / coverage
 - 监听器体检：检查监听器是否停摆、最近数据时间
-- 空间检查：查看 DB / archive / reports 占用
+- 空间检查：提交后台任务查看 DB / archive / reports 占用
+- 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小
 
 【日报流程】
-- 标准日报流程YYYY-MM-DD：daily-close + full replay + report + compare + checkpoint
+- 标准日报流程YYYY-MM-DD：提交后台任务，展开 daily-close 子步骤 + full replay + report + compare + checkpoint
 - 分析报告YYYY-MM-DD：分析已存在日报
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
@@ -159,10 +184,18 @@ request_id：{request_id}
 - Shadow复盘YYYY-MM-DD
 
 【维护预检】
-- 归档压缩预检YYYY-MM-DD：只 dry-run，不压缩
+- 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，不压缩
 
 【周复盘】
-- 周复盘START到END，例如：周复盘2026-04-27到2026-05-03
+- 周复盘START到END：提交后台任务，例如：周复盘2026-04-27到2026-05-03
+
+【后台任务】
+- 任务状态JOB_ID
+- 查看结果JOB_ID
+- 查看日志JOB_ID
+- 诊断任务JOB_ID
+- 最近任务
+- 取消任务JOB_ID 我确认取消
 
 规则：
 - 日期必须用 YYYY-MM-DD
@@ -178,9 +211,22 @@ request_id：{request_id}
 3. 发送 `/chain-monitor-report-analyst 分析昨天的报告`。
    预期：拒绝，不运行 date，不执行 report/analyze/digest/close，不读取 reports。
 4. 发送 `/chain-monitor-report-analyst 标准日报流程2026-05-01`。
-   预期：router 映射到 daily-flow，并由 wrapper 执行固定流程。
+   预期：router 映射到 submit-daily-flow，立即返回 job_id。
 5. 发送 `/chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03`。
-   预期：router 映射到 weekly-review。
+   预期：router 映射到 submit-weekly-review，立即返回 job_id。
+6. 发送 `/chain-monitor-report-analyst 任务状态cmjob_...`。
+   预期：router 映射到 job-status。
+7. 如果任务 failed，发送 `/chain-monitor-report-analyst 诊断任务cmjob_...`。
+   预期：router 映射到 job-diagnose，只读返回 failed_substep 和 failed_command。
+
+## 标准日报流程失败诊断
+
+- 标准日报流程的 daily-close 阶段必须展开子步骤，不得只把 `make daily-close DATE=YYYY-MM-DD` 当成黑盒。
+- daily-close 默认只是 compression dry-run，不真正压缩 archive。
+- 只有 `COMPRESS=YES CONFIRM=YES` 才执行实际 archive gzip。
+- 标准日报流程 failed 时，先使用 `诊断任务JOB_ID` 和 `查看日志JOB_ID`。
+- 不要因为 daily-close failure 就压缩 archive。
+- “每日收尾YYYY-MM-DD 我确认压缩”不是 ordinary daily-flow failure 的修复方法。
 
 ## 安全处理要点
 

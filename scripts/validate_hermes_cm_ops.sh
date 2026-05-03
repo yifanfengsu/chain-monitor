@@ -37,6 +37,31 @@ for pattern in \
   "cmd_health()" \
   "cmd_digest()" \
   "cmd_analyze()" \
+  "cmd_submit_daily_flow()" \
+  "cmd_submit_space_check()" \
+  "cmd_submit_archive_compress_check()" \
+  "cmd_submit_weekly_review()" \
+  "cmd_job_status()" \
+  "cmd_job_list()" \
+  "cmd_job_result()" \
+  "cmd_job_log()" \
+  "cmd_job_diagnose()" \
+  "cmd_job_cancel()" \
+  "cmd_space_fast()" \
+  "cmd_run_job()" \
+  "submit-daily-flow" \
+  "submit-space-check" \
+  "submit-archive-compress-check" \
+  "submit-weekly-review" \
+  "job-status" \
+  "job-list" \
+  "job-result" \
+  "job-log" \
+  "job-diagnose" \
+  "job-cancel" \
+  "__run-job" \
+  "HERMES_OPS_JOB_RUNNER_OK" \
+  "job_runner_required" \
   "HERMES_OPS_AUDIT_LOG" \
   "ops_audit.ndjson" \
   "HERMES_OPS_LOCK_PATH" \
@@ -68,7 +93,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -76,8 +101,10 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "report|digest|analyze|close|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|archive-compress-check|weekly-review"
+require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
+require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
+require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
 
 extract_block() {
   local start="$1"
@@ -92,12 +119,14 @@ system_health_block="$(extract_block 'cmd_system_health()' 'cmd_listener_health(
 listener_block="$(extract_block 'cmd_listener_health()' 'append_flow_step()')"
 daily_flow_block="$(extract_block 'cmd_daily_flow()' 'cmd_replay_check()')"
 space_block="$(extract_block 'cmd_space_check()' 'cmd_archive_compress_check()')"
+db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
 archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
 
 [[ -n "$help_block" ]] || die "could not extract cmd_help"
 [[ -n "$menu_block" ]] || die "could not extract cmd_command_menu"
 [[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
+[[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
 
 if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
   die "command-menu must not execute or mention make commands"
@@ -115,8 +144,16 @@ for required in \
   "Blocker复盘YYYY-MM-DD" \
   "Shadow复盘YYYY-MM-DD" \
   "空间检查" \
+  "空间快检" \
+  "数据库体积诊断" \
+  "重新标准日报流程YYYY-MM-DD 我确认重跑" \
   "归档压缩预检YYYY-MM-DD" \
   "周复盘START到END" \
+  "任务状态JOB_ID" \
+  "查看结果JOB_ID" \
+  "查看日志JOB_ID" \
+  "诊断任务JOB_ID" \
+  "最近任务" \
   "YYYY-MM-DD" \
   "今天" \
   "昨天" \
@@ -129,14 +166,30 @@ do
 done
 
 for required in \
-  "make daily-close" \
+  "daily-close:migrate_archive" \
+  "make db-migrate-date" \
+  "daily-close:db_integrity_fast" \
+  "make db-integrity" \
+  "daily-close:db_report" \
+  "make db-report" \
+  "daily-close:archive_mirror_check" \
+  "app.archive_maintenance" \
+  "--mirror-check-date" \
+  "daily-close:archive_compress_dry_run" \
+  "make archive-compress-dry-run" \
   "make trade-replay-full" \
   "make report-daily-date" \
   "make daily-compare" \
-  "make sqlite-checkpoint"
+  "make sqlite-checkpoint" \
+  "timeout_hit" \
+  "failed_substep"
 do
   grep -Fq -- "$required" <<<"$daily_flow_block" || die "daily-flow missing required command: ${required}"
 done
+
+if grep -Fq -- "make daily-close" <<<"$daily_flow_block"; then
+  die "daily-flow must not call make daily-close as a black box"
+fi
 
 for forbidden in \
   "archive-compress-date" \
@@ -161,6 +214,13 @@ for forbidden in "rm " "db-vacuum" "db-prune-execute" "sqlite_store --vacuum" "s
   fi
 done
 
+grep -Fq "make db-export-operational-payloads-dry-run" <<<"$db_size_block" || die "db-size-diagnose missing operational payload export dry-run"
+for forbidden in "db-export-operational-payloads-execute" "db-export-operational-payloads-table-execute"; do
+  if grep -Fq -- "$forbidden" "$SCRIPT"; then
+    die "Telegram wrapper must not expose operational payload export execute: ${forbidden}"
+  fi
+done
+
 for forbidden in "systemctl restart" "systemctl stop" "pkill"; do
   if grep -Fqi -- "$forbidden" <<<"$listener_block"; then
     die "listener-health contains forbidden listener action: ${forbidden}"
@@ -175,15 +235,37 @@ done
 
 for guarded in \
   "daily-flow" \
+  "submit-daily-flow" \
+  "submit-space-check" \
+  "submit-archive-compress-check" \
+  "submit-weekly-review" \
+  "job-status" \
+  "job-list" \
+  "job-result" \
+  "job-log" \
+  "job-diagnose" \
+  "job-cancel" \
+  "space-fast" \
+  "db-size-diagnose" \
   "replay-check" \
   "data-quality" \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
+  "space-check" \
   "archive-compress-check" \
   "weekly-review"
 do
   grep -Fq -- "$guarded" <<<"$(extract_block 'is_router_guarded_command()' 'enforce_router_guard()')" || die "router guard missing ${guarded}"
+done
+
+for guarded in \
+  "daily-flow" \
+  "space-check" \
+  "archive-compress-check" \
+  "weekly-review"
+do
+  grep -Fq -- "$guarded" <<<"$(extract_block 'is_long_job_runner_command()' 'enforce_long_job_runner_guard()')" || die "long job runner guard missing ${guarded}"
 done
 
 for required in \
@@ -218,6 +300,14 @@ HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \
 
 grep -Fq "系统体检" "$TMP_DIR/menu.out" || die "command-menu output missing 系统体检"
 grep -Fq "标准日报流程YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 标准日报流程YYYY-MM-DD"
+grep -Fq "任务状态JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 任务状态JOB_ID"
+grep -Fq "查看结果JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 查看结果JOB_ID"
+grep -Fq "查看日志JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 查看日志JOB_ID"
+grep -Fq "诊断任务JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 诊断任务JOB_ID"
+grep -Fq "最近任务" "$TMP_DIR/menu.out" || die "command-menu output missing 最近任务"
+grep -Fq "空间快检" "$TMP_DIR/menu.out" || die "command-menu output missing 空间快检"
+grep -Fq "数据库体积诊断" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库体积诊断"
+grep -Fq "重新标准日报流程YYYY-MM-DD 我确认重跑" "$TMP_DIR/menu.out" || die "command-menu output missing rerun command"
 
 mkdir -p "$TMP_DIR/bin"
 cat >"$TMP_DIR/bin/make" <<'MAKE'
@@ -245,8 +335,28 @@ set -e
 [[ "$guard_rc" -ne 0 ]] || die "daily-flow was not protected by router guard"
 grep -Fq "router_required" "$TMP_DIR/daily_flow_guard_audit.ndjson" || die "daily-flow guard audit missing router_required"
 
+set +e
 HERMES_EXEC_ASK=1 \
 HERMES_OPS_ROUTER_OK=1 \
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/daily_flow_job_guard_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/daily_flow_job_guard.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" daily-flow --date 2026-05-01 >"$TMP_DIR/daily_flow_job_guard.out" 2>"$TMP_DIR/daily_flow_job_guard.err"
+job_guard_rc=$?
+set -e
+[[ "$job_guard_rc" -ne 0 ]] || die "daily-flow was not protected by job runner guard"
+grep -Fq "job_runner_required" "$TMP_DIR/daily_flow_job_guard_audit.ndjson" || die "daily-flow job guard audit missing job_runner_required"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/run_job_guard_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/run_job_guard.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" __run-job --job-id cmjob_20260501T120000Z_abcdef12 --kind daily-flow --date 2026-05-01 >"$TMP_DIR/run_job_guard.out" 2>"$TMP_DIR/run_job_guard.err"
+run_job_guard_rc=$?
+set -e
+[[ "$run_job_guard_rc" -ne 0 ]] || die "__run-job was not protected by job runner guard"
+grep -Fq "job_runner_required" "$TMP_DIR/run_job_guard_audit.ndjson" || die "__run-job guard audit missing job_runner_required"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/archive_check_audit.ndjson" \
 HERMES_OPS_LOCK_PATH="$TMP_DIR/archive_check.lock" \
 PATH="$TMP_DIR/bin:$PATH" \

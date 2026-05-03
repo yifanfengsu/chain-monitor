@@ -136,6 +136,61 @@ Rules:
 - 如果用户问为什么地址/交易 hash 被隐藏，说明输出默认脱敏。
 - 不提供直接交易建议，不把 `CANDIDATE` 或 `VERIFIED` 描述成买卖指令。
 
+## Long Running Commands Must Be Submitted As Jobs
+
+Telegram 中的长命令不得同步执行。
+
+以下命令必须提交后台 job：
+
+- 标准日报流程YYYY-MM-DD
+- 空间检查
+- 归档压缩预检YYYY-MM-DD
+- 周复盘START到END
+
+用户会收到 job_id。后续用“任务状态JOB_ID / 查看结果JOB_ID / 查看日志JOB_ID / 诊断任务JOB_ID / 最近任务”查询。
+
+Rules:
+
+- 不要因为用户催促就重新提交相同任务；应查询 existing job 或让用户使用“任务状态JOB_ID”。
+- 不得绕过 job submit 直接执行 daily-flow/space-check/weekly-review。
+- 不得用 date 解析相对日期。
+- 不得自动生成日报。
+- 输出必须中文、简短，展示 job_id 和后续查询命令。
+- 长任务不得同步执行，不得让 Telegram 等到流程结束。
+
+示例：
+
+用户：
+
+```text
+/chain-monitor-report-analyst 标准日报流程2026-05-01
+```
+
+正确回复：
+
+```text
+✅ 已提交后台任务：标准日报流程
+job_id：cmjob_...
+查询进度：任务状态cmjob_...
+查看结果：查看结果cmjob_...
+查看日志：查看日志cmjob_...
+失败诊断：诊断任务cmjob_...
+说明：该任务会在 VPS 后台继续执行，Telegram 不需要等待。
+```
+
+用户：
+
+```text
+/chain-monitor-report-analyst 任务状态cmjob_...
+```
+
+用户：
+
+```text
+/chain-monitor-report-analyst 查看结果cmjob_...
+/chain-monitor-report-analyst 诊断任务cmjob_...
+```
+
 ## 中文 Telegram 手动控制菜单
 
 本菜单覆盖第 5 步 12 个功能，并额外支持“命令提示”。
@@ -177,6 +232,8 @@ Telegram 示例：
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
 /chain-monitor-report-analyst 标准日报流程2026-05-01
+/chain-monitor-report-analyst 任务状态cmjob_...
+/chain-monitor-report-analyst 查看结果cmjob_...
 /chain-monitor-report-analyst 分析报告2026-05-01
 /chain-monitor-report-analyst 检查回放2026-05-01
 /chain-monitor-report-analyst 数据质量2026-05-01
@@ -184,6 +241,7 @@ Telegram 示例：
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 空间检查
+/chain-monitor-report-analyst 空间快检
 /chain-monitor-report-analyst 归档压缩预检2026-05-01
 /chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03
 ```
@@ -235,15 +293,22 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh command-menu
 ./scripts/hermes_cm_ops.sh system-health
 ./scripts/hermes_cm_ops.sh listener-health
-./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
-./scripts/hermes_cm_ops.sh space-check
-./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD
-./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
+./scripts/hermes_cm_ops.sh submit-space-check
+./scripts/hermes_cm_ops.sh space-fast
+./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
+./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID
+./scripts/hermes_cm_ops.sh job-result --job-id JOB_ID
+./scripts/hermes_cm_ops.sh job-log --job-id JOB_ID
+./scripts/hermes_cm_ops.sh job-diagnose --job-id JOB_ID
+./scripts/hermes_cm_ops.sh job-list
+./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm
 ./scripts/hermes_cm_ops.sh report --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD --mode fast
 ./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD --mode deep
@@ -260,6 +325,17 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh help
 ./scripts/hermes_cm_ops.sh health
 ```
+
+Local/internal long command names retained for job runner only:
+
+```bash
+./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh space-check
+./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
+```
+
+这些旧长命令不得作为 Telegram 中文 grammar 的直接目标。
 
 保留以下安全聚合 make 命令仅作为 wrapper 内部或本地开发参考，不作为 Telegram 直接映射：
 
@@ -308,6 +384,9 @@ Rules:
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
 /chain-monitor-report-analyst 标准日报流程2026-05-01
+/chain-monitor-report-analyst 任务状态cmjob_...
+/chain-monitor-report-analyst 查看结果cmjob_...
+/chain-monitor-report-analyst 诊断任务cmjob_...
 /chain-monitor-report-analyst 分析报告2026-05-01
 /chain-monitor-report-analyst 检查回放2026-05-01
 /chain-monitor-report-analyst 数据质量2026-05-01
@@ -315,6 +394,7 @@ Rules:
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 空间检查
+/chain-monitor-report-analyst 空间快检
 /chain-monitor-report-analyst 归档压缩预检2026-05-01
 /chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03
 /chain-monitor-report-analyst 生成日报YYYY-MM-DD
@@ -331,6 +411,15 @@ High-risk 示例：
 ```
 
 每日收尾是 high-risk。每日收尾不属于每日默认流程。每日收尾必须包含“我确认压缩”。
+
+标准日报流程失败时，不要建议用户运行“每日收尾YYYY-MM-DD 我确认压缩”。daily-close 默认只是 compression dry-run，不真正压缩 archive；只有 `COMPRESS=YES CONFIRM=YES` 才会执行实际 archive gzip。“每日收尾YYYY-MM-DD 我确认压缩”不是 ordinary daily-flow failure 的修复方法。先让用户执行：
+
+```text
+/chain-monitor-report-analyst 诊断任务JOB_ID
+/chain-monitor-report-analyst 查看日志JOB_ID
+```
+
+不要因为 daily-close failure 就压缩 archive。
 
 Hard failure examples:
 
@@ -490,10 +579,12 @@ Explain that direct/raw maintenance commands are outside this Skill's Telegram c
 推荐每日流程必须使用中文命令：
 
 1. `/chain-monitor-report-analyst 系统体检`
-2. `/chain-monitor-report-analyst 生成日报YYYY-MM-DD`
-3. `/chain-monitor-report-analyst 分析报告YYYY-MM-DD`
-4. 可选：`/chain-monitor-report-analyst 生成摘要YYYY-MM-DD 快速`
-5. 可选深度复盘：`/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD`
+2. `/chain-monitor-report-analyst 标准日报流程YYYY-MM-DD`
+3. `/chain-monitor-report-analyst 任务状态JOB_ID`
+4. 失败时先用 `/chain-monitor-report-analyst 诊断任务JOB_ID` 和 `/chain-monitor-report-analyst 查看日志JOB_ID`
+5. `/chain-monitor-report-analyst 分析报告YYYY-MM-DD`
+6. 可选：`/chain-monitor-report-analyst 生成摘要YYYY-MM-DD 快速`
+7. 可选深度复盘：`/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD`
 
 “每日收尾”不属于默认每日流程。
 

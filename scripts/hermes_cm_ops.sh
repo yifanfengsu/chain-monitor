@@ -15,6 +15,18 @@ Usage:
   ./scripts/hermes_cm_ops.sh listener-health
   ./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD [--mode fast|deep]
   ./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD [--mode fast|deep] [--auto-build]
+  ./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD [--force-rerun]
+  ./scripts/hermes_cm_ops.sh submit-space-check
+  ./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID
+  ./scripts/hermes_cm_ops.sh job-list [--limit N]
+  ./scripts/hermes_cm_ops.sh job-result --job-id JOB_ID
+  ./scripts/hermes_cm_ops.sh job-log --job-id JOB_ID
+  ./scripts/hermes_cm_ops.sh job-diagnose --job-id JOB_ID
+  ./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm
+  ./scripts/hermes_cm_ops.sh space-fast
+  ./scripts/hermes_cm_ops.sh db-size-diagnose
   ./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
@@ -54,6 +66,11 @@ cmd_help() {
   /chain-monitor-report-analyst 系统体检
   /chain-monitor-report-analyst 监听器体检
   /chain-monitor-report-analyst 标准日报流程YYYY-MM-DD
+  /chain-monitor-report-analyst 重新标准日报流程YYYY-MM-DD 我确认重跑
+  /chain-monitor-report-analyst 任务状态JOB_ID
+  /chain-monitor-report-analyst 查看结果JOB_ID
+  /chain-monitor-report-analyst 诊断任务JOB_ID
+  /chain-monitor-report-analyst 最近任务
   /chain-monitor-report-analyst 分析报告YYYY-MM-DD
   /chain-monitor-report-analyst 检查回放YYYY-MM-DD
   /chain-monitor-report-analyst 数据质量YYYY-MM-DD
@@ -61,6 +78,8 @@ cmd_help() {
   /chain-monitor-report-analyst Blocker复盘YYYY-MM-DD
   /chain-monitor-report-analyst Shadow复盘YYYY-MM-DD
   /chain-monitor-report-analyst 空间检查
+  /chain-monitor-report-analyst 空间快检
+  /chain-monitor-report-analyst 数据库体积诊断
   /chain-monitor-report-analyst 归档压缩预检YYYY-MM-DD
   /chain-monitor-report-analyst 周复盘START到END
   /chain-monitor-report-analyst 生成日报YYYY-MM-DD
@@ -88,6 +107,7 @@ cmd_help() {
 安全说明：
   - 中文 Telegram 请求必须先通过 ./scripts/hermes_cm_cn_router.py。
   - report/analyze/digest/close 在 gateway 场景下不能绕过 router。
+  - 标准日报流程、空间检查、归档压缩预检、周复盘在 Telegram 中只提交后台 job。
   - 输出默认脱敏。
   - 不输出 token、RPC URL、完整地址、交易 hash 或私有路径。
 HELP
@@ -101,10 +121,13 @@ cmd_command_menu() {
 【每日检查】
 - 系统体检：检查 DB / report source / market / coverage
 - 监听器体检：检查监听器是否停摆、最近数据时间
-- 空间检查：查看 DB / archive / reports 占用
+- 空间检查：提交后台任务查看 DB / archive / reports 占用
+- 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小
+- 数据库体积诊断：解释 DB / WAL / archive / reports 哪个大
 
 【日报流程】
-- 标准日报流程YYYY-MM-DD：daily-close + full replay + report + compare + checkpoint
+- 标准日报流程YYYY-MM-DD：提交后台任务，展开 daily-close 子步骤 + full replay + report + compare + checkpoint
+- 重新标准日报流程YYYY-MM-DD 我确认重跑：仅在确实需要重跑时使用
 - 分析报告YYYY-MM-DD：分析已存在日报
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
@@ -115,10 +138,18 @@ cmd_command_menu() {
 - Shadow复盘YYYY-MM-DD：查看 shadow funnel
 
 【维护预检】
-- 归档压缩预检YYYY-MM-DD：只 dry-run，不压缩
+- 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，不压缩
 
 【周复盘】
-- 周复盘START到END，例如：周复盘2026-04-27到2026-05-03
+- 周复盘START到END：提交后台任务，例如：周复盘2026-04-27到2026-05-03
+
+【后台任务】
+- 任务状态JOB_ID：查看后台任务状态
+- 查看结果JOB_ID：查看任务 result.md 摘要
+- 查看日志JOB_ID：查看 stdout/stderr 日志尾部
+- 诊断任务JOB_ID：查看失败子步骤、失败命令和下一步建议
+- 最近任务：列出最近 10 个任务
+- 取消任务JOB_ID 我确认取消：取消 pending/running 后台任务
 
 规则：
 - 日期必须用 YYYY-MM-DD
@@ -487,6 +518,7 @@ ensure_runtime() {
   is_positive_int "$CLOSE_TIMEOUT_SEC" || refuse invalid_arguments "HERMES_OPS_CLOSE_TIMEOUT_SEC must be a positive integer"
   is_positive_int "$HEALTH_TIMEOUT_SEC" || refuse invalid_arguments "HERMES_OPS_HEALTH_TIMEOUT_SEC must be a positive integer"
   is_positive_int "$DIGEST_TIMEOUT_SEC" || refuse invalid_arguments "HERMES_OPS_DIGEST_TIMEOUT_SEC must be a positive integer"
+  is_positive_int "$JOB_TIMEOUT_SEC" || refuse invalid_arguments "HERMES_OPS_JOB_TIMEOUT_SEC must be a positive integer"
   is_nonnegative_int "$LOCK_TIMEOUT_SEC" || refuse invalid_arguments "HERMES_OPS_LOCK_TIMEOUT_SEC must be a non-negative integer"
 }
 
@@ -516,11 +548,45 @@ parse_required_date() {
   validate_date "$value" || refuse invalid_date "invalid date: ${value}"
 }
 
+validate_job_id() {
+  [[ "$1" =~ ^cmjob_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9]{8,16}$ ]] || refuse invalid_job_id "invalid job_id"
+}
+
+validate_weekly_range() {
+  local start_date="$1"
+  local end_date="$2"
+  local range_rc=0
+
+  set +e
+  "$(python_bin)" - "$start_date" "$end_date" >/dev/null <<'PY'
+import datetime
+import sys
+start = datetime.date.fromisoformat(sys.argv[1])
+end = datetime.date.fromisoformat(sys.argv[2])
+if start > end:
+    raise SystemExit(2)
+if (end - start).days > 13:
+    raise SystemExit(3)
+PY
+  range_rc=$?
+  set -e
+  case "$range_rc" in
+    0) ;;
+    2) refuse invalid_date_range "weekly-review start must be <= end" ;;
+    3) refuse date_range_too_large "weekly-review range must be <= 14 days" ;;
+    *) refuse invalid_date_range "weekly-review date range invalid" ;;
+  esac
+}
+
 beijing_today() {
   TZ=Asia/Shanghai date +%F
 }
 
 python_bin() {
+  if [[ -n "${HERMES_OPS_PYTHON_BIN:-}" ]]; then
+    printf '%s\n' "$HERMES_OPS_PYTHON_BIN"
+    return
+  fi
   if [[ -x "./venv/bin/python" ]]; then
     printf '%s\n' "./venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then
@@ -528,6 +594,26 @@ python_bin() {
   else
     refuse runtime_missing_dependency "python3 or ./venv/bin/python is required"
   fi
+}
+
+jobctl() {
+  command -v python3 >/dev/null 2>&1 || refuse runtime_missing_dependency "python3 is required for job controller"
+  python3 scripts/hermes_cm_jobctl.py "$@"
+}
+
+jobs_root_path() {
+  local configured="${HERMES_JOBCTL_JOBS_ROOT:-reports/hermes/jobs}"
+
+  if [[ "$configured" == /* ]]; then
+    printf '%s\n' "$configured"
+  else
+    printf '%s/%s\n' "$REPO_ROOT" "$configured"
+  fi
+}
+
+job_result_file() {
+  local job_id="$1"
+  printf '%s/%s/result.md\n' "$(jobs_root_path)" "$job_id"
 }
 
 daily_report_json_path() {
@@ -554,7 +640,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    report|digest|analyze|close|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|archive-compress-check|weekly-review)
+    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -573,6 +659,42 @@ enforce_router_guard() {
 ❌ 已拒绝：Telegram/Hermes dated operation 必须先经过中文命令解析器。
 请使用：/chain-monitor-report-analyst 分析报告YYYY-MM-DD
 MESSAGE
+    exit 2
+  fi
+}
+
+is_long_job_runner_command() {
+  case "$1" in
+    daily-flow|space-check|archive-compress-check|weekly-review)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+enforce_long_job_runner_guard() {
+  local command_name="$1"
+
+  if is_long_job_runner_command "$command_name" && is_gateway_router_required && [[ "${HERMES_OPS_JOB_RUNNER_OK:-}" != "1" ]]; then
+    AUDIT_ALLOWED=false
+    AUDIT_REFUSED_REASON="job_runner_required"
+    cat >&2 <<'MESSAGE'
+❌ 已拒绝：Telegram/Hermes 长任务必须提交后台 job。
+请使用：标准日报流程YYYY-MM-DD、空间检查、归档压缩预检YYYY-MM-DD 或 周复盘START到END。
+MESSAGE
+    exit 2
+  fi
+}
+
+enforce_job_runner_guard() {
+  local command_name="$1"
+
+  if [[ "$command_name" == "__run-job" && "${HERMES_OPS_JOB_RUNNER_OK:-}" != "1" ]]; then
+    AUDIT_ALLOWED=false
+    AUDIT_REFUSED_REASON="job_runner_required"
+    echo "❌ 已拒绝：__run-job 只能由后台 job controller 调用。" >&2
     exit 2
   fi
 }
@@ -1070,6 +1192,73 @@ PY
   exit 0
 }
 
+limit_tail_file() {
+  local source_path="$1"
+  local dest_path="$2"
+  local tail_lines="${3:-80}"
+  local tail_path="${dest_path}.tailraw"
+
+  if [[ -s "$source_path" ]]; then
+    tail -n "$tail_lines" "$source_path" >"$tail_path"
+  else
+    : >"$tail_path"
+  fi
+  limit_output_file "$tail_path" "$dest_path"
+  rm -f "$tail_path"
+}
+
+run_flow_command() {
+  local title="$1"
+  local timeout_sec="$2"
+  shift 2
+
+  local safe_title="${title//[!A-Za-z0-9_]/_}"
+  local stdout_raw="${TMP_DIR}/${safe_title}.stdout.raw"
+  local stderr_raw="${TMP_DIR}/${safe_title}.stderr.raw"
+  local stdout_tail="${TMP_DIR}/${safe_title}.stdout.tail"
+  local stderr_tail="${TMP_DIR}/${safe_title}.stderr.tail"
+  local rc=0
+
+  FLOW_COMMAND="$(display_command "$@")"
+  FLOW_TIMEOUT_LIMIT_SEC="$timeout_sec"
+  FLOW_TIMEOUT_HIT=false
+  FLOW_STDOUT_TAIL="$stdout_tail"
+  FLOW_STDERR_TAIL="$stderr_tail"
+  FLOW_STDOUT_RAW_BYTES=0
+  FLOW_STDOUT_RAW_LINES=0
+  FLOW_STDERR_RAW_BYTES=0
+  FLOW_STDERR_RAW_LINES=0
+  FLOW_STDOUT_TRUNCATED=0
+  FLOW_STDERR_TRUNCATED=0
+
+  if run_with_timeout "$timeout_sec" "$@" >"$stdout_raw" 2>"$stderr_raw"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  FLOW_EXIT_CODE="$rc"
+  if [[ "$rc" -eq 124 ]]; then
+    FLOW_TIMEOUT_HIT=true
+  fi
+
+  FLOW_STDOUT_RAW_BYTES="$(wc -c <"$stdout_raw" | tr -d '[:space:]')"
+  FLOW_STDOUT_RAW_LINES="$(wc -l <"$stdout_raw" | tr -d '[:space:]')"
+  FLOW_STDERR_RAW_BYTES="$(wc -c <"$stderr_raw" | tr -d '[:space:]')"
+  FLOW_STDERR_RAW_LINES="$(wc -l <"$stderr_raw" | tr -d '[:space:]')"
+  limit_tail_file "$stdout_raw" "$stdout_tail" 80
+  limit_tail_file "$stderr_raw" "$stderr_tail" 80
+
+  if (( FLOW_STDOUT_RAW_BYTES > MAX_CMD_BYTES || FLOW_STDOUT_RAW_LINES > MAX_CMD_LINES )); then
+    FLOW_STDOUT_TRUNCATED=1
+  fi
+  if (( FLOW_STDERR_RAW_BYTES > MAX_CMD_BYTES || FLOW_STDERR_RAW_LINES > MAX_CMD_LINES )); then
+    FLOW_STDERR_TRUNCATED=1
+  fi
+
+  return "$rc"
+}
+
 append_flow_step() {
   local output_path="$1"
   local title="$2"
@@ -1077,7 +1266,7 @@ append_flow_step() {
   shift 3
   local rc=0
 
-  if run_command "$title" "$timeout_sec" "$@"; then
+  if run_flow_command "$title" "$timeout_sec" "$@"; then
     rc=0
   else
     rc=$?
@@ -1085,19 +1274,813 @@ append_flow_step() {
 
   {
     echo "## ${title}"
+    echo "step=${title}"
+    echo "command=${FLOW_COMMAND}"
     echo "status=$([[ "$rc" -eq 0 ]] && echo ok || echo failed)"
     echo "exit_code=${rc}"
-    echo "timeout_sec=${RUN_TIMEOUT_SEC:-$timeout_sec}"
-    if [[ "$RUN_TRUNCATED" -eq 1 ]]; then
-      echo "warning=command_output_truncated raw_bytes=${RUN_RAW_BYTES} raw_lines=${RUN_RAW_LINES}"
+    echo "timeout_limit_sec=${FLOW_TIMEOUT_LIMIT_SEC}"
+    echo "timeout_hit=${FLOW_TIMEOUT_HIT}"
+    echo "output_limit=max_bytes=${MAX_CMD_BYTES} max_lines=${MAX_CMD_LINES} tail_lines=80"
+    if [[ "$FLOW_STDOUT_TRUNCATED" -eq 1 ]]; then
+      echo "warning=stdout_tail_truncated raw_bytes=${FLOW_STDOUT_RAW_BYTES} raw_lines=${FLOW_STDOUT_RAW_LINES}"
+    fi
+    if [[ "$FLOW_STDERR_TRUNCATED" -eq 1 ]]; then
+      echo "warning=stderr_tail_truncated raw_bytes=${FLOW_STDERR_RAW_BYTES} raw_lines=${FLOW_STDERR_RAW_LINES}"
     fi
     echo
-    cat "$RUN_OUTPUT"
+    echo "stdout_tail:"
+    if [[ -s "$FLOW_STDOUT_TAIL" ]]; then
+      cat "$FLOW_STDOUT_TAIL"
+    else
+      echo "(empty)"
+    fi
+    echo
+    echo "stderr_tail:"
+    if [[ -s "$FLOW_STDERR_TAIL" ]]; then
+      cat "$FLOW_STDERR_TAIL"
+    else
+      echo "(empty)"
+    fi
     echo
   } >>"$output_path"
 
-  FLOW_STEP_SUMMARY+=("${title}: $([[ "$rc" -eq 0 ]] && echo ok || echo failed)")
+  FLOW_STEP_SUMMARY+=("${title}: $([[ "$rc" -eq 0 ]] && echo ok || echo failed) exit_code=${rc} timeout_hit=${FLOW_TIMEOUT_HIT}")
   return "$rc"
+}
+
+finish_daily_flow_failure() {
+  local tmp_output="$1"
+  local final_output="$2"
+  local latest_output="$3"
+  local report_date="$4"
+  local failed_substep="$5"
+  local rc="$6"
+  local failed_step="${failed_substep%%:*}"
+  local timeout_text="命令返回失败"
+
+  if [[ "$FLOW_TIMEOUT_HIT" == "true" ]]; then
+    timeout_text="命令超时"
+  fi
+
+  mv "$tmp_output" "$final_output"
+  cp "$final_output" "$latest_output"
+
+  echo "📋 任务结果 | daily-flow"
+  echo
+  echo "类型：daily-flow"
+  echo "日期：${report_date}"
+  echo "状态：❌ failed"
+  echo "失败步骤：${failed_substep}"
+  echo "失败命令：${FLOW_COMMAND}"
+  echo "exit_code：${rc}"
+  echo "timeout_hit：${FLOW_TIMEOUT_HIT}"
+  echo "timeout_limit_sec：${FLOW_TIMEOUT_LIMIT_SEC}"
+  echo "result_path：$(display_safe_path "$final_output")"
+  echo
+  echo "failed_step=${failed_step}"
+  echo "failed_substep=${failed_substep}"
+  echo "failed_command=${FLOW_COMMAND}"
+  echo "exit_code=${rc}"
+  echo "timeout_limit_sec=${FLOW_TIMEOUT_LIMIT_SEC}"
+  echo "timeout_hit=${FLOW_TIMEOUT_HIT}"
+  echo "result_path=$(display_safe_path "$final_output")"
+  echo "failure_reason=${timeout_text}"
+  echo
+  echo "stdout_tail:"
+  if [[ -s "$FLOW_STDOUT_TAIL" ]]; then
+    cat "$FLOW_STDOUT_TAIL"
+  else
+    echo "(empty)"
+  fi
+  echo
+  echo "stderr_tail:"
+  if [[ -s "$FLOW_STDERR_TAIL" ]]; then
+    cat "$FLOW_STDERR_TAIL"
+  else
+    echo "(empty)"
+  fi
+  echo
+  echo "建议："
+  echo "请先修复上述失败子步骤，再重新运行："
+  echo "/chain-monitor-report-analyst 标准日报流程${report_date}"
+  echo
+  echo "request_id=${HERMES_OPS_REQUEST_ID}"
+  printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
+  exit "$rc"
+}
+
+cmd_submit_daily_flow() {
+  local report_date=""
+  local force_rerun=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "submit-daily-flow --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      --force-rerun)
+        force_rerun=1
+        shift
+        ;;
+      *) die "unknown submit-daily-flow argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "submit-daily-flow requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  if [[ "$force_rerun" -eq 1 ]]; then
+    jobctl submit --kind daily-flow --date "$report_date" --force-rerun
+  else
+    jobctl submit --kind daily-flow --date "$report_date"
+  fi
+}
+
+cmd_submit_space_check() {
+  [[ $# -eq 0 ]] || die "submit-space-check does not accept arguments"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  jobctl submit --kind space-check
+}
+
+cmd_submit_archive_compress_check() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "submit-archive-compress-check --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown submit-archive-compress-check argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "submit-archive-compress-check requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  jobctl submit --kind archive-compress-check --date "$report_date"
+}
+
+cmd_submit_weekly_review() {
+  local start_date=""
+  local end_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --start)
+        [[ $# -ge 2 ]] || die "submit-weekly-review --start requires YYYY-MM-DD"
+        start_date="$2"
+        shift 2
+        ;;
+      --end)
+        [[ $# -ge 2 ]] || die "submit-weekly-review --end requires YYYY-MM-DD"
+        end_date="$2"
+        shift 2
+        ;;
+      *) die "unknown submit-weekly-review argument" ;;
+    esac
+  done
+
+  [[ -n "$start_date" && -n "$end_date" ]] || die "submit-weekly-review requires --start and --end"
+  parse_required_date "$start_date"
+  parse_required_date "$end_date"
+  validate_weekly_range "$start_date" "$end_date"
+  AUDIT_DATE="${start_date}..${end_date}"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  jobctl submit --kind weekly-review --start "$start_date" --end "$end_date"
+}
+
+cmd_job_status() {
+  local job_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "job-status --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      *) die "unknown job-status argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" ]] || die "job-status requires --job-id JOB_ID"
+  validate_job_id "$job_id"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs/${job_id}/status.json"
+  jobctl status --job-id "$job_id"
+}
+
+cmd_job_list() {
+  local limit=10
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit)
+        [[ $# -ge 2 ]] || die "job-list --limit requires N"
+        is_positive_int "$2" || die "job-list --limit requires positive N"
+        limit="$2"
+        shift 2
+        ;;
+      *) die "unknown job-list argument" ;;
+    esac
+  done
+
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  jobctl list --limit "$limit"
+}
+
+cmd_job_result() {
+  local job_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "job-result --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      *) die "unknown job-result argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" ]] || die "job-result requires --job-id JOB_ID"
+  validate_job_id "$job_id"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs/${job_id}/result.md"
+  jobctl result --job-id "$job_id"
+}
+
+cmd_job_log() {
+  local job_id=""
+  local tail_lines=80
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "job-log --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      --tail)
+        [[ $# -ge 2 ]] || die "job-log --tail requires N"
+        is_positive_int "$2" || die "job-log --tail requires positive N"
+        tail_lines="$2"
+        shift 2
+        ;;
+      *) die "unknown job-log argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" ]] || die "job-log requires --job-id JOB_ID"
+  validate_job_id "$job_id"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs/${job_id}/stdout.log"
+  jobctl log --job-id "$job_id" --tail "$tail_lines"
+}
+
+cmd_job_diagnose() {
+  local job_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "job-diagnose --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      *) die "unknown job-diagnose argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" ]] || die "job-diagnose requires --job-id JOB_ID"
+  validate_job_id "$job_id"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs/${job_id}/result.md"
+  jobctl diagnose --job-id "$job_id"
+}
+
+cmd_job_cancel() {
+  local job_id=""
+  local confirm=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "job-cancel --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      --confirm)
+        confirm=1
+        shift
+        ;;
+      *) die "unknown job-cancel argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" ]] || die "job-cancel requires --job-id JOB_ID"
+  validate_job_id "$job_id"
+  [[ "$confirm" -eq 1 ]] || refuse missing_cancel_confirm "job-cancel requires --confirm"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="reports/hermes/jobs/${job_id}"
+  jobctl cancel --job-id "$job_id" --confirm
+}
+
+cmd_space_fast() {
+  local db="data/chain_monitor.sqlite"
+  local wal="data/chain_monitor.sqlite-wal"
+  local shm="data/chain_monitor.sqlite-shm"
+
+  [[ $# -eq 0 ]] || die "space-fast does not accept arguments"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="space-fast"
+
+  echo "空间快检"
+  echo "SQLite 主文件大小: $(stat -c%s "$db" 2>/dev/null || echo missing)"
+  echo "WAL 文件大小: $(stat -c%s "$wal" 2>/dev/null || echo missing)"
+  echo "SHM 文件大小: $(stat -c%s "$shm" 2>/dev/null || echo missing)"
+  if [[ -d "app/data/archive" ]]; then
+    echo "archive 目录: exists"
+  else
+    echo "archive 目录: missing"
+  fi
+  if [[ -d "reports" ]]; then
+    echo "reports 目录: exists"
+  else
+    echo "reports 目录: missing"
+  fi
+  echo "说明=快速同步检查；未递归扫描 archive/reports，未执行 du。"
+}
+
+cmd_db_size_diagnose() {
+  local db="data/chain_monitor.sqlite"
+
+  [[ $# -eq 0 ]] || die "db-size-diagnose does not accept arguments"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="db-size-diagnose"
+
+  echo "数据库体积诊断"
+  echo "generated_at_utc=$(TZ=UTC date -Is)"
+  echo "policy=read-only; no delete, no checkpoint, no vacuum, no prune, no compact execute, no operational payload export execute"
+  echo
+
+  echo "## SQLite files"
+  ls -lh data/chain_monitor.sqlite* 2>/dev/null || echo "missing=data/chain_monitor.sqlite*"
+  echo
+
+  "$(python_bin)" - "$db" <<'PY'
+from __future__ import annotations
+
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db = Path(sys.argv[1])
+wal = Path(str(db) + "-wal")
+shm = Path(str(db) + "-shm")
+archive = Path("app/data/archive")
+reports = Path("reports")
+
+
+def size_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return int(path.stat().st_size)
+        if path.is_dir():
+            total = 0
+            for root, _, files in os.walk(path):
+                for name in files:
+                    candidate = Path(root) / name
+                    try:
+                        total += int(candidate.stat().st_size)
+                    except OSError:
+                        continue
+            return total
+    except OSError:
+        return 0
+    return 0
+
+
+def mb(value: int | float) -> float:
+    return round(float(value) / 1024 / 1024, 2)
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+db_bytes = size_bytes(db)
+wal_bytes = size_bytes(wal)
+shm_bytes = size_bytes(shm)
+archive_bytes = size_bytes(archive)
+reports_bytes = size_bytes(reports)
+
+print("## SQLite pragmas")
+if not db.exists():
+    print("db_status=missing")
+    print()
+else:
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        print(f"db_open_error={exc}")
+        print()
+    else:
+        with conn:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            page_size = int(conn.execute("PRAGMA page_size").fetchone()[0] or 0)
+            page_count = int(conn.execute("PRAGMA page_count").fetchone()[0] or 0)
+            freelist_count = int(conn.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+            db_mb = mb(page_size * page_count)
+            free_mb = mb(page_size * freelist_count)
+            print(f"journal_mode={journal_mode}")
+            print(f"page_size={page_size}")
+            print(f"page_count={page_count}")
+            print(f"freelist_count={freelist_count}")
+            print(f"db_mb={db_mb}")
+            print(f"free_mb={free_mb}")
+            print()
+
+            print("## dbstat top 30 tables/indexes")
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT name, COALESCE(path, '') AS path, SUM(pgsize) AS bytes, COUNT(*) AS pages
+                    FROM dbstat
+                    GROUP BY name
+                    ORDER BY bytes DESC
+                    LIMIT 30
+                    """
+                ).fetchall()
+            except sqlite3.Error as exc:
+                print(f"dbstat_unavailable={exc}")
+            else:
+                print("name | mb | pages")
+                for row in rows:
+                    print(f"{row['name']} | {mb(int(row['bytes'] or 0))} | {int(row['pages'] or 0)}")
+            print()
+
+            print("## key table counts")
+            key_tables = [
+                "raw_events",
+                "parsed_events",
+                "signals",
+                "trade_opportunities",
+                "delivery_audit",
+                "telegram_deliveries",
+                "market_context_snapshots",
+                "outcomes",
+                "opportunity_outcomes",
+                "trade_replay_examples",
+                "trade_replay_profile_stats",
+                "trade_replay_profile_daily_stats",
+            ]
+            for table in key_tables:
+                if not table_exists(conn, table):
+                    print(f"{table}=missing")
+                    continue
+                try:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                except sqlite3.Error as exc:
+                    print(f"{table}=error:{exc}")
+                else:
+                    print(f"{table}={int(count or 0)}")
+            print()
+
+print("## directory summaries")
+print(f"main_db_mb={mb(db_bytes)}")
+print(f"wal_mb={mb(wal_bytes)}")
+print(f"shm_mb={mb(shm_bytes)}")
+print(f"archive_mb={mb(archive_bytes)}")
+print(f"reports_mb={mb(reports_bytes)}")
+print()
+
+print("## diagnosis")
+findings: list[str] = []
+db_mb_value = mb(db_bytes)
+wal_mb_value = mb(wal_bytes)
+archive_mb_value = mb(archive_bytes)
+reports_mb_value = mb(reports_bytes)
+if wal_mb_value >= max(64.0, db_mb_value * 0.25):
+    findings.append("WAL 大：WAL 文件相对主 DB 偏大，可能需要在安全窗口做 checkpoint。")
+if db.exists():
+    try:
+        conn2 = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        page_size2 = int(conn2.execute("PRAGMA page_size").fetchone()[0] or 0)
+        freelist2 = int(conn2.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+        free_mb_value = mb(page_size2 * freelist2)
+        if free_mb_value >= max(64.0, db_mb_value * 0.20):
+            findings.append("free pages 大：主 DB 内部空闲页偏多；不要从 Telegram 执行 vacuum。")
+        try:
+            stat_rows = conn2.execute(
+                """
+                SELECT name, SUM(pgsize) AS bytes
+                FROM dbstat
+                GROUP BY name
+                ORDER BY bytes DESC
+                LIMIT 5
+                """
+            ).fetchall()
+            if stat_rows:
+                top_name = str(stat_rows[0][0])
+                top_mb = mb(int(stat_rows[0][1] or 0))
+                findings.append(f"live rows/index 大：最大对象 {top_name} 约 {top_mb} MB。")
+        except sqlite3.Error:
+            pass
+        conn2.close()
+    except sqlite3.Error:
+        pass
+if archive_mb_value >= max(256.0, db_mb_value):
+    findings.append("archive 大：归档目录是主要占用之一。")
+if reports_mb_value >= max(128.0, db_mb_value * 0.5):
+    findings.append("reports 大：reports 目录占用需要检查生成文件保留策略。")
+if not findings:
+    findings.append("未发现单一明显大头；请结合 dbstat top 和目录摘要判断。")
+for item in findings:
+    print(f"- {item}")
+PY
+  echo
+  echo "## operational payload export dry-run"
+  make db-export-operational-payloads-dry-run 2>/dev/null || echo "operational_payload_export_dry_run=failed"
+  echo
+  echo "## archive size summary"
+  du -sh app/data/archive 2>/dev/null || echo "archive=missing"
+  echo
+  echo "## reports size summary"
+  du -sh reports 2>/dev/null || echo "reports=missing"
+}
+
+run_output_value() {
+  local key="$1"
+
+  if [[ -z "${RUN_OUTPUT:-}" || ! -f "$RUN_OUTPUT" ]]; then
+    return 0
+  fi
+  sed -n "s/^${key}=//p" "$RUN_OUTPUT" | head -n1
+}
+
+jobctl_update_status() {
+  local job_id="$1"
+  local status="$2"
+  local exit_code="${3:-}"
+  local failed_step="${4:-}"
+  local failed_substep="${5:-}"
+  local failed_command="${6:-}"
+  local timeout_hit="${7:-}"
+  local timeout_limit_sec="${8:-}"
+  local -a args=(__update --job-id "$job_id" --status "$status")
+
+  if [[ -n "$exit_code" ]]; then
+    args+=(--exit-code "$exit_code")
+  fi
+  if [[ -n "$failed_step" ]]; then
+    args+=(--failed-step "$failed_step")
+  fi
+  if [[ -n "$failed_substep" ]]; then
+    args+=(--failed-substep "$failed_substep")
+  fi
+  if [[ -n "$failed_command" ]]; then
+    args+=(--failed-command "$failed_command")
+  fi
+  if [[ -n "$timeout_hit" ]]; then
+    args+=(--timeout-hit "$timeout_hit")
+  fi
+  if [[ -n "$timeout_limit_sec" ]]; then
+    args+=(--timeout-limit-sec "$timeout_limit_sec")
+  fi
+  jobctl "${args[@]}" >/dev/null
+}
+
+cmd_run_job() {
+  local job_id=""
+  local kind=""
+  local report_date=""
+  local start_date=""
+  local end_date=""
+  local timeout_sec="${HERMES_OPS_JOB_TIMEOUT_SEC:-7200}"
+  local result_file=""
+  local tmp_result=""
+  local rc=0
+  local final_status="failed"
+  local failed_step=""
+  local failed_substep=""
+  local failed_command=""
+  local failed_exit_code=""
+  local timeout_hit=""
+  local timeout_limit_sec=""
+  local substep_result_path=""
+  local failure_label=""
+  local -a cmd=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --job-id)
+        [[ $# -ge 2 ]] || die "__run-job --job-id requires JOB_ID"
+        job_id="$2"
+        shift 2
+        ;;
+      --kind)
+        [[ $# -ge 2 ]] || die "__run-job --kind requires KIND"
+        kind="$2"
+        shift 2
+        ;;
+      --date)
+        [[ $# -ge 2 ]] || die "__run-job --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      --start)
+        [[ $# -ge 2 ]] || die "__run-job --start requires YYYY-MM-DD"
+        start_date="$2"
+        shift 2
+        ;;
+      --end)
+        [[ $# -ge 2 ]] || die "__run-job --end requires YYYY-MM-DD"
+        end_date="$2"
+        shift 2
+        ;;
+      *) die "unknown __run-job argument" ;;
+    esac
+  done
+
+  [[ -n "$job_id" && -n "$kind" ]] || die "__run-job requires --job-id and --kind"
+  validate_job_id "$job_id"
+  case "$kind" in
+    daily-flow)
+      [[ -n "$report_date" ]] || die "daily-flow job requires --date"
+      parse_required_date "$report_date"
+      AUDIT_DATE="$report_date"
+      cmd=(./scripts/hermes_cm_ops.sh daily-flow --date "$report_date")
+      ;;
+    space-check)
+      [[ -z "$report_date$start_date$end_date" ]] || die "space-check job does not accept date/range"
+      cmd=(./scripts/hermes_cm_ops.sh space-check)
+      ;;
+    archive-compress-check)
+      [[ -n "$report_date" ]] || die "archive-compress-check job requires --date"
+      parse_required_date "$report_date"
+      AUDIT_DATE="$report_date"
+      cmd=(./scripts/hermes_cm_ops.sh archive-compress-check --date "$report_date")
+      ;;
+    weekly-review)
+      [[ -n "$start_date" && -n "$end_date" ]] || die "weekly-review job requires --start and --end"
+      parse_required_date "$start_date"
+      parse_required_date "$end_date"
+      validate_weekly_range "$start_date" "$end_date"
+      AUDIT_DATE="${start_date}..${end_date}"
+      cmd=(./scripts/hermes_cm_ops.sh weekly-review --start "$start_date" --end "$end_date")
+      ;;
+    *)
+      refuse invalid_job_kind "unsupported job kind: ${kind}"
+      ;;
+  esac
+
+  AUDIT_ALLOWED=true
+  result_file="$(job_result_file "$job_id")"
+  AUDIT_OUTPUT_HINT="$result_file"
+  mkdir -p "$(dirname "$result_file")"
+  tmp_result="$(mktemp "$(dirname "$result_file")/.result.XXXXXX.md")"
+  jobctl_update_status "$job_id" running
+
+  if run_command "job_${kind}_${job_id}" "$timeout_sec" "${cmd[@]}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  failed_step="$(run_output_value failed_step)"
+  failed_substep="$(run_output_value failed_substep)"
+  failed_command="$(run_output_value failed_command)"
+  failed_exit_code="$(run_output_value exit_code)"
+  timeout_hit="$(run_output_value timeout_hit)"
+  timeout_limit_sec="$(run_output_value timeout_limit_sec)"
+  substep_result_path="$(run_output_value result_path)"
+  if [[ -z "$failed_exit_code" ]]; then
+    failed_exit_code="$rc"
+  fi
+  if [[ -z "$timeout_hit" ]]; then
+    if [[ "$rc" -eq 124 ]]; then
+      timeout_hit=true
+    else
+      timeout_hit=false
+    fi
+  fi
+  if [[ -z "$timeout_limit_sec" ]]; then
+    timeout_limit_sec="$timeout_sec"
+  fi
+  if [[ -n "$failed_substep" ]]; then
+    failure_label="$failed_substep"
+  else
+    failure_label="$failed_step"
+  fi
+
+  {
+    echo "# Hermes Background Job ${job_id}"
+    echo
+    echo "generated_at_utc=$(TZ=UTC date -Is)"
+    echo "job_id=${job_id}"
+    echo "kind=${kind}"
+    echo "date=${report_date}"
+    echo "start=${start_date}"
+    echo "end=${end_date}"
+    echo "request_id=${HERMES_OPS_REQUEST_ID}"
+    echo
+    echo "📋 任务结果 | ${job_id}"
+    echo
+    echo "类型：${kind}"
+    echo "日期：${report_date}"
+    echo "状态：$([[ "$rc" -eq 0 ]] && echo "✅ succeeded" || echo "❌ failed")"
+    if [[ "$rc" -ne 0 ]]; then
+      echo "失败步骤：${failure_label:-${kind}}"
+      echo "失败命令：${failed_command:-$(display_command "${cmd[@]}")}"
+      echo "exit_code：${failed_exit_code}"
+      echo "timeout_hit：${timeout_hit}"
+      echo "timeout_limit_sec：${timeout_limit_sec}"
+      echo "result_path：$(display_safe_path "$result_file")"
+      if [[ -n "$substep_result_path" ]]; then
+        echo "flow_result_path：${substep_result_path}"
+      fi
+      echo
+      echo "failed_step=${failed_step:-${kind}}"
+      echo "failed_substep=${failed_substep:-${failure_label:-${kind}}}"
+      echo "failed_command=${failed_command:-$(display_command "${cmd[@]}")}"
+      echo "exit_code=${failed_exit_code}"
+      echo "timeout_hit=${timeout_hit}"
+      echo "timeout_limit_sec=${timeout_limit_sec}"
+      echo "result_path=$(display_safe_path "$result_file")"
+      if [[ -n "$substep_result_path" ]]; then
+        echo "flow_result_path=${substep_result_path}"
+      fi
+      echo
+      echo "输出摘要："
+      cat "$RUN_OUTPUT"
+      if [[ "$substep_result_path" == reports/* && -f "$substep_result_path" ]]; then
+        echo
+        echo "## daily_flow_step_results"
+        cat "$substep_result_path"
+      fi
+      echo
+      echo "建议："
+      if [[ "$kind" == "daily-flow" ]]; then
+        echo "请先修复上述失败子步骤，再重新运行："
+        echo "/chain-monitor-report-analyst 标准日报流程${report_date}"
+      else
+        echo "请先查看失败命令输出和日志，再重新提交对应后台任务。"
+      fi
+    else
+      echo "exit_code=0"
+      echo "timeout_hit=false"
+      echo "timeout_limit_sec=${timeout_sec}"
+      echo "result_path=$(display_safe_path "$result_file")"
+      echo
+      echo "输出摘要："
+      cat "$RUN_OUTPUT"
+      if [[ "$substep_result_path" == reports/* && -f "$substep_result_path" ]]; then
+        echo
+        echo "## daily_flow_step_results"
+        cat "$substep_result_path"
+      fi
+    fi
+  } >"$tmp_result"
+  mv "$tmp_result" "$result_file"
+
+  if [[ -f "$(jobs_root_path)/${job_id}/cancel.request" ]]; then
+    final_status="cancelled"
+  elif [[ "$rc" -eq 0 ]]; then
+    final_status="succeeded"
+  else
+    final_status="failed"
+  fi
+  if [[ "$final_status" == "failed" ]]; then
+    jobctl_update_status "$job_id" "$final_status" "$rc" "$failed_step" "$failed_substep" "$failed_command" "$timeout_hit" "$timeout_limit_sec"
+  else
+    jobctl_update_status "$job_id" "$final_status" "$rc"
+  fi
+
+  echo "job_id=${job_id}"
+  echo "kind=${kind}"
+  echo "status=${final_status}"
+  echo "exit_code=${rc}"
+  echo "result=$(display_safe_path "$result_file")"
+  [[ "$rc" -eq 0 ]] && exit 0
+  exit 1
 }
 
 cmd_daily_flow() {
@@ -1145,58 +2128,40 @@ cmd_daily_flow() {
     echo
     echo "generated_at_utc=$(TZ=UTC date -Is)"
     echo "beijing_today_guard=${today_bj}"
+    echo "daily_close_mode=expanded_substeps"
+    echo "daily_close_compression=archive_compress_dry_run_only"
     echo "compression=disabled"
     echo "compact=disabled"
     echo "vacuum=disabled"
     echo "prune=disabled"
+    echo "failure_fields=failed_step failed_substep failed_command exit_code timeout_hit timeout_limit_sec stdout_tail stderr_tail result_path"
     echo
   } >"$tmp_output"
 
-  append_flow_step "$tmp_output" "daily-close" "$CLOSE_TIMEOUT_SEC" make daily-close "DATE=${report_date}" || {
-    mv "$tmp_output" "$final_output"
-    cp "$final_output" "$latest_output"
-    echo "标准日报流程失败：daily-close"
-    echo "request_id=${HERMES_OPS_REQUEST_ID}"
-    echo "output=$(display_safe_path "$final_output")"
-    printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-    exit 1
-  }
-  append_flow_step "$tmp_output" "trade-replay-full" "$REPORT_TIMEOUT_SEC" make trade-replay-full "DATE=${report_date}" || {
-    mv "$tmp_output" "$final_output"
-    cp "$final_output" "$latest_output"
-    echo "标准日报流程失败：trade-replay-full"
-    echo "request_id=${HERMES_OPS_REQUEST_ID}"
-    echo "output=$(display_safe_path "$final_output")"
-    printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-    exit 1
-  }
-  append_flow_step "$tmp_output" "report-daily-date" "$REPORT_TIMEOUT_SEC" make report-daily-date "DATE=${report_date}" || {
-    mv "$tmp_output" "$final_output"
-    cp "$final_output" "$latest_output"
-    echo "标准日报流程失败：report-daily-date"
-    echo "request_id=${HERMES_OPS_REQUEST_ID}"
-    echo "output=$(display_safe_path "$final_output")"
-    printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-    exit 1
-  }
-  append_flow_step "$tmp_output" "daily-compare" "$REPORT_TIMEOUT_SEC" make daily-compare "DATE=${report_date}" || {
-    mv "$tmp_output" "$final_output"
-    cp "$final_output" "$latest_output"
-    echo "标准日报流程失败：daily-compare"
-    echo "request_id=${HERMES_OPS_REQUEST_ID}"
-    echo "output=$(display_safe_path "$final_output")"
-    printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-    exit 1
-  }
-  append_flow_step "$tmp_output" "sqlite-checkpoint" "$CMD_TIMEOUT_SEC" make sqlite-checkpoint || {
-    mv "$tmp_output" "$final_output"
-    cp "$final_output" "$latest_output"
-    echo "标准日报流程失败：sqlite-checkpoint"
-    echo "request_id=${HERMES_OPS_REQUEST_ID}"
-    echo "output=$(display_safe_path "$final_output")"
-    printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-    exit 1
-  }
+  append_flow_step "$tmp_output" "daily-close:migrate_archive" "$CLOSE_TIMEOUT_SEC" make db-migrate-date "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:migrate_archive" "$?"
+  append_flow_step "$tmp_output" "daily-close:db_integrity_fast" "$CLOSE_TIMEOUT_SEC" make db-integrity "DATE=${report_date}" DB_INTEGRITY_FAST=YES || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:db_integrity_fast" "$?"
+  append_flow_step "$tmp_output" "daily-close:db_report" "$CLOSE_TIMEOUT_SEC" make db-report || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:db_report" "$?"
+  append_flow_step "$tmp_output" "daily-close:archive_mirror_check" "$CLOSE_TIMEOUT_SEC" "$(python_bin)" -m app.archive_maintenance --mirror-check-date "$report_date" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:archive_mirror_check" "$?"
+  append_flow_step "$tmp_output" "daily-close:initial_report_daily" "$REPORT_TIMEOUT_SEC" make report-daily-date "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:initial_report_daily" "$?"
+  append_flow_step "$tmp_output" "daily-close:initial_daily_compare" "$REPORT_TIMEOUT_SEC" make daily-compare "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:initial_daily_compare" "$?"
+  append_flow_step "$tmp_output" "daily-close:archive_compress_dry_run" "$CLOSE_TIMEOUT_SEC" make archive-compress-dry-run "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:archive_compress_dry_run" "$?"
+  append_flow_step "$tmp_output" "daily-close:sqlite_checkpoint" "$CMD_TIMEOUT_SEC" make sqlite-checkpoint || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:sqlite_checkpoint" "$?"
+  append_flow_step "$tmp_output" "replay:trade_replay_full" "$REPORT_TIMEOUT_SEC" make trade-replay-full "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "replay:trade_replay_full" "$?"
+  append_flow_step "$tmp_output" "report:report_daily_after_full_replay" "$REPORT_TIMEOUT_SEC" make report-daily-date "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "report:report_daily_after_full_replay" "$?"
+  append_flow_step "$tmp_output" "compare:daily_compare_after_full_replay" "$REPORT_TIMEOUT_SEC" make daily-compare "DATE=${report_date}" || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "compare:daily_compare_after_full_replay" "$?"
+  append_flow_step "$tmp_output" "final:sqlite_checkpoint" "$CMD_TIMEOUT_SEC" make sqlite-checkpoint || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "final:sqlite_checkpoint" "$?"
 
   mv "$tmp_output" "$final_output"
   cp "$final_output" "$latest_output"
@@ -1205,9 +2170,10 @@ cmd_daily_flow() {
   echo "request_id=${HERMES_OPS_REQUEST_ID}"
   echo "date=${report_date}"
   echo "output=$(display_safe_path "$final_output")"
+  echo "result_path=$(display_safe_path "$final_output")"
   echo "latest=$(display_safe_path "$latest_output")"
   printf '%s\n' "${FLOW_STEP_SUMMARY[@]}"
-  echo "未执行 archive 压缩、compact、vacuum、prune。"
+  echo "只执行 archive compression dry-run；未执行 archive 压缩、compact、vacuum、prune。"
   exit 0
 }
 
@@ -2078,6 +3044,7 @@ MAX_CMD_LINES="${HERMES_OPS_MAX_CMD_LINES:-400}"
 
 # Generic fallback timeout.
 CMD_TIMEOUT_SEC="${HERMES_OPS_CMD_TIMEOUT_SEC:-120}"
+JOB_TIMEOUT_SEC="${HERMES_OPS_JOB_TIMEOUT_SEC:-7200}"
 
 # Command-specific timeouts.
 # If HERMES_OPS_CMD_TIMEOUT_SEC is explicitly set, it acts as the fallback for
@@ -2094,8 +3061,21 @@ RUN_RAW_BYTES=0
 RUN_RAW_LINES=0
 RUN_TRUNCATED=0
 RUN_TIMEOUT_SEC="$CMD_TIMEOUT_SEC"
+FLOW_COMMAND=""
+FLOW_EXIT_CODE=0
+FLOW_TIMEOUT_LIMIT_SEC=0
+FLOW_TIMEOUT_HIT=false
+FLOW_STDOUT_TAIL=""
+FLOW_STDERR_TAIL=""
+FLOW_STDOUT_RAW_BYTES=0
+FLOW_STDOUT_RAW_LINES=0
+FLOW_STDERR_RAW_BYTES=0
+FLOW_STDERR_RAW_LINES=0
+FLOW_STDOUT_TRUNCATED=0
+FLOW_STDERR_TRUNCATED=0
 HEALTH_PARTIAL=0
 HEALTH_SUMMARY=()
+FLOW_STEP_SUMMARY=()
 
 if [[ $# -gt 0 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
   usage
@@ -2141,7 +3121,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
+  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -2151,6 +3131,8 @@ case "$1" in
 esac
 
 enforce_router_guard "$AUDIT_COMMAND"
+enforce_long_job_runner_guard "$AUDIT_COMMAND"
+enforce_job_runner_guard "$AUDIT_COMMAND"
 
 export HERMES_DIGEST_WORKDIR="$REPO_ROOT"
 export HERMES_DIGEST_REDACT=1
@@ -2172,6 +3154,88 @@ if [[ "$1" == "command-menu" ]]; then
   cmd_command_menu
   exit 0
 fi
+
+case "$1" in
+  submit-daily-flow)
+    shift
+    emit_request_header
+    cmd_submit_daily_flow "$@"
+    exit $?
+    ;;
+  submit-space-check)
+    shift
+    emit_request_header
+    cmd_submit_space_check "$@"
+    exit $?
+    ;;
+  submit-archive-compress-check)
+    shift
+    emit_request_header
+    cmd_submit_archive_compress_check "$@"
+    exit $?
+    ;;
+  submit-weekly-review)
+    shift
+    emit_request_header
+    cmd_submit_weekly_review "$@"
+    exit $?
+    ;;
+  job-status)
+    shift
+    emit_request_header
+    cmd_job_status "$@"
+    exit $?
+    ;;
+  job-list)
+    shift
+    emit_request_header
+    cmd_job_list "$@"
+    exit $?
+    ;;
+  job-result)
+    shift
+    emit_request_header
+    cmd_job_result "$@"
+    exit $?
+    ;;
+  job-log)
+    shift
+    emit_request_header
+    cmd_job_log "$@"
+    exit $?
+    ;;
+  job-diagnose)
+    shift
+    emit_request_header
+    cmd_job_diagnose "$@"
+    exit $?
+    ;;
+  job-cancel)
+    shift
+    emit_request_header
+    cmd_job_cancel "$@"
+    exit $?
+    ;;
+  space-fast)
+    shift
+    emit_request_header
+    cmd_space_fast "$@"
+    exit $?
+    ;;
+  db-size-diagnose)
+    shift
+    emit_request_header
+    cmd_db_size_diagnose "$@"
+    exit $?
+    ;;
+  __run-job)
+    shift
+    ensure_runtime
+    emit_request_header
+    TMP_DIR="$(mktemp -d)"
+    cmd_run_job "$@"
+    ;;
+esac
 
 ensure_runtime
 emit_request_header

@@ -36,6 +36,7 @@ TEST_SQLITE_COMPACT_MODULES := \
 	$(APP).test_sqlite_migration_modes \
 	$(APP).test_sqlite_payload_backfill \
 	$(APP).test_sqlite_payload_backfill_safety \
+	$(APP).test_sqlite_operational_payload_export \
 	$(APP).test_sqlite_compact_after_backfill
 
 TEST_REPORT_MODULES := \
@@ -150,6 +151,10 @@ endef
 	db-backfill-payload-execute \
 	db-backfill-table-dry-run \
 	db-backfill-table-execute \
+	db-export-operational-payloads-dry-run \
+	db-export-operational-payloads-execute \
+	db-export-operational-payloads-table-dry-run \
+	db-export-operational-payloads-table-execute \
 	db-compact-dry-run \
 	db-compact-execute \
 	db-compact-table-dry-run \
@@ -243,6 +248,14 @@ help:
 	@printf '%s\n' "  make db-backfill-payload-execute        Execute payload metadata backfill only with CONFIRM=YES."
 	@printf '%s\n' "  make db-backfill-table-dry-run          Preview one-table backfill. Usage: make ... TABLE=raw_events"
 	@printf '%s\n' "  make db-backfill-table-execute          Execute one-table backfill only with TABLE=... CONFIRM=YES."
+	@printf '%s\n' "  make db-export-operational-payloads-dry-run"
+	@printf '%s\n' "                                          Preview telegram/delivery audit payload archive export."
+	@printf '%s\n' "  make db-export-operational-payloads-execute"
+	@printf '%s\n' "                                          Export operational payloads only with CONFIRM=YES."
+	@printf '%s\n' "  make db-export-operational-payloads-table-dry-run TABLE=telegram_deliveries|delivery_audit"
+	@printf '%s\n' "                                          Preview one operational diagnostics table export."
+	@printf '%s\n' "  make db-export-operational-payloads-table-execute TABLE=telegram_deliveries|delivery_audit CONFIRM=YES"
+	@printf '%s\n' "                                          Export one operational diagnostics table only with CONFIRM=YES."
 	@printf '%s\n' "  make db-compact-dry-run                 Preview compact without modifying DB."
 	@printf '%s\n' "  make db-compact-execute                 Execute compact only with CONFIRM=YES."
 	@printf '%s\n' "  make db-compact-table-dry-run           Preview one-table compact. Usage: make ... TABLE=raw_events"
@@ -405,6 +418,24 @@ db-backfill-table-execute:
 	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-backfill-table-execute TABLE=raw_events CONFIRM=YES"; exit 2; fi
 	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to backfill one table. Use make db-backfill-table-execute TABLE=$(TABLE) CONFIRM=YES"; exit 2; fi
 	$(RUN_PY) -m $(APP).sqlite_store --backfill-payload-metadata --table "$(TABLE)" --execute
+
+db-export-operational-payloads-dry-run:
+	$(RUN_PY) -m $(APP).sqlite_store --export-operational-payloads --dry-run
+
+db-export-operational-payloads-execute:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to export operational payloads. Use make db-export-operational-payloads-execute CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --export-operational-payloads --execute --confirm
+
+db-export-operational-payloads-table-dry-run:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-export-operational-payloads-table-dry-run TABLE=telegram_deliveries|delivery_audit"; exit 2; fi
+	@case "$(TABLE)" in telegram_deliveries|delivery_audit) ;; *) echo "Refusing unsupported operational table: $(TABLE)"; exit 2 ;; esac
+	$(RUN_PY) -m $(APP).sqlite_store --export-operational-payloads --table "$(TABLE)" --dry-run
+
+db-export-operational-payloads-table-execute:
+	@if [ -z "$(TABLE)" ]; then echo "Usage: make db-export-operational-payloads-table-execute TABLE=telegram_deliveries|delivery_audit CONFIRM=YES"; exit 2; fi
+	@case "$(TABLE)" in telegram_deliveries|delivery_audit) ;; *) echo "Refusing unsupported operational table: $(TABLE)"; exit 2 ;; esac
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "Refusing to export one operational table. Use make db-export-operational-payloads-table-execute TABLE=$(TABLE) CONFIRM=YES"; exit 2; fi
+	$(RUN_PY) -m $(APP).sqlite_store --export-operational-payloads --table "$(TABLE)" --execute --confirm
 
 db-compact-dry-run:
 	$(RUN_PY) -m $(APP).sqlite_store --compact --dry-run
