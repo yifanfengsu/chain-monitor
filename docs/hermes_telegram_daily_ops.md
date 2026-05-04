@@ -26,6 +26,22 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - gateway 正在运行。
 - Telegram 中已经发送 `/reset`。
 
+## Outbound 发送层健康检查
+
+`app/notifier.py` 是系统主动推送链上告警的 outbound 发送层。日常体检除了确认 listener、SQLite、market context 正常，也要关注 Telegram outbound 健康：
+
+- `get_notifier_health()` 中的 `pool_timeout_count`、`retry_after_count`、`network_error_count`、`consecutive_failures`。
+- 日志中的 `notifier send failed: type=... attempt=... consecutive_failures=...`。
+- 如果出现 `Pool timeout: All connections in the connection pool are occupied` 且链上监听、解析、SQLite 写入仍正常，短期优先重启 listener 恢复 Telegram client 连接池；长期必须使用显式 `HTTPXRequest` 和应用层 send semaphore，避免 worker burst 打爆连接池。
+
+推荐 outbound env：
+
+```bash
+TELEGRAM_CONNECTION_POOL_SIZE=16
+TELEGRAM_POOL_TIMEOUT=10
+TELEGRAM_SEND_CONCURRENCY=3
+```
+
 ## 每日中文命令
 
 直接复制到 Telegram 使用：

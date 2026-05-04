@@ -99,6 +99,7 @@ TEST_CLMM_MODULES := \
 
 TEST_CORE_MODULES := \
 	$(APP).test_operational_intent_notifier \
+	$(APP).test_notifier_telegram_request \
 	$(APP).test_exchange_entity_attribution \
 	$(APP).test_data_fallbacks
 

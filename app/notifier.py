@@ -2,6 +2,8 @@ import asyncio
 import os
 import time
 from telegram import Bot
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.request import HTTPXRequest
 
 from config import (
     CHAT_ID,
@@ -21,11 +23,60 @@ from trade_opportunity import (
 )
 from user_tiers import get_user_tier_profile, should_use_asset_case_primary
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+def _get_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+def _get_float_env(name: str, default: float, *, minimum: float | None = None) -> float:
+    raw = os.getenv(name)
+    try:
+        value = float(raw) if raw is not None else float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+TELEGRAM_CONNECTION_POOL_SIZE = _get_int_env("TELEGRAM_CONNECTION_POOL_SIZE", 16, minimum=1)
+TELEGRAM_POOL_TIMEOUT = _get_float_env("TELEGRAM_POOL_TIMEOUT", 10.0, minimum=0.1)
+TELEGRAM_CONNECT_TIMEOUT = _get_float_env("TELEGRAM_CONNECT_TIMEOUT", 10.0, minimum=0.1)
+TELEGRAM_READ_TIMEOUT = _get_float_env("TELEGRAM_READ_TIMEOUT", 20.0, minimum=0.1)
+TELEGRAM_WRITE_TIMEOUT = _get_float_env("TELEGRAM_WRITE_TIMEOUT", 20.0, minimum=0.1)
+TELEGRAM_SEND_CONCURRENCY = _get_int_env("TELEGRAM_SEND_CONCURRENCY", 3, minimum=1)
+TELEGRAM_SEND_MAX_ATTEMPTS = _get_int_env("TELEGRAM_SEND_MAX_ATTEMPTS", 3, minimum=1)
+TELEGRAM_NOTIFIER_ALERT_FAILURES = _get_int_env("TELEGRAM_NOTIFIER_ALERT_FAILURES", 20, minimum=0)
+
+request = HTTPXRequest(
+    connection_pool_size=TELEGRAM_CONNECTION_POOL_SIZE,
+    pool_timeout=TELEGRAM_POOL_TIMEOUT,
+    connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
+    read_timeout=TELEGRAM_READ_TIMEOUT,
+    write_timeout=TELEGRAM_WRITE_TIMEOUT,
+)
+bot = Bot(token=TELEGRAM_BOT_TOKEN, request=request)
+_SEND_SEMAPHORE = asyncio.Semaphore(TELEGRAM_SEND_CONCURRENCY)
 NOTIFIER_RUNTIME_STATS = {
     "signals_attempted_send": 0,
     "signals_sent_ok": 0,
     "signals_sent_failed": 0,
+    "telegram_pool_timeout_count": 0,
+    "telegram_retry_after_count": 0,
+    "telegram_network_error_count": 0,
+    "telegram_error_count": 0,
+    "telegram_last_success_ts": None,
+    "telegram_last_failure_ts": None,
+    "telegram_consecutive_failures": 0,
+    "telegram_last_error_type": None,
+    "telegram_last_error_message_sanitized": None,
 }
 _NOTIFIER_STATS_LOG_INTERVAL_SEC = 300
 _last_notifier_stats_log_ts = 0.0
@@ -51,17 +102,190 @@ BRIEF_BY_DEFAULT_VARIANTS = {
 }
 
 
+def _sanitize_telegram_error_message(error: Exception) -> str:
+    message = str(error)
+    if TELEGRAM_BOT_TOKEN:
+        message = message.replace(str(TELEGRAM_BOT_TOKEN), "[redacted-token]")
+    message = " ".join(message.split())
+    if len(message) > 300:
+        return f"{message[:297]}..."
+    return message
+
+
+def _is_pool_timeout_message(message: str) -> bool:
+    normalized = str(message or "").lower()
+    return "pool timeout" in normalized or "connection pool" in normalized
+
+
+def _record_telegram_success() -> None:
+    NOTIFIER_RUNTIME_STATS["telegram_last_success_ts"] = time.time()
+    NOTIFIER_RUNTIME_STATS["telegram_consecutive_failures"] = 0
+    NOTIFIER_RUNTIME_STATS["telegram_last_error_type"] = None
+    NOTIFIER_RUNTIME_STATS["telegram_last_error_message_sanitized"] = None
+
+
+def _record_telegram_failure(error_type: str, message: str) -> int:
+    NOTIFIER_RUNTIME_STATS["telegram_last_failure_ts"] = time.time()
+    NOTIFIER_RUNTIME_STATS["telegram_consecutive_failures"] = (
+        int(NOTIFIER_RUNTIME_STATS.get("telegram_consecutive_failures") or 0) + 1
+    )
+    NOTIFIER_RUNTIME_STATS["telegram_last_error_type"] = error_type
+    NOTIFIER_RUNTIME_STATS["telegram_last_error_message_sanitized"] = message
+    return int(NOTIFIER_RUNTIME_STATS["telegram_consecutive_failures"])
+
+
+def _increment_telegram_error_counter(error_type: str, message: str) -> None:
+    if error_type == "RetryAfter":
+        NOTIFIER_RUNTIME_STATS["telegram_retry_after_count"] = (
+            int(NOTIFIER_RUNTIME_STATS.get("telegram_retry_after_count") or 0) + 1
+        )
+    elif error_type == "TimedOut":
+        if _is_pool_timeout_message(message):
+            NOTIFIER_RUNTIME_STATS["telegram_pool_timeout_count"] = (
+                int(NOTIFIER_RUNTIME_STATS.get("telegram_pool_timeout_count") or 0) + 1
+            )
+    elif error_type == "NetworkError":
+        NOTIFIER_RUNTIME_STATS["telegram_network_error_count"] = (
+            int(NOTIFIER_RUNTIME_STATS.get("telegram_network_error_count") or 0) + 1
+        )
+    elif error_type == "TelegramError":
+        NOTIFIER_RUNTIME_STATS["telegram_error_count"] = (
+            int(NOTIFIER_RUNTIME_STATS.get("telegram_error_count") or 0) + 1
+        )
+    else:
+        NOTIFIER_RUNTIME_STATS["telegram_error_count"] = (
+            int(NOTIFIER_RUNTIME_STATS.get("telegram_error_count") or 0) + 1
+        )
+
+
+def _log_telegram_send_failure(
+    *,
+    error_type: str,
+    attempt: int,
+    max_attempts: int,
+    consecutive_failures: int,
+    message: str,
+) -> None:
+    print(
+        "notifier send failed:",
+        f"type={error_type}",
+        f"attempt={attempt}/{max_attempts}",
+        f"consecutive_failures={consecutive_failures}",
+        f"message={message}",
+    )
+    alert_threshold = int(TELEGRAM_NOTIFIER_ALERT_FAILURES or 0)
+    if alert_threshold > 0 and consecutive_failures >= alert_threshold and consecutive_failures % alert_threshold == 0:
+        print(
+            "WARNING notifier telegram send unhealthy:",
+            f"consecutive_failures={consecutive_failures}",
+            f"last_error_type={error_type}",
+        )
+
+
+def _backoff_delay_seconds(attempt: int) -> float:
+    return float(min(4, 2 ** max(0, attempt - 1)))
+
+
 async def send(msg) -> bool:
-    """发送告警消息到 Telegram，失败时做短重试。"""
-    for i in range(3):
-        try:
-            await bot.send_message(chat_id=CHAT_ID, text=msg)
-            return True
-        except Exception as e:
-            print(f"发送失败，第{i + 1}次重试:", e)
-            if i < 2:
-                await asyncio.sleep(2)
-    return False
+    """发送告警消息到 Telegram，失败时做分类重试。"""
+    async with _SEND_SEMAPHORE:
+        for attempt in range(1, TELEGRAM_SEND_MAX_ATTEMPTS + 1):
+            try:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=msg,
+                    read_timeout=TELEGRAM_READ_TIMEOUT,
+                    write_timeout=TELEGRAM_WRITE_TIMEOUT,
+                    connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
+                    pool_timeout=TELEGRAM_POOL_TIMEOUT,
+                )
+                _record_telegram_success()
+                return True
+            except RetryAfter as error:
+                error_type = "RetryAfter"
+                message = _sanitize_telegram_error_message(error)
+                _increment_telegram_error_counter(error_type, message)
+                consecutive = _record_telegram_failure(error_type, message)
+                _log_telegram_send_failure(
+                    error_type=error_type,
+                    attempt=attempt,
+                    max_attempts=TELEGRAM_SEND_MAX_ATTEMPTS,
+                    consecutive_failures=consecutive,
+                    message=message,
+                )
+                if attempt < TELEGRAM_SEND_MAX_ATTEMPTS:
+                    await asyncio.sleep(float(error.retry_after) + 0.5)
+            except TimedOut as error:
+                error_type = "TimedOut"
+                message = _sanitize_telegram_error_message(error)
+                _increment_telegram_error_counter(error_type, message)
+                consecutive = _record_telegram_failure(error_type, message)
+                _log_telegram_send_failure(
+                    error_type=error_type,
+                    attempt=attempt,
+                    max_attempts=TELEGRAM_SEND_MAX_ATTEMPTS,
+                    consecutive_failures=consecutive,
+                    message=message,
+                )
+                if attempt < TELEGRAM_SEND_MAX_ATTEMPTS:
+                    await asyncio.sleep(_backoff_delay_seconds(attempt))
+            except NetworkError as error:
+                error_type = "NetworkError"
+                message = _sanitize_telegram_error_message(error)
+                _increment_telegram_error_counter(error_type, message)
+                consecutive = _record_telegram_failure(error_type, message)
+                _log_telegram_send_failure(
+                    error_type=error_type,
+                    attempt=attempt,
+                    max_attempts=TELEGRAM_SEND_MAX_ATTEMPTS,
+                    consecutive_failures=consecutive,
+                    message=message,
+                )
+                if attempt < TELEGRAM_SEND_MAX_ATTEMPTS:
+                    await asyncio.sleep(_backoff_delay_seconds(attempt))
+            except TelegramError as error:
+                error_type = "TelegramError"
+                message = _sanitize_telegram_error_message(error)
+                _increment_telegram_error_counter(error_type, message)
+                consecutive = _record_telegram_failure(error_type, message)
+                _log_telegram_send_failure(
+                    error_type=error_type,
+                    attempt=attempt,
+                    max_attempts=TELEGRAM_SEND_MAX_ATTEMPTS,
+                    consecutive_failures=consecutive,
+                    message=message,
+                )
+                return False
+            except Exception as error:
+                error_type = type(error).__name__ or "Exception"
+                message = _sanitize_telegram_error_message(error)
+                _increment_telegram_error_counter(error_type, message)
+                consecutive = _record_telegram_failure(error_type, message)
+                _log_telegram_send_failure(
+                    error_type=error_type,
+                    attempt=attempt,
+                    max_attempts=TELEGRAM_SEND_MAX_ATTEMPTS,
+                    consecutive_failures=consecutive,
+                    message=message,
+                )
+                if attempt < TELEGRAM_SEND_MAX_ATTEMPTS:
+                    await asyncio.sleep(_backoff_delay_seconds(attempt))
+        return False
+
+
+def get_notifier_health() -> dict:
+    return {
+        "attempted": int(NOTIFIER_RUNTIME_STATS.get("signals_attempted_send") or 0),
+        "sent_ok": int(NOTIFIER_RUNTIME_STATS.get("signals_sent_ok") or 0),
+        "sent_failed": int(NOTIFIER_RUNTIME_STATS.get("signals_sent_failed") or 0),
+        "pool_timeout_count": int(NOTIFIER_RUNTIME_STATS.get("telegram_pool_timeout_count") or 0),
+        "retry_after_count": int(NOTIFIER_RUNTIME_STATS.get("telegram_retry_after_count") or 0),
+        "network_error_count": int(NOTIFIER_RUNTIME_STATS.get("telegram_network_error_count") or 0),
+        "consecutive_failures": int(NOTIFIER_RUNTIME_STATS.get("telegram_consecutive_failures") or 0),
+        "last_success_ts": NOTIFIER_RUNTIME_STATS.get("telegram_last_success_ts"),
+        "last_failure_ts": NOTIFIER_RUNTIME_STATS.get("telegram_last_failure_ts"),
+        "last_error_type": NOTIFIER_RUNTIME_STATS.get("telegram_last_error_type"),
+    }
 
 
 def _log_notifier_stats_if_needed(force: bool = False) -> None:
@@ -75,6 +299,10 @@ def _log_notifier_stats_if_needed(force: bool = False) -> None:
         f"attempted={NOTIFIER_RUNTIME_STATS['signals_attempted_send']}",
         f"sent_ok={NOTIFIER_RUNTIME_STATS['signals_sent_ok']}",
         f"sent_failed={NOTIFIER_RUNTIME_STATS['signals_sent_failed']}",
+        f"pool_timeout={NOTIFIER_RUNTIME_STATS['telegram_pool_timeout_count']}",
+        f"retry_after={NOTIFIER_RUNTIME_STATS['telegram_retry_after_count']}",
+        f"network_error={NOTIFIER_RUNTIME_STATS['telegram_network_error_count']}",
+        f"consecutive_failures={NOTIFIER_RUNTIME_STATS['telegram_consecutive_failures']}",
     )
 
 
