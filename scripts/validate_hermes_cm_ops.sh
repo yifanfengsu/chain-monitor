@@ -48,6 +48,7 @@ for pattern in \
   "cmd_job_diagnose()" \
   "cmd_job_cancel()" \
   "cmd_space_fast()" \
+  "cmd_db_slim_dry_run()" \
   "cmd_run_job()" \
   "submit-daily-flow" \
   "submit-space-check" \
@@ -59,6 +60,7 @@ for pattern in \
   "job-log" \
   "job-diagnose" \
   "job-cancel" \
+  "db-slim-dry-run" \
   "__run-job" \
   "HERMES_OPS_JOB_RUNNER_OK" \
   "job_runner_required" \
@@ -74,6 +76,8 @@ for pattern in \
   "runtime_missing_dependency" \
   "current_utc_date_protected" \
   "current_beijing_date_protected" \
+  "Asia/Shanghai" \
+  "HERMES_TEST_BEIJING_TODAY" \
   "missing_confirm_compress" \
   "HERMES_EXEC_ASK" \
   "HERMES_OPS_REQUIRE_ROUTER" \
@@ -93,7 +97,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -101,7 +105,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -120,6 +124,7 @@ listener_block="$(extract_block 'cmd_listener_health()' 'append_flow_step()')"
 daily_flow_block="$(extract_block 'cmd_daily_flow()' 'cmd_replay_check()')"
 space_block="$(extract_block 'cmd_space_check()' 'cmd_archive_compress_check()')"
 db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
+db_slim_block="$(extract_block 'cmd_db_slim_dry_run()' 'run_output_value()')"
 archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
 
@@ -127,6 +132,7 @@ weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
 [[ -n "$menu_block" ]] || die "could not extract cmd_command_menu"
 [[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
 [[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
+[[ -n "$db_slim_block" ]] || die "could not extract cmd_db_slim_dry_run"
 
 if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
   die "command-menu must not execute or mention make commands"
@@ -146,7 +152,12 @@ for required in \
   "空间检查" \
   "空间快检" \
   "数据库体积诊断" \
+  "数据库瘦身预检" \
   "重新标准日报流程YYYY-MM-DD 我确认重跑" \
+  "生成日报YYYY-MM-DD" \
+  "深度分析报告YYYY-MM-DD" \
+  "生成摘要YYYY-MM-DD 快速" \
+  "生成摘要YYYY-MM-DD 深度" \
   "归档压缩预检YYYY-MM-DD" \
   "周复盘START到END" \
   "任务状态JOB_ID" \
@@ -158,7 +169,10 @@ for required in \
   "今天" \
   "昨天" \
   "脱敏" \
-  "不提供交易建议"
+  "不提供交易建议" \
+  "长任务会返回 job_id" \
+  "数据库瘦身预检只能 dry-run" \
+  "不开放 vacuum / prune / compact execute / export execute / delete DB / 修改地址簿"
 do
   if ! grep -Fq -- "$required" <<<"$help_block$menu_block"; then
     die "help/menu missing required Chinese text: ${required}"
@@ -215,6 +229,17 @@ for forbidden in "rm " "db-vacuum" "db-prune-execute" "sqlite_store --vacuum" "s
 done
 
 grep -Fq "make db-export-operational-payloads-dry-run" <<<"$db_size_block" || die "db-size-diagnose missing operational payload export dry-run"
+grep -Fq "make db-export-operational-payloads-dry-run" <<<"$db_slim_block" || die "db-slim-dry-run missing operational payload export dry-run"
+grep -Fq "dry-run only" <<<"$db_slim_block" || die "db-slim-dry-run missing dry-run policy"
+grep -Fq "archive_write=false" <<<"$db_slim_block" || die "db-slim-dry-run missing archive_write=false"
+grep -Fq "json_payload_clear=false" <<<"$db_slim_block" || die "db-slim-dry-run missing json_payload_clear=false"
+grep -Fq "telegram_deliveries" <<<"$db_slim_block" || die "db-slim-dry-run missing telegram_deliveries summary"
+grep -Fq "delivery_audit" <<<"$db_slim_block" || die "db-slim-dry-run missing delivery_audit summary"
+for forbidden in "--execute" "--confirm" "db-vacuum" "db-prune-execute" "db-compact-execute" "archive-compress-date"; do
+  if grep -Fq -- "$forbidden" <<<"$db_slim_block"; then
+    die "db-slim-dry-run contains forbidden execute term: ${forbidden}"
+  fi
+done
 for forbidden in "db-export-operational-payloads-execute" "db-export-operational-payloads-table-execute"; do
   if grep -Fq -- "$forbidden" "$SCRIPT"; then
     die "Telegram wrapper must not expose operational payload export execute: ${forbidden}"
@@ -247,6 +272,7 @@ for guarded in \
   "job-cancel" \
   "space-fast" \
   "db-size-diagnose" \
+  "db-slim-dry-run" \
   "replay-check" \
   "data-quality" \
   "profile-review" \
@@ -307,6 +333,11 @@ grep -Fq "诊断任务JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output mi
 grep -Fq "最近任务" "$TMP_DIR/menu.out" || die "command-menu output missing 最近任务"
 grep -Fq "空间快检" "$TMP_DIR/menu.out" || die "command-menu output missing 空间快检"
 grep -Fq "数据库体积诊断" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库体积诊断"
+grep -Fq "数据库瘦身预检" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库瘦身预检"
+grep -Fq "生成日报YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 生成日报YYYY-MM-DD"
+grep -Fq "深度分析报告YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 深度分析报告YYYY-MM-DD"
+grep -Fq "生成摘要YYYY-MM-DD 快速" "$TMP_DIR/menu.out" || die "command-menu output missing 生成摘要YYYY-MM-DD 快速"
+grep -Fq "生成摘要YYYY-MM-DD 深度" "$TMP_DIR/menu.out" || die "command-menu output missing 生成摘要YYYY-MM-DD 深度"
 grep -Fq "重新标准日报流程YYYY-MM-DD 我确认重跑" "$TMP_DIR/menu.out" || die "command-menu output missing rerun command"
 
 mkdir -p "$TMP_DIR/bin"
@@ -362,6 +393,15 @@ HERMES_OPS_LOCK_PATH="$TMP_DIR/archive_check.lock" \
 PATH="$TMP_DIR/bin:$PATH" \
   "$SCRIPT" archive-compress-check --date 2026-05-01 >"$TMP_DIR/archive_check.out"
 grep -Fq "fake make ok: archive-compress-dry-run DATE=2026-05-01" "$TMP_DIR/archive_check.out" || die "archive-compress-check did not call dry-run"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/db_slim_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/db_slim.lock" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" db-slim-dry-run >"$TMP_DIR/db_slim.out"
+grep -Fq "fake make ok: db-export-operational-payloads-dry-run" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run did not call operational payload export dry-run"
+grep -Fq "archive_write=false" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing archive_write=false"
+grep -Fq "json_payload_clear=false" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing json_payload_clear=false"
+grep -Fq "未执行 export execute、VACUUM、compact、prune、删除 DB、清 JSON payload、写 archive" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing dry-run safety statement"
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "$SCRIPT" "$0"

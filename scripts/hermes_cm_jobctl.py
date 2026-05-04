@@ -53,6 +53,45 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def beijing_today() -> str:
+    override = os.environ.get("HERMES_TEST_BEIJING_TODAY", "").strip()
+    if override:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", override):
+            raise JobctlError("invalid_test_beijing_today", "❌ 已拒绝：HERMES_TEST_BEIJING_TODAY 必须是 YYYY-MM-DD。")
+        try:
+            parsed = dt.date.fromisoformat(override)
+        except ValueError as exc:
+            raise JobctlError("invalid_test_beijing_today", "❌ 已拒绝：HERMES_TEST_BEIJING_TODAY 必须是真实日期。") from exc
+        if parsed.isoformat() != override:
+            raise JobctlError("invalid_test_beijing_today", "❌ 已拒绝：HERMES_TEST_BEIJING_TODAY 必须是真实日期。")
+        return override
+    try:
+        from zoneinfo import ZoneInfo
+
+        tzinfo = ZoneInfo("Asia/Shanghai")
+    except Exception:  # noqa: BLE001
+        tzinfo = dt.timezone(dt.timedelta(hours=8))
+    return dt.datetime.now(tzinfo).date().isoformat()
+
+
+def current_beijing_date_override_allowed() -> bool:
+    if os.environ.get("HERMES_ALLOW_CURRENT_BEIJING_DATE") != "1":
+        return False
+    if os.environ.get("HERMES_OPS_PLATFORM", "").lower() == "telegram":
+        return False
+    return os.environ.get("HERMES_OPS_ROUTER_OK") != "1"
+
+
+def current_beijing_date_refusal_message(report_date: str) -> str:
+    return "\n".join(
+        [
+            f"❌ 已拒绝：{report_date} 仍是当前北京时间逻辑日，数据可能还在写入。",
+            "请在北京时间次日 00:05 后重试：",
+            f"标准日报流程{report_date}",
+        ]
+    )
+
+
 def parse_utc(value: str) -> dt.datetime | None:
     if not value:
         return None
@@ -231,6 +270,7 @@ def write_status_json(meta: dict[str, Any]) -> None:
         "failed_step": meta.get("failed_step", ""),
         "failed_substep": meta.get("failed_substep", ""),
         "failed_command": meta.get("failed_command", ""),
+        "refused_reason": meta.get("refused_reason", ""),
         "timeout_hit": meta.get("timeout_hit", ""),
         "timeout_limit_sec": meta.get("timeout_limit_sec", ""),
         "result_path": meta.get("result_path", ""),
@@ -248,6 +288,7 @@ def update_meta(
     failed_step: str | None = None,
     failed_substep: str | None = None,
     failed_command: str | None = None,
+    refused_reason: str | None = None,
     timeout_hit: str | None = None,
     timeout_limit_sec: int | None = None,
     started: bool = False,
@@ -267,6 +308,8 @@ def update_meta(
         meta["failed_substep"] = redact(failed_substep)
     if failed_command is not None:
         meta["failed_command"] = redact(failed_command)
+    if refused_reason is not None:
+        meta["refused_reason"] = redact(refused_reason)
     if timeout_hit is not None:
         meta["timeout_hit"] = timeout_hit
     if timeout_limit_sec is not None:
@@ -428,6 +471,20 @@ def submit_job(args: argparse.Namespace, request_id: str, original_hash: str) ->
     force_rerun = bool(getattr(args, "force_rerun", False))
     if force_rerun and kind != "daily-flow":
         raise JobctlError("invalid_arguments", "❌ 已拒绝：--force-rerun 仅支持 daily-flow。")
+    if kind == "daily-flow" and date == beijing_today() and not current_beijing_date_override_allowed():
+        write_audit(
+            event="job_submit",
+            request_id=request_id,
+            kind=kind,
+            allowed=False,
+            refused_reason="current_beijing_date_protected",
+            date=date,
+            start=start,
+            end=end,
+            original_text_hash=original_hash,
+        )
+        print(current_beijing_date_refusal_message(date))
+        return 2
     with job_lock():
         for meta in all_job_metas():
             if same_signature(meta, kind, date, start, end, ACTIVE_STATUSES):
@@ -601,6 +658,7 @@ def action_status(args: argparse.Namespace, request_id: str, original_hash: str)
         print(f"failed_step: {meta.get('failed_step', '')}")
         print(f"failed_substep: {meta.get('failed_substep', '')}")
         print(f"failed_command: {meta.get('failed_command', '')}")
+        print(f"refused_reason: {meta.get('refused_reason', '')}")
         print(f"timeout_hit: {meta.get('timeout_hit', '')}")
         print(f"timeout_limit_sec: {meta.get('timeout_limit_sec', '')}")
     print(f"result command: 查看结果{meta.get('job_id')}")
@@ -751,6 +809,51 @@ def extract_block(text: str, label: str) -> str:
     return value
 
 
+def audit_refused_reason_for(meta: dict[str, Any]) -> str:
+    request_id = str(meta.get("request_id") or "")
+    job_id = str(meta.get("job_id") or "")
+    date = str(meta.get("date") or "")
+    path = audit_path()
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines[-5000:]):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        reason = str(payload.get("refused_reason") or "")
+        if not reason:
+            continue
+        if job_id and str(payload.get("job_id") or "") == job_id:
+            return reason
+        if request_id and str(payload.get("request_id") or "") == request_id:
+            return reason
+        if date and str(payload.get("date") or "") == date and str(payload.get("command") or "") in {"daily-flow", "__run-job"}:
+            return reason
+    return ""
+
+
+def status_refused_reason_for(meta: dict[str, Any]) -> str:
+    job_id = str(meta.get("job_id") or "")
+    if not job_id:
+        return ""
+    try:
+        payload = read_json(status_path(job_id))
+    except JobctlError:
+        return ""
+    return str(payload.get("refused_reason") or "")
+
+
+def argv_uses_run_job(argv: Any) -> bool:
+    return isinstance(argv, list) and len(argv) >= 2 and argv[1] == "__run-job"
+
+
 def action_diagnose(args: argparse.Namespace, request_id: str, original_hash: str) -> int:
     with job_lock():
         meta = load_existing(args.job_id)
@@ -772,6 +875,12 @@ def action_diagnose(args: argparse.Namespace, request_id: str, original_hash: st
     failed_step = str(meta.get("failed_step") or extract_field(text, "failed_step"))
     failed_substep = str(meta.get("failed_substep") or extract_field(text, "failed_substep"))
     failed_command = str(meta.get("failed_command") or extract_field(text, "failed_command"))
+    refused_reason = str(
+        meta.get("refused_reason")
+        or status_refused_reason_for(meta)
+        or extract_field(text, "refused_reason")
+        or audit_refused_reason_for(meta)
+    )
     timeout_hit = str(meta.get("timeout_hit") or extract_field(text, "timeout_hit") or "")
     timeout_limit_sec = str(meta.get("timeout_limit_sec") or extract_field(text, "timeout_limit_sec") or "")
     exit_code = meta.get("exit_code")
@@ -783,6 +892,16 @@ def action_diagnose(args: argparse.Namespace, request_id: str, original_hash: st
     job_id = str(meta.get("job_id", ""))
     kind = str(meta.get("kind", ""))
     date = str(meta.get("date", ""))
+    directory = job_dir(job_id)
+    if not stdout_tail:
+        stdout_tail = redact(tail_lines(directory / "stdout.log", 80))
+    if not stderr_tail:
+        stderr_tail = redact(tail_lines(directory / "stderr.log", 80))
+    argv = meta.get("argv", [])
+    argv_text = redact(json.dumps(argv, ensure_ascii=False))
+    exit_code_text = str(exit_code if exit_code is not None else "")
+    stdout_empty = not stdout_tail.strip()
+    stderr_empty = not stderr_tail.strip()
 
     print("任务诊断")
     print(f"job_id={job_id}")
@@ -791,10 +910,12 @@ def action_diagnose(args: argparse.Namespace, request_id: str, original_hash: st
     print(f"failed_step={failed_step}")
     print(f"failed_substep={failed_substep}")
     print(f"failed_command={failed_command}")
+    print(f"refused_reason={refused_reason}")
     print(f"exit_code={exit_code}")
     print(f"timeout_hit={timeout_hit or 'false'}")
     print(f"timeout_limit_sec={timeout_limit_sec}")
     print(f"result_path={safe_rel(path)}")
+    print(f"meta_argv={argv_text}")
     print()
     print("stdout_tail:")
     print(stdout_tail or "(empty)")
@@ -803,7 +924,22 @@ def action_diagnose(args: argparse.Namespace, request_id: str, original_hash: st
     print(stderr_tail or "(empty)")
     print()
     print("下一步建议:")
-    if kind == "daily-flow" and failed_substep:
+    if refused_reason == "current_beijing_date_protected":
+        print(f"等北京时间次日 00:05 后重新运行标准日报流程{date}。")
+        print(f"/chain-monitor-report-analyst 标准日报流程{date}")
+    elif refused_reason:
+        print(f"任务被 preflight/refusal 拒绝：{refused_reason}")
+        print("请先处理拒绝原因，再重新提交。")
+    elif exit_code_text == "2" and stdout_empty and stderr_empty:
+        print("这通常是 preflight/refusal。请检查 refused_reason、meta argv 和 audit。")
+        print("请重点确认：是否提交了当前北京时间逻辑日。")
+        print("请重点确认：是否本地 jobctl 仍是旧版。")
+        print("请重点确认：meta.json argv 是否为 __run-job。")
+        if argv_uses_run_job(argv):
+            print("meta.json argv 已使用 __run-job。")
+        else:
+            print("meta.json argv 不是 __run-job，可能本地 jobctl 仍是旧版，请重新运行 install/pull。")
+    elif kind == "daily-flow" and failed_substep:
         print("请先修复上述失败子步骤，再重新运行：")
         print(f"/chain-monitor-report-analyst 标准日报流程{date}")
     elif meta.get("status") in ACTIVE_STATUSES:
@@ -942,6 +1078,7 @@ def action_update(args: argparse.Namespace) -> int:
             failed_step=args.failed_step,
             failed_substep=args.failed_substep,
             failed_command=args.failed_command,
+            refused_reason=args.refused_reason,
             timeout_hit=args.timeout_hit,
             timeout_limit_sec=args.timeout_limit_sec,
             started=args.status == "running",
@@ -990,6 +1127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     update.add_argument("--failed-step")
     update.add_argument("--failed-substep")
     update.add_argument("--failed-command")
+    update.add_argument("--refused-reason")
     update.add_argument("--timeout-hit", choices=("true", "false"))
     update.add_argument("--timeout-limit-sec", type=int)
     return parser.parse_args(argv)

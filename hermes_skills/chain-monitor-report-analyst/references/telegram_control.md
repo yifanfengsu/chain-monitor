@@ -8,6 +8,8 @@
 
 相对日期必须拒绝。不得先运行 `date -u`，不得运行 `TZ=Asia/Shanghai date`，不得把 今天/昨天/前天/今日/昨日/today/yesterday/tomorrow 转换成具体日期。
 
+标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。例如北京时间 2026-05-03 还没结束时，不能跑 `标准日报流程2026-05-03`；请在次日 00:05 后执行同一命令。
+
 控制路径：
 
 ```text
@@ -23,7 +25,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | 命令提示 / 功能列表 / 菜单 / 帮助 / 命令 / 怎么用 / 使用说明 | command-menu | `./scripts/hermes_cm_ops.sh command-menu` | low | sync quick |
 | 系统体检 / 体检 / 健康检查 / 系统状态 / 状态 | system-health | `./scripts/hermes_cm_ops.sh system-health` | low | sync |
 | 监听器体检 / 监听器检查 / 监听状态 / 监听器状态 / 最近数据 / 零活动排查 | listener-health | `./scripts/hermes_cm_ops.sh listener-health` | low | sync |
-| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job |
+| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job；当前北京时间日期会拒绝且不创建 job |
 | 分析报告YYYY-MM-DD / 快速分析报告YYYY-MM-DD / 日报分析YYYY-MM-DD / 报告分析YYYY-MM-DD | analyze fast | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium | sync |
 | 检查回放YYYY-MM-DD / 回放检查YYYY-MM-DD / 回放摘要YYYY-MM-DD / 检查replayYYYY-MM-DD / Replay检查YYYY-MM-DD | replay-check | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | sync quick |
 | 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | sync quick |
@@ -32,6 +34,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
 | 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
 | 空间快检 / 快速空间检查 / 快速磁盘检查 | space-fast | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick |
+| 数据库体积诊断 / DB体积诊断 / 数据库为什么大 | db-size-diagnose | `./scripts/hermes_cm_ops.sh db-size-diagnose` | low | sync quick |
+| 数据库瘦身预检 / DB瘦身预检 / 数据库清理预检 | db-slim-dry-run | `./scripts/hermes_cm_ops.sh db-slim-dry-run` | low-medium | sync dry-run |
 | 归档压缩预检YYYY-MM-DD / 压缩预检YYYY-MM-DD / archive压缩预检YYYY-MM-DD / Archive压缩预检YYYY-MM-DD | submit-archive-compress-check | `./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD` | low-medium | async job |
 | 周复盘START到END / 周复盘 START 到 END / 周度复盘START到END / 每周复盘START到END | submit-weekly-review | `./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD` | medium | async job |
 | 任务状态JOB_ID / 查询任务JOB_ID / 任务进度JOB_ID | job-status | `./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID` | low | sync quick |
@@ -61,6 +65,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 - 所有可执行命令必须使用绝对日期 `YYYY-MM-DD`。
 - 日期必须用 Python `datetime.date.fromisoformat` 校验真实日期。
+- 标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期；submit 阶段会返回 `current_beijing_date_protected`。
 - 支持日期与中文命令之间无空格，例如 `分析报告2026-05-01`。
 - 支持日期与中文命令之间有空格，例如 `分析报告 2026-05-01`。
 - 周复盘使用 `START到END`，例如 `周复盘2026-04-27到2026-05-03`。
@@ -68,6 +73,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。
 - 取消任务必须包含“我确认取消”。
 - `生成摘要2026-05-01` 没有 快速/深度，必须拒绝并要求指定模式。
+- `数据库瘦身预检` 只能映射到 `db-slim-dry-run`，只做 operational payload export dry-run。
 - 普通“分析报告YYYY-MM-DD”不得自动生成日报，不得自动 auto-build。
 - 只有“构建并分析报告YYYY-MM-DD 快速/深度”才允许 auto-build。
 - close 只能由“每日收尾YYYY-MM-DD 我确认压缩”触发。
@@ -108,7 +114,10 @@ Skill 必须拒绝或要求改写：
 - db vacuum
 - prune
 - compact execute
+- operational payload export execute
 - 删除 archive/cache/db
+- delete DB
+- 修改地址簿
 - 把地址簿发给我
 - 把真实监控地址发出来
 - 给我买入卖出建议
@@ -171,10 +180,16 @@ job_id：cmjob_...
 - 监听器体检：检查监听器是否停摆、最近数据时间
 - 空间检查：提交后台任务查看 DB / archive / reports 占用
 - 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小
+- 数据库体积诊断：解释 DB / WAL / archive / reports 哪个大
+- 数据库瘦身预检：只运行 operational payload export dry-run，显示候选行和预计节省
 
 【日报流程】
 - 标准日报流程YYYY-MM-DD：提交后台任务，展开 daily-close 子步骤 + full replay + report + compare + checkpoint
+- 生成日报YYYY-MM-DD：生成 canonical 日报
 - 分析报告YYYY-MM-DD：分析已存在日报
+- 深度分析报告YYYY-MM-DD：深度分析已存在日报
+- 生成摘要YYYY-MM-DD 快速：生成快速分析输入包
+- 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
 
@@ -200,8 +215,15 @@ job_id：cmjob_...
 规则：
 - 日期必须用 YYYY-MM-DD
 - 不支持 今天/昨天/前天 自动执行
+- 标准日报流程只能跑已经结束的北京时间逻辑日
+- 不支持当前北京时间日期；例如北京时间 2026-05-03 还没结束时，不能跑 标准日报流程2026-05-03
+- 请在次日 00:05 后执行标准日报流程YYYY-MM-DD
+- 长任务会返回 job_id
+- 标准日报流程、空间检查、归档压缩预检、周复盘是后台任务
+- 数据库瘦身预检只能 dry-run
 - 输出默认脱敏
 - 不提供交易建议
+- 不开放 vacuum / prune / compact execute / export execute / delete DB / 修改地址簿
 ```
 
 ## 端到端测试顺序
@@ -233,7 +255,7 @@ job_id：cmjob_...
 - 所有中文 Telegram 请求必须先匹配 router 固定 grammar，再由 router 映射到 wrapper 命令。
 - 不匹配 grammar 的请求不得执行。
 - Wrapper 命令列只能由 router 生成。
-- Telegram 中文请求不得直接调用 `make`、`raw shell`、`systemctl`、`bash -c`、`sh -c`、`python -c`、`rm`、`kill`、`vacuum`、`prune`、`compact execute`。
+- Telegram 中文请求不得直接调用 `make`、`raw shell`、`systemctl`、`bash -c`、`sh -c`、`python -c`、`rm`、`kill`、`vacuum`、`prune`、`compact execute`、`export execute`、`delete DB`。
 - 不开放 listener restart / stop / kill。
 - 不开放修改地址簿、LP 池、阈值、`.env`、token、RPC。
 - 输出必须中文、简短、Telegram-friendly，并且不给交易建议。

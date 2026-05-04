@@ -113,6 +113,15 @@ require_out space_fast 'space-fast'
 run_ok db_size_diagnose --text '数据库体积诊断' --dry-run --platform telegram
 require_out db_size_diagnose 'db-size-diagnose'
 
+run_ok db_slim_dry_run --text '数据库瘦身预检' --dry-run --platform telegram
+require_out db_slim_dry_run 'db-slim-dry-run'
+
+run_ok db_slim_alias --text 'DB瘦身预检' --dry-run --platform telegram
+require_out db_slim_alias 'db-slim-dry-run'
+
+run_ok db_cleanup_alias --text '数据库清理预检' --dry-run --platform telegram
+require_out db_cleanup_alias 'db-slim-dry-run'
+
 run_ok archive_check --text '归档压缩预检2026-05-01' --dry-run --platform telegram
 require_out archive_check 'submit-archive-compress-check'
 require_out archive_check '--date'
@@ -181,6 +190,11 @@ grep -Fq '诊断任务JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute 
 grep -Fq '最近任务' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 最近任务"
 grep -Fq '空间快检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 空间快检"
 grep -Fq '数据库体积诊断' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库体积诊断"
+grep -Fq '数据库瘦身预检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库瘦身预检"
+grep -Fq '生成日报YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成日报YYYY-MM-DD"
+grep -Fq '深度分析报告YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 深度分析报告YYYY-MM-DD"
+grep -Fq '生成摘要YYYY-MM-DD 快速' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成摘要YYYY-MM-DD 快速"
+grep -Fq '生成摘要YYYY-MM-DD 深度' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成摘要YYYY-MM-DD 深度"
 grep -Fq '重新标准日报流程YYYY-MM-DD 我确认重跑' "$TMP_DIR/menu_execute.out" || fail "menu execute missing rerun command"
 grep -Fq 'command-menu' "$MENU_AUDIT" || grep -Fq 'command-menu' "$HERMES_OPS_AUDIT_LOG" || fail "audit missing command-menu"
 

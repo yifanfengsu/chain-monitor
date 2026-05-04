@@ -151,6 +151,9 @@ Telegram 中的长命令不得同步执行。
 
 Rules:
 
+- 标准日报流程、空间检查、归档压缩预检、周复盘是后台任务。
+- 标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。
+- 例如北京时间 2026-05-03 还没结束时，不能跑 标准日报流程2026-05-03；请在次日 00:05 后执行。
 - 不要因为用户催促就重新提交相同任务；应查询 existing job 或让用户使用“任务状态JOB_ID”。
 - 不得绕过 job submit 直接执行 daily-flow/space-check/weekly-review。
 - 不得用 date 解析相对日期。
@@ -193,7 +196,7 @@ job_id：cmjob_...
 
 ## 中文 Telegram 手动控制菜单
 
-本菜单覆盖第 5 步 12 个功能，并额外支持“命令提示”。
+本菜单覆盖第 5 步 12 个功能，并额外支持“命令提示”、生成日报、深度分析、摘要和数据库瘦身预检。
 
 用户可以输入：
 
@@ -216,6 +219,7 @@ Rules:
 - 不得直接调用 hermes_cm_ops.sh 的 dated operations。
 - 不得把“昨天/今天/前天”转换成日期。
 - 不得运行 date -u 或 TZ=Asia/Shanghai date 来解析用户相对日期。
+- 标准日报流程只能跑已经结束的北京时间逻辑日；当前北京时间日期会被 submit 阶段拒绝且不创建 job。
 - 报告缺失时，不得自动生成日报；必须提示用户运行：标准日报流程YYYY-MM-DD。
 - 所有输出中文、简洁、适合 Telegram。
 - 必须展示 request_id，如果 wrapper 输出中有。
@@ -224,6 +228,7 @@ Rules:
 - 不得输出 token/RPC/API key。
 - 不给交易建议。
 - 不得解析昨天。
+- 数据库瘦身预检只能 dry-run，不允许 export execute、vacuum、prune、compact execute、delete DB、修改地址簿。
 
 Telegram 示例：
 
@@ -242,8 +247,13 @@ Telegram 示例：
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
+/chain-monitor-report-analyst 数据库瘦身预检
 /chain-monitor-report-analyst 归档压缩预检2026-05-01
 /chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03
+/chain-monitor-report-analyst 生成日报YYYY-MM-DD
+/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD
+/chain-monitor-report-analyst 生成摘要YYYY-MM-DD 快速
+/chain-monitor-report-analyst 生成摘要YYYY-MM-DD 深度
 ```
 
 拒绝示例：
@@ -301,6 +311,8 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh submit-space-check
 ./scripts/hermes_cm_ops.sh space-fast
+./scripts/hermes_cm_ops.sh db-size-diagnose
+./scripts/hermes_cm_ops.sh db-slim-dry-run
 ./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID
@@ -395,6 +407,7 @@ Rules:
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
+/chain-monitor-report-analyst 数据库瘦身预检
 /chain-monitor-report-analyst 归档压缩预检2026-05-01
 /chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03
 /chain-monitor-report-analyst 生成日报YYYY-MM-DD
@@ -552,8 +565,11 @@ make run-research
 make health
 make db-report
 make db-compact-execute
+operational payload export execute
 make db-vacuum
 make db-prune-execute
+delete DB
+修改地址簿
 make archive-compress-date
 make daily-close COMPRESS=YES
 make daily-close direct/raw
@@ -587,6 +603,8 @@ Explain that direct/raw maintenance commands are outside this Skill's Telegram c
 7. 可选深度复盘：`/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD`
 
 “每日收尾”不属于默认每日流程。
+
+标准日报流程只能跑已经结束的北京时间逻辑日。例如北京时间 2026-05-03 还没结束时，不能跑 `/chain-monitor-report-analyst 标准日报流程2026-05-03`；请在次日 00:05 后重试同一命令。
 
 “每日收尾”必须使用：
 

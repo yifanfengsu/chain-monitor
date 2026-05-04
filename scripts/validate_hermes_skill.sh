@@ -105,7 +105,9 @@ for term in \
   "任务状态" \
   "查看结果" \
   "诊断任务" \
-  "输出默认脱敏"
+  "输出默认脱敏" \
+  "数据库瘦身预检" \
+  "db-slim-dry-run"
 do
   require_text "$term" "Chinese Telegram router term"
 done
@@ -125,8 +127,13 @@ for example in \
   "Blocker复盘2026-05-01" \
   "Shadow复盘2026-05-01" \
   "空间检查" \
+  "数据库瘦身预检" \
   "归档压缩预检2026-05-01" \
   "周复盘2026-04-27到2026-05-03" \
+  "生成日报YYYY-MM-DD" \
+  "深度分析报告YYYY-MM-DD" \
+  "生成摘要YYYY-MM-DD 快速" \
+  "生成摘要YYYY-MM-DD 深度" \
   "/chain-monitor-report-analyst 命令提示" \
   "/chain-monitor-report-analyst 标准日报流程2026-05-01"
 do
@@ -171,6 +178,8 @@ for command in \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
+  "./scripts/hermes_cm_ops.sh db-size-diagnose" \
+  "./scripts/hermes_cm_ops.sh db-slim-dry-run" \
   "./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID" \
@@ -202,8 +211,11 @@ for forbidden in \
   "make run" \
   "make run-research" \
   "make db-compact-execute" \
+  "operational payload export execute" \
   "make db-vacuum" \
   "make db-prune-execute" \
+  "delete DB" \
+  "修改地址簿" \
   "make archive-compress-date" \
   "make daily-close COMPRESS=YES" \
   "systemctl" \

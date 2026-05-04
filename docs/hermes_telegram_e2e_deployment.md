@@ -110,6 +110,8 @@ journalctl -u hermes-gateway -f
 /chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03
 ```
 
+标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。例如北京时间 2026-05-03 还没结束时，不能跑 `/chain-monitor-report-analyst 标准日报流程2026-05-03`；请在次日 00:05 后执行。
+
 失败标准：
 
 - “命令提示”没有返回完整菜单。

@@ -28,6 +28,7 @@ Usage:
   ./scripts/hermes_cm_ops.sh job-cancel --job-id JOB_ID --confirm
   ./scripts/hermes_cm_ops.sh space-fast
   ./scripts/hermes_cm_ops.sh db-size-diagnose
+  ./scripts/hermes_cm_ops.sh db-slim-dry-run
   ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
@@ -83,6 +84,7 @@ cmd_help() {
   /chain-monitor-report-analyst 空间检查
   /chain-monitor-report-analyst 空间快检
   /chain-monitor-report-analyst 数据库体积诊断
+  /chain-monitor-report-analyst 数据库瘦身预检
   /chain-monitor-report-analyst 归档压缩预检YYYY-MM-DD
   /chain-monitor-report-analyst 周复盘START到END
   /chain-monitor-report-analyst 生成日报YYYY-MM-DD
@@ -95,6 +97,9 @@ cmd_help() {
   - 日期必须是 YYYY-MM-DD。
   - 不支持 今天/昨天/前天 自动执行。
   - 也不支持 today/yesterday 自动执行。
+  - 标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。
+  - 例如北京时间 2026-05-03 还没结束时，不能跑 标准日报流程2026-05-03。
+  - 请在次日 00:05 后执行标准日报流程YYYY-MM-DD。
 
 模式规则：
   - digest/analyze 支持 快速/深度。
@@ -111,8 +116,10 @@ cmd_help() {
   - 中文 Telegram 请求必须先通过 ./scripts/hermes_cm_cn_router.py。
   - report/analyze/digest/close 在 gateway 场景下不能绕过 router。
   - 标准日报流程、空间检查、归档压缩预检、周复盘在 Telegram 中只提交后台 job。
+  - 长任务会立即返回 job_id，再用任务状态/查看结果/查看日志/诊断任务查询。
   - Telegram 长任务入口只使用 submit-daily-flow、submit-space-check、submit-archive-compress-check、submit-weekly-review。
   - daily-flow、space-check、archive-compress-check、weekly-review 是 internal job runner only。
+  - 数据库瘦身预检只做 dry-run，不执行 export execute、VACUUM、compact、prune、删除 DB、修改地址簿。
   - 输出默认脱敏。
   - 不输出 token、RPC URL、完整地址、交易 hash 或私有路径。
 HELP
@@ -129,11 +136,16 @@ cmd_command_menu() {
 - 空间检查：提交后台任务查看 DB / archive / reports 占用
 - 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小
 - 数据库体积诊断：解释 DB / WAL / archive / reports 哪个大
+- 数据库瘦身预检：只运行 operational payload export dry-run，显示候选行和预计节省
 
 【日报流程】
 - 标准日报流程YYYY-MM-DD：提交后台任务，展开 daily-close 子步骤 + full replay + report + compare + checkpoint
 - 重新标准日报流程YYYY-MM-DD 我确认重跑：仅在确实需要重跑时使用
+- 生成日报YYYY-MM-DD：生成 canonical 日报
 - 分析报告YYYY-MM-DD：分析已存在日报
+- 深度分析报告YYYY-MM-DD：深度分析已存在日报
+- 生成摘要YYYY-MM-DD 快速：生成快速分析输入包
+- 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
 
@@ -159,9 +171,15 @@ cmd_command_menu() {
 规则：
 - 日期必须用 YYYY-MM-DD
 - 不支持 今天/昨天/前天 自动执行
-- 长任务只通过 submit-daily-flow / submit-space-check / submit-archive-compress-check / submit-weekly-review 提交后台 job
+- 标准日报流程只能跑已经结束的北京时间逻辑日
+- 不支持当前北京时间日期；例如北京时间 2026-05-03 还没结束时，不能跑 标准日报流程2026-05-03
+- 请在次日 00:05 后执行标准日报流程YYYY-MM-DD
+- 长任务会返回 job_id
+- 标准日报流程、空间检查、归档压缩预检、周复盘是后台任务
+- 数据库瘦身预检只能 dry-run
 - 输出默认脱敏
 - 不提供交易建议
+- 不开放 vacuum / prune / compact execute / export execute / delete DB / 修改地址簿
 MENU
 }
 
@@ -585,7 +603,35 @@ PY
 }
 
 beijing_today() {
+  if [[ -n "${HERMES_TEST_BEIJING_TODAY:-}" ]]; then
+    validate_date "$HERMES_TEST_BEIJING_TODAY" || refuse invalid_date "invalid HERMES_TEST_BEIJING_TODAY: ${HERMES_TEST_BEIJING_TODAY}"
+    printf '%s\n' "$HERMES_TEST_BEIJING_TODAY"
+    return
+  fi
   TZ=Asia/Shanghai date +%F
+}
+
+current_beijing_date_override_allowed() {
+  [[ "${HERMES_ALLOW_CURRENT_BEIJING_DATE:-}" == "1" && "${HERMES_OPS_PLATFORM:-unknown}" != "telegram" && "${HERMES_OPS_ROUTER_OK:-}" != "1" ]]
+}
+
+print_current_beijing_date_refusal() {
+  local report_date="$1"
+
+  cat <<MESSAGE
+❌ 已拒绝：${report_date} 仍是当前北京时间逻辑日，数据可能还在写入。
+请在北京时间次日 00:05 后重试：
+标准日报流程${report_date}
+MESSAGE
+}
+
+refuse_current_beijing_date() {
+  local report_date="$1"
+
+  AUDIT_ALLOWED=false
+  AUDIT_REFUSED_REASON="current_beijing_date_protected"
+  print_current_beijing_date_refusal "$report_date" >&2
+  exit 2
 }
 
 python_bin() {
@@ -646,7 +692,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
+    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -1378,6 +1424,7 @@ finish_daily_flow_failure() {
 cmd_submit_daily_flow() {
   local report_date=""
   local force_rerun=0
+  local today_bj=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1397,8 +1444,12 @@ cmd_submit_daily_flow() {
   [[ -n "$report_date" ]] || die "submit-daily-flow requires --date YYYY-MM-DD"
   parse_required_date "$report_date"
   AUDIT_DATE="$report_date"
-  AUDIT_ALLOWED=true
   AUDIT_OUTPUT_HINT="reports/hermes/jobs"
+  today_bj="$(beijing_today)"
+  if [[ "$report_date" == "$today_bj" ]] && ! current_beijing_date_override_allowed; then
+    refuse_current_beijing_date "$report_date"
+  fi
+  AUDIT_ALLOWED=true
   if [[ "$force_rerun" -eq 1 ]]; then
     jobctl submit --kind daily-flow --date "$report_date" --force-rerun
   else
@@ -1833,6 +1884,64 @@ PY
   du -sh reports 2>/dev/null || echo "reports=missing"
 }
 
+cmd_db_slim_dry_run() {
+  local rc=0
+
+  [[ $# -eq 0 ]] || die "db-slim-dry-run does not accept arguments"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="db-slim-dry-run"
+
+  if run_command "db_slim_dry_run" "$HEALTH_TIMEOUT_SEC" make db-export-operational-payloads-dry-run; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  echo "数据库瘦身预检"
+  echo "request_id=${HERMES_OPS_REQUEST_ID}"
+  echo "status=$([[ "$rc" -eq 0 ]] && echo ok || echo failed)"
+  echo "policy=dry-run only; no export execute, no VACUUM, no compact, no prune, no delete DB, no address-book changes"
+  echo "archive_write=false"
+  echo "json_payload_clear=false"
+  echo "vacuum_executed=false"
+  echo
+  "$(python_bin)" - "$RUN_OUTPUT" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:  # noqa: BLE001
+    print("dry_run_json_status=unparsed")
+    print("raw_output_redacted:")
+    print(path.read_text(encoding="utf-8", errors="replace").strip())
+    raise SystemExit(0)
+
+tables = payload.get("tables") if isinstance(payload, dict) else {}
+if not isinstance(tables, dict):
+    tables = {}
+
+print(f"dry_run={bool(payload.get('dry_run'))}")
+print(f"total_candidate_rows={int(payload.get('candidate_rows') or 0)}")
+print(f"total_selected_rows={int(payload.get('selected_rows') or 0)}")
+print(f"total_estimated_savings_mb={payload.get('estimated_savings_mb') or 0}")
+for table in ("telegram_deliveries", "delivery_audit"):
+    item = tables.get(table) if isinstance(tables.get(table), dict) else {}
+    print(f"{table}.candidate_rows={int(item.get('candidate_rows') or 0)}")
+    print(f"{table}.selected_rows={int(item.get('selected_rows') or 0)}")
+    print(f"{table}.estimated_savings_mb={item.get('estimated_savings_mb') or 0}")
+    print(f"{table}.would_update_rows={int(item.get('would_update_rows') or 0)}")
+PY
+  echo
+  echo "未执行 export execute、VACUUM、compact、prune、删除 DB、清 JSON payload、写 archive。"
+  [[ "$rc" -eq 0 ]] && exit 0
+  exit 1
+}
+
 run_output_value() {
   local key="$1"
 
@@ -1851,6 +1960,7 @@ jobctl_update_status() {
   local failed_command="${6:-}"
   local timeout_hit="${7:-}"
   local timeout_limit_sec="${8:-}"
+  local refused_reason="${9:-}"
   local -a args=(__update --job-id "$job_id" --status "$status")
 
   if [[ -n "$exit_code" ]]; then
@@ -1864,6 +1974,9 @@ jobctl_update_status() {
   fi
   if [[ -n "$failed_command" ]]; then
     args+=(--failed-command "$failed_command")
+  fi
+  if [[ -n "$refused_reason" ]]; then
+    args+=(--refused-reason "$refused_reason")
   fi
   if [[ -n "$timeout_hit" ]]; then
     args+=(--timeout-hit "$timeout_hit")
@@ -1893,6 +2006,7 @@ cmd_run_job() {
   local timeout_limit_sec=""
   local substep_result_path=""
   local failure_label=""
+  local today_bj=""
   local -a cmd=()
 
   while [[ $# -gt 0 ]]; do
@@ -1958,10 +2072,69 @@ cmd_run_job() {
       ;;
   esac
 
-  AUDIT_ALLOWED=true
   result_file="$(job_result_file "$job_id")"
   AUDIT_OUTPUT_HINT="$result_file"
   mkdir -p "$(dirname "$result_file")"
+  if [[ "$kind" == "daily-flow" ]]; then
+    today_bj="$(beijing_today)"
+    if [[ "$report_date" == "$today_bj" ]] && ! current_beijing_date_override_allowed; then
+      AUDIT_ALLOWED=false
+      AUDIT_REFUSED_REASON="current_beijing_date_protected"
+      tmp_result="$(mktemp "$(dirname "$result_file")/.result.XXXXXX.md")"
+      {
+        echo "# Hermes Background Job ${job_id}"
+        echo
+        echo "generated_at_utc=$(TZ=UTC date -Is)"
+        echo "job_id=${job_id}"
+        echo "kind=${kind}"
+        echo "date=${report_date}"
+        echo "request_id=${HERMES_OPS_REQUEST_ID}"
+        echo
+        echo "📋 任务结果 | ${job_id}"
+        echo
+        echo "类型：${kind}"
+        echo "日期：${report_date}"
+        echo "状态：❌ failed"
+        echo "失败步骤：preflight:current_beijing_date_guard"
+        echo "失败命令：$(display_command "${cmd[@]}")"
+        echo "refused_reason：current_beijing_date_protected"
+        echo "exit_code：2"
+        echo "timeout_hit：false"
+        echo "timeout_limit_sec：${timeout_sec}"
+        echo "result_path：$(display_safe_path "$result_file")"
+        echo
+        echo "failed_step=preflight"
+        echo "failed_substep=preflight:current_beijing_date_guard"
+        echo "failed_command=$(display_command "${cmd[@]}")"
+        echo "refused_reason=current_beijing_date_protected"
+        echo "exit_code=2"
+        echo "timeout_hit=false"
+        echo "timeout_limit_sec=${timeout_sec}"
+        echo "result_path=$(display_safe_path "$result_file")"
+        echo
+        echo "stdout_tail:"
+        echo "(empty)"
+        echo
+        echo "stderr_tail:"
+        print_current_beijing_date_refusal "$report_date"
+        echo
+        echo "建议："
+        echo "等北京时间次日 00:05 后重新运行标准日报流程${report_date}。"
+        echo "/chain-monitor-report-analyst 标准日报流程${report_date}"
+      } >"$tmp_result"
+      mv "$tmp_result" "$result_file"
+      jobctl_update_status "$job_id" failed 2 preflight "preflight:current_beijing_date_guard" "$(display_command "${cmd[@]}")" false "$timeout_sec" "current_beijing_date_protected"
+      print_current_beijing_date_refusal "$report_date" >&2
+      echo "job_id=${job_id}"
+      echo "kind=${kind}"
+      echo "status=failed"
+      echo "refused_reason=current_beijing_date_protected"
+      echo "exit_code=2"
+      echo "result=$(display_safe_path "$result_file")"
+      exit 2
+    fi
+  fi
+  AUDIT_ALLOWED=true
   tmp_result="$(mktemp "$(dirname "$result_file")/.result.XXXXXX.md")"
   jobctl_update_status "$job_id" running
 
@@ -2118,8 +2291,8 @@ cmd_daily_flow() {
   parse_required_date "$report_date"
   AUDIT_DATE="$report_date"
   today_bj="$(beijing_today)"
-  if [[ "$report_date" == "$today_bj" ]]; then
-    refuse current_beijing_date_protected "refusing daily-flow for current Beijing logical date ${today_bj}"
+  if [[ "$report_date" == "$today_bj" ]] && ! current_beijing_date_override_allowed; then
+    refuse_current_beijing_date "$report_date"
   fi
 
   AUDIT_ALLOWED=true
@@ -3127,7 +3300,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
+  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -3266,6 +3439,10 @@ case "$1" in
     shift
     [[ $# -eq 0 ]] || die "system-health does not accept arguments"
     cmd_system_health
+    ;;
+  db-slim-dry-run)
+    shift
+    cmd_db_slim_dry_run "$@"
     ;;
   listener-health)
     shift

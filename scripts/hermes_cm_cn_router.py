@@ -375,6 +375,16 @@ def parse_command(text: str) -> dict[str, Any]:
             "auto_build": False,
         }
 
+    if text in {"数据库瘦身预检", "DB瘦身预检", "数据库清理预检"}:
+        return {
+            "action": "db-slim-dry-run",
+            "command_intent": "db-slim-dry-run",
+            "argv": wrapper_argv("db-slim-dry-run"),
+            "date": "",
+            "mode": "",
+            "auto_build": False,
+        }
+
     match = re.fullmatch(r"(?:归档压缩预检|压缩预检|archive压缩预检|Archive压缩预检)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
     if match:
         report_date = validate_date(match.group(1))
@@ -660,7 +670,10 @@ def main(argv: list[str]) -> int:
         exit_code = execute_wrapper(command["argv"], args.platform, original_hash, request_id)
     else:
         exit_code = 0
-        print(json.dumps({"allowed": True, "action": command["action"], "argv": command["argv"]}, ensure_ascii=False))
+        response: dict[str, Any] = {"allowed": True, "action": command["action"], "argv": command["argv"]}
+        if command["action"] == "submit-daily-flow":
+            response["warning"] = "注意：如果该日期仍是当前北京时间逻辑日，submit 阶段会拒绝。"
+        print(json.dumps(response, ensure_ascii=False))
 
     write_audit(
         request_id=request_id,

@@ -57,6 +57,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 日期必须是绝对 `YYYY-MM-DD`。不要发送“今天”“昨天”“前天”这类相对日期。
 
+标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。例如北京时间 2026-05-03 还没结束时，不能跑 `/chain-monitor-report-analyst 标准日报流程2026-05-03`；请在次日 00:05 后执行同一命令。
+
 ## 手动控制菜单
 
 发送：
@@ -71,7 +73,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 - 系统体检：检查 SQLite / report source / market / coverage。
 - 监听器体检：检查 listener 进程、最近 raw/parsed/signal/archive 时间和 zero activity 风险。
-- 标准日报流程YYYY-MM-DD：展开 daily-close 子步骤，然后 trade-replay-full、report-daily-date、daily-compare、sqlite-checkpoint。daily-close 默认只是 compression dry-run。
+- 标准日报流程YYYY-MM-DD：展开 daily-close 子步骤，然后 trade-replay-full、report-daily-date、daily-compare、sqlite-checkpoint。只能跑已经结束的北京时间逻辑日，当前北京时间日期会被 submit 阶段拒绝且不创建 job。daily-close 默认只是 compression dry-run。
 - 分析报告YYYY-MM-DD：分析已存在 canonical daily report，不自动生成日报。
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、replay_scope=full。
 - 数据质量YYYY-MM-DD：判断该日是否适合策略质量分析。

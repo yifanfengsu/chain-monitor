@@ -63,6 +63,11 @@ for pattern in \
   "status.json" \
   "result.md" \
   "cmjob_" \
+  "current_beijing_date_protected" \
+  "Asia/Shanghai" \
+  "HERMES_TEST_BEIJING_TODAY" \
+  "__run-job" \
+  "HERMES_OPS_JOB_RUNNER_OK" \
   "submit" \
   "status" \
   "list" \
@@ -94,6 +99,11 @@ for pattern in \
   "诊断任务JOB_ID" \
   "最近任务" \
   "空间快检" \
+  "数据库瘦身预检" \
+  "生成日报YYYY-MM-DD" \
+  "深度分析报告YYYY-MM-DD" \
+  "生成摘要YYYY-MM-DD 快速" \
+  "生成摘要YYYY-MM-DD 深度" \
   "归档压缩预检YYYY-MM-DD" \
   "周复盘START到END" \
   "不支持 今天/昨天/前天" \
@@ -121,6 +131,8 @@ for pattern in \
   "查看结果" \
   "不得同步执行" \
   "不给交易建议" \
+  "数据库瘦身预检" \
+  "db-slim-dry-run" \
   "不输出原始地址" \
   "/chain-monitor-report-analyst 标准日报流程2026-05-01" \
   "/chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03"
@@ -146,6 +158,7 @@ for pattern in \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
+  "db-slim-dry-run" \
   "archive-compress-check" \
   "submit-archive-compress-check" \
   "weekly-review" \
@@ -174,6 +187,7 @@ for pattern in \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
+  "db-slim-dry-run" \
   "archive-compress-check" \
   "submit-archive-compress-check" \
   "weekly-review" \
@@ -207,6 +221,7 @@ for pattern in \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
+  "db-slim-dry-run" \
   "archive-compress-check" \
   "submit-archive-compress-check" \
   "weekly-review" \
@@ -242,6 +257,7 @@ for wrapper_argv in \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
+  "./scripts/hermes_cm_ops.sh db-slim-dry-run" \
   "./scripts/hermes_cm_ops.sh submit-archive-compress-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-weekly-review --start YYYY-MM-DD --end YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh job-status --job-id JOB_ID" \
@@ -364,6 +380,9 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "space-fast"' "$TMP_DIR/space_fast.out" 
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库体积诊断" --dry-run --platform telegram >"$TMP_DIR/db_size.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "db-size-diagnose"' "$TMP_DIR/db_size.out" || fail "router db-size-diagnose argv is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库瘦身预检" --dry-run --platform telegram >"$TMP_DIR/db_slim.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "db-slim-dry-run"' "$TMP_DIR/db_slim.out" || fail "router db-slim-dry-run argv is not wrapper-only"
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "任务状态cmjob_20260501T120000Z_abcdef12" --dry-run --platform telegram >"$TMP_DIR/job_status.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "job-status"' "$TMP_DIR/job_status.out" || fail "router job-status argv is not wrapper-only"
