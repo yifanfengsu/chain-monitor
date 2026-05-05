@@ -92,6 +92,24 @@ class NotifierTelegramRequestTests(unittest.TestCase):
     def test_send_retries_timed_out_then_returns_false_and_redacts_token(self) -> None:
         asyncio.run(self._assert_timed_out_retry_failure())
 
+    def test_send_success_updates_health_counters(self) -> None:
+        asyncio.run(self._assert_send_success_updates_health_counters())
+
+    async def _assert_send_success_updates_health_counters(self) -> None:
+        notifier = self._fresh_notifier()
+        notifier.bot = FakeBot([object()])
+
+        delivered = await notifier.send("unit test message")
+        health = notifier.get_notifier_health()
+
+        self.assertTrue(delivered)
+        self.assertEqual(1, len(notifier.bot.calls))
+        self.assertEqual(1, health["attempted"])
+        self.assertEqual(1, health["sent_ok"])
+        self.assertEqual(0, health["sent_failed"])
+        self.assertEqual(0, health["consecutive_failures"])
+        self.assertIsNotNone(health["last_success_ts"])
+
     async def _assert_timed_out_retry_failure(self) -> None:
         token = "123456:unit-test-secret-token"
         notifier = self._fresh_notifier(TELEGRAM_BOT_TOKEN=token)
@@ -111,11 +129,18 @@ class NotifierTelegramRequestTests(unittest.TestCase):
         with mock.patch.object(notifier.asyncio, "sleep", new=fake_sleep), redirect_stdout(output):
             delivered = await notifier.send("unit test message")
 
+        health = notifier.get_notifier_health()
+
         self.assertFalse(delivered)
         self.assertEqual(3, len(notifier.bot.calls))
         self.assertEqual([1.0, 2.0], sleep_calls)
         self.assertNotIn(token, output.getvalue())
         self.assertIn("[redacted-token]", output.getvalue())
+        self.assertEqual(1, health["attempted"])
+        self.assertEqual(0, health["sent_ok"])
+        self.assertEqual(1, health["sent_failed"])
+        self.assertEqual(3, health["pool_timeout_count"])
+        self.assertEqual(3, health["consecutive_failures"])
         self.assertEqual(3, notifier.NOTIFIER_RUNTIME_STATS["telegram_pool_timeout_count"])
         self.assertEqual(3, notifier.NOTIFIER_RUNTIME_STATS["telegram_consecutive_failures"])
         self.assertEqual("TimedOut", notifier.NOTIFIER_RUNTIME_STATS["telegram_last_error_type"])
@@ -137,9 +162,16 @@ class NotifierTelegramRequestTests(unittest.TestCase):
         with mock.patch.object(notifier.asyncio, "sleep", new=fake_sleep), redirect_stdout(output):
             delivered = await notifier.send("unit test message")
 
+        health = notifier.get_notifier_health()
+
         self.assertTrue(delivered)
         self.assertEqual(2, len(notifier.bot.calls))
         self.assertEqual([1.5], sleep_calls)
+        self.assertEqual(1, health["attempted"])
+        self.assertEqual(1, health["sent_ok"])
+        self.assertEqual(0, health["sent_failed"])
+        self.assertEqual(1, health["retry_after_count"])
+        self.assertEqual(0, health["consecutive_failures"])
         self.assertEqual(1, notifier.NOTIFIER_RUNTIME_STATS["telegram_retry_after_count"])
         self.assertEqual(0, notifier.NOTIFIER_RUNTIME_STATS["telegram_consecutive_failures"])
         self.assertIsNotNone(notifier.NOTIFIER_RUNTIME_STATS["telegram_last_success_ts"])

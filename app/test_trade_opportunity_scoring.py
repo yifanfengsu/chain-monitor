@@ -58,7 +58,8 @@ class TradeOpportunityScoringTests(unittest.TestCase):
 
         self.assertEqual("BLOCKED", payload["trade_opportunity_status"])
         self.assertEqual("data_gap", payload["trade_opportunity_primary_blocker"])
-        self.assertEqual("risk_blocker", payload["telegram_update_kind"])
+        self.assertFalse(payload["telegram_should_send"])
+        self.assertEqual("blocked_default_realtime_suppressed", payload["telegram_suppression_reason"])
 
     def test_no_trade_lock_is_hard_blocker(self) -> None:
         manager = TradeOpportunityManager(state_manager=StubStateManager(), persistence_enabled=False)

@@ -29,6 +29,9 @@ for pattern in \
   "cmd_profile_review()" \
   "cmd_blocker_review()" \
   "cmd_shadow_review()" \
+  "cmd_learning_review()" \
+  "cmd_candidate_coverage()" \
+  "cmd_lp_diagnose()" \
   "cmd_space_check()" \
   "cmd_archive_compress_check()" \
   "cmd_weekly_review()" \
@@ -61,6 +64,9 @@ for pattern in \
   "job-diagnose" \
   "job-cancel" \
   "db-slim-dry-run" \
+  "learning-review" \
+  "candidate-coverage" \
+  "lp-diagnose" \
   "__run-job" \
   "HERMES_OPS_JOB_RUNNER_OK" \
   "job_runner_required" \
@@ -97,7 +103,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -105,7 +111,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review"
+require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -127,12 +133,16 @@ db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
 db_slim_block="$(extract_block 'cmd_db_slim_dry_run()' 'run_output_value()')"
 archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
+candidate_block="$(extract_block 'cmd_candidate_coverage()' 'cmd_space_check()')"
+lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 
 [[ -n "$help_block" ]] || die "could not extract cmd_help"
 [[ -n "$menu_block" ]] || die "could not extract cmd_command_menu"
 [[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
 [[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
 [[ -n "$db_slim_block" ]] || die "could not extract cmd_db_slim_dry_run"
+[[ -n "$candidate_block" ]] || die "could not extract cmd_candidate_coverage"
+[[ -n "$lp_block" ]] || die "could not extract cmd_lp_diagnose"
 
 if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
   die "command-menu must not execute or mention make commands"
@@ -149,6 +159,10 @@ for required in \
   "Profile复盘YYYY-MM-DD" \
   "Blocker复盘YYYY-MM-DD" \
   "Shadow复盘YYYY-MM-DD" \
+  "学习复盘YYYY-MM-DD" \
+  "学习总结YYYY-MM-DD" \
+  "CANDIDATE覆盖诊断YYYY-MM-DD" \
+  "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "空间快检" \
   "数据库体积诊断" \
@@ -246,10 +260,87 @@ for forbidden in "db-export-operational-payloads-execute" "db-export-operational
   fi
 done
 
+for required in \
+  "HERMES_CANDIDATE_COVERAGE_DB_PATH" \
+  "sqlite3.connect(db_path.resolve().as_uri() + \"?mode=ro\"" \
+  "daily_report_status" \
+  "signals_total" \
+  "trade_opportunities_total" \
+  "trade_opportunity_status_distribution" \
+  "replay_examples_total" \
+  "replay_examples_with_opportunity" \
+  "replay_examples_status_CANDIDATE" \
+  "delivery_audit_stage_status_distribution" \
+  "实时推送主要是 observe/signal，不是 opportunity candidate" \
+  "replay 关联层可能漏接" \
+  "candidate gate 太严格或当天无合格候选" \
+  "只读聚合诊断"
+do
+  grep -Fq -- "$required" <<<"$candidate_block" || die "candidate-coverage missing required content: ${required}"
+done
+for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$candidate_block"; then
+    die "candidate-coverage contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
+  "scripts/hermes_lp_diagnose.py" \
+  "lp-diagnose requires --date YYYY-MM-DD" \
+  "AUDIT_OUTPUT_HINT=\"lp-diagnose" \
+  "AUDIT_ALLOWED=true"
+do
+  grep -Fq -- "$required" <<<"$lp_block" || die "lp-diagnose wrapper missing required content: ${required}"
+done
+for required in \
+  "daily_report字段存在性" \
+  "SQLite LP-like计数 signals" \
+  "format_json_counts('signal_json'" \
+  "raw_events" \
+  "parsed_events" \
+  "delivery_audit LP相关推送抑制" \
+  "major coverage ETH/BTC/SOL x USDT/USDC" \
+  "report_mapping判断" \
+  "LP analyzer / gate" \
+  "当天无可用 LP 样本或扫描覆盖不足" \
+  "HERMES_LP_DIAGNOSE_DB_PATH" \
+  "?mode=ro"
+do
+  grep -Fq -- "$required" scripts/hermes_lp_diagnose.py || die "LP diagnose helper missing required content: ${required}"
+done
+for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$lp_block" || grep -Fqi -- "$forbidden" scripts/hermes_lp_diagnose.py; then
+    die "lp-diagnose contains forbidden term: ${forbidden}"
+  fi
+done
+
 for forbidden in "systemctl restart" "systemctl stop" "pkill"; do
   if grep -Fqi -- "$forbidden" <<<"$listener_block"; then
     die "listener-health contains forbidden listener action: ${forbidden}"
   fi
+done
+
+for required in \
+  "Telegram outbound health" \
+  "HERMES_LISTENER_HEALTH_DB_PATH" \
+  "notifier.get_notifier_health" \
+  "attempted=" \
+  "sent_ok=" \
+  "sent_failed=" \
+  "pool_timeout_count" \
+  "retry_after_count" \
+  "network_error_count" \
+  "consecutive_failures" \
+  "sent_to_telegram=1数量" \
+  "sent_to_telegram=0数量" \
+  "notifier_send_failed" \
+  "最近成功 Telegram 发送时间" \
+  "最近失败时间" \
+  "Telegram outbound 可能异常" \
+  "pool timeout / NetworkError / TimedOut" \
+  "未发送 Telegram warning"
+do
+  grep -Fq -- "$required" <<<"$listener_block" || die "listener-health missing Telegram outbound check: ${required}"
 done
 
 for forbidden in "make run" "make run-research" "VERIFIED 阈值"; do
@@ -278,6 +369,9 @@ for guarded in \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
+  "learning-review" \
+  "candidate-coverage" \
+  "lp-diagnose" \
   "space-check" \
   "archive-compress-check" \
   "weekly-review"
@@ -315,10 +409,22 @@ do
 done
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes_cm_ops_validate.XXXXXX")"
+LEARNING_REPORT="reports/daily/daily_report_2099-12-30.json"
+LEARNING_INVALID_REPORT="reports/daily/daily_report_2099-12-31.json"
+CANDIDATE_REPORT="reports/daily/daily_report_2099-12-29.json"
 cleanup() {
   rm -rf "$TMP_DIR"
+  rm -f "$LEARNING_REPORT"
+  rm -f "$LEARNING_INVALID_REPORT"
+  rm -f "$CANDIDATE_REPORT"
 }
 trap cleanup EXIT
+
+bash scripts/test_listener_health_telegram_outbound.sh >"$TMP_DIR/listener_health_tg_outbound.out"
+grep -Fq "listener-health Telegram outbound test ok" "$TMP_DIR/listener_health_tg_outbound.out" || die "listener-health Telegram outbound test did not pass"
+
+bash scripts/test_hermes_lp_diagnose.sh >"$TMP_DIR/lp_diagnose.out"
+grep -Fq "Hermes LP diagnose test passed" "$TMP_DIR/lp_diagnose.out" || die "LP diagnose test did not pass"
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/ops_audit.ndjson" \
 HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \
@@ -334,6 +440,10 @@ grep -Fq "最近任务" "$TMP_DIR/menu.out" || die "command-menu output missing 
 grep -Fq "空间快检" "$TMP_DIR/menu.out" || die "command-menu output missing 空间快检"
 grep -Fq "数据库体积诊断" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库体积诊断"
 grep -Fq "数据库瘦身预检" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库瘦身预检"
+grep -Fq "学习复盘YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习复盘YYYY-MM-DD"
+grep -Fq "学习总结YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习总结YYYY-MM-DD"
+grep -Fq "CANDIDATE覆盖诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing CANDIDATE覆盖诊断YYYY-MM-DD"
+grep -Fq "LP诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing LP诊断YYYY-MM-DD"
 grep -Fq "生成日报YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 生成日报YYYY-MM-DD"
 grep -Fq "深度分析报告YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 深度分析报告YYYY-MM-DD"
 grep -Fq "生成摘要YYYY-MM-DD 快速" "$TMP_DIR/menu.out" || die "command-menu output missing 生成摘要YYYY-MM-DD 快速"
@@ -402,6 +512,252 @@ grep -Fq "fake make ok: db-export-operational-payloads-dry-run" "$TMP_DIR/db_sli
 grep -Fq "archive_write=false" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing archive_write=false"
 grep -Fq "json_payload_clear=false" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing json_payload_clear=false"
 grep -Fq "未执行 export execute、VACUUM、compact、prune、删除 DB、清 JSON payload、写 archive" "$TMP_DIR/db_slim.out" || die "db-slim-dry-run output missing dry-run safety statement"
+
+[[ ! -f "$CANDIDATE_REPORT" ]] || die "temporary candidate-coverage fixture already exists: ${CANDIDATE_REPORT}"
+mkdir -p reports/daily
+cat >"$CANDIDATE_REPORT" <<'JSON'
+{
+  "logical_date": "2099-12-29",
+  "data_quality_summary": {
+    "data_quality_status": "valid",
+    "zero_activity_day": false
+  },
+  "trade_replay_summary": {
+    "replay_source": "persisted",
+    "replay_scope": "full",
+    "replay_count": 2,
+    "valid_replay_count": 2,
+    "replay_coverage_rate_candidate": 0
+  }
+}
+JSON
+
+python3 - "$TMP_DIR/candidate_coverage.sqlite" <<'PY'
+import datetime
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+start = int(datetime.datetime(2099, 12, 29, tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp())
+conn = sqlite3.connect(db_path)
+try:
+    conn.executescript(
+        """
+        CREATE TABLE signals (
+            signal_id TEXT PRIMARY KEY,
+            timestamp REAL,
+            created_at REAL
+        );
+        CREATE TABLE trade_opportunities (
+            trade_opportunity_id TEXT PRIMARY KEY,
+            status TEXT,
+            created_at REAL,
+            opportunity_json TEXT
+        );
+        CREATE TABLE trade_replay_examples (
+            replay_id TEXT PRIMARY KEY,
+            logical_date TEXT,
+            replay_scope TEXT,
+            trade_opportunity_id TEXT,
+            opportunity_status TEXT,
+            signal_ts REAL
+        );
+        CREATE TABLE delivery_audit (
+            audit_id TEXT PRIMARY KEY,
+            timestamp REAL,
+            notifier_sent_at REAL,
+            sent_to_telegram INTEGER,
+            stage TEXT,
+            opportunity_status TEXT
+        );
+        """
+    )
+    for idx in range(4):
+        conn.execute("INSERT INTO signals VALUES (?, ?, ?)", (f"sig-{idx}", start + 10 + idx, start + 10 + idx))
+    for idx, status in enumerate(("CANDIDATE", "BLOCKED", "INVALIDATED", "")):
+        conn.execute(
+            "INSERT INTO trade_opportunities VALUES (?, ?, ?, ?)",
+            (f"opp-{idx}", status, start + 30 + idx, "{}"),
+        )
+    conn.execute("INSERT INTO trade_replay_examples VALUES (?, ?, ?, ?, ?, ?)", ("replay-1", "2099-12-29", "full", "opp-1", "BLOCKED", start + 60))
+    conn.execute("INSERT INTO trade_replay_examples VALUES (?, ?, ?, ?, ?, ?)", ("replay-2", "2099-12-29", "full", "", "", start + 90))
+    for idx in range(5):
+        conn.execute(
+            "INSERT INTO delivery_audit VALUES (?, ?, ?, ?, ?, ?)",
+            (f"audit-observe-{idx}", start + 120 + idx, start + 120 + idx, 1, "observe", ""),
+        )
+    conn.execute(
+        "INSERT INTO delivery_audit VALUES (?, ?, ?, ?, ?, ?)",
+        ("audit-signal-1", start + 140, start + 140, 1, "signal", "BLOCKED"),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/candidate_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/candidate.lock" \
+HERMES_OPS_ROUTER_OK=1 \
+HERMES_CANDIDATE_COVERAGE_DB_PATH="$TMP_DIR/candidate_coverage.sqlite" \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" candidate-coverage --date 2099-12-29 >"$TMP_DIR/candidate.out"
+for required in \
+  "Chain Monitor CANDIDATE覆盖诊断｜2099-12-29" \
+  "daily_report_status=present" \
+  "signals_total=4" \
+  "trade_opportunities_total=4" \
+  "trade_opportunity_status_distribution=NONE=1 / CANDIDATE=1 / VERIFIED=0 / BLOCKED=1 / INVALIDATED=1" \
+  "replay_scope_used=full" \
+  "replay_examples_total=2" \
+  "replay_examples_with_opportunity=1" \
+  "replay_examples_status_CANDIDATE=0" \
+  "delivery_audit_telegram_push_total=6" \
+  "observe/NONE=5" \
+  "signal/BLOCKED=1" \
+  "实时推送主要是 observe/signal，不是 opportunity candidate" \
+  "replay 关联层可能漏接" \
+  "只读聚合诊断"
+do
+  grep -Fq "$required" "$TMP_DIR/candidate.out" || die "candidate-coverage output missing: ${required}"
+done
+for forbidden in "交易建议" "买入" "卖出" "仓位" "杠杆" "止盈" "止损" "0x"; do
+  if grep -Fq "$forbidden" "$TMP_DIR/candidate.out"; then
+    die "candidate-coverage output contains forbidden term: ${forbidden}"
+  fi
+done
+grep -Fq '"command":"candidate-coverage"' "$TMP_DIR/candidate_audit.ndjson" || die "candidate-coverage audit missing command"
+grep -Fq '"allowed":true' "$TMP_DIR/candidate_audit.ndjson" || die "candidate-coverage audit missing allowed=true"
+
+[[ ! -f "$LEARNING_REPORT" ]] || die "temporary learning-review fixture already exists: ${LEARNING_REPORT}"
+mkdir -p reports/daily
+cat >"$LEARNING_REPORT" <<'JSON'
+{
+  "logical_date": "2099-12-30",
+  "data_quality_summary": {
+    "data_quality_status": "valid",
+    "zero_activity_day": false
+  },
+  "run_overview": {
+    "lp_signal_rows": 4
+  },
+  "data_source_summary": {
+    "row_counts": {
+      "delivery_audit": 8,
+      "telegram_deliveries": 2
+    }
+  },
+  "trade_replay_summary": {
+    "replay_source": "persisted",
+    "replay_scope": "full",
+    "avg_net_pnl_bps": -5.25,
+    "suppressed_avg_net_pnl_bps": -2.5,
+    "replay_coverage_rate_candidate": 0,
+    "valid_replay_count": 4
+  },
+  "trade_replay_profile_summary": {
+    "blocker_grade_negative_profiles": [
+      {
+        "valid_sample_count": 12,
+        "avg_net_pnl_bps": -7.5,
+        "profile_key": "ETH|LONG|fixture"
+      }
+    ],
+    "high_confidence_positive_profiles": []
+  },
+  "blocker_summary": {
+    "top_blockers": {
+      "replay_profile_negative": 3,
+      "low_quality": 1
+    },
+    "verification_blocker_distribution": {
+      "profile_adverse_too_high": 4
+    }
+  },
+  "shadow_funnel_summary": {
+    "shadow_candidate_count": 1,
+    "shadow_verified_count": 0,
+    "shadow_reason_distribution": {
+      "score_below_shadow_candidate": 2
+    }
+  },
+  "telegram_suppression_summary": {
+    "messages_before_suppression_estimate": 4,
+    "messages_after_suppression_actual": 2,
+    "telegram_suppression_ratio": 0.5,
+    "high_value_suppressed_count": 0
+  }
+}
+JSON
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/learning_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/learning.lock" \
+HERMES_OPS_ROUTER_OK=1 \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" learning-review --date 2099-12-30 >"$TMP_DIR/learning.out"
+for required in \
+  "数据是否有效=有效" \
+  "replay_source / replay_scope=persisted / full" \
+  "avg_net_pnl_bps=-5.25" \
+  "suppressed_avg_net_pnl_bps=-2.5" \
+  "CANDIDATE 覆盖率=0" \
+  "LP signal rows 是否缺失=否 value=4" \
+  "主要负收益 profile=" \
+  "主要 blocker=" \
+  "shadow_candidate / shadow_verified=1 / 0" \
+  "Telegram 推送是否可能噪音过多=否" \
+  "排查 candidate/opportunity/replay 连接" \
+  "今日结论：收紧" \
+  "明天只建议改一个点："
+do
+  grep -Fq "$required" "$TMP_DIR/learning.out" || die "learning-review output missing: ${required}"
+done
+for forbidden in "交易建议" "买入" "卖出" "仓位" "杠杆" "止盈" "止损"; do
+  if grep -Fq "$forbidden" "$TMP_DIR/learning.out"; then
+    die "learning-review output contains forbidden term: ${forbidden}"
+  fi
+done
+grep -Fq '"command":"learning-review"' "$TMP_DIR/learning_audit.ndjson" || die "learning-review audit missing command"
+grep -Fq '"allowed":true' "$TMP_DIR/learning_audit.ndjson" || die "learning-review audit missing allowed=true"
+
+[[ ! -f "$LEARNING_INVALID_REPORT" ]] || die "temporary learning-review invalid fixture already exists: ${LEARNING_INVALID_REPORT}"
+cat >"$LEARNING_INVALID_REPORT" <<'JSON'
+{
+  "logical_date": "2099-12-31",
+  "data_quality_summary": {
+    "data_quality_status": "invalid",
+    "zero_activity_day": true
+  },
+  "trade_replay_summary": {
+    "replay_source": "persisted",
+    "replay_scope": "full",
+    "avg_net_pnl_bps": 10,
+    "suppressed_avg_net_pnl_bps": 11,
+    "replay_coverage_rate_candidate": 0.3
+  },
+  "trade_replay_profile_summary": {
+    "blocker_grade_negative_profiles": [
+      {
+        "valid_sample_count": 99,
+        "avg_net_pnl_bps": -99,
+        "profile_key": "SHOULD_NOT_BE_PRINTED"
+      }
+    ]
+  }
+}
+JSON
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/learning_invalid_audit.ndjson" \
+HERMES_OPS_LOCK_PATH="$TMP_DIR/learning_invalid.lock" \
+HERMES_OPS_ROUTER_OK=1 \
+PATH="$TMP_DIR/bin:$PATH" \
+  "$SCRIPT" learning-review --date 2099-12-31 >"$TMP_DIR/learning_invalid.out"
+grep -Fq "数据是否有效=无效" "$TMP_DIR/learning_invalid.out" || die "invalid learning-review output missing invalid data status"
+grep -Fq "主要负收益 profile=不评价：data_quality invalid" "$TMP_DIR/learning_invalid.out" || die "invalid learning-review evaluated profile"
+grep -Fq "主要 blocker=不评价：data_quality invalid" "$TMP_DIR/learning_invalid.out" || die "invalid learning-review evaluated blocker"
+grep -Fq "策略评价=跳过：data_quality invalid" "$TMP_DIR/learning_invalid.out" || die "invalid learning-review missing strategy skip"
+grep -Fq "今日结论：排障" "$TMP_DIR/learning_invalid.out" || die "invalid learning-review conclusion is not 排障"
+if grep -Fq "SHOULD_NOT_BE_PRINTED" "$TMP_DIR/learning_invalid.out"; then
+  die "invalid learning-review printed strategy profile details"
+fi
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "$SCRIPT" "$0"

@@ -79,6 +79,8 @@ guarded_commands=(
   "profile_review_direct profile-review --date 2026-05-01"
   "blocker_review_direct blocker-review --date 2026-05-01"
   "shadow_review_direct shadow-review --date 2026-05-01"
+  "learning_review_direct learning-review --date 2026-05-01"
+  "lp_diagnose_direct lp-diagnose --date 2026-05-01"
   "space_check_direct space-check"
   "archive_check_direct archive-compress-check --date 2026-05-01"
   "weekly_review_direct weekly-review --start 2026-04-27 --end 2026-05-03"

@@ -90,6 +90,10 @@ for pattern in \
   "Profile复盘YYYY-MM-DD" \
   "Blocker复盘YYYY-MM-DD" \
   "Shadow复盘YYYY-MM-DD" \
+  "学习复盘YYYY-MM-DD" \
+  "学习总结YYYY-MM-DD" \
+  "CANDIDATE覆盖诊断YYYY-MM-DD" \
+  "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "后台任务" \
   "job_id" \
@@ -117,7 +121,7 @@ for pattern in \
   "中文 Telegram Command Router - Mandatory" \
   "中文 Telegram 手动控制菜单" \
   "命令提示" \
-  "12 个功能" \
+  "15 个功能" \
   "~/.hermes/bin/chain-monitor-cn-router" \
   "不得直接调用 make" \
   "不得直接调用 hermes_cm_ops.sh 的 dated operations" \
@@ -155,6 +159,9 @@ for pattern in \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
+  "learning-review" \
+  "candidate-coverage" \
+  "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
@@ -184,6 +191,9 @@ for pattern in \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
+  "learning-review" \
+  "candidate-coverage" \
+  "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
@@ -218,6 +228,9 @@ for pattern in \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
+  "learning-review" \
+  "candidate-coverage" \
+  "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
   "space-fast" \
@@ -255,6 +268,9 @@ for wrapper_argv in \
   "./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
   "./scripts/hermes_cm_ops.sh db-slim-dry-run" \
@@ -383,6 +399,56 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "db-size-diagnose"' "$TMP_DIR/db_size.ou
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库瘦身预检" --dry-run --platform telegram >"$TMP_DIR/db_slim.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "db-slim-dry-run"' "$TMP_DIR/db_slim.out" || fail "router db-slim-dry-run argv is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "学习复盘2026-05-04" --dry-run --platform telegram >"$TMP_DIR/learning.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "learning-review"' "$TMP_DIR/learning.out" || fail "router learning-review argv is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "学习总结2026-05-04" --dry-run --platform telegram >"$TMP_DIR/learning_summary.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "learning-review"' "$TMP_DIR/learning_summary.out" || fail "router learning-summary argv is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "CANDIDATE覆盖诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/candidate_coverage.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "candidate-coverage"' "$TMP_DIR/candidate_coverage.out" || fail "router candidate-coverage argv is not wrapper-only"
+grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/candidate_coverage.out" || fail "router candidate-coverage did not include date"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "候选覆盖诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/candidate_coverage_alias.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "candidate-coverage"' "$TMP_DIR/candidate_coverage_alias.out" || fail "router candidate-coverage alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "候选覆盖2026-05-04" --dry-run --platform telegram >"$TMP_DIR/candidate_coverage_short.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "candidate-coverage"' "$TMP_DIR/candidate_coverage_short.out" || fail "router candidate-coverage short alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_diagnose.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose argv is not wrapper-only"
+grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose did not include date"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP信号诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_signal_diagnose.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/lp_signal_diagnose.out" || fail "router LP signal diagnose alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "池子诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/pool_diagnose.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/pool_diagnose.out" || fail "router pool diagnose alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "CLMM诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/clmm_diagnose.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/clmm_diagnose.out" || fail "router CLMM diagnose alias is not wrapper-only"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "候选覆盖昨天" --dry-run --platform telegram >"$TMP_DIR/candidate_relative.out" 2>"$TMP_DIR/candidate_relative.err"
+candidate_relative_rc=$?
+set -e
+[[ "$candidate_relative_rc" -ne 0 ]] || fail "router accepted relative candidate-coverage date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/candidate_relative.out" "$TMP_DIR/candidate_relative.err" || fail "router relative candidate-coverage did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断昨天" --dry-run --platform telegram >"$TMP_DIR/lp_relative.out" 2>"$TMP_DIR/lp_relative.err"
+lp_relative_rc=$?
+set -e
+[[ "$lp_relative_rc" -ne 0 ]] || fail "router accepted relative lp-diagnose date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/lp_relative.out" "$TMP_DIR/lp_relative.err" || fail "router relative lp-diagnose did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "学习复盘昨天" --dry-run --platform telegram >"$TMP_DIR/learning_relative.out" 2>"$TMP_DIR/learning_relative.err"
+learning_relative_rc=$?
+set -e
+[[ "$learning_relative_rc" -ne 0 ]] || fail "router accepted relative learning-review date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/learning_relative.out" "$TMP_DIR/learning_relative.err" || fail "router relative learning-review did not ask for absolute date"
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "任务状态cmjob_20260501T120000Z_abcdef12" --dry-run --platform telegram >"$TMP_DIR/job_status.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "job-status"' "$TMP_DIR/job_status.out" || fail "router job-status argv is not wrapper-only"

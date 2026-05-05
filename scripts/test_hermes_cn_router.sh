@@ -82,6 +82,29 @@ run_ok daily_flow_submit --text '标准日报流程2026-05-01' --dry-run
 require_out daily_flow_submit 'submit-daily-flow'
 forbid_out daily_flow_submit '"daily-flow"'
 
+run_ok learning_review --text '学习复盘2026-05-04' --dry-run
+require_out learning_review 'learning-review'
+require_out learning_review '"--date"'
+require_out learning_review '"2026-05-04"'
+
+run_ok learning_summary --text '学习总结2026-05-04' --dry-run
+require_out learning_summary 'learning-review'
+require_out learning_summary '"--date"'
+require_out learning_summary '"2026-05-04"'
+
+run_ok candidate_coverage --text 'CANDIDATE覆盖诊断2026-05-04' --dry-run
+require_out candidate_coverage 'candidate-coverage'
+require_out candidate_coverage '"--date"'
+require_out candidate_coverage '"2026-05-04"'
+
+run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run
+require_out lp_diagnose 'lp-diagnose'
+require_out lp_diagnose '"--date"'
+require_out lp_diagnose '"2026-05-04"'
+
+run_ok lp_signal_diagnose --text 'LP信号诊断2026-05-04' --dry-run
+require_out lp_signal_diagnose 'lp-diagnose'
+
 run_ok job_status --text '任务状态cmjob_20260501T120000Z_abcdef12' --dry-run
 require_out job_status 'job-status'
 
@@ -101,6 +124,21 @@ fi
 
 run_fail today --text '生成今天的日报' --dry-run
 require_out today '绝对日期'
+
+run_fail learning_relative --text '学习复盘昨天' --dry-run
+require_out learning_relative '绝对日期'
+require_out learning_relative 'YYYY-MM-DD'
+forbid_out learning_relative 'learning-review'
+
+run_fail candidate_relative --text '候选覆盖昨天' --dry-run
+require_out candidate_relative '绝对日期'
+require_out candidate_relative 'YYYY-MM-DD'
+forbid_out candidate_relative 'candidate-coverage'
+
+run_fail lp_relative --text 'LP诊断昨天' --dry-run
+require_out lp_relative '绝对日期'
+require_out lp_relative 'YYYY-MM-DD'
+forbid_out lp_relative 'lp-diagnose'
 
 run_fail digest_missing_mode --text '生成摘要2026-05-01' --dry-run
 require_out digest_missing_mode '快速'

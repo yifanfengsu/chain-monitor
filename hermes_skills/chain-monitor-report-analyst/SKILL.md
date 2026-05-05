@@ -32,6 +32,9 @@ Use this Skill when the user requests chain-monitor report analysis, daily repor
 分析报告2026-05-01
 检查回放2026-05-01
 数据质量2026-05-01
+学习复盘2026-05-04
+CANDIDATE覆盖诊断2026-05-04
+LP诊断2026-05-04
 周复盘2026-04-27到2026-05-03
 ```
 
@@ -196,7 +199,7 @@ job_id：cmjob_...
 
 ## 中文 Telegram 手动控制菜单
 
-本菜单覆盖第 5 步 12 个功能，并额外支持“命令提示”、生成日报、深度分析、摘要和数据库瘦身预检。
+本菜单覆盖第 5 步 15 个功能，并额外支持“命令提示”、生成日报、深度分析、摘要和数据库瘦身预检。
 
 用户可以输入：
 
@@ -245,6 +248,9 @@ Telegram 示例：
 /chain-monitor-report-analyst Profile复盘2026-05-01
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
+/chain-monitor-report-analyst 学习复盘2026-05-04
+/chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04
+/chain-monitor-report-analyst LP诊断2026-05-04
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
 /chain-monitor-report-analyst 数据库瘦身预检
@@ -309,6 +315,9 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh submit-space-check
 ./scripts/hermes_cm_ops.sh space-fast
 ./scripts/hermes_cm_ops.sh db-size-diagnose
@@ -405,6 +414,9 @@ Rules:
 /chain-monitor-report-analyst Profile复盘2026-05-01
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
+/chain-monitor-report-analyst 学习复盘2026-05-04
+/chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04
+/chain-monitor-report-analyst LP诊断2026-05-04
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
 /chain-monitor-report-analyst 数据库瘦身预检
@@ -555,6 +567,135 @@ Rules:
 - Do not treat `CANDIDATE` or `VERIFIED` as an order instruction.
 - Requests such as “今天的分析报告”“昨天的报告”“分析一下” must not execute; ask for an absolute `YYYY-MM-DD`.
 
+## Learning Review
+
+用户说：
+
+```text
+学习复盘YYYY-MM-DD
+每日学习YYYY-MM-DD
+学习总结YYYY-MM-DD
+今日学习复盘YYYY-MM-DD
+```
+
+Hermes should run only the router:
+
+```bash
+~/.hermes/bin/chain-monitor-cn-router --text "学习复盘YYYY-MM-DD" --execute --platform telegram
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD
+```
+
+学习复盘必须整合 data-quality、replay-check、profile-review、blocker-review、shadow-review、delivery audit 和 Telegram delivery summary 的聚合字段。输出必须包含：
+
+- 数据是否有效
+- replay_source / replay_scope
+- avg_net_pnl_bps
+- suppressed_avg_net_pnl_bps
+- CANDIDATE 覆盖率
+- 主要负收益 profile
+- 主要 blocker
+- shadow_candidate / shadow_verified
+- LP signal rows 是否缺失
+- Telegram 推送是否可能噪音过多
+- 今日结论：保持 / 收紧 / 观察 / 排障
+- 明天只建议改一个点
+
+Rules:
+
+- 如果 data_quality invalid，结论必须是“排障”，并跳过策略评价。
+- 如果 avg_net_pnl_bps < 0 且 suppressed_avg_net_pnl_bps < 0，结论倾向“收紧”，不得建议放宽。
+- 如果 CANDIDATE 覆盖率 = 0，必须提示排查 candidate/opportunity/replay 连接。
+- 如果 LP signal rows 缺失，必须列为排查项。
+- 如果没有高样本正收益 profile，不得建议提升 VERIFIED。
+- 输出只做学习复盘，不输出执行指令。
+- `学习复盘昨天` 必须拒绝，不能解析相对日期，不能读取 reports。
+
+## Candidate Coverage Diagnosis
+
+用户说：
+
+```text
+CANDIDATE覆盖诊断YYYY-MM-DD
+候选覆盖诊断YYYY-MM-DD
+候选覆盖YYYY-MM-DD
+```
+
+Hermes should run only the router:
+
+```bash
+~/.hermes/bin/chain-monitor-cn-router --text "CANDIDATE覆盖诊断YYYY-MM-DD" --execute --platform telegram
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
+```
+
+覆盖诊断必须只读 SQLite 和 canonical daily report 的聚合字段。输出必须包含：
+
+- 当日 signals 总数
+- 当日 trade_opportunities 总数
+- `NONE / CANDIDATE / VERIFIED / BLOCKED / INVALIDATED` status 分布
+- replay examples 总数
+- replay examples 中关联 opportunity 的数量
+- replay examples 中 `status=CANDIDATE` 的数量
+- delivery_audit 中实时推送的 stage / status 分布
+
+Rules:
+
+- 如果 Telegram 推送多但 CANDIDATE 少，提示“实时推送主要是 observe/signal，不是 opportunity candidate”。
+- 如果 trade_opportunities 有 CANDIDATE 但 replay 没覆盖，提示“replay 关联层可能漏接”。
+- 如果 CANDIDATE 本身为 0，提示“candidate gate 太严格或当天无合格候选”。
+- `候选覆盖昨天` 必须拒绝，不能解析相对日期。
+- 不输出执行指令、原始地址、交易 hash、raw SQLite rows 或 full payload。
+
+## LP Signal Diagnosis
+
+用户说：
+
+```text
+LP诊断YYYY-MM-DD
+LP信号诊断YYYY-MM-DD
+池子诊断YYYY-MM-DD
+CLMM诊断YYYY-MM-DD
+```
+
+Hermes should run only the router:
+
+```bash
+~/.hermes/bin/chain-monitor-cn-router --text "LP诊断YYYY-MM-DD" --execute --platform telegram
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
+```
+
+LP 诊断必须只读 canonical daily report 和 SQLite 聚合字段。输出必须包含：
+
+- daily_report 中 `lp_signal_summary`、`lp_signals`、`lp_stage_summary`、`clmm_summary`、`major_coverage_summary` 字段是否存在
+- SQLite `signals.signal_json LIKE '%lp%' / '%pool%' / '%liquidity%' / '%clmm%'` 计数
+- SQLite `raw_events` / `parsed_events` 的 LP-like 聚合计数
+- `delivery_audit` 中 LP 相关 pushed / suppressed 数量
+- ETH/BTC/SOL x USDT/USDC major coverage 状态
+- `report_mapping判断`
+- `analyzer_gate判断`
+
+Rules:
+
+- 如果 SQLite 有 LP-like signals 但 daily_report 缺少 LP 明细字段或 lp_signal_rows 为 0，提示 report mapping 问题。
+- 如果 raw/parsed 有 LP-like 但 signals 为 0，提示 LP analyzer / gate 问题。
+- 如果 signals、raw/parsed、delivery_audit 全部为 0，提示当天无可用 LP 样本或扫描覆盖不足。
+- `LP诊断昨天` 必须拒绝，不能解析相对日期。
+- 不输出执行指令、原始地址、交易 hash、raw SQLite rows 或 full payload。
+
 ## Not approved / Forbidden from Telegram
 
 Do not call these commands or actions directly from Telegram. Use only the approved wrapper command when a supported operation exists.
@@ -600,7 +741,10 @@ Explain that direct/raw maintenance commands are outside this Skill's Telegram c
 4. 失败时先用 `/chain-monitor-report-analyst 诊断任务JOB_ID` 和 `/chain-monitor-report-analyst 查看日志JOB_ID`
 5. `/chain-monitor-report-analyst 分析报告YYYY-MM-DD`
 6. 可选：`/chain-monitor-report-analyst 生成摘要YYYY-MM-DD 快速`
-7. 可选深度复盘：`/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD`
+7. 可选学习复盘：`/chain-monitor-report-analyst 学习复盘YYYY-MM-DD`
+8. 如果 CANDIDATE 覆盖率为 0：`/chain-monitor-report-analyst CANDIDATE覆盖诊断YYYY-MM-DD`
+9. 如果 LP signal rows 缺失：`/chain-monitor-report-analyst LP诊断YYYY-MM-DD`
+10. 可选深度复盘：`/chain-monitor-report-analyst 深度分析报告YYYY-MM-DD`
 
 “每日收尾”不属于默认每日流程。
 

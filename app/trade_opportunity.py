@@ -1005,6 +1005,22 @@ class TradeOpportunityManager:
             "market_state_label": _text(context.get("market_state_label"), metadata.get("market_state_label"), event_metadata.get("market_state_label")),
             "message_template": _text(context.get("message_template"), metadata.get("message_template"), event_metadata.get("message_template")),
             "user_tier": _text(context.get("user_tier"), metadata.get("user_tier"), event_metadata.get("user_tier")),
+            "trade_opportunity_blocked_realtime_diagnostic": _bool(
+                context.get("trade_opportunity_blocked_realtime_diagnostic"),
+                metadata.get("trade_opportunity_blocked_realtime_diagnostic"),
+                event_metadata.get("trade_opportunity_blocked_realtime_diagnostic"),
+                context.get("blocked_realtime_diagnostic"),
+                metadata.get("blocked_realtime_diagnostic"),
+                event_metadata.get("blocked_realtime_diagnostic"),
+                context.get("telegram_force_blocked_diagnostic"),
+                metadata.get("telegram_force_blocked_diagnostic"),
+                event_metadata.get("telegram_force_blocked_diagnostic"),
+            ),
+            "trade_opportunity_blocked_realtime_reason": _text(
+                context.get("trade_opportunity_blocked_realtime_reason"),
+                metadata.get("trade_opportunity_blocked_realtime_reason"),
+                event_metadata.get("trade_opportunity_blocked_realtime_reason"),
+            ),
             "operational_intent_key": _text(
                 context.get("operational_intent_key"),
                 metadata.get("operational_intent_key"),
@@ -2491,6 +2507,8 @@ class TradeOpportunityManager:
             "trade_opportunity_would_have_been_verified": bool(shadow.get("would_have_been_verified")),
             "trade_opportunity_maturity": maturity,
             "trade_opportunity_replay_eligible": replay_eligible,
+            "trade_opportunity_blocked_realtime_diagnostic": bool(summary.get("trade_opportunity_blocked_realtime_diagnostic")),
+            "trade_opportunity_blocked_realtime_reason": str(summary.get("trade_opportunity_blocked_realtime_reason") or ""),
         }
 
     def _evaluate_shadow_opportunity(
@@ -3336,6 +3354,7 @@ class TradeOpportunityManager:
         update_kind = "suppressed"
         should_send = False
         state_change_reason = ""
+        blocked_realtime_diagnostic = bool(record.get("trade_opportunity_blocked_realtime_diagnostic"))
         if status == "VERIFIED":
             update_kind = "opportunity"
             state_change_reason = f"{str(previous.get('trade_opportunity_status') or 'none') if previous else 'none'}->{status}"
@@ -3366,7 +3385,9 @@ class TradeOpportunityManager:
         elif status == "BLOCKED":
             update_kind = "risk_blocker"
             state_change_reason = f"{str(previous.get('trade_opportunity_status') or 'none') if previous else 'none'}->{status}"
-            if (
+            if not blocked_realtime_diagnostic:
+                suppression_reason = "blocked_default_realtime_suppressed"
+            elif (
                 asset_state.last_sent_key == str(record.get("trade_opportunity_key") or "")
                 and now_ts - int(asset_state.last_sent_at or 0) < int(TELEGRAM_SUPPRESS_REPEAT_STATE_SEC)
             ):
@@ -3396,6 +3417,7 @@ class TradeOpportunityManager:
             "trade_opportunity_should_send": bool(should_send),
             "trade_opportunity_suppression_reason": suppression_reason,
             "trade_opportunity_update_kind": update_kind if should_send else "suppressed",
+            "trade_opportunity_blocked_realtime_diagnostic": bool(blocked_realtime_diagnostic),
         }
 
     def _final_trading_output(

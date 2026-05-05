@@ -8300,6 +8300,20 @@ class SignalPipeline:
                 )
                 or ""
             ),
+            "blocked_realtime_diagnostic": bool(
+                _first(
+                    signal_context.get("trade_opportunity_blocked_realtime_diagnostic"),
+                    signal_metadata.get("trade_opportunity_blocked_realtime_diagnostic"),
+                    event_metadata.get("trade_opportunity_blocked_realtime_diagnostic"),
+                    signal_context.get("blocked_realtime_diagnostic"),
+                    signal_metadata.get("blocked_realtime_diagnostic"),
+                    event_metadata.get("blocked_realtime_diagnostic"),
+                    signal_context.get("telegram_force_blocked_diagnostic"),
+                    signal_metadata.get("telegram_force_blocked_diagnostic"),
+                    event_metadata.get("telegram_force_blocked_diagnostic"),
+                    False,
+                )
+            ),
         }
 
     def _apply_lp_final_output_gate_payload(self, event: Event, signal, payload: dict[str, object]) -> None:
@@ -8316,7 +8330,10 @@ class SignalPipeline:
         trade_action_key = str(gate_state["trade_action_key"])
         asset_market_state_key = str(gate_state["asset_market_state_key"])
         forced_gate_reason = ""
-        if trade_action_key in LEGACY_CHASE_ACTION_KEYS and status != "VERIFIED":
+        blocked_default_suppressed = status == "BLOCKED" and not bool(gate_state["blocked_realtime_diagnostic"])
+        if blocked_default_suppressed:
+            forced_gate_reason = "blocked_default_realtime_suppressed"
+        elif trade_action_key in LEGACY_CHASE_ACTION_KEYS and status != "VERIFIED":
             forced_gate_reason = "legacy_chase_requires_verified_opportunity"
         elif asset_market_state_key in {"LONG_CANDIDATE", "SHORT_CANDIDATE", "TRADEABLE_LONG", "TRADEABLE_SHORT"} and status not in {"CANDIDATE", "VERIFIED", "BLOCKED"}:
             forced_gate_reason = "asset_market_state_candidate_without_opportunity"
@@ -8338,7 +8355,7 @@ class SignalPipeline:
         primary_blocker = str(gate_state["primary_blocker"])
         legacy_downgrade_reason = str(gate_state["legacy_chase_downgrade_reason"])
 
-        if status in {"VERIFIED", "CANDIDATE", "BLOCKED"}:
+        if status in {"VERIFIED", "CANDIDATE", "BLOCKED"} and not blocked_default_suppressed:
             canonical_label = canonical_final_trading_output_label(status, side, primary_blocker)
             canonical_gate_passed = bool(gate_state["opportunity_gate_passed"]) or status in {"CANDIDATE", "BLOCKED"}
             canonical_allowed, _ = validate_final_trading_output_gate(

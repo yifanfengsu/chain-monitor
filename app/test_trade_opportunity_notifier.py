@@ -40,7 +40,7 @@ class TradeOpportunityNotifierTests(unittest.TestCase):
         message = format_signal_message(signal, event)
 
         self.assertTrue(message.splitlines()[0].startswith("多头候选｜ETH｜"))
-        self.assertIn("状态：候选，不可盲追", message)
+        self.assertIn("候选级｜仍不可交易｜等待 replay/profile 支撑", message)
         self.assertNotIn("可顺势追多", message)
 
     def test_verified_sends_opportunity_card(self) -> None:
@@ -71,7 +71,7 @@ class TradeOpportunityNotifierTests(unittest.TestCase):
         manager.apply_lp_signal(event, signal)
         message = format_signal_message(signal, event)
 
-        self.assertTrue(message.splitlines()[0].startswith("不交易｜ETH｜不交易锁定"))
+        self.assertTrue(message.splitlines()[0].startswith("已阻断｜原因：no_trade_lock"))
         self.assertIn("阻止原因：不交易锁定", message)
 
     def test_repeated_candidate_is_suppressed(self) -> None:

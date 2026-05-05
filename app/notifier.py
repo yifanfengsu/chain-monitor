@@ -100,6 +100,18 @@ BRIEF_BY_DEFAULT_VARIANTS = {
     "liquidation_risk",
     "liquidation_execution",
 }
+PROHIBITED_TRADING_OUTPUT_REPLACEMENTS = (
+    ("买入", "流入"),
+    ("卖出", "流出"),
+    ("入场", "行动"),
+    ("做多", "偏多"),
+    ("做空", "偏空"),
+    ("开仓", "建立观察"),
+    ("止损", "失效条件"),
+    ("止盈", "收益观察"),
+    ("杠杆", "风险暴露"),
+    ("仓位", "风险暴露"),
+)
 
 
 def _sanitize_telegram_error_message(error: Exception) -> str:
@@ -189,6 +201,7 @@ def _backoff_delay_seconds(attempt: int) -> float:
 async def send(msg) -> bool:
     """发送告警消息到 Telegram，失败时做分类重试。"""
     async with _SEND_SEMAPHORE:
+        _bump_notifier_stat("signals_attempted_send")
         for attempt in range(1, TELEGRAM_SEND_MAX_ATTEMPTS + 1):
             try:
                 await bot.send_message(
@@ -200,6 +213,7 @@ async def send(msg) -> bool:
                     pool_timeout=TELEGRAM_POOL_TIMEOUT,
                 )
                 _record_telegram_success()
+                _bump_notifier_stat("signals_sent_ok")
                 return True
             except RetryAfter as error:
                 error_type = "RetryAfter"
@@ -255,6 +269,7 @@ async def send(msg) -> bool:
                     consecutive_failures=consecutive,
                     message=message,
                 )
+                _bump_notifier_stat("signals_sent_failed", force_log=True)
                 return False
             except Exception as error:
                 error_type = type(error).__name__ or "Exception"
@@ -270,6 +285,7 @@ async def send(msg) -> bool:
                 )
                 if attempt < TELEGRAM_SEND_MAX_ATTEMPTS:
                     await asyncio.sleep(_backoff_delay_seconds(attempt))
+        _bump_notifier_stat("signals_sent_failed", force_log=True)
         return False
 
 
@@ -353,7 +369,12 @@ def _priority_text(context: dict) -> str:
 
 def _stage_role_line(signal: Signal, context: dict) -> str:
     delivery_class = str(signal.delivery_class or context.get("delivery_class") or "").strip().lower()
-    stage_label = "Primary" if delivery_class == "primary" else "Observe" if delivery_class == "observe" else ""
+    if delivery_class == "primary":
+        stage_label = "Primary"
+    elif delivery_class == "observe":
+        stage_label = "观察级｜不可交易｜等待后续确认"
+    else:
+        stage_label = ""
     role_tier = str(
         context.get("role_priority_tier")
         or signal.metadata.get("role_priority_tier")
@@ -478,6 +499,13 @@ def _smart_money_variant(signal: Signal, event: Event, context: dict) -> str:
 
 def _join_lines(lines: list[str]) -> str:
     return "\n".join([line for line in lines if str(line).strip()]) + "\n"
+
+
+def _sanitize_trading_instruction_terms(message: str) -> str:
+    sanitized = str(message or "")
+    for prohibited, replacement in PROHIBITED_TRADING_OUTPUT_REPLACEMENTS:
+        sanitized = sanitized.replace(prohibited, replacement)
+    return sanitized
 
 
 def _usd_value_text(value: float) -> str:
@@ -914,6 +942,101 @@ def _trade_opportunity_status(context: dict) -> str:
     return str(context.get("trade_opportunity_status") or "").strip().upper()
 
 
+def _trade_opportunity_maturity(context: dict) -> str:
+    return str(
+        context.get("trade_opportunity_maturity")
+        or context.get("opportunity_maturity")
+        or context.get("verified_maturity")
+        or ""
+    ).strip().lower()
+
+
+def _coerce_text_items(value) -> list[str]:
+    if value in (None, "", [], {}, ()):
+        return []
+    if isinstance(value, dict):
+        return [
+            str(value.get(key) or "").strip()
+            for key in ("blocker", "primary_blocker")
+            if str(value.get(key) or "").strip()
+        ]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    for separator in ("｜", "/", ",", ";"):
+        text = text.replace(separator, "\n")
+    return [segment.strip() for segment in text.splitlines() if segment.strip()]
+
+
+def _trade_opportunity_blocker_keys(context: dict) -> list[str]:
+    raw: list[str] = []
+    for key in (
+        "trade_opportunity_primary_blocker",
+        "trade_opportunity_primary_hard_blocker",
+        "trade_opportunity_primary_verification_blocker",
+        "trade_opportunity_blockers",
+        "trade_opportunity_hard_blockers",
+        "trade_opportunity_verification_blockers",
+        "trade_opportunity_risk_flags",
+        "primary_blocker",
+        "blockers",
+    ):
+        raw.extend(_coerce_text_items(context.get(key)))
+    raw.extend(_coerce_text_items(context.get("trade_opportunity_replay_profile_gate")))
+    raw.extend(_coerce_text_items(context.get("replay_profile_gate")))
+
+    blockers: list[str] = []
+    for item in raw:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in blockers:
+            continue
+        blockers.append(normalized)
+    return blockers
+
+
+def _trade_opportunity_blocker_key_text(context: dict) -> str:
+    blockers = _trade_opportunity_blocker_keys(context)
+    return " / ".join(blockers[:4]) if blockers else "无"
+
+
+def _trade_opportunity_replay_support_status(context: dict) -> str:
+    blockers = set(_trade_opportunity_blocker_keys(context))
+    if "replay_profile_negative" in blockers:
+        return "负收益"
+    if blockers.intersection(
+        {
+            "outcome_history_insufficient",
+            "profile_sample_count_insufficient",
+            "history_samples_insufficient",
+            "sample_count_insufficient",
+        }
+    ):
+        return "样本不足"
+    history = context.get("trade_opportunity_history_snapshot") or {}
+    if isinstance(history, dict):
+        try:
+            if int(history.get("sample_size") or 0) <= 0 and str(history.get("history_source") or "") in {"", "none"}:
+                return "无"
+        except (TypeError, ValueError):
+            return "无"
+    if (
+        context.get("opportunity_profile_key")
+        or context.get("trade_opportunity_replay_eligible")
+        or _trade_opportunity_status(context) in {"CANDIDATE", "VERIFIED", "BLOCKED"}
+    ):
+        return "正在观察"
+    return "无"
+
+
+def _trade_opportunity_replay_line(context: dict) -> str:
+    return (
+        f"replay 支撑：{_trade_opportunity_replay_support_status(context)}"
+        f"｜主要 blocker：{_trade_opportunity_blocker_key_text(context)}"
+    )
+
+
 def _final_trading_output_source(context: dict) -> str:
     return str(context.get("final_trading_output_source") or "").strip().lower()
 
@@ -1002,6 +1125,7 @@ def _trade_opportunity_blocker_labels(context: dict) -> str:
         "no_trade_lock": "不交易锁定",
         "direction_conflict": "方向冲突",
         "data_gap": "数据缺口",
+        "replay_profile_negative": "replay/profile 负收益",
         "sweep_exhaustion_risk": "清扫后回吐/反抽风险",
         "late_or_chase": "确认偏晚 / 追单风险",
         "crowded_basis": "basis 拥挤",
@@ -1020,6 +1144,8 @@ def _trade_opportunity_blocker_labels(context: dict) -> str:
         "history_adverse_too_high": "历史 adverse 偏高",
         "history_completion_not_ready": "历史 completion 未稳定",
         "history_adverse_not_ready": "历史 adverse 未稳定",
+        "sample_count_insufficient": "样本不足",
+        "maturity_insufficient": "成熟度不足",
         "alignment_lost": "原机会条件消失",
     }
     raw = list(context.get("trade_opportunity_blockers") or [])
@@ -1043,13 +1169,17 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
     user_tier = str(context.get("user_tier") or "research")
     template = str(context.get("message_template") or signal.metadata.get("message_template") or "").strip().lower()
     show_debug = bool(TRADE_ACTION_RESEARCH_DEBUG) and bool(user_tier == "research" or template == "debug")
+    maturity = _trade_opportunity_maturity(context)
 
     if status == "VERIFIED":
-        title = "多头机会" if side == "LONG" else "空头机会"
-        conclusion = "更广买压确认" if side == "LONG" else "更广卖压确认"
+        immature = maturity == "immature"
+        title = "验证未成熟" if immature else "多头机会" if side == "LONG" else "空头机会"
+        conclusion = "不可交易" if immature else "更广买压确认" if side == "LONG" else "更广卖压确认"
         lines = [
             f"{title}｜{asset}｜{conclusion}",
+            "验证未成熟｜不可交易" if immature else "",
             f"机会分：{score:.2f}｜置信：{'高' if confidence == 'high' else '中'}｜周期：{horizon}",
+            _trade_opportunity_replay_line(context),
             f"证据：{evidence}",
             f"为什么：{reason}",
             "说明：不是自动下单",
@@ -1060,7 +1190,9 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
         conclusion = "更广买压出现，等待后验证明" if side == "LONG" else "更广卖压出现，等待后验证明"
         lines = [
             f"{title}｜{asset}｜{conclusion}",
-            f"机会分：{score:.2f}｜置信：{'中' if confidence != 'low' else '低'}｜状态：候选，不可盲追",
+            "候选级｜仍不可交易｜等待 replay/profile 支撑",
+            f"机会分：{score:.2f}｜置信：{'中' if confidence != 'low' else '低'}｜状态：候选级，仍不可交易",
+            _trade_opportunity_replay_line(context),
             f"证据：{evidence}",
             f"为什么：{reason}",
             f"触发：{required_confirmation}｜风险：{_trade_opportunity_risk_level(context)}",
@@ -1068,8 +1200,10 @@ def _trade_opportunity_message(signal: Signal, event: Event, context: dict) -> s
     elif status == "BLOCKED":
         blocker_title, blocker_conclusion = _trade_opportunity_blocker_headline(context)
         lines = [
+            f"已阻断｜原因：{_trade_opportunity_blocker_key_text(context)}｜不建议行动",
             f"{blocker_title}｜{asset}｜{blocker_conclusion}",
             f"阻止原因：{_trade_opportunity_blocker_labels(context)}",
+            _trade_opportunity_replay_line(context),
             f"为什么：{reason}",
             f"解除：{required_confirmation}",
         ]
@@ -1113,6 +1247,7 @@ def _lp_action_message(
 
     lines = [
         f"{action_label}｜{pair_or_pool}｜{conclusion or _trade_action_conclusion(context, event)}",
+        _stage_role_line(signal, context),
         f"证据：{evidence}",
         f"为什么：{reason}",
         f"触发：{required_confirmation}",
@@ -1576,14 +1711,16 @@ def format_signal_message(signal: Signal, event: Event) -> str:
         template = "brief"
 
     if template == "brief":
-        return _brief_message(signal, event, context, raw)
-    if template == "short":
-        return _short_message(signal, event, context, raw)
-    if template == "intent":
-        return _intent_message(signal, event, context, raw)
-    if template == "debug" and context.get("operational_intent_key"):
-        return _intent_message(signal, event, context, raw, debug=True)
-    return _long_message(signal, event, context, raw)
+        message = _brief_message(signal, event, context, raw)
+    elif template == "short":
+        message = _short_message(signal, event, context, raw)
+    elif template == "intent":
+        message = _intent_message(signal, event, context, raw)
+    elif template == "debug" and context.get("operational_intent_key"):
+        message = _intent_message(signal, event, context, raw, debug=True)
+    else:
+        message = _long_message(signal, event, context, raw)
+    return _sanitize_trading_instruction_terms(message)
 
 def _signal_type_display(signal: Signal) -> str:
     normalized = canonicalize_pool_semantic_key(signal.type)
@@ -1660,14 +1797,7 @@ async def send_signal(signal: Signal, event: Event) -> bool:
         return False
     try:
         msg = format_signal_message(signal, event)
-        _bump_notifier_stat("signals_attempted_send")
-        delivered = await send(msg)
-        if delivered:
-            _bump_notifier_stat("signals_sent_ok")
-        else:
-            _bump_notifier_stat("signals_sent_failed", force_log=True)
-        return delivered
+        return await send(msg)
     except Exception as e:
-        _bump_notifier_stat("signals_sent_failed", force_log=True)
         print(f"信号发送失败: {e}")
         return False

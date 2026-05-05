@@ -50,6 +50,9 @@ for pattern in \
   "## Approved Commands" \
   "## Hermes Gateway / Telegram Control Rules" \
   "## Telegram 中文命令示例" \
+  "## Learning Review" \
+  "## Candidate Coverage Diagnosis" \
+  "## LP Signal Diagnosis" \
   "## Not approved / Forbidden from Telegram" \
   "## 每日中文 Telegram 工作流" \
   "## Output Style" \
@@ -126,6 +129,9 @@ for example in \
   "Profile复盘2026-05-01" \
   "Blocker复盘2026-05-01" \
   "Shadow复盘2026-05-01" \
+  "学习复盘2026-05-04" \
+  "CANDIDATE覆盖诊断2026-05-04" \
+  "LP诊断2026-05-04" \
   "空间检查" \
   "数据库瘦身预检" \
   "归档压缩预检2026-05-01" \
@@ -176,6 +182,9 @@ for command in \
   "./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
   "./scripts/hermes_cm_ops.sh db-size-diagnose" \

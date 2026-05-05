@@ -190,6 +190,17 @@ def parse_command(text: str) -> dict[str, Any]:
     if len(text) > MAX_INPUT_CHARS:
         raise RouterError("input_too_long", "❌ 已拒绝：输入过长，请使用固定中文命令。")
     if has_relative_date(text):
+        match = re.fullmatch(r"今日学习复盘\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+        if match:
+            report_date = validate_date(match.group(1))
+            return {
+                "action": "learning-review",
+                "command_intent": "learning-review",
+                "argv": wrapper_argv("learning-review", "--date", report_date),
+                "date": report_date,
+                "mode": "",
+                "auto_build": False,
+            }
         raise RouterError("relative_date_forbidden", RELATIVE_DATE_MESSAGE)
 
     if text in {"命令提示", "功能列表", "菜单", "帮助", "命令", "怎么用", "使用说明"}:
@@ -340,6 +351,42 @@ def parse_command(text: str) -> dict[str, Any]:
             "action": "shadow-review",
             "command_intent": "shadow-review",
             "argv": wrapper_argv("shadow-review", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:学习复盘|每日学习|学习总结|今日学习复盘)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "learning-review",
+            "command_intent": "learning-review",
+            "argv": wrapper_argv("learning-review", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:CANDIDATE覆盖诊断|候选覆盖诊断|候选覆盖)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "candidate-coverage",
+            "command_intent": "candidate-coverage",
+            "argv": wrapper_argv("candidate-coverage", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:LP诊断|LP信号诊断|池子诊断|CLMM诊断)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "lp-diagnose",
+            "command_intent": "lp-diagnose",
+            "argv": wrapper_argv("lp-diagnose", "--date", report_date),
             "date": report_date,
             "mode": "",
             "auto_build": False,

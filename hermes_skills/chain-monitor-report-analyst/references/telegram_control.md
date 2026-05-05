@@ -32,6 +32,9 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | Profile复盘YYYY-MM-DD / profile复盘YYYY-MM-DD / 画像复盘YYYY-MM-DD / 后验画像YYYY-MM-DD | profile-review | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | sync quick |
 | Blocker复盘YYYY-MM-DD / blocker复盘YYYY-MM-DD / 阻断复盘YYYY-MM-DD / 风控阻断复盘YYYY-MM-DD | blocker-review | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | sync quick |
 | Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
+| 学习复盘YYYY-MM-DD / 每日学习YYYY-MM-DD / 学习总结YYYY-MM-DD / 今日学习复盘YYYY-MM-DD | learning-review | `./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD` | low | sync quick；整合 data-quality、replay、profile、blocker、shadow、delivery audit 和 Telegram delivery 摘要 |
+| CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | candidate-coverage | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 CANDIDATE 覆盖率为 0 是 gate 结果还是 replay 关联层漏接 |
+| LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | lp-diagnose | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 LP signal rows 缺失是 report mapping、解析/gate 还是扫描覆盖不足 |
 | 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
 | 空间快检 / 快速空间检查 / 快速磁盘检查 | space-fast | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick |
 | 数据库体积诊断 / DB体积诊断 / 数据库为什么大 | db-size-diagnose | `./scripts/hermes_cm_ops.sh db-size-diagnose` | low | sync quick |
@@ -70,6 +73,9 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 支持日期与中文命令之间有空格，例如 `分析报告 2026-05-01`。
 - 周复盘使用 `START到END`，例如 `周复盘2026-04-27到2026-05-03`。
 - 周复盘 START / END 必须是 `YYYY-MM-DD`，START <= END，范围最多 14 天。
+- 学习复盘只接受绝对日期，例如 `学习复盘2026-05-04` 或 `学习总结2026-05-04`；`学习复盘昨天` 和 `学习总结昨天` 必须拒绝。
+- CANDIDATE 覆盖诊断只接受绝对日期，例如 `CANDIDATE覆盖诊断2026-05-04`；`候选覆盖昨天` 必须拒绝。
+- LP 诊断只接受绝对日期，例如 `LP诊断2026-05-04`；`LP诊断昨天` 必须拒绝。
 - job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。
 - 取消任务必须包含“我确认取消”。
 - `生成摘要2026-05-01` 没有 快速/深度，必须拒绝并要求指定模式。
@@ -84,6 +90,9 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 这些相对日期必须拒绝，refused_reason=`relative_date_forbidden`，不允许 date 命令，不允许 report/analyze/digest/close/daily-flow，不允许读取 reports：
 
 - 分析昨天的报告
+- 学习复盘昨天
+- 候选覆盖昨天
+- LP诊断昨天
 - 生成今天的日报
 - 标准日报流程昨天
 - 周复盘上周
@@ -197,6 +206,9 @@ job_id：cmjob_...
 - Profile复盘YYYY-MM-DD
 - Blocker复盘YYYY-MM-DD
 - Shadow复盘YYYY-MM-DD
+- 学习复盘YYYY-MM-DD
+- CANDIDATE覆盖诊断YYYY-MM-DD
+- LP诊断YYYY-MM-DD
 
 【维护预检】
 - 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，不压缩
@@ -236,9 +248,17 @@ job_id：cmjob_...
    预期：router 映射到 submit-daily-flow，立即返回 job_id。
 5. 发送 `/chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03`。
    预期：router 映射到 submit-weekly-review，立即返回 job_id。
-6. 发送 `/chain-monitor-report-analyst 任务状态cmjob_...`。
+6. 发送 `/chain-monitor-report-analyst 学习复盘2026-05-04`。
+   预期：router 映射到 learning-review，同步返回中文学习结论，不包含执行指令。
+7. 发送 `/chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04`。
+   预期：router 映射到 candidate-coverage，同步返回 status 分布和 replay/opportunity 连接情况。
+8. 发送 `/chain-monitor-report-analyst LP诊断2026-05-04`。
+   预期：router 映射到 lp-diagnose，同步返回 LP 字段存在性、SQLite LP-like 计数、report mapping 判断。
+9. 发送 `/chain-monitor-report-analyst 学习复盘昨天`。
+   预期：拒绝 relative_date_forbidden，不读取 reports。
+10. 发送 `/chain-monitor-report-analyst 任务状态cmjob_...`。
    预期：router 映射到 job-status。
-7. 如果任务 failed，发送 `/chain-monitor-report-analyst 诊断任务cmjob_...`。
+11. 如果任务 failed，发送 `/chain-monitor-report-analyst 诊断任务cmjob_...`。
    预期：router 映射到 job-diagnose，只读返回 failed_substep 和 failed_command。
 
 ## 标准日报流程失败诊断

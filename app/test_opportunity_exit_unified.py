@@ -43,7 +43,7 @@ class OpportunityExitUnifiedTests(unittest.TestCase):
         self.assertEqual("多头候选", payload["final_trading_output_label"])
         self.assertTrue(payload["legacy_chase_downgraded"])
         self.assertTrue(message.splitlines()[0].startswith("多头候选｜ETH｜"))
-        self.assertIn("候选，不可盲追", message)
+        self.assertIn("候选级｜仍不可交易｜等待 replay/profile 支撑", message)
         self.assertNotIn("可顺势追多", message)
 
     def test_short_chase_allowed_with_blocked_shows_do_not_chase(self) -> None:
@@ -64,7 +64,7 @@ class OpportunityExitUnifiedTests(unittest.TestCase):
         self.assertEqual("trade_opportunity", payload["final_trading_output_source"])
         self.assertEqual("不追空", payload["final_trading_output_label"])
         self.assertTrue(payload["legacy_chase_downgraded"])
-        self.assertTrue(message.splitlines()[0].startswith("不追空｜ETH｜"))
+        self.assertTrue(message.splitlines()[0].startswith("已阻断｜原因：sweep_exhaustion_risk"))
         self.assertIn("阻止原因：", message)
         self.assertNotIn("可顺势追空", message)
 

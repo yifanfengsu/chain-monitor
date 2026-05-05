@@ -104,6 +104,54 @@ require_out shadow_review 'shadow-review'
 require_out shadow_review '--date'
 require_out shadow_review '2026-05-01'
 
+run_ok learning_review --text '学习复盘2026-05-04' --dry-run --platform telegram
+require_out learning_review 'learning-review'
+require_out learning_review '--date'
+require_out learning_review '2026-05-04'
+
+run_ok daily_learning_review --text '每日学习2026-05-04' --dry-run --platform telegram
+require_out daily_learning_review 'learning-review'
+
+run_ok learning_summary --text '学习总结2026-05-04' --dry-run --platform telegram
+require_out learning_summary 'learning-review'
+
+run_ok today_learning_review --text '今日学习复盘2026-05-04' --dry-run --platform telegram
+require_out today_learning_review 'learning-review'
+
+run_fail learning_relative --text '学习复盘昨天' --dry-run --platform telegram
+require_out learning_relative 'YYYY-MM-DD'
+
+run_ok candidate_coverage --text 'CANDIDATE覆盖诊断2026-05-04' --dry-run --platform telegram
+require_out candidate_coverage 'candidate-coverage'
+require_out candidate_coverage '--date'
+require_out candidate_coverage '2026-05-04'
+
+run_ok candidate_coverage_alias --text '候选覆盖诊断2026-05-04' --dry-run --platform telegram
+require_out candidate_coverage_alias 'candidate-coverage'
+
+run_ok candidate_coverage_short --text '候选覆盖2026-05-04' --dry-run --platform telegram
+require_out candidate_coverage_short 'candidate-coverage'
+
+run_fail candidate_relative --text '候选覆盖昨天' --dry-run --platform telegram
+require_out candidate_relative 'YYYY-MM-DD'
+
+run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run --platform telegram
+require_out lp_diagnose 'lp-diagnose'
+require_out lp_diagnose '--date'
+require_out lp_diagnose '2026-05-04'
+
+run_ok lp_diagnose_alias --text 'LP信号诊断2026-05-04' --dry-run --platform telegram
+require_out lp_diagnose_alias 'lp-diagnose'
+
+run_ok pool_diagnose_alias --text '池子诊断2026-05-04' --dry-run --platform telegram
+require_out pool_diagnose_alias 'lp-diagnose'
+
+run_ok clmm_diagnose_alias --text 'CLMM诊断2026-05-04' --dry-run --platform telegram
+require_out clmm_diagnose_alias 'lp-diagnose'
+
+run_fail lp_diagnose_relative --text 'LP诊断昨天' --dry-run --platform telegram
+require_out lp_diagnose_relative 'YYYY-MM-DD'
+
 run_ok space_check --text '空间检查' --dry-run --platform telegram
 require_out space_check 'submit-space-check'
 
@@ -191,6 +239,10 @@ grep -Fq '最近任务' "$TMP_DIR/menu_execute.out" || fail "menu execute missin
 grep -Fq '空间快检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 空间快检"
 grep -Fq '数据库体积诊断' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库体积诊断"
 grep -Fq '数据库瘦身预检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库瘦身预检"
+grep -Fq '学习复盘YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习复盘YYYY-MM-DD"
+grep -Fq '学习总结YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习总结YYYY-MM-DD"
+grep -Fq 'CANDIDATE覆盖诊断YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing CANDIDATE覆盖诊断YYYY-MM-DD"
+grep -Fq 'LP诊断YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing LP诊断YYYY-MM-DD"
 grep -Fq '生成日报YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成日报YYYY-MM-DD"
 grep -Fq '深度分析报告YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 深度分析报告YYYY-MM-DD"
 grep -Fq '生成摘要YYYY-MM-DD 快速' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成摘要YYYY-MM-DD 快速"

@@ -34,6 +34,9 @@ Usage:
   ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 
   # Internal job runner only; Telegram users must use submit-* above:
   ./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
@@ -81,6 +84,10 @@ cmd_help() {
   /chain-monitor-report-analyst Profile复盘YYYY-MM-DD
   /chain-monitor-report-analyst Blocker复盘YYYY-MM-DD
   /chain-monitor-report-analyst Shadow复盘YYYY-MM-DD
+  /chain-monitor-report-analyst 学习复盘YYYY-MM-DD
+  /chain-monitor-report-analyst 学习总结YYYY-MM-DD
+  /chain-monitor-report-analyst CANDIDATE覆盖诊断YYYY-MM-DD
+  /chain-monitor-report-analyst LP诊断YYYY-MM-DD
   /chain-monitor-report-analyst 空间检查
   /chain-monitor-report-analyst 空间快检
   /chain-monitor-report-analyst 数据库体积诊断
@@ -132,7 +139,7 @@ cmd_command_menu() {
 
 【每日检查】
 - 系统体检：检查 DB / report source / market / coverage
-- 监听器体检：检查监听器是否停摆、最近数据时间
+- 监听器体检：检查监听器是否停摆、最近数据时间、Telegram outbound 健康
 - 空间检查：提交后台任务查看 DB / archive / reports 占用
 - 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小
 - 数据库体积诊断：解释 DB / WAL / archive / reports 哪个大
@@ -153,6 +160,9 @@ cmd_command_menu() {
 - Profile复盘YYYY-MM-DD：查看 profile 后验
 - Blocker复盘YYYY-MM-DD：查看 blocker 分布
 - Shadow复盘YYYY-MM-DD：查看 shadow funnel
+- 学习复盘YYYY-MM-DD / 每日学习YYYY-MM-DD / 学习总结YYYY-MM-DD：整合数据质量、回放、profile、blocker、shadow、Telegram 去噪，输出中文学习结论
+- CANDIDATE覆盖诊断YYYY-MM-DD：排查 signals -> opportunity -> replay 覆盖连接
+- LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 
 【维护预检】
 - 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，不压缩
@@ -692,7 +702,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
+    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -1118,11 +1128,22 @@ import json
 import os
 import sqlite3
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _final_output = sys.argv[1]
 root = Path.cwd()
-db_path = root / "data" / "chain_monitor.sqlite"
+configured_db_path = os.getenv("HERMES_LISTENER_HEALTH_DB_PATH", "data/chain_monitor.sqlite")
+db_path = Path(configured_db_path)
+if not db_path.is_absolute():
+    db_path = root / db_path
+WINDOWS = (
+    ("最近30分钟", 30 * 60),
+    ("最近2小时", 2 * 60 * 60),
+)
+NOW_TS = time.time()
+BJ_TZ = timezone(timedelta(hours=8))
 
 
 def safe_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> object:
@@ -1131,6 +1152,19 @@ def safe_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> objec
     except sqlite3.Error as exc:
         return f"unavailable:{exc.__class__.__name__}"
     return row[0] if row else None
+
+
+def safe_count(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> int | None:
+    try:
+        row = conn.execute(sql, params).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None:
+        return 0
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -1143,6 +1177,268 @@ def columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     except sqlite3.Error:
         return set()
+
+
+def _epoch_sql(column: str) -> str:
+    return f"(CASE WHEN {column} > 10000000000 THEN {column} / 1000.0 ELSE {column} END)"
+
+
+def time_expr(conn: sqlite3.Connection, table: str, candidates: list[str]) -> str | None:
+    if not table_exists(conn, table):
+        return None
+    cols = columns(conn, table)
+    present = [col for col in candidates if col in cols]
+    if not present:
+        return None
+    if len(present) == 1:
+        return _epoch_sql(present[0])
+    return "COALESCE(" + ", ".join(_epoch_sql(col) for col in present) + ")"
+
+
+def count_recent(
+    conn: sqlite3.Connection,
+    table: str,
+    time_candidates: list[str],
+    window_sec: int,
+    predicate: str = "",
+) -> int | None:
+    expr = time_expr(conn, table, time_candidates)
+    if expr is None:
+        return None
+    sql = f"SELECT COUNT(*) FROM {table} WHERE {expr} >= ?"
+    if predicate:
+        sql += f" AND ({predicate})"
+    return safe_count(conn, sql, (NOW_TS - window_sec,))
+
+
+def max_recent_ts(conn: sqlite3.Connection, table: str, time_candidates: list[str], predicate: str = "") -> float | None:
+    expr = time_expr(conn, table, time_candidates)
+    if expr is None:
+        return None
+    sql = f"SELECT MAX({expr}) FROM {table}"
+    params: tuple = ()
+    if predicate:
+        sql += f" WHERE {predicate}"
+    value = safe_scalar(conn, sql, params)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_count(value: int | None) -> str:
+    return "unavailable" if value is None else str(int(value))
+
+
+def fmt_ts(value: object) -> str:
+    if value in (None, "", "none"):
+        return "none"
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if ts > 10000000000:
+        ts = ts / 1000.0
+    utc = datetime.fromtimestamp(ts, timezone.utc)
+    bj = utc.astimezone(BJ_TZ)
+    return f"{utc.strftime('%Y-%m-%d %H:%M:%S')} UTC / 北京 {bj.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def _text_match_predicate(conn: sqlite3.Connection, table: str, needles: list[str]) -> str:
+    cols = columns(conn, table)
+    text_cols = [
+        col
+        for col in (
+            "reason",
+            "blocked_reason",
+            "gate_reason",
+            "suppression_reason",
+            "stage",
+            "delivery_decision",
+            "audit_json",
+            "message_json",
+        )
+        if col in cols
+    ]
+    parts = []
+    for col in text_cols:
+        for needle in needles:
+            escaped = needle.lower().replace("'", "''")
+            parts.append(f"LOWER(COALESCE({col}, '')) LIKE '%{escaped}%'")
+    return " OR ".join(parts) if parts else "0"
+
+
+def notifier_failure_predicate(conn: sqlite3.Connection, table: str = "delivery_audit") -> str:
+    return _text_match_predicate(conn, table, ["notifier_send_failed"])
+
+
+def transport_error_predicate(conn: sqlite3.Connection, table: str = "delivery_audit") -> str:
+    return _text_match_predicate(conn, table, ["pool timeout", "connection pool", "NetworkError", "TimedOut"])
+
+
+def read_notifier_runtime_health() -> tuple[dict | None, str]:
+    try:
+        sys.path.insert(0, str(root / "app"))
+        import notifier  # type: ignore
+
+        getter = getattr(notifier, "get_notifier_health", None)
+        if not callable(getter):
+            return None, "missing_get_notifier_health"
+        payload = getter()
+    except Exception as exc:  # noqa: BLE001
+        return None, f"unavailable:{exc.__class__.__name__}"
+    if not isinstance(payload, dict):
+        return None, "unavailable:non_dict_payload"
+    return payload, "readable"
+
+
+def count_telegram_window(conn: sqlite3.Connection, label: str, window_sec: int) -> dict[str, int | None | str]:
+    audit_cols = columns(conn, "delivery_audit") if table_exists(conn, "delivery_audit") else set()
+    tg_cols = columns(conn, "telegram_deliveries") if table_exists(conn, "telegram_deliveries") else set()
+    failure_pred = notifier_failure_predicate(conn)
+    transport_pred = transport_error_predicate(conn)
+
+    sent_1_pred = "sent_to_telegram = 1" if "sent_to_telegram" in audit_cols else "0"
+    sent_0_pred = "sent_to_telegram = 0" if "sent_to_telegram" in audit_cols else "0"
+    tg_sent_pred = "sent = 1" if "sent" in tg_cols else "0"
+    tg_failed_pred = "sent = 0 AND COALESCE(suppressed, 0) = 0" if {"sent", "suppressed"}.issubset(tg_cols) else "0"
+
+    audit_sent_ok = count_recent(conn, "delivery_audit", ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"], window_sec, sent_1_pred)
+    tg_sent_ok = count_recent(conn, "telegram_deliveries", ["sent_at", "created_at"], window_sec, tg_sent_pred)
+    sent_ok_candidates = [value for value in (audit_sent_ok, tg_sent_ok) if value is not None]
+    sent_ok = max(sent_ok_candidates) if sent_ok_candidates else None
+
+    failed_count = count_recent(
+        conn,
+        "delivery_audit",
+        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+        window_sec,
+        failure_pred,
+    )
+    tg_failed_count = count_recent(conn, "telegram_deliveries", ["sent_at", "created_at"], window_sec, tg_failed_pred)
+    sent_failed_candidates = [value for value in (failed_count, tg_failed_count) if value is not None]
+    sent_failed = max(sent_failed_candidates) if sent_failed_candidates else None
+
+    return {
+        "label": label,
+        "signals": count_recent(conn, "signals", ["timestamp", "created_at", "updated_at", "notifier_sent_at", "archive_written_at"], window_sec),
+        "delivery_audit": count_recent(
+            conn,
+            "delivery_audit",
+            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+            window_sec,
+        ),
+        "sent_ok": sent_ok,
+        "sent_failed": sent_failed,
+        "sent_to_telegram_1": audit_sent_ok,
+        "sent_to_telegram_0": count_recent(
+            conn,
+            "delivery_audit",
+            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+            window_sec,
+            sent_0_pred,
+        ),
+        "notifier_send_failed": failed_count,
+        "transport_error_records": count_recent(
+            conn,
+            "delivery_audit",
+            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+            window_sec,
+            transport_pred,
+        ),
+    }
+
+
+def print_telegram_outbound_health(conn: sqlite3.Connection) -> None:
+    print()
+    print("## Telegram outbound health")
+    print("source=SQLite 聚合 + notifier.get_notifier_health；只读；未发送 Telegram warning")
+
+    window_rows = [count_telegram_window(conn, label, window_sec) for label, window_sec in WINDOWS]
+    warning_reasons: list[str] = []
+    recent_transport_errors = 0
+    for row in window_rows:
+        signals = row["signals"] if isinstance(row["signals"], int) else 0
+        sent_ok = row["sent_ok"] if isinstance(row["sent_ok"], int) else 0
+        transport_errors = row["transport_error_records"] if isinstance(row["transport_error_records"], int) else 0
+        recent_transport_errors += int(transport_errors)
+        if signals > 0 and sent_ok == 0:
+            warning_reasons.append(f"{row['label']} signals>0 且 sent_ok=0")
+        print(
+            f"{row['label']}："
+            f"signals={fmt_count(row['signals'] if isinstance(row['signals'], int) else None)} "
+            f"delivery_audit={fmt_count(row['delivery_audit'] if isinstance(row['delivery_audit'], int) else None)} "
+            f"sent_ok={fmt_count(row['sent_ok'] if isinstance(row['sent_ok'], int) else None)} "
+            f"sent_failed={fmt_count(row['sent_failed'] if isinstance(row['sent_failed'], int) else None)} "
+            f"sent_to_telegram=1数量={fmt_count(row['sent_to_telegram_1'] if isinstance(row['sent_to_telegram_1'], int) else None)} "
+            f"sent_to_telegram=0数量={fmt_count(row['sent_to_telegram_0'] if isinstance(row['sent_to_telegram_0'], int) else None)} "
+            f"notifier_send_failed={fmt_count(row['notifier_send_failed'] if isinstance(row['notifier_send_failed'], int) else None)} "
+            f"transport_error_records={fmt_count(row['transport_error_records'] if isinstance(row['transport_error_records'], int) else None)}"
+        )
+
+    audit_success = max_recent_ts(
+        conn,
+        "delivery_audit",
+        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+        "sent_to_telegram = 1" if "sent_to_telegram" in columns(conn, "delivery_audit") else "0",
+    )
+    tg_success = max_recent_ts(
+        conn,
+        "telegram_deliveries",
+        ["sent_at", "created_at"],
+        "sent = 1" if "sent" in columns(conn, "telegram_deliveries") else "0",
+    )
+    success_candidates = [value for value in (audit_success, tg_success) if value is not None]
+    last_success = max(success_candidates) if success_candidates else None
+
+    failure_pred = notifier_failure_predicate(conn)
+    audit_failure = max_recent_ts(
+        conn,
+        "delivery_audit",
+        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
+        failure_pred,
+    )
+    tg_failure = max_recent_ts(
+        conn,
+        "telegram_deliveries",
+        ["sent_at", "created_at"],
+        "sent = 0 AND COALESCE(suppressed, 0) = 0"
+        if {"sent", "suppressed"}.issubset(columns(conn, "telegram_deliveries"))
+        else "0",
+    )
+    failure_candidates = [value for value in (audit_failure, tg_failure) if value is not None]
+    last_failure = max(failure_candidates) if failure_candidates else None
+    print(f"最近成功 Telegram 发送时间: {fmt_ts(last_success)}")
+    print(f"最近失败时间: {fmt_ts(last_failure)}")
+
+    runtime_health, runtime_status = read_notifier_runtime_health()
+    if runtime_health is None:
+        print(f"notifier.get_notifier_health: {runtime_status}")
+    else:
+        print(
+            "notifier.get_notifier_health: "
+            "source=local_import_snapshot "
+            f"attempted={int(runtime_health.get('attempted') or 0)} "
+            f"sent_ok={int(runtime_health.get('sent_ok') or 0)} "
+            f"sent_failed={int(runtime_health.get('sent_failed') or 0)} "
+            f"pool_timeout_count={int(runtime_health.get('pool_timeout_count') or 0)} "
+            f"retry_after_count={int(runtime_health.get('retry_after_count') or 0)} "
+            f"network_error_count={int(runtime_health.get('network_error_count') or 0)} "
+            f"consecutive_failures={int(runtime_health.get('consecutive_failures') or 0)} "
+            f"last_success_ts={fmt_ts(runtime_health.get('last_success_ts'))} "
+            f"last_failure_ts={fmt_ts(runtime_health.get('last_failure_ts'))}"
+        )
+        if int(runtime_health.get("pool_timeout_count") or 0) > 0 or int(runtime_health.get("network_error_count") or 0) > 0:
+            recent_transport_errors += 1
+        if int(runtime_health.get("sent_failed") or 0) > 0 and int(runtime_health.get("sent_ok") or 0) == 0:
+            warning_reasons.append("notifier runtime sent_failed>0 且 sent_ok=0")
+
+    if warning_reasons:
+        print(f"warning: Telegram outbound 可能异常（{'; '.join(warning_reasons)}）")
+    if recent_transport_errors > 0:
+        print("warning: 最近发现 Telegram pool timeout / NetworkError / TimedOut 记录")
+    if not warning_reasons and recent_transport_errors <= 0:
+        print("Telegram outbound 状态: 未发现明显异常")
 
 
 def max_field(conn: sqlite3.Connection, table: str, candidates: list[str]) -> str:
@@ -1212,7 +1508,7 @@ def spill_summary() -> str:
 
 print("## Listener Data Freshness")
 if db_path.exists():
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         print(f"SQLite 最新 logical_date: {max_field(conn, 'signals', ['logical_date'])}")
         print(f"最近 raw_events 时间: {max_field(conn, 'raw_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
@@ -1220,10 +1516,15 @@ if db_path.exists():
         print(f"最近 signals 时间: {max_field(conn, 'signals', ['timestamp', 'created_at', 'updated_at', 'notifier_sent_at'])}")
         if table_exists(conn, "runtime_heartbeats"):
             print(f"runtime_heartbeats 最新 check_ts: {safe_scalar(conn, 'SELECT MAX(check_ts) FROM runtime_heartbeats')}")
+        print_telegram_outbound_health(conn)
     finally:
         conn.close()
 else:
     print("SQLite 状态: missing data/chain_monitor.sqlite")
+    print()
+    print("## Telegram outbound health")
+    print("source=SQLite 聚合；只读；未发送 Telegram warning")
+    print("Telegram outbound 状态: 数据不足，SQLite missing")
 print(f"最近 archive 修改时间: {latest_archive_mtime()}")
 print(f"latest zero_activity_day: {latest_zero_activity()}")
 print(f"queue spill: {spill_summary()}")
@@ -1240,6 +1541,8 @@ PY
     echo "listener_process=no_process_match_or_pgrep_failed"
   fi
   grep -E '^(最近 raw_events 时间|最近 parsed_events 时间|最近 signals 时间|最近 archive 修改时间|latest zero_activity_day|SQLite 最新 logical_date|queue spill):' "$final_output" || true
+  echo "Telegram outbound:"
+  grep -E '^(最近30分钟|最近2小时)：|^(warning: Telegram outbound|warning: 最近发现 Telegram)|^(最近成功 Telegram 发送时间|最近失败时间|notifier\.get_notifier_health|Telegram outbound 状态):' "$final_output" || true
   echo "action=只读体检；未重启 listener。"
   exit 0
 }
@@ -2714,6 +3017,709 @@ if not verified:
 PY
 }
 
+cmd_learning_review() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "learning-review --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown learning-review argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "learning-review requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="learning-review ${report_date}"
+  require_daily_report_json "$report_date"
+
+  "$(python_bin)" - "$report_date" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def first_dict(*values: Any) -> dict[str, Any]:
+    for value in values:
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
+def num(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def intish(value: Any) -> int | None:
+    parsed = num(value)
+    return None if parsed is None else int(parsed)
+
+
+def fmt(value: Any, digits: int = 4) -> str:
+    parsed = num(value)
+    if parsed is None:
+        return "missing"
+    return f"{parsed:.{digits}f}".rstrip("0").rstrip(".")
+
+
+def value_or_missing(value: Any) -> str:
+    if value is None or value == "":
+        return "missing"
+    return str(value)
+
+
+def top_items(counter: Counter[str], limit: int = 3) -> str:
+    if not counter:
+        return "missing"
+    return "；".join(f"{key}={count}" for key, count in counter.most_common(limit))
+
+
+def add_counter(counter: Counter[str], value: Any) -> None:
+    if not isinstance(value, dict):
+        return
+    for key, count in value.items():
+        name = str(key or "").strip()
+        parsed = intish(count)
+        if name and parsed is not None:
+            counter[name] += parsed
+
+
+def profile_line(profile: Any) -> str:
+    if not isinstance(profile, dict):
+        return ""
+    return (
+        f"samples={value_or_missing(profile.get('valid_sample_count'))} "
+        f"avg_net_pnl_bps={fmt(profile.get('avg_net_pnl_bps'), 2)} "
+        f"profile={value_or_missing(profile.get('profile_key'))}"
+    )
+
+
+date = sys.argv[1]
+path = Path("reports/daily") / f"daily_report_{date}.json"
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload = as_dict(payload)
+
+quality = as_dict(payload.get("data_quality_summary"))
+replay = as_dict(payload.get("trade_replay_summary"))
+profile_summary = first_dict(
+    payload.get("trade_replay_profile_summary"),
+    payload.get("profile_posterior_summary"),
+    replay,
+)
+blocker = as_dict(payload.get("blocker_summary"))
+shadow = first_dict(payload.get("shadow_funnel_summary"), payload.get("shadow_opportunity_summary"), replay.get("shadow_funnel_summary"))
+telegram = as_dict(payload.get("telegram_suppression_summary"))
+run_overview = as_dict(payload.get("run_overview"))
+data_source = as_dict(payload.get("data_source_summary"))
+row_counts = as_dict(data_source.get("row_counts"))
+
+data_status = str(quality.get("data_quality_status") or "missing")
+zero_activity = quality.get("zero_activity_day")
+data_valid = data_status == "valid" and zero_activity is not True and zero_activity != 1
+
+lp_signal_rows = run_overview.get("lp_signal_rows")
+if lp_signal_rows is None:
+    lp_signal_rows = payload.get("lp_signal_rows", payload.get("lp_rows"))
+if lp_signal_rows is None:
+    lp_signal_rows = quality.get("lp_signal_rows")
+lp_rows_missing = lp_signal_rows is None
+
+replay_source = replay.get("replay_source")
+replay_scope = replay.get("replay_scope")
+avg_net = num(replay.get("avg_net_pnl_bps"))
+suppressed_avg = num(replay.get("suppressed_avg_net_pnl_bps"))
+candidate_coverage = num(
+    replay.get(
+        "replay_coverage_rate_candidate",
+        as_dict(replay.get("eligibility_summary")).get("replay_coverage_rate_candidate"),
+    )
+)
+candidate_coverage_zero = candidate_coverage == 0.0
+
+negative_profiles = (
+    as_list(profile_summary.get("blocker_grade_negative_profiles"))
+    or as_list(profile_summary.get("high_confidence_negative_profiles"))
+    or as_list(profile_summary.get("sampled_negative_profiles"))
+    or as_list(profile_summary.get("top_negative_profiles"))
+)
+negative_profile_lines = [line for line in (profile_line(item) for item in negative_profiles[:3]) if line]
+high_sample_positive = as_list(profile_summary.get("high_confidence_positive_profiles"))
+
+blocker_counter: Counter[str] = Counter()
+add_counter(blocker_counter, blocker.get("verification_blocker_distribution"))
+add_counter(blocker_counter, as_dict(blocker.get("replay_profile_negative_summary")).get("primary_blocker_distribution"))
+add_counter(blocker_counter, blocker.get("top_blockers"))
+add_counter(blocker_counter, blocker.get("hard_blocker_distribution"))
+shadow_blockers = as_dict(shadow.get("shadow_reason_distribution")) or as_dict(shadow.get("shadow_blocked_reasons"))
+add_counter(blocker_counter, shadow_blockers)
+
+shadow_candidate = intish(shadow.get("shadow_candidate_count"))
+shadow_verified = intish(shadow.get("shadow_verified_count"))
+
+delivery_audit_rows = intish(row_counts.get("delivery_audit"))
+telegram_rows = intish(row_counts.get("telegram_deliveries"))
+telegram_after = intish(telegram.get("messages_after_suppression_actual"))
+telegram_before = intish(telegram.get("messages_before_suppression_estimate"))
+high_value_suppressed = intish(telegram.get("high_value_suppressed_count")) or 0
+telegram_ratio = num(telegram.get("telegram_suppression_ratio"))
+if not data_valid:
+    telegram_noise = "不评价：data_quality invalid"
+elif telegram_after is None:
+    telegram_noise = "数据不足"
+elif telegram_after <= 30 and high_value_suppressed == 0:
+    telegram_noise = "否"
+elif telegram_after <= 50 and high_value_suppressed == 0:
+    telegram_noise = "可控"
+else:
+    telegram_noise = "偏多"
+
+troubleshoot_items: list[str] = []
+if candidate_coverage_zero:
+    troubleshoot_items.append("CANDIDATE覆盖率=0，排查 candidate/opportunity/replay 连接")
+if lp_rows_missing:
+    troubleshoot_items.append("LP signal rows 缺失")
+if replay_source != "persisted" or replay_scope != "full":
+    troubleshoot_items.append("replay 不是 persisted/full")
+
+if not data_valid:
+    conclusion = "排障"
+    tomorrow = "修复 data_quality 输入完整性"
+elif lp_rows_missing or replay_source != "persisted" or replay_scope != "full":
+    conclusion = "排障"
+    tomorrow = "补齐 LP/replay 数据链路"
+elif avg_net is not None and suppressed_avg is not None and avg_net < 0 and suppressed_avg < 0:
+    conclusion = "收紧"
+    tomorrow = "先排查 candidate/opportunity/replay 连接" if candidate_coverage_zero else "复核主要负收益 profile 的阻断"
+elif candidate_coverage_zero or not high_sample_positive:
+    conclusion = "观察"
+    tomorrow = "先排查 candidate/opportunity/replay 连接" if candidate_coverage_zero else "继续积累高样本正收益 profile"
+elif telegram_noise == "偏多":
+    conclusion = "观察"
+    tomorrow = "复核 Telegram 去噪口径"
+else:
+    conclusion = "保持"
+    tomorrow = "保持当前学习口径"
+
+print(f"Chain Monitor 学习复盘｜{date}")
+print(f"数据是否有效={ '有效' if data_valid else '无效' } data_quality_status={data_status} zero_activity_day={value_or_missing(zero_activity)}")
+print(f"replay_source / replay_scope={value_or_missing(replay_source)} / {value_or_missing(replay_scope)}")
+print(f"avg_net_pnl_bps={fmt(avg_net, 2)}")
+print(f"suppressed_avg_net_pnl_bps={fmt(suppressed_avg, 2)}")
+print(f"CANDIDATE 覆盖率={fmt(candidate_coverage, 4)}")
+print(f"LP signal rows 是否缺失={'是' if lp_rows_missing else '否'} value={value_or_missing(lp_signal_rows)}")
+if data_valid:
+    print(f"主要负收益 profile={negative_profile_lines[0] if negative_profile_lines else 'missing'}")
+    for line in negative_profile_lines[1:3]:
+        print(f"负收益 profile补充={line}")
+    print(f"主要 blocker={top_items(blocker_counter)}")
+else:
+    print("主要负收益 profile=不评价：data_quality invalid")
+    print("主要 blocker=不评价：data_quality invalid")
+print(f"shadow_candidate / shadow_verified={value_or_missing(shadow_candidate)} / {value_or_missing(shadow_verified)}")
+print(
+    "delivery_audit / telegram delivery summary="
+    f"delivery_audit_rows={value_or_missing(delivery_audit_rows)} "
+    f"telegram_deliveries={value_or_missing(telegram_rows)} "
+    f"messages_before={value_or_missing(telegram_before)} "
+    f"messages_after={value_or_missing(telegram_after)} "
+    f"suppression_ratio={fmt(telegram_ratio, 4)} "
+    f"high_value_suppressed={high_value_suppressed}"
+)
+print(f"Telegram 推送是否可能噪音过多={telegram_noise}")
+print(f"高样本正收益 profile={len(high_sample_positive) if data_valid else '不评价'}")
+if data_valid and not high_sample_positive:
+    print("VERIFIED升级依据=不足，缺少高样本正收益 profile")
+if troubleshoot_items:
+    print("排查项=" + "；".join(troubleshoot_items))
+if not data_valid:
+    print("策略评价=跳过：data_quality invalid")
+print(f"今日结论：{conclusion}")
+print(f"明天只建议改一个点：{tomorrow}")
+print("说明=仅为学习复盘，不含执行指令。")
+PY
+}
+
+cmd_candidate_coverage() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "candidate-coverage --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown candidate-coverage argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "candidate-coverage requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="candidate-coverage ${report_date}"
+
+  "$(python_bin)" - "$report_date" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import sys
+from collections import Counter
+from datetime import date as date_type
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+
+STATUSES = ("NONE", "CANDIDATE", "VERIFIED", "BLOCKED", "INVALIDATED")
+BJ_TZ = timezone(timedelta(hours=8))
+
+
+def logical_window(logical_date: str) -> tuple[int, int]:
+    parsed = date_type.fromisoformat(logical_date)
+    start_bj = datetime(parsed.year, parsed.month, parsed.day, tzinfo=BJ_TZ)
+    start_ts = int(start_bj.timestamp())
+    return start_ts, start_ts + 24 * 3600 - 1
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row)
+
+
+def columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def epoch_expr(column: str) -> str:
+    return f"(CASE WHEN CAST({column} AS REAL) > 10000000000 THEN CAST({column} AS REAL) / 1000.0 ELSE CAST({column} AS REAL) END)"
+
+
+def time_expr(cols: set[str], candidates: tuple[str, ...]) -> str:
+    present = [column for column in candidates if column in cols]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return epoch_expr(present[0])
+    return "COALESCE(" + ", ".join(epoch_expr(column) for column in present) + ")"
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def norm_status(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if raw in {"", "NONE", "NULL", "N/A", "NA"}:
+        return "NONE"
+    if raw in STATUSES:
+        return raw
+    return "OTHER"
+
+
+def status_counter() -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for status in STATUSES:
+        counter[status] = 0
+    return counter
+
+
+def format_status_distribution(counter: Counter[str]) -> str:
+    items = [f"{status}={safe_int(counter.get(status))}" for status in STATUSES]
+    other = safe_int(counter.get("OTHER"))
+    if other:
+        items.append(f"OTHER={other}")
+    return " / ".join(items)
+
+
+def redact_text(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"0x[0-9A-Fa-f]{64}", "0xTX_REDACTED", text)
+    text = re.sub(r"0x[0-9A-Fa-f]{40}", "0xADDR_REDACTED", text)
+    if len(text) > 80:
+        text = text[:77] + "..."
+    return text or "unknown"
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def read_daily_report(logical_date: str) -> tuple[dict[str, Any], list[str], str]:
+    path = Path("reports/daily") / f"daily_report_{logical_date}.json"
+    if not path.exists():
+        return {}, [f"daily_report_missing:{path.as_posix()}"], "missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {}, [f"daily_report_unreadable:{exc.__class__.__name__}"], "unreadable"
+    if not isinstance(payload, dict):
+        return {}, ["daily_report_schema_non_dict"], "unreadable"
+    return payload, [], "present"
+
+
+def count_window(
+    conn: sqlite3.Connection,
+    table: str,
+    time_candidates: tuple[str, ...],
+    start_ts: int,
+    end_ts: int,
+    warnings: list[str],
+    predicate: str = "",
+) -> int:
+    cols = columns(conn, table)
+    if not cols:
+        warnings.append(f"sqlite_missing_table:{table}")
+        return 0
+    expr = time_expr(cols, time_candidates)
+    if not expr:
+        warnings.append(f"sqlite_missing_time_column:{table}")
+        return 0
+    sql = f"SELECT COUNT(*) FROM {table} WHERE {expr} >= ? AND {expr} <= ?"
+    if predicate:
+        sql += f" AND ({predicate})"
+    try:
+        row = conn.execute(sql, (start_ts, end_ts)).fetchone()
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:{table}:{exc.__class__.__name__}")
+        return 0
+    return safe_int(row[0] if row else 0)
+
+
+def trade_opportunity_distribution(
+    conn: sqlite3.Connection,
+    start_ts: int,
+    end_ts: int,
+    warnings: list[str],
+) -> tuple[int, Counter[str]]:
+    table = "trade_opportunities"
+    counter = status_counter()
+    cols = columns(conn, table)
+    if not cols:
+        warnings.append("sqlite_missing_table:trade_opportunities")
+        return 0, counter
+    expr = time_expr(cols, ("created_at", "updated_at"))
+    if not expr:
+        warnings.append("sqlite_missing_time_column:trade_opportunities")
+        return 0, counter
+
+    select_parts = []
+    if "status" in cols:
+        select_parts.append("status")
+    if "opportunity_json" in cols:
+        select_parts.append("opportunity_json")
+    if not select_parts:
+        warnings.append("sqlite_missing_status_column:trade_opportunities")
+        return count_window(conn, table, ("created_at", "updated_at"), start_ts, end_ts, warnings), counter
+
+    sql = f"SELECT {', '.join(select_parts)} FROM {table} WHERE {expr} >= ? AND {expr} <= ?"
+    rows = []
+    try:
+        rows = conn.execute(sql, (start_ts, end_ts)).fetchall()
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:trade_opportunities:{exc.__class__.__name__}")
+        return 0, counter
+
+    for row in rows:
+        status_value = row["status"] if "status" in row.keys() else ""
+        if not status_value and "opportunity_json" in row.keys():
+            try:
+                payload = json.loads(row["opportunity_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict):
+                status_value = payload.get("trade_opportunity_status") or payload.get("status")
+        counter[norm_status(status_value)] += 1
+    return len(rows), counter
+
+
+def replay_stats(
+    conn: sqlite3.Connection,
+    logical_date: str,
+    preferred_scope: str,
+    warnings: list[str],
+) -> tuple[str, int, int, int, dict[str, int]]:
+    table = "trade_replay_examples"
+    cols = columns(conn, table)
+    if not cols:
+        warnings.append("sqlite_missing_table:trade_replay_examples")
+        return "missing", 0, 0, 0, {}
+    if "logical_date" not in cols:
+        warnings.append("sqlite_missing_column:trade_replay_examples.logical_date")
+        return "missing", 0, 0, 0, {}
+
+    scope_counts: dict[str, int] = {}
+    scope_used = "all"
+    where = "logical_date = ?"
+    params: list[Any] = [logical_date]
+    if "replay_scope" in cols:
+        try:
+            scope_rows = conn.execute(
+                "SELECT COALESCE(replay_scope, '') AS replay_scope, COUNT(*) FROM trade_replay_examples WHERE logical_date=? GROUP BY COALESCE(replay_scope, '')",
+                (logical_date,),
+            ).fetchall()
+            scope_counts = {str(row[0] or "missing"): safe_int(row[1]) for row in scope_rows}
+        except sqlite3.Error as exc:
+            warnings.append(f"sqlite_query_failed:trade_replay_examples_scope:{exc.__class__.__name__}")
+            scope_counts = {}
+        preferred = preferred_scope.strip() if preferred_scope else ""
+        if preferred and scope_counts.get(preferred, 0) > 0:
+            scope_used = preferred
+        elif scope_counts.get("full", 0) > 0:
+            scope_used = "full"
+        elif len(scope_counts) == 1:
+            scope_used = next(iter(scope_counts))
+        if scope_used != "all":
+            where += " AND COALESCE(replay_scope, '') = ?"
+            params.append("" if scope_used == "missing" else scope_used)
+
+    try:
+        total_row = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()
+        total = safe_int(total_row[0] if total_row else 0)
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:trade_replay_examples:{exc.__class__.__name__}")
+        return scope_used, 0, 0, 0, scope_counts
+
+    with_opportunity = 0
+    if "trade_opportunity_id" in cols:
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where} AND trade_opportunity_id IS NOT NULL AND TRIM(CAST(trade_opportunity_id AS TEXT)) != ''",
+                params,
+            ).fetchone()
+            with_opportunity = safe_int(row[0] if row else 0)
+        except sqlite3.Error as exc:
+            warnings.append(f"sqlite_query_failed:trade_replay_examples_opportunity:{exc.__class__.__name__}")
+    else:
+        warnings.append("sqlite_missing_column:trade_replay_examples.trade_opportunity_id")
+
+    candidate = 0
+    if "opportunity_status" in cols:
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where} AND UPPER(COALESCE(opportunity_status, '')) = 'CANDIDATE'",
+                params,
+            ).fetchone()
+            candidate = safe_int(row[0] if row else 0)
+        except sqlite3.Error as exc:
+            warnings.append(f"sqlite_query_failed:trade_replay_examples_candidate:{exc.__class__.__name__}")
+    else:
+        warnings.append("sqlite_missing_column:trade_replay_examples.opportunity_status")
+    return scope_used, total, with_opportunity, candidate, scope_counts
+
+
+def delivery_audit_distribution(
+    conn: sqlite3.Connection,
+    start_ts: int,
+    end_ts: int,
+    warnings: list[str],
+) -> tuple[int, Counter[str]]:
+    table = "delivery_audit"
+    dist: Counter[str] = Counter()
+    cols = columns(conn, table)
+    if not cols:
+        warnings.append("sqlite_missing_table:delivery_audit")
+        return 0, dist
+    expr = time_expr(cols, ("notifier_sent_at", "timestamp", "archive_written_at", "created_at", "updated_at"))
+    if not expr:
+        warnings.append("sqlite_missing_time_column:delivery_audit")
+        return 0, dist
+    if "sent_to_telegram" in cols:
+        sent_pred = "sent_to_telegram = 1"
+    elif "delivered" in cols:
+        sent_pred = "delivered = 1"
+    else:
+        warnings.append("sqlite_missing_sent_column:delivery_audit")
+        return 0, dist
+
+    stage_expr = "stage" if "stage" in cols else "''"
+    status_expr = "opportunity_status" if "opportunity_status" in cols else "''"
+    sql = (
+        f"SELECT {stage_expr} AS stage, {status_expr} AS opportunity_status, COUNT(*) AS count "
+        f"FROM {table} WHERE {expr} >= ? AND {expr} <= ? AND ({sent_pred}) "
+        f"GROUP BY {stage_expr}, {status_expr}"
+    )
+    try:
+        rows = conn.execute(sql, (start_ts, end_ts)).fetchall()
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:delivery_audit:{exc.__class__.__name__}")
+        return 0, dist
+    total = 0
+    for row in rows:
+        count = safe_int(row["count"])
+        stage = redact_text(row["stage"]).lower()
+        status = norm_status(row["opportunity_status"])
+        dist[f"{stage}/{status}"] += count
+        total += count
+    return total, dist
+
+
+def format_distribution(counter: Counter[str], limit: int = 20) -> str:
+    if not counter:
+        return "missing"
+    return "；".join(f"{key}={value}" for key, value in counter.most_common(limit))
+
+
+logical_date = sys.argv[1]
+start_ts, end_ts = logical_window(logical_date)
+payload, report_warnings, report_status = read_daily_report(logical_date)
+quality = as_dict(payload.get("data_quality_summary"))
+replay = as_dict(payload.get("trade_replay_summary"))
+preferred_scope = str(replay.get("replay_scope") or "")
+warnings = list(report_warnings)
+
+configured_db = os.getenv("HERMES_CANDIDATE_COVERAGE_DB_PATH", "data/chain_monitor.sqlite")
+db_path = Path(configured_db)
+if not db_path.is_absolute():
+    db_path = Path.cwd() / db_path
+
+signals_total = 0
+trade_total = 0
+trade_status = status_counter()
+replay_scope_used = "missing"
+replay_total = 0
+replay_with_opportunity = 0
+replay_candidate = 0
+replay_scope_counts: dict[str, int] = {}
+delivery_total = 0
+delivery_dist: Counter[str] = Counter()
+
+if not db_path.exists():
+    warnings.append("sqlite_missing:data/chain_monitor.sqlite")
+else:
+    try:
+        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
+    else:
+        try:
+            signals_total = count_window(
+                conn,
+                "signals",
+                ("timestamp", "archive_written_at", "created_at", "updated_at", "notifier_sent_at"),
+                start_ts,
+                end_ts,
+                warnings,
+            )
+            trade_total, trade_status = trade_opportunity_distribution(conn, start_ts, end_ts, warnings)
+            replay_scope_used, replay_total, replay_with_opportunity, replay_candidate, replay_scope_counts = replay_stats(
+                conn,
+                logical_date,
+                preferred_scope,
+                warnings,
+            )
+            delivery_total, delivery_dist = delivery_audit_distribution(conn, start_ts, end_ts, warnings)
+        finally:
+            conn.close()
+
+trade_candidate = safe_int(trade_status.get("CANDIDATE"))
+
+print(f"Chain Monitor CANDIDATE覆盖诊断｜{logical_date}")
+print(f"daily_report_status={report_status}")
+print(
+    "data_quality_status="
+    f"{quality.get('data_quality_status', 'missing')} "
+    f"zero_activity_day={quality.get('zero_activity_day', 'missing')}"
+)
+print(
+    "replay_source / replay_scope="
+    f"{replay.get('replay_source', 'missing')} / {replay.get('replay_scope', 'missing')}"
+)
+print(
+    "daily_report_replay="
+    f"replay_count={replay.get('replay_count', 'missing')} "
+    f"valid_replay_count={replay.get('valid_replay_count', 'missing')} "
+    f"replay_coverage_rate_candidate={replay.get('replay_coverage_rate_candidate', as_dict(replay.get('eligibility_summary')).get('replay_coverage_rate_candidate', 'missing'))}"
+)
+print(f"signals_total={signals_total}")
+print(f"trade_opportunities_total={trade_total}")
+print(f"trade_opportunity_status_distribution={format_status_distribution(trade_status)}")
+print(f"replay_scope_used={replay_scope_used}")
+print(f"replay_scope_counts={json.dumps(replay_scope_counts, ensure_ascii=False, sort_keys=True) if replay_scope_counts else 'missing'}")
+print(f"replay_examples_total={replay_total}")
+print(f"replay_examples_with_opportunity={replay_with_opportunity}")
+print(f"replay_examples_status_CANDIDATE={replay_candidate}")
+print(f"delivery_audit_telegram_push_total={delivery_total}")
+print(f"delivery_audit_stage_status_distribution={format_distribution(delivery_dist)}")
+
+diagnostics: list[str] = []
+if delivery_total >= 5 and replay_candidate <= max(1, delivery_total // 2):
+    diagnostics.append("实时推送主要是 observe/signal，不是 opportunity candidate。")
+if trade_candidate > 0 and replay_candidate == 0:
+    diagnostics.append("trade_opportunities 有 CANDIDATE 但 replay examples 未覆盖，replay 关联层可能漏接。")
+if trade_candidate == 0:
+    diagnostics.append("CANDIDATE 本身为 0，candidate gate 太严格或当天无合格候选。")
+if replay_total > 0 and replay_with_opportunity == 0:
+    diagnostics.append("replay examples 没有关联 opportunity_id，signals -> opportunity -> replay 连接需要排查。")
+if not diagnostics:
+    diagnostics.append("未发现 CANDIDATE 覆盖链路的明显断点；请结合日报质量字段继续复核。")
+
+for item in diagnostics:
+    print(f"提示={item}")
+if warnings:
+    print("limitations=" + "；".join(dict.fromkeys(warnings)))
+print("说明=只读聚合诊断，不含执行指令。")
+PY
+}
+
+cmd_lp_diagnose() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "lp-diagnose --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown lp-diagnose argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "lp-diagnose requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="lp-diagnose ${report_date}"
+
+  "$(python_bin)" scripts/hermes_lp_diagnose.py --date "$report_date"
+}
+
 cmd_space_check() {
   local output_dir="reports/hermes"
   local final_output="${output_dir}/hermes_space_check_latest.md"
@@ -3300,7 +4306,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|space-check|archive-compress-check|weekly-review)
+  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -3480,6 +4486,18 @@ case "$1" in
   shadow-review)
     shift
     cmd_shadow_review "$@"
+    ;;
+  learning-review)
+    shift
+    cmd_learning_review "$@"
+    ;;
+  candidate-coverage)
+    shift
+    cmd_candidate_coverage "$@"
+    ;;
+  lp-diagnose)
+    shift
+    cmd_lp_diagnose "$@"
     ;;
   space-check)
     shift
