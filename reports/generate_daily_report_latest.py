@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -29,6 +29,10 @@ from replay_profile_gate import profile_payload as replay_profile_payload  # noq
 from replay_profile_gate import repair_profile_rows_with_sources  # noqa: E402
 from replay_profile_gate import replay_profile_summary  # noqa: E402
 from trade_opportunity import BLOCKER_PRIORITY, choose_primary_blocker  # noqa: E402
+try:  # noqa: E402
+    from trade_replay import normalize_lp_sample_asset_pair
+except Exception:  # noqa: E402
+    normalize_lp_sample_asset_pair = None
 from app import report_data_loader  # noqa: E402
 
 
@@ -65,6 +69,9 @@ PREALERT_COUNT_FIELDS = (
 )
 LP_LIKE_TERMS = ("lp", "pool", "liquidity", "clmm")
 LP_SUPPRESSION_REPLAY_MIN_SAMPLES = 3
+LP_SUPPRESSION_SAMPLE_SCOPE = "lp_suppression_sample"
+LP_SUPPRESSION_SAMPLE_MIN_SAMPLES = 10
+LP_SUPPRESSION_SAMPLE_REVIEW_PROFITABLE_RATE = 0.55
 CANDIDATE_FRONTIER_MARGIN = 0.05
 NEAR_CANDIDATE_SOFT_BLOCKERS = {
     "score_below_shadow_candidate",
@@ -1929,7 +1936,64 @@ def _read_trade_replay_rows(logical_date: str) -> list[dict[str, Any]]:
                 ]
                 if rows:
                     return rows
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM trade_replay_examples WHERE logical_date=? AND COALESCE(replay_scope, 'default') != ?",
+                    (logical_date, LP_SUPPRESSION_SAMPLE_SCOPE),
+                ).fetchall()
+            ]
         return [dict(row) for row in conn.execute("SELECT * FROM trade_replay_examples WHERE logical_date=?", (logical_date,)).fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _read_opportunity_outcome_rows(window: dict[str, Any], opportunity_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    path = _db_path()
+    if not path.exists():
+        return []
+    opportunity_ids = sorted(
+        {
+            str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+            for row in opportunity_rows
+            if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+        }
+    )
+    try:
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return []
+    try:
+        if not _sqlite_table_exists(conn, "opportunity_outcomes"):
+            return []
+        cols = _sqlite_columns(conn, "opportunity_outcomes")
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        if opportunity_ids and "trade_opportunity_id" in cols:
+            for index in range(0, len(opportunity_ids), 500):
+                batch = opportunity_ids[index : index + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows.extend(dict(row) for row in conn.execute(f"SELECT * FROM opportunity_outcomes WHERE trade_opportunity_id IN ({placeholders})", tuple(batch)).fetchall())
+        expr = _sqlite_time_expr(cols, ("created_at", "completed_at", "due_at", "updated_at"), "")
+        if expr:
+            rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    f"SELECT * FROM opportunity_outcomes WHERE {expr} >= ? AND {expr} <= ?",
+                    (window["start_ts"], window["end_ts"]),
+                ).fetchall()
+            )
+        unique: list[dict[str, Any]] = []
+        for row in rows:
+            key = (str(row.get("trade_opportunity_id") or ""), int(_to_int(row.get("window_sec")) or 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        return unique
     except sqlite3.Error:
         return []
     finally:
@@ -1948,6 +2012,114 @@ def _replay_values_for_opportunities(replay_rows: list[dict[str, Any]], opportun
         if value is not None:
             values.append(value)
     return values
+
+
+def _candidate_coverage_summary(
+    signal_rows: list[dict[str, Any]],
+    opportunity_rows: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+    candidate_frontier: dict[str, Any],
+) -> dict[str, Any]:
+    replay_with_opportunity = [
+        row
+        for row in replay_rows
+        if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+    ]
+    candidate_replay = [
+        row
+        for row in replay_rows
+        if _status({"status": _first(row, "opportunity_status", "trade_opportunity_status", "status")}) == "CANDIDATE"
+    ]
+    return {
+        "available": bool(signal_rows or opportunity_rows or replay_rows),
+        "signals_total": len(signal_rows),
+        "trade_opportunities_total": len(opportunity_rows),
+        "none_count": int(candidate_frontier.get("none_count") or 0),
+        "blocked_count": int(candidate_frontier.get("blocked_count") or 0),
+        "candidate_count": int(candidate_frontier.get("candidate_count") or 0),
+        "verified_count": int(candidate_frontier.get("verified_count") or 0),
+        "replay_examples_total": len(replay_rows),
+        "replay_examples_with_opportunity": len(replay_with_opportunity),
+        "replay_examples_status_candidate": len(candidate_replay),
+        "near_candidate_count": int(candidate_frontier.get("near_candidate_count") or 0),
+        "near_candidate_avg_net_pnl_bps": candidate_frontier.get("near_candidate_avg_net_pnl_bps"),
+        "diagnosis": candidate_frontier.get("diagnosis") or "insufficient_data",
+    }
+
+
+def _outcome_diagnosis_summary(
+    signal_rows: list[dict[str, Any]],
+    opportunity_rows: list[dict[str, Any]],
+    outcome_rows: list[dict[str, Any]],
+    opportunity_outcome_rows: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    signal_ids = {
+        str(_first(row, "signal_id", "record_id") or "").strip()
+        for row in signal_rows
+        if str(_first(row, "signal_id", "record_id") or "").strip()
+    }
+    opportunity_ids = {
+        str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+        for row in opportunity_rows
+        if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+    }
+    outcome_signal_ids = {
+        str(_first(row, "signal_id") or "").strip()
+        for row in outcome_rows
+        if str(_first(row, "signal_id") or "").strip() in signal_ids
+    }
+    opportunity_outcome_ids = {
+        str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+        for row in opportunity_outcome_rows
+        if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip() in opportunity_ids
+    }
+    replay_opportunity_ids = {
+        str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+        for row in replay_rows
+        if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip() in opportunity_ids
+    }
+    outcome_completed = sum(1 for row in outcome_rows if str(_first(row, "status") or "").lower() == "completed")
+    opportunity_completed = sum(1 for row in opportunity_outcome_rows if str(_first(row, "status") or "").lower() == "completed")
+    opportunity_pending = sum(1 for row in opportunity_outcome_rows if str(_first(row, "status") or "").lower() == "pending")
+    now_ts = int(datetime.now(UTC).timestamp())
+    past_due_pending = 0
+    for row in opportunity_outcome_rows:
+        if str(_first(row, "status") or "").lower() != "pending":
+            continue
+        due_at = _to_float(_first(row, "due_at"))
+        if due_at is not None and due_at > 10_000_000_000:
+            due_at = due_at / 1000.0
+        if due_at is not None and due_at <= now_ts:
+            past_due_pending += 1
+    if opportunity_outcome_rows and opportunity_pending and opportunity_completed == 0 and past_due_pending:
+        diagnosis = "opportunity_outcomes_pending_not_settled"
+        recommended = "outcome-catchup dry-run"
+    elif opportunity_rows and not opportunity_outcome_rows:
+        diagnosis = "opportunity_outcomes_missing"
+        recommended = "outcome-diagnose"
+    elif opportunity_pending:
+        diagnosis = "opportunity_outcomes_partially_pending"
+        recommended = "outcome-catchup dry-run"
+    else:
+        diagnosis = "ok"
+        recommended = "continue monitoring"
+    return {
+        "available": bool(signal_rows or opportunity_rows or outcome_rows or opportunity_outcome_rows),
+        "signals_total": len(signal_rows),
+        "trade_opportunities_total": len(opportunity_rows),
+        "outcomes_total": len(outcome_rows),
+        "outcomes_completed": outcome_completed,
+        "opportunity_outcomes_total": len(opportunity_outcome_rows),
+        "opportunity_outcomes_completed": opportunity_completed,
+        "opportunity_outcomes_pending": opportunity_pending,
+        "opportunity_outcomes_past_due_pending": past_due_pending,
+        "signals_to_outcomes_match_rate": _rate(len(outcome_signal_ids), len(signal_rows)),
+        "opportunities_to_opportunity_outcomes_match_rate": _rate(len(opportunity_outcome_ids), len(opportunity_rows)),
+        "opportunities_to_replay_examples_match_rate": _rate(len(replay_opportunity_ids), len(opportunity_rows)),
+        "diagnosis": diagnosis,
+        "recommended_next_check": recommended,
+    }
 
 
 def _candidate_frontier_summary(
@@ -2027,12 +2199,252 @@ def _candidate_frontier_summary(
     }
 
 
+def _lp_suppression_sample_recommended_action(sample_count: int, valid_count: int, avg: float | None, profitable_rate: float | None) -> str:
+    if sample_count < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES or valid_count < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES:
+        return "needs_more_samples"
+    if avg is not None and avg > 0 and profitable_rate is not None and profitable_rate >= LP_SUPPRESSION_SAMPLE_REVIEW_PROFITABLE_RATE:
+        return "review_threshold"
+    return "keep_suppressed"
+
+
+def _read_lp_suppression_sample_replay_summary(logical_date: str) -> dict[str, Any]:
+    path = _db_path()
+    empty = {
+        "available": False,
+        "sampled": False,
+        "sample_limit_per_reason": None,
+        "sample_min_count": LP_SUPPRESSION_SAMPLE_MIN_SAMPLES,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "by_reason": [],
+        "by_pair": {},
+        "invalid_count": 0,
+        "invalid_reason_counts": {},
+        "asset_pair_mismatch_examples": [],
+        "asset_pair_summary": {
+            "valid_pairs": {},
+            "invalid_single_asset_pair_count": 0,
+            "unknown_pair_count": 0,
+        },
+        "listener_prefilter_metadata_rows": 0,
+        "listener_prefilter_metadata_direction_rows": 0,
+        "listener_prefilter_metadata_pair_rows": 0,
+        "listener_prefilter_legacy_rows": 0,
+        "listener_prefilter_recovery_mode": "none",
+        "diagnosis": "needs_more_samples",
+    }
+    if not path.exists():
+        return {**empty, "reason": "sqlite_missing"}
+    try:
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return {**empty, "reason": "sqlite_open_failed"}
+    try:
+        if not _sqlite_table_exists(conn, "trade_replay_examples"):
+            return {**empty, "reason": "trade_replay_examples_missing"}
+        cols = _sqlite_columns(conn, "trade_replay_examples")
+        if not {"logical_date", "replay_scope"}.issubset(cols):
+            return {**empty, "reason": "replay_scope_missing"}
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM trade_replay_examples WHERE logical_date=? AND replay_scope=?",
+                (logical_date, LP_SUPPRESSION_SAMPLE_SCOPE),
+            ).fetchall()
+        ]
+    except sqlite3.Error as exc:
+        return {**empty, "reason": f"sqlite_query_failed:{exc.__class__.__name__}"}
+    finally:
+        conn.close()
+    if not rows:
+        return {**empty, "reason": "sample_replay_not_run"}
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    sample_limit: int | None = None
+    direction_inference_summary: Counter[str] = Counter(
+        {
+            "long": 0,
+            "short": 0,
+            "ambiguous": 0,
+            "conflict": 0,
+            "do_not_chase_long": 0,
+            "do_not_chase_short": 0,
+        }
+    )
+    direction_source_distribution: Counter[str] = Counter()
+    invalid_reason_counts: Counter[str] = Counter()
+    by_pair: Counter[str] = Counter()
+    listener_prefilter_metadata_rows = 0
+    listener_prefilter_metadata_direction_rows = 0
+    listener_prefilter_metadata_pair_rows = 0
+    listener_prefilter_legacy_rows = 0
+    invalid_single_asset_pair_count = 0
+    unknown_pair_count = 0
+    asset_pair_mismatch_examples: list[dict[str, Any]] = []
+    for row in rows:
+        features = _from_json(row.get("features_json"), {})
+        features = features if isinstance(features, dict) else {}
+        reason = str(features.get("suppression_reason") or "").strip()
+        if not reason:
+            reason = _normalize_suppression_reason(_first(row, "suppression_reason", "reason") or "unknown")
+        grouped[reason].append(row)
+        if reason == "listener_prefilter/drop":
+            if bool(features.get("listener_prefilter_has_metadata")):
+                listener_prefilter_metadata_rows += 1
+                if bool(features.get("listener_prefilter_metadata_has_direction")):
+                    listener_prefilter_metadata_direction_rows += 1
+                if bool(features.get("listener_prefilter_metadata_has_pair")):
+                    listener_prefilter_metadata_pair_rows += 1
+            else:
+                listener_prefilter_legacy_rows += 1
+        if sample_limit is None:
+            sample_limit = _to_int(features.get("sample_limit_per_reason"))
+        inferred_side = str(features.get("inferred_side") or row.get("side") or "").strip().lower()
+        direction_source = str(features.get("direction_source") or "").strip()
+        invalid_reason = str(features.get("invalid_reason") or row.get("invalid_reason") or "").strip()
+        original_intent = str(features.get("original_intent") or features.get("intent") or "").strip().upper()
+        pair_value = str(row.get("pair") or features.get("pair") or "").strip()
+        original_pair = str(features.get("original_pair") or "").strip()
+        if normalize_lp_sample_asset_pair is not None:
+            normalized_pair = normalize_lp_sample_asset_pair(
+                {
+                    "asset": row.get("asset"),
+                    "pair": pair_value,
+                    "original_pair": original_pair,
+                    "features_json": features,
+                }
+            )
+            pair_value = str(normalized_pair.get("pair") or "")
+        if pair_value and "/" in pair_value:
+            by_pair[pair_value] += 1
+        else:
+            unknown_pair_count += 1
+        if original_pair and "/" not in original_pair:
+            invalid_single_asset_pair_count += 1
+        if invalid_reason in {"asset_pair_mismatch", "outcome_asset_mismatch", "outcome_pair_mismatch"} and len(asset_pair_mismatch_examples) < 5:
+            asset_pair_mismatch_examples.append(
+                {
+                    "asset": str(row.get("asset") or "")[:20],
+                    "pair": str(row.get("pair") or "")[:40],
+                    "original_asset": str(features.get("original_asset") or "")[:20],
+                    "original_pair": original_pair[:40],
+                    "invalid_reason": invalid_reason,
+                }
+            )
+        if invalid_reason == "direction_conflict":
+            direction_inference_summary["conflict"] += 1
+        elif inferred_side in {"long", "long_bias_observe"} or str(row.get("side") or "").strip().upper() == "LONG":
+            direction_inference_summary["long"] += 1
+        elif inferred_side in {"short", "short_bias_observe"} or str(row.get("side") or "").strip().upper() == "SHORT":
+            direction_inference_summary["short"] += 1
+        elif invalid_reason == "direction_ambiguous":
+            direction_inference_summary["ambiguous"] += 1
+        if direction_source:
+            direction_source_distribution[direction_source] += 1
+            if direction_source == "do_not_chase_long":
+                direction_inference_summary["do_not_chase_long"] += 1
+            elif direction_source == "do_not_chase_short":
+                direction_inference_summary["do_not_chase_short"] += 1
+        elif invalid_reason:
+            direction_source_distribution[invalid_reason] += 1
+        if original_intent == "DO_NOT_CHASE_LONG" and direction_source != "do_not_chase_long":
+            direction_inference_summary["do_not_chase_long"] += 1
+        elif original_intent == "DO_NOT_CHASE_SHORT" and direction_source != "do_not_chase_short":
+            direction_inference_summary["do_not_chase_short"] += 1
+        if invalid_reason:
+            invalid_reason_counts[invalid_reason] += 1
+    by_reason: list[dict[str, Any]] = []
+    actions: list[str] = []
+    for reason in sorted(grouped):
+        reason_rows = grouped[reason]
+        valid_rows = [row for row in reason_rows if _is_true(row.get("data_valid", 1))]
+        invalid_rows = [row for row in reason_rows if not _is_true(row.get("data_valid", 1))]
+        invalid_by_reason = Counter(str(row.get("invalid_reason") or "unknown") for row in invalid_rows)
+        source_by_reason = Counter()
+        for row in reason_rows:
+            features = _from_json(row.get("features_json"), {})
+            features = features if isinstance(features, dict) else {}
+            source_by_reason[str(features.get("direction_source") or row.get("invalid_reason") or "unknown")] += 1
+        values = [
+            value
+            for value in (_to_float(row.get("net_pnl_bps")) for row in valid_rows)
+            if value is not None
+        ]
+        avg = round(sum(values) / len(values), 2) if values else None
+        profitable_rate = _rate(sum(1 for value in values if value > 0), len(values)) if values else None
+        action = _lp_suppression_sample_recommended_action(len(reason_rows), len(valid_rows), avg, profitable_rate)
+        actions.append(action)
+        by_reason.append(
+            {
+                "reason": reason,
+                "sample_count": len(reason_rows),
+                "replay_count": len(reason_rows),
+                "valid_replay_count": len(valid_rows),
+                "avg_net_pnl_bps": avg,
+                "profitable_rate": profitable_rate,
+                "recommended_action": action,
+                "invalid_reason_counts": dict(invalid_by_reason.most_common(10)),
+                "direction_source_distribution": dict(source_by_reason.most_common(10)),
+            }
+        )
+    if any(action == "review_threshold" for action in actions):
+        diagnosis = "possible_over_suppression"
+    elif actions and all(action == "keep_suppressed" for action in actions):
+        diagnosis = "early_suppression_seems_correct"
+    else:
+        diagnosis = "needs_more_samples"
+    if listener_prefilter_metadata_rows > 0:
+        listener_prefilter_recovery_mode = "metadata"
+    elif any(
+        str((_from_json(row.get("features_json"), {}) or {}).get("listener_prefilter_recovery_mode") or "") == "join"
+        for row in rows
+    ):
+        listener_prefilter_recovery_mode = "join"
+    else:
+        listener_prefilter_recovery_mode = "none"
+    valid_rows = [row for row in rows if _is_true(row.get("data_valid", 1))]
+    values = [
+        value
+        for value in (_to_float(row.get("net_pnl_bps")) for row in valid_rows)
+        if value is not None
+    ]
+    return {
+        "available": True,
+        "sampled": True,
+        "sample_limit_per_reason": sample_limit,
+        "sample_min_count": LP_SUPPRESSION_SAMPLE_MIN_SAMPLES,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "replay_count": len(rows),
+        "valid_replay_count": len(valid_rows),
+        "invalid_count": len(rows) - len(valid_rows),
+        "avg_net_pnl_bps": round(sum(values) / len(values), 2) if values else None,
+        "profitable_rate": _rate(sum(1 for value in values if value > 0), len(values)) if values else None,
+        "by_reason": by_reason,
+        "by_pair": dict(by_pair.most_common(20)),
+        "invalid_reason_counts": dict(invalid_reason_counts.most_common(20)),
+        "asset_pair_mismatch_examples": asset_pair_mismatch_examples,
+        "asset_pair_summary": {
+            "valid_pairs": dict(by_pair.most_common(20)),
+            "invalid_single_asset_pair_count": invalid_single_asset_pair_count,
+            "unknown_pair_count": unknown_pair_count,
+        },
+        "direction_inference_summary": dict(direction_inference_summary),
+        "direction_source_distribution": dict(direction_source_distribution.most_common(20)),
+        "listener_prefilter_metadata_rows": listener_prefilter_metadata_rows,
+        "listener_prefilter_metadata_direction_rows": listener_prefilter_metadata_direction_rows,
+        "listener_prefilter_metadata_pair_rows": listener_prefilter_metadata_pair_rows,
+        "listener_prefilter_legacy_rows": listener_prefilter_legacy_rows,
+        "listener_prefilter_recovery_mode": listener_prefilter_recovery_mode,
+        "diagnosis": diagnosis,
+    }
+
+
 def _lp_suppression_replay_summary(
     lp_suppression_summary: dict[str, Any],
     delivery_rows: list[dict[str, Any]],
     replay_rows: list[dict[str, Any]],
     signal_rows: list[dict[str, Any]],
     replay_summary: dict[str, Any] | None = None,
+    sample_replay_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     signal_by_id = {
         str(_first(row, "signal_id") or ""): row
@@ -2071,6 +2483,12 @@ def _lp_suppression_replay_summary(
             continue
         values_by_reason.setdefault(reason, []).append(value)
         overall_values.append(value)
+    sample_replay_summary = sample_replay_summary or {}
+    sample_by_reason = {
+        str(item.get("reason") or ""): item
+        for item in (sample_replay_summary.get("by_reason") or [])
+        if isinstance(item, dict)
+    }
     by_reason = []
     for reason in sorted(set([*count_by_reason.keys(), *values_by_reason.keys()])):
         values = values_by_reason.get(reason, [])
@@ -2083,16 +2501,22 @@ def _lp_suppression_replay_summary(
             action = "review_threshold"
         else:
             action = "keep_suppressed"
-        by_reason.append(
-            {
-                "reason": reason,
-                "count": int(count_by_reason.get(reason) or 0),
-                "replay_count": replay_count,
-                "avg_net_pnl_bps": avg,
-                "profitable_rate": profitable_rate,
-                "recommended_action": action,
-            }
-        )
+        item = {
+            "reason": reason,
+            "count": int(count_by_reason.get(reason) or 0),
+            "replay_count": replay_count,
+            "avg_net_pnl_bps": avg,
+            "profitable_rate": profitable_rate,
+            "recommended_action": action,
+        }
+        sample_item = sample_by_reason.get(reason)
+        if replay_count == 0 and sample_item:
+            item["sampled_replay_count"] = int(sample_item.get("replay_count") or 0)
+            item["sampled_avg_net_pnl_bps"] = sample_item.get("avg_net_pnl_bps")
+            item["sampled_profitable_rate"] = sample_item.get("profitable_rate")
+            item["sampled_recommended_action"] = sample_item.get("recommended_action")
+            item["sampled_replay_reference"] = "lp_suppression_sample_replay_summary"
+        by_reason.append(item)
     by_reason.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason") or "")))
     replay_summary = replay_summary or {}
     overall_avg = _to_float(replay_summary.get("suppressed_avg_net_pnl_bps"))
@@ -2109,6 +2533,9 @@ def _lp_suppression_replay_summary(
         "available": bool(lp_suppression_summary.get("available") or by_reason),
         "by_reason": by_reason,
         "overall_suppressed_avg_net_pnl_bps": overall_avg,
+        "sampled_replay_available": bool(sample_replay_summary.get("available")),
+        "sampled_replay_diagnosis": sample_replay_summary.get("diagnosis"),
+        "sampled_replay_reference": "lp_suppression_sample_replay_summary" if sample_replay_summary.get("available") else "",
         "diagnosis": diagnosis,
     }
 
@@ -3148,6 +3575,7 @@ def _markdown(payload: dict[str, Any]) -> str:
     lp_stage = payload.get("lp_stage_summary") or {}
     lp_suppression = payload.get("lp_suppression_summary") or {}
     lp_suppression_replay = payload.get("lp_suppression_replay_summary") or {}
+    lp_suppression_sample_replay = payload.get("lp_suppression_sample_replay_summary") or {}
     clmm = payload.get("clmm_summary") or {}
     data_quality = payload.get("data_quality_summary") or {}
     lines.extend(
@@ -3233,6 +3661,7 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- clmm_summary: `{json.dumps(clmm, ensure_ascii=False, sort_keys=True)}`",
             f"- lp_suppression_summary: `{json.dumps(lp_suppression, ensure_ascii=False, sort_keys=True)}`",
             f"- lp_suppression_replay_summary: `{json.dumps(lp_suppression_replay, ensure_ascii=False, sort_keys=True)}`",
+            f"- lp_suppression_sample_replay_summary: `{json.dumps(lp_suppression_sample_replay, ensure_ascii=False, sort_keys=True)}`",
             f"- lp_missing_reason: `{payload.get('lp_missing_reason')}`",
             "",
             "## 数据质量 / Runtime Health",
@@ -3323,11 +3752,14 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("candidate_frontier", "top_near_candidate_blockers", payload.get("candidate_frontier_summary", {}).get("top_near_candidate_blockers")),
         ("candidate_frontier", "top_missing_requirements", payload.get("candidate_frontier_summary", {}).get("top_missing_requirements")),
         ("candidate_frontier", "diagnosis", payload.get("candidate_frontier_summary", {}).get("diagnosis")),
+        ("candidate_coverage", "summary", payload.get("candidate_coverage_summary")),
+        ("outcome_diagnosis", "summary", payload.get("outcome_diagnosis_summary")),
         ("lp", "lp_signal_summary", payload.get("lp_signal_summary")),
         ("lp", "lp_stage_summary", payload.get("lp_stage_summary")),
         ("lp", "clmm_summary", payload.get("clmm_summary")),
         ("lp", "lp_suppression_summary", payload.get("lp_suppression_summary")),
         ("lp", "lp_suppression_replay_summary", payload.get("lp_suppression_replay_summary")),
+        ("lp", "lp_suppression_sample_replay_summary", payload.get("lp_suppression_sample_replay_summary")),
         ("lp", "lp_missing_reason", payload.get("lp_missing_reason")),
         ("data_quality", "data_quality_status", payload.get("data_quality_summary", {}).get("data_quality_status")),
     ]
@@ -3371,12 +3803,23 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
     replay_rows = _read_trade_replay_rows(logical_date)
     shadow_summary = _shadow_opportunity_summary(opportunity_rows, replay_summary)
     candidate_frontier = _candidate_frontier_summary(opportunity_rows, replay_rows, replay_summary)
+    opportunity_outcome_rows = _read_opportunity_outcome_rows(window, opportunity_rows)
+    candidate_coverage = _candidate_coverage_summary(signal_rows, opportunity_rows, replay_rows, candidate_frontier)
+    outcome_diagnosis = _outcome_diagnosis_summary(
+        signal_rows,
+        opportunity_rows,
+        rows.get("outcomes", []) or [],
+        opportunity_outcome_rows,
+        replay_rows,
+    )
+    lp_suppression_sample_replay = _read_lp_suppression_sample_replay_summary(logical_date)
     lp_suppression_replay = _lp_suppression_replay_summary(
         lp_suppression,
         delivery_rows,
         replay_rows,
         signal_rows,
         replay_summary,
+        lp_suppression_sample_replay,
     )
     runtime_health_summary = _runtime_health_summary(logical_date)
     trade_actions = _trade_action_summary(signal_rows, delivery_rows)
@@ -3449,6 +3892,11 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             "candidate_frontier: "
             f"near={candidate_frontier.get('near_candidate_count')} "
             f"diagnosis={candidate_frontier.get('diagnosis')}"
+        ),
+        (
+            "outcome_diagnosis: "
+            f"opportunity_outcomes_pending={outcome_diagnosis.get('opportunity_outcomes_pending')} "
+            f"diagnosis={outcome_diagnosis.get('diagnosis')}"
         ),
         (
             "lp_mapping: "
@@ -3555,6 +4003,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "candidate_verified_summary": _candidate_verified_summary(trade_summary),
         "candidate_tradeable_summary": _candidate_verified_summary(trade_summary),
         "candidate_frontier_summary": candidate_frontier,
+        "candidate_coverage_summary": candidate_coverage,
+        "outcome_diagnosis_summary": outcome_diagnosis,
         "near_candidate_examples": candidate_frontier.get("near_candidate_examples", []),
         "candidate_gate_blocker_distribution": candidate_frontier.get("candidate_gate_blocker_distribution", {}),
         "blocker_summary": blocker_summary,
@@ -3567,6 +4017,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "clmm_summary": clmm_summary,
         "lp_suppression_summary": lp_suppression,
         "lp_suppression_replay_summary": lp_suppression_replay,
+        "lp_suppression_sample_replay_summary": lp_suppression_sample_replay,
         "lp_missing_reason": lp_missing_reason,
         "asset_market_state_summary": asset_state,
         "no_trade_lock_summary": no_trade_lock,

@@ -47,6 +47,10 @@ def _summary_for(db_summary=None, **datasets):
         report,
         "_read_opportunity_db_summary",
         return_value=db_summary or {"available": False, "reason": "unit_test"},
+    ), mock.patch.object(
+        report,
+        "_read_lp_suppression_sample_replay_summary",
+        return_value={"available": False, "sampled": False, "reason": "unit_test"},
     ):
         return report.build_daily_report("2026-04-27")
 

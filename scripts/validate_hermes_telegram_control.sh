@@ -95,6 +95,8 @@ for pattern in \
   "学习总结YYYY-MM-DD" \
   "CANDIDATE覆盖诊断YYYY-MM-DD" \
   "Outcome闭环诊断YYYY-MM-DD" \
+  "Outcome补全预检YYYY-MM-DD" \
+  "LP抑制抽样预检YYYY-MM-DD" \
   "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "后台任务" \
@@ -166,6 +168,8 @@ for pattern in \
   "candidate-coverage" \
   "daily-report-schema-check" \
   "outcome-diagnose" \
+  "outcome-catchup" \
+  "lp-suppression-sample-replay" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -201,6 +205,8 @@ for pattern in \
   "candidate-coverage" \
   "daily-report-schema-check" \
   "outcome-diagnose" \
+  "outcome-catchup" \
+  "lp-suppression-sample-replay" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -241,6 +247,8 @@ for pattern in \
   "candidate-coverage" \
   "daily-report-schema-check" \
   "outcome-diagnose" \
+  "outcome-catchup" \
+  "lp-suppression-sample-replay" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -283,6 +291,8 @@ for wrapper_argv in \
   "./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run" \
+  "./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run" \
   "./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
@@ -446,6 +456,17 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_di
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "结果闭环诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_diagnose_result.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_diagnose_result.out" || fail "router outcome-diagnose result alias is not wrapper-only"
 
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome补全预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_catchup.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-catchup"' "$TMP_DIR/outcome_catchup.out" || fail "router outcome-catchup argv is not wrapper-only"
+grep -Fq '"--dry-run"' "$TMP_DIR/outcome_catchup.out" || fail "router outcome-catchup did not force dry-run"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "后验补全预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_catchup_cn.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-catchup"' "$TMP_DIR/outcome_catchup_cn.out" || fail "router outcome-catchup Chinese alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP抑制抽样预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_sample.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-suppression-sample-replay"' "$TMP_DIR/lp_sample.out" || fail "router LP suppression sample argv is not wrapper-only"
+grep -Fq '"--dry-run"' "$TMP_DIR/lp_sample.out" || fail "router LP suppression sample did not force dry-run"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_diagnose.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose argv is not wrapper-only"
 grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose did not include date"
@@ -479,6 +500,13 @@ schema_relative_rc=$?
 set -e
 [[ "$schema_relative_rc" -ne 0 ]] || fail "router accepted relative daily-report-schema-check date"
 grep -Fq 'YYYY-MM-DD' "$TMP_DIR/schema_relative.out" "$TMP_DIR/schema_relative.err" || fail "router relative daily-report-schema-check did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP抑制抽样预检昨天" --dry-run --platform telegram >"$TMP_DIR/lp_sample_relative.out" 2>"$TMP_DIR/lp_sample_relative.err"
+lp_sample_relative_rc=$?
+set -e
+[[ "$lp_sample_relative_rc" -ne 0 ]] || fail "router accepted relative lp-suppression-sample date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/lp_sample_relative.out" "$TMP_DIR/lp_sample_relative.err" || fail "router relative lp-suppression-sample did not ask for absolute date"
 
 set +e
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断昨天" --dry-run --platform telegram >"$TMP_DIR/lp_relative.out" 2>"$TMP_DIR/lp_relative.err"

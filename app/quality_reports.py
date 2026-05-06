@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
 from config import ARCHIVE_BASE_DIR, LP_MAJOR_ASSETS, LP_MAJOR_QUOTES, PROJECT_ROOT
 import config
@@ -755,39 +756,51 @@ def _market_context_kpi_payload(conn, date_str: str | None = None) -> dict:
 
 
 def _trade_replay_summary_payload(conn, date_str: str | None = None) -> dict:
-    where = "WHERE logical_date = ?" if date_str else ""
-    params = (date_str,) if date_str else ()
+    conditions: list[str] = []
+    params: list[Any] = []
+    if date_str:
+        conditions.append("logical_date = ?")
+        params.append(date_str)
     try:
-        total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where}", params).fetchone()[0])
+        replay_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(trade_replay_examples)").fetchall()}
+    except Exception:
+        replay_columns = set()
+    if "replay_scope" in replay_columns:
+        conditions.append("COALESCE(replay_scope, 'default') != ?")
+        params.append("lp_suppression_sample")
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    query_params = tuple(params)
+    try:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where}", query_params).fetchone()[0])
     except Exception as exc:
         return {"trade_replay_available": False, "reason": f"trade_replay_unavailable:{exc}", "logical_date": date_str}
     if total <= 0:
         return {"trade_replay_available": False, "reason": "trade_replay_missing", "logical_date": date_str, "replay_count": 0}
-    valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1", params).fetchone()[0])
+    valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1", query_params).fetchone()[0])
     label_counts = {
         str(row[0] or ""): int(row[1])
         for row in conn.execute(
             f"SELECT label, COUNT(*) FROM trade_replay_examples {where} GROUP BY label",
-            params,
+            query_params,
         ).fetchall()
     }
     avg_row = conn.execute(
         f"SELECT AVG(net_pnl_bps) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1",
-        params,
+        query_params,
     ).fetchone()
-    wins = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
+    wins = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} data_valid=1 AND net_pnl_bps > 0", query_params).fetchone()[0])
     suppressed_where = f"{where + (' AND' if where else 'WHERE')} signal_stage='SUPPRESSED'"
-    suppressed_total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where}", params).fetchone()[0])
-    suppressed_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1", params).fetchone()[0])
-    suppressed_profit = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
-    suppressed_clean = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='clean_followthrough'", params).fetchone()[0])
-    suppressed_bad = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label IN ('bad_entry','followthrough_but_bad_entry')", params).fetchone()[0])
-    suppressed_absorb = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='absorption_reversal'", params).fetchone()[0])
+    suppressed_total = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where}", query_params).fetchone()[0])
+    suppressed_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1", query_params).fetchone()[0])
+    suppressed_profit = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND net_pnl_bps > 0", query_params).fetchone()[0])
+    suppressed_clean = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='clean_followthrough'", query_params).fetchone()[0])
+    suppressed_bad = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label IN ('bad_entry','followthrough_but_bad_entry')", query_params).fetchone()[0])
+    suppressed_absorb = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {suppressed_where} AND data_valid=1 AND label='absorption_reversal'", query_params).fetchone()[0])
     blocked_where = f"{where + (' AND' if where else 'WHERE')} opportunity_status='BLOCKED'"
-    blocked_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1", params).fetchone()[0])
-    blocked_saved = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND label='absorption_reversal'", params).fetchone()[0])
-    blocked_false = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND net_pnl_bps > 0", params).fetchone()[0])
-    shadow_count = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != 'NONE' AND shadow_status != ''", params).fetchone()[0])
+    blocked_valid = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1", query_params).fetchone()[0])
+    blocked_saved = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND label='absorption_reversal'", query_params).fetchone()[0])
+    blocked_false = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {blocked_where} AND data_valid=1 AND net_pnl_bps > 0", query_params).fetchone()[0])
+    shadow_count = int(conn.execute(f"SELECT COUNT(*) FROM trade_replay_examples {where + (' AND' if where else 'WHERE')} shadow_status IS NOT NULL AND shadow_status != 'NONE' AND shadow_status != ''", query_params).fetchone()[0])
     profiles = [
         dict(row)
         for row in conn.execute(

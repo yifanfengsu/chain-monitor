@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from collections import Counter, defaultdict
@@ -52,6 +53,15 @@ MIN_PROFILE_REPLAY_SAMPLES = 10
 REPLAY_SAMPLE_INSUFFICIENT = 5
 BJ_TZ = timezone(timedelta(hours=8))
 REPLAY_SCOPES = {"default", "full", "suppressed", "blocked"}
+LP_SUPPRESSION_SAMPLE_SCOPE = "lp_suppression_sample"
+LP_SUPPRESSION_SAMPLE_SOURCE = "sampled_from_delivery_audit"
+LP_SUPPRESSION_SAMPLE_LIMIT_DEFAULT = 100
+LP_SUPPRESSION_SAMPLE_MIN_SAMPLES = 10
+LP_SUPPRESSION_SAMPLE_REASONS = {
+    "gate/lp_noise_filtered",
+    "listener_prefilter/drop",
+}
+LP_SUPPRESSION_SAMPLE_REVIEW_PROFITABLE_RATE = 0.55
 
 INPUT_SOURCE_KEYS = (
     "signals",
@@ -697,6 +707,8 @@ def get_price_at_ts(
             )
             if outcome_result["price"] is not None:
                 return outcome_result
+            if str(outcome_result.get("reason") or "") in {"outcome_asset_mismatch", "outcome_pair_mismatch"}:
+                return outcome_result
 
         if trade_opportunity_id:
             opp_result = _lookup_price_from_opportunity_outcomes(
@@ -914,6 +926,305 @@ def _first_payload_value(row: dict[str, Any], payloads: list[dict[str, Any]], *k
     return None
 
 
+LP_SAMPLE_QUOTE_SYMBOLS = {
+    "USDC",
+    "USDT",
+    "USD",
+    "DAI",
+    "USDE",
+    "USDS",
+    "FRAX",
+    "TUSD",
+    "USDP",
+    "PYUSD",
+    "GUSD",
+}
+LP_SAMPLE_ASSET_ALIASES = {
+    "WETH": "ETH",
+    "ETH.E": "ETH",
+    "WBTC": "BTC",
+    "CBBTC": "BTC",
+    "BTC.B": "BTC",
+    "WSOL": "SOL",
+    "SOL.E": "SOL",
+    "USDC.E": "USDC",
+    "USDT.E": "USDT",
+}
+
+
+def _normalize_lp_symbol(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    text = text.replace("$", "").replace(" ", "")
+    return LP_SAMPLE_ASSET_ALIASES.get(text, text)
+
+
+def _is_lp_quote_symbol(value: Any) -> bool:
+    return _normalize_lp_symbol(value) in LP_SAMPLE_QUOTE_SYMBOLS
+
+
+def _lp_asset_aliases(asset: str) -> tuple[str, ...]:
+    normalized = _normalize_lp_symbol(asset)
+    if normalized == "ETH":
+        return ("ETH", "WETH", "ETH.E")
+    if normalized == "BTC":
+        return ("BTC", "WBTC", "CBBTC", "BTC.B")
+    if normalized == "SOL":
+        return ("SOL", "WSOL", "SOL.E")
+    aliases = {normalized}
+    aliases.update(alias for alias, canonical in LP_SAMPLE_ASSET_ALIASES.items() if canonical == normalized)
+    return tuple(sorted(alias for alias in aliases if alias))
+
+
+def _normalize_lp_pair_value(value: Any) -> dict[str, Any]:
+    text = str(value or "").strip().upper()
+    if not text:
+        return {"base": None, "quote": None, "pair": None, "invalid_reason": None}
+    text = text.replace("-", "/").replace("_", "/").replace(" ", "")
+    if "/" not in text:
+        symbol = _normalize_lp_symbol(text)
+        return {
+            "base": None,
+            "quote": symbol if _is_lp_quote_symbol(symbol) else None,
+            "pair": None,
+            "invalid_reason": "asset_pair_ambiguous",
+            "single_asset_pair": symbol or text,
+        }
+    parts = [part for part in text.split("/") if part]
+    if len(parts) != 2:
+        return {"base": None, "quote": None, "pair": None, "invalid_reason": "asset_pair_ambiguous"}
+    left = _normalize_lp_symbol(parts[0])
+    right = _normalize_lp_symbol(parts[1])
+    if not left or not right or left == right:
+        return {"base": None, "quote": None, "pair": None, "invalid_reason": "asset_pair_ambiguous"}
+    if _is_lp_quote_symbol(left) and not _is_lp_quote_symbol(right):
+        base, quote = right, left
+    else:
+        base, quote = left, right
+    if _is_lp_quote_symbol(base) and _is_lp_quote_symbol(quote):
+        return {"base": None, "quote": None, "pair": None, "invalid_reason": "asset_pair_ambiguous"}
+    return {
+        "base": base,
+        "quote": quote,
+        "pair": f"{base}/{quote}",
+        "invalid_reason": None,
+    }
+
+
+def _iter_lp_pair_candidates(row: dict[str, Any]) -> list[tuple[str, Any]]:
+    payloads = _expanded_payloads(row, [])
+    candidates: list[tuple[str, Any]] = []
+
+    def add(source: str, value: Any) -> None:
+        if value not in (None, "", [], {}):
+            candidates.append((source, value))
+
+    for key in ("drop_pair", "drop_metadata_pair", "pair", "pair_label"):
+        add(key, row.get(key))
+    for key in ("pool_pair", "pool_pair_label", "lp_pair", "lp_pair_label"):
+        add(key, row.get(key))
+    for key in ("signal_pair", "signal_pair_label"):
+        add(key, row.get(key))
+    for payload_key in ("signal_json", "signal_payload"):
+        payload = _from_json(row.get(payload_key), row.get(payload_key))
+        if isinstance(payload, dict):
+            for key in ("pair", "pair_label", "pool_pair", "lp_pair"):
+                add(f"{payload_key}.{key}", payload.get(key))
+    for key in ("audit_pair", "audit_pair_label", "original_pair"):
+        add(key, row.get(key))
+    for payload_key in ("audit_json", "audit_payload"):
+        payload = _from_json(row.get(payload_key), row.get(payload_key))
+        if isinstance(payload, dict):
+            for key in ("pair", "pair_label", "pool_pair", "lp_pair"):
+                add(f"{payload_key}.{key}", payload.get(key))
+    for payload in payloads:
+        for key in ("pool_pair", "pool_pair_label", "lp_pair", "lp_pair_label", "pair", "pair_label"):
+            add(f"payload.{key}", payload.get(key))
+        lp_context = payload.get("lp_context")
+        if isinstance(lp_context, dict):
+            for key in ("pair_label", "pool_pair", "lp_pair"):
+                add(f"lp_context.{key}", lp_context.get(key))
+    return candidates
+
+
+def _iter_lp_asset_candidates(row: dict[str, Any]) -> list[tuple[str, Any]]:
+    payloads = _expanded_payloads(row, [])
+    candidates: list[tuple[str, Any]] = []
+
+    def add(source: str, value: Any) -> None:
+        if value not in (None, "", [], {}):
+            candidates.append((source, value))
+
+    for key in (
+        "drop_asset",
+        "drop_base",
+        "drop_base_symbol",
+        "asset",
+        "asset_symbol",
+        "base",
+        "base_symbol",
+        "base_token_symbol",
+    ):
+        add(key, row.get(key))
+    for key in ("signal_asset", "signal_asset_symbol", "signal_base_token_symbol"):
+        add(key, row.get(key))
+    for payload_key in ("signal_json", "signal_payload"):
+        payload = _from_json(row.get(payload_key), row.get(payload_key))
+        if isinstance(payload, dict):
+            for key in ("asset", "asset_symbol", "base", "base_symbol", "base_token_symbol"):
+                add(f"{payload_key}.{key}", payload.get(key))
+    for key in ("audit_asset", "audit_asset_symbol", "original_asset", "token_symbol"):
+        add(key, row.get(key))
+    for payload_key in ("audit_json", "audit_payload"):
+        payload = _from_json(row.get(payload_key), row.get(payload_key))
+        if isinstance(payload, dict):
+            for key in ("asset", "asset_symbol", "base", "base_symbol", "base_token_symbol", "token_symbol"):
+                add(f"{payload_key}.{key}", payload.get(key))
+    for payload in payloads:
+        for key in ("asset", "asset_symbol", "base", "base_symbol", "base_token_symbol", "token_symbol"):
+            add(f"payload.{key}", payload.get(key))
+        lp_context = payload.get("lp_context")
+        if isinstance(lp_context, dict):
+            for key in ("base_token_symbol", "asset", "asset_symbol", "token_symbol"):
+                add(f"lp_context.{key}", lp_context.get(key))
+    return candidates
+
+
+def _infer_lp_pair_from_tokens(row: dict[str, Any]) -> dict[str, Any]:
+    payloads = _expanded_payloads(row, [])
+    containers: list[tuple[str, dict[str, Any]]] = [("row", row)]
+    for key in ("signal_json", "signal_payload", "audit_json", "audit_payload", "metadata"):
+        payload = _from_json(row.get(key), row.get(key))
+        if isinstance(payload, dict):
+            containers.append((key, payload))
+    for payload in payloads:
+        containers.append(("payload", payload))
+        lp_context = payload.get("lp_context")
+        if isinstance(lp_context, dict):
+            containers.append(("lp_context", lp_context))
+
+    token_key_pairs = (
+        ("base_token_symbol", "quote_token_symbol"),
+        ("base_symbol", "quote_symbol"),
+        ("token0_symbol", "token1_symbol"),
+        ("token_a_symbol", "token_b_symbol"),
+    )
+    for source, container in containers:
+        for left_key, right_key in token_key_pairs:
+            left = _normalize_lp_symbol(container.get(left_key))
+            right = _normalize_lp_symbol(container.get(right_key))
+            if not left or not right or left == right:
+                continue
+            if _is_lp_quote_symbol(left) and not _is_lp_quote_symbol(right):
+                base, quote = right, left
+            elif _is_lp_quote_symbol(right) and not _is_lp_quote_symbol(left):
+                base, quote = left, right
+            else:
+                continue
+            return {
+                "asset": base,
+                "pair": f"{base}/{quote}",
+                "quote": quote,
+                "base": base,
+                "asset_pair_source": f"{source}.{left_key}+{right_key}",
+                "invalid_reason": None,
+            }
+    return {
+        "asset": None,
+        "pair": None,
+        "quote": None,
+        "base": None,
+        "asset_pair_source": "",
+        "invalid_reason": None,
+    }
+
+
+def normalize_lp_sample_asset_pair(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize research-only LP replay asset/pair metadata without guessing."""
+    pair_payload: dict[str, Any] | None = None
+    pair_source = ""
+    first_single_asset_pair = ""
+    for source, value in _iter_lp_pair_candidates(row):
+        parsed = _normalize_lp_pair_value(value)
+        if parsed.get("pair"):
+            pair_payload = parsed
+            pair_source = source
+            break
+        if parsed.get("single_asset_pair") and not first_single_asset_pair:
+            first_single_asset_pair = str(parsed.get("single_asset_pair") or "")
+    if pair_payload is None:
+        inferred = _infer_lp_pair_from_tokens(row)
+        if inferred.get("pair"):
+            pair_payload = {
+                "base": inferred.get("base"),
+                "quote": inferred.get("quote"),
+                "pair": inferred.get("pair"),
+                "invalid_reason": None,
+            }
+            pair_source = str(inferred.get("asset_pair_source") or "token_pair_inference")
+
+    asset_source = ""
+    asset_value = ""
+    for source, value in _iter_lp_asset_candidates(row):
+        normalized = _normalize_lp_symbol(value)
+        if normalized:
+            asset_source = source
+            asset_value = normalized
+            break
+
+    if pair_payload and pair_payload.get("pair"):
+        base = str(pair_payload.get("base") or "")
+        quote = str(pair_payload.get("quote") or "")
+        pair = str(pair_payload.get("pair") or "")
+        if asset_value and asset_value != base and not _is_lp_quote_symbol(asset_value):
+            return {
+                "asset": base,
+                "pair": pair,
+                "quote": quote,
+                "base": base,
+                "asset_pair_source": f"{pair_source};asset={asset_source}",
+                "invalid_reason": "asset_pair_mismatch",
+            }
+        return {
+            "asset": base,
+            "pair": pair,
+            "quote": quote,
+            "base": base,
+            "asset_pair_source": f"{pair_source};asset={asset_source}" if asset_source else pair_source,
+            "invalid_reason": None,
+        }
+
+    if first_single_asset_pair:
+        return {
+            "asset": None if _is_lp_quote_symbol(first_single_asset_pair) else _normalize_lp_symbol(asset_value or first_single_asset_pair),
+            "pair": None,
+            "quote": _normalize_lp_symbol(first_single_asset_pair) if _is_lp_quote_symbol(first_single_asset_pair) else None,
+            "base": None,
+            "asset_pair_source": "single_asset_pair",
+            "invalid_reason": "asset_pair_ambiguous",
+        }
+
+    if asset_value:
+        return {
+            "asset": None if _is_lp_quote_symbol(asset_value) else asset_value,
+            "pair": None,
+            "quote": asset_value if _is_lp_quote_symbol(asset_value) else None,
+            "base": None,
+            "asset_pair_source": asset_source,
+            "invalid_reason": "asset_pair_ambiguous",
+        }
+
+    return {
+        "asset": None,
+        "pair": None,
+        "quote": None,
+        "base": None,
+        "asset_pair_source": "",
+        "invalid_reason": "asset_pair_ambiguous",
+    }
+
+
 def _coerce_replay_eligible(value: Any) -> bool | None:
     if value in (None, ""):
         return None
@@ -1048,6 +1359,319 @@ def _direction_from_values(*values: Any) -> str:
         if "SHORT" in raw or raw.endswith("_SELL") or raw.startswith("SELL_"):
             return "SHORT"
     return ""
+
+
+LP_SAMPLE_DIRECTION_FIELDS = {
+    "trade_action_key",
+    "trade_action",
+    "delivery_decision",
+    "final_trading_output_label",
+    "intent_type",
+    "intent",
+    "canonical_semantic_key",
+    "side",
+    "direction",
+    "direction_bucket",
+    "market_bias",
+    "signal_type",
+    "stage_reason",
+    "stage",
+    "lp_stage",
+    "lp_alert_stage",
+    "reason",
+    "suppression_reason",
+    "telegram_suppression_reason",
+    "gate_reason",
+}
+
+
+LP_SAMPLE_DIRECTION_CONTAINER_KEYS = {
+    "audit_json",
+    "signal_json",
+    "message_json",
+    "metadata",
+    "context",
+    "signal_context",
+    "signal_metadata",
+    "event_metadata",
+    "signal",
+    "event",
+    "trade_action",
+    "trade_action_debug",
+    "lp_stage_context",
+    "market_context",
+    "profile_features",
+    "opportunity_profile_features_json",
+    "features_json",
+    "opportunity_json",
+    "quality_snapshot",
+}
+
+
+def _lp_direction_key_name(path: str) -> str:
+    key = str(path or "").rsplit(".", 1)[-1].lower()
+    for prefix in ("signal_", "audit_", "telegram_", "parsed_", "original_"):
+        if key.startswith(prefix):
+            key = key[len(prefix):]
+    return key
+
+
+def _lp_sample_direction_values(value: Any, *, path: str = "", depth: int = 0) -> list[tuple[str, str, Any]]:
+    if depth > 5:
+        return []
+    parsed = _from_json(value, value)
+    values: list[tuple[str, str, Any]] = []
+    if isinstance(parsed, dict):
+        for key, item in parsed.items():
+            key_text = str(key or "")
+            child_path = f"{path}.{key_text}" if path else key_text
+            normalized_key = _lp_direction_key_name(child_path)
+            if normalized_key in LP_SAMPLE_DIRECTION_FIELDS and not isinstance(item, (dict, list)):
+                values.append((child_path, normalized_key, item))
+            if (
+                isinstance(item, (dict, list))
+                or key_text in LP_SAMPLE_DIRECTION_CONTAINER_KEYS
+                or (isinstance(item, str) and item[:1] in {"{", "["})
+            ):
+                values.extend(_lp_sample_direction_values(item, path=child_path, depth=depth + 1))
+    elif isinstance(parsed, list):
+        for index, item in enumerate(parsed[:20]):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            values.extend(_lp_sample_direction_values(item, path=child_path, depth=depth + 1))
+    return values
+
+
+def _lp_direction_tokens(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    lowered = text.lower()
+    normalized = "".join(ch.lower() if ch.isalnum() or ch in {"_", "/"} else "_" for ch in text)
+    parts = {part for part in normalized.replace("/", "_").split("_") if part}
+    tokens = set(parts)
+    for marker in (
+        "long_bias_observe",
+        "short_bias_observe",
+        "do_not_chase_long",
+        "do_not_chase_short",
+        "pool_buy_pressure",
+        "pool_sell_pressure",
+        "buy_pressure",
+        "sell_pressure",
+        "lp_noise_filtered",
+        "listener_prefilter/drop",
+        "listener_prefilter_drop",
+        "no_trade_lock",
+        "no_trade",
+    ):
+        if marker in lowered or marker.replace("/", "_") in normalized:
+            tokens.add(marker)
+    if "买入" in text:
+        tokens.add("买入")
+    if "卖出" in text:
+        tokens.add("卖出")
+    return tokens
+
+
+def _lp_direction_votes_from_value(path: str, field_name: str, value: Any) -> list[dict[str, Any]]:
+    tokens = _lp_direction_tokens(value)
+    if not tokens:
+        return []
+    votes: list[dict[str, Any]] = []
+    source = str(path or field_name or "unknown")
+
+    def add(side: str, confidence: float, vote_source: str | None = None) -> None:
+        votes.append(
+            {
+                "side": side,
+                "direction_source": vote_source or source,
+                "direction_confidence": confidence,
+            }
+        )
+
+    do_not_present = "do_not_chase_long" in tokens or "do_not_chase_short" in tokens
+    strong_present = bool(
+        tokens
+        & {
+            "long_bias_observe",
+            "short_bias_observe",
+            "pool_buy_pressure",
+            "pool_sell_pressure",
+            "buy_pressure",
+            "sell_pressure",
+        }
+    )
+    if "do_not_chase_long" in tokens:
+        add("long", 0.55, "do_not_chase_long")
+    if "do_not_chase_short" in tokens:
+        add("short", 0.55, "do_not_chase_short")
+    if do_not_present and not strong_present:
+        return votes
+
+    if "long_bias_observe" in tokens:
+        add("long", 0.95)
+    if "short_bias_observe" in tokens:
+        add("short", 0.95)
+    if "pool_buy_pressure" in tokens or "buy_pressure" in tokens:
+        add("long", 0.9)
+    if "pool_sell_pressure" in tokens or "sell_pressure" in tokens:
+        add("short", 0.9)
+
+    if field_name in {"side", "direction", "direction_bucket"}:
+        if tokens & {"long", "buy", "bullish", "买入"}:
+            add("long", 0.9)
+        if tokens & {"short", "sell", "bearish", "卖出"}:
+            add("short", 0.9)
+    elif field_name == "market_bias":
+        if tokens & {"long", "bullish"}:
+            add("long", 0.8)
+        if tokens & {"short", "bearish"}:
+            add("short", 0.8)
+    elif field_name in {"intent_type", "intent", "canonical_semantic_key", "trade_action_key", "trade_action", "signal_type"}:
+        if tokens & {"long", "buy", "bullish"}:
+            add("long", 0.85)
+        if tokens & {"short", "sell", "bearish"}:
+            add("short", 0.85)
+
+    return votes
+
+
+def infer_lp_sample_replay_side(row: dict[str, Any]) -> dict[str, Any]:
+    """Infer research-only replay direction for early LP suppression samples."""
+    votes: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for path, field_name, value in _lp_sample_direction_values(row):
+        for vote in _lp_direction_votes_from_value(path, field_name, value):
+            key = (
+                str(vote.get("side") or ""),
+                str(vote.get("direction_source") or ""),
+                str(vote.get("direction_confidence") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            votes.append(vote)
+
+    sides = {str(item.get("side") or "") for item in votes if item.get("side")}
+    if len(sides) > 1:
+        return {
+            "side": None,
+            "direction_source": "direction_conflict",
+            "direction_confidence": 0.0,
+            "invalid_reason": "direction_conflict",
+        }
+    if not sides:
+        return {
+            "side": None,
+            "direction_source": "",
+            "direction_confidence": 0.0,
+            "invalid_reason": "direction_ambiguous",
+        }
+    side = next(iter(sides))
+    strongest = max(votes, key=lambda item: float(item.get("direction_confidence") or 0.0))
+    return {
+        "side": side,
+        "direction_source": str(strongest.get("direction_source") or ""),
+        "direction_confidence": round(float(strongest.get("direction_confidence") or 0.0), 4),
+        "invalid_reason": None,
+    }
+
+
+def _listener_prefilter_metadata_containers(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    containers: list[dict[str, Any]] = []
+
+    def add(value: Any) -> None:
+        parsed = _from_json(value, value)
+        if isinstance(parsed, dict):
+            nested = _from_json(parsed.get("drop_metadata"), parsed.get("drop_metadata"))
+            if isinstance(nested, dict):
+                containers.append(nested)
+            containers.append(parsed)
+
+    add(candidate)
+    for key in ("audit_json", "audit_payload", "metadata", "audit_metadata"):
+        add(candidate.get(key))
+    return containers
+
+
+def _listener_prefilter_metadata_value(candidate: dict[str, Any], *keys: str) -> Any:
+    for container in _listener_prefilter_metadata_containers(candidate):
+        for key in keys:
+            value = _none_if_blank(container.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _listener_prefilter_drop_metadata_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    version = _to_int(_listener_prefilter_metadata_value(candidate, "drop_metadata_version"))
+    if version != 1:
+        return {}
+    return {
+        "drop_metadata_version": version,
+        "event_id": _listener_prefilter_metadata_value(candidate, "event_id"),
+        "tx_hash": _listener_prefilter_metadata_value(candidate, "tx_hash"),
+        "pool_address": _listener_prefilter_metadata_value(candidate, "pool_address", "lp_pool_address"),
+        "pair": _listener_prefilter_metadata_value(candidate, "pair", "pair_label", "lp_pair_label"),
+        "asset": _listener_prefilter_metadata_value(candidate, "asset", "asset_symbol", "base", "base_symbol"),
+        "base": _listener_prefilter_metadata_value(candidate, "base", "base_symbol", "base_token_symbol", "asset", "asset_symbol"),
+        "quote": _listener_prefilter_metadata_value(candidate, "quote", "quote_symbol", "quote_token_symbol"),
+        "side": _listener_prefilter_metadata_value(candidate, "side", "direction"),
+        "intent_type": _listener_prefilter_metadata_value(candidate, "intent_type", "intent", "trade_action_key", "canonical_semantic_key"),
+        "lp_stage": _listener_prefilter_metadata_value(candidate, "lp_stage", "lp_alert_stage", "stage"),
+        "event_ts": _listener_prefilter_metadata_value(candidate, "event_ts"),
+        "drop_reason": _listener_prefilter_metadata_value(candidate, "drop_reason"),
+    }
+
+
+def _listener_prefilter_metadata_direction_row(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "side": metadata.get("side"),
+        "direction": metadata.get("side"),
+        "intent_type": metadata.get("intent_type"),
+        "intent": metadata.get("intent_type"),
+        "trade_action_key": metadata.get("intent_type"),
+        "lp_stage": metadata.get("lp_stage"),
+    }
+
+
+def _apply_listener_prefilter_drop_metadata(candidate: dict[str, Any]) -> None:
+    if str(candidate.get("suppression_reason") or "") != "listener_prefilter/drop":
+        return
+    metadata = _listener_prefilter_drop_metadata_payload(candidate)
+    candidate["listener_prefilter_has_metadata"] = bool(metadata)
+    if not metadata:
+        candidate["listener_prefilter_metadata_has_pair"] = False
+        candidate["listener_prefilter_metadata_has_direction"] = False
+        return
+
+    for key in ("pair", "asset", "base", "quote", "side", "intent_type", "lp_stage", "event_ts", "pool_address"):
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            continue
+        candidate[f"drop_{key}"] = value
+        if candidate.get(key) in (None, "", [], {}):
+            candidate[key] = value
+    if metadata.get("intent_type") not in (None, "", [], {}):
+        candidate["intent"] = metadata.get("intent_type")
+        if candidate.get("trade_action_key") in (None, "", [], {}):
+            candidate["trade_action_key"] = metadata.get("intent_type")
+    if metadata.get("lp_stage") not in (None, "", [], {}) and candidate.get("stage") in (None, "", [], {}):
+        candidate["stage"] = metadata.get("lp_stage")
+    if metadata.get("event_ts") not in (None, "", [], {}):
+        candidate["event_ts"] = metadata.get("event_ts")
+
+    pair_payload = normalize_lp_sample_asset_pair(
+        {
+            "pair": metadata.get("pair"),
+            "asset": metadata.get("asset") or metadata.get("base"),
+            "base": metadata.get("base"),
+            "quote": metadata.get("quote"),
+        }
+    )
+    direction_payload = infer_lp_sample_replay_side(_listener_prefilter_metadata_direction_row(metadata))
+    candidate["listener_prefilter_metadata_has_pair"] = bool(pair_payload.get("pair") and not pair_payload.get("invalid_reason"))
+    candidate["listener_prefilter_metadata_has_direction"] = bool(direction_payload.get("side") in {"long", "short"})
 
 
 def _candidate_action_key(candidate: dict[str, Any]) -> str:
@@ -1434,7 +2058,8 @@ def _shadow_score_distribution(scores: list[float]) -> dict[str, Any]:
 
 def _candidate_timestamp(candidate: dict[str, Any]) -> int:
     return _to_int(
-        candidate.get("archive_ts")
+        candidate.get("event_ts")
+        or candidate.get("archive_ts")
         or candidate.get("timestamp")
         or candidate.get("created_at")
         or candidate.get("sent_at")
@@ -1459,6 +2084,8 @@ def _candidate_to_signal_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "asset_symbol": str(candidate.get("asset") or ""),
         "pair": str(candidate.get("pair") or ""),
         "pair_label": str(candidate.get("pair") or ""),
+        "base": str(candidate.get("base") or ""),
+        "quote": str(candidate.get("quote") or ""),
         "direction": direction,
         "trade_opportunity_side": direction,
         "archive_ts": signal_ts,
@@ -1504,10 +2131,22 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
             feature_fields.update(parsed)
     candidate = {
         "source": source,
+        "event_id": _first_payload_value(row, payloads, "event_id"),
+        "tx_hash": _first_payload_value(row, payloads, "tx_hash"),
+        "pool_address": _first_payload_value(row, payloads, "pool_address", "pool", "address"),
         "signal_id": _first_payload_value(row, payloads, "signal_id"),
         "trade_opportunity_id": _first_payload_value(row, payloads, "trade_opportunity_id"),
         "asset": _first_payload_value(row, payloads, "asset", "asset_symbol", "token_symbol"),
         "pair": _first_payload_value(row, payloads, "pair", "pair_label"),
+        "base": _first_payload_value(row, payloads, "base", "base_symbol", "base_token_symbol"),
+        "quote": _first_payload_value(row, payloads, "quote", "quote_symbol", "quote_token_symbol"),
+        "drop_metadata_version": _first_payload_value(row, payloads, "drop_metadata_version"),
+        "drop_reason": _first_payload_value(row, payloads, "drop_reason"),
+        "intent_type": _first_payload_value(row, payloads, "intent_type", "canonical_semantic_key"),
+        "intent": _first_payload_value(row, payloads, "intent", "intent_type", "canonical_semantic_key"),
+        "direction_bucket": _first_payload_value(row, payloads, "direction_bucket"),
+        "market_bias": _first_payload_value(row, payloads, "market_bias", "bias"),
+        "signal_type": _first_payload_value(row, payloads, "signal_type", "type"),
         "side": _first_payload_value(row, payloads, "side", "opportunity_profile_side", "trade_opportunity_side", "would_have_been_direction"),
         "direction": _first_payload_value(row, payloads, "direction", "trade_opportunity_side", "side", "would_have_been_direction"),
         "trade_action_key": _first_payload_value(row, payloads, "trade_action_key", "trade_action"),
@@ -1547,11 +2186,14 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
         "major_asset": _first_payload_value(row, payloads, "major_asset"),
         "delivery_decision": _first_payload_value(row, payloads, "delivery_decision", "delivery_reason", "delivery_class"),
         "stage": _first_payload_value(row, payloads, "stage"),
+        "stage_reason": _first_payload_value(row, payloads, "stage_reason", "stage_detail_reason", "reason"),
+        "metadata": _first_payload_value(row, payloads, "metadata", "signal_metadata", "event_metadata"),
         "gate_reason": _first_payload_value(row, payloads, "gate_reason", "opportunity_gate_failure_reason"),
         "suppression_reason": _first_payload_value(row, payloads, "suppression_reason", "telegram_suppression_reason", "reason", "gate_reason"),
         "blocked_reason": _first_payload_value(row, payloads, "blocked_reason", "primary_blocker", "primary_hard_blocker"),
         "replay_eligible": _coerce_replay_eligible(_first_payload_value(row, payloads, "replay_eligible", "trade_opportunity_replay_eligible")),
         "archive_ts": _first_payload_value(row, payloads, "archive_ts", "archive_written_at"),
+        "event_ts": _first_payload_value(row, payloads, "event_ts"),
         "timestamp": _first_payload_value(row, payloads, "timestamp"),
         "created_at": _first_payload_value(row, payloads, "created_at"),
         "updated_at": _first_payload_value(row, payloads, "updated_at"),
@@ -1565,6 +2207,1089 @@ def _source_row_base(source: str, row: dict[str, Any], payloads: list[dict[str, 
     repair_fields.update({key: value for key, value in candidate.items() if value not in (None, "", [], {})})
     candidate["profile_key"] = repair_profile_key(candidate.get("profile_key"), repair_fields)
     return candidate
+
+
+def _normalize_lp_suppression_sample_reason(value: Any) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower().replace(" ", "_")
+    if not lowered:
+        return "unknown"
+    if "lp_noise_filtered" in lowered:
+        return "gate/lp_noise_filtered"
+    if (
+        "listener_prefilter" in lowered
+        or "prefilter/drop" in lowered
+        or "prefilter_drop" in lowered
+        or "lp_adjacent_noise" in lowered
+    ):
+        return "listener_prefilter/drop"
+    return text[:80]
+
+
+def _lp_suppression_sample_reason(candidate: dict[str, Any]) -> str:
+    reason_text = _candidate_reason_text(candidate)
+    normalized = _normalize_lp_suppression_sample_reason(reason_text)
+    if normalized in LP_SUPPRESSION_SAMPLE_REASONS:
+        return normalized
+    for key in (
+        "suppression_reason",
+        "gate_reason",
+        "blocked_reason",
+        "delivery_decision",
+        "stage",
+        "final_trading_output_label",
+    ):
+        normalized = _normalize_lp_suppression_sample_reason(candidate.get(key))
+        if normalized in LP_SUPPRESSION_SAMPLE_REASONS:
+            return normalized
+    return normalized
+
+
+def _canonical_pair_label(pair: Any, asset: Any = "") -> str:
+    text = str(pair or "").strip().upper().replace("-", "/")
+    parsed = _normalize_lp_pair_value(text)
+    if parsed.get("pair"):
+        return str(parsed["pair"])
+    if text and "/" in text:
+        return text
+    return ""
+
+
+def _lp_suppression_sample_intent(candidate: dict[str, Any]) -> str:
+    for key in (
+        "signal_trade_action_key",
+        "signal_trade_action",
+        "signal_intent_type",
+        "signal_intent",
+        "signal_direction_bucket",
+        "audit_trade_action_key",
+        "audit_trade_action",
+        "audit_intent_type",
+        "audit_intent",
+        "parsed_trade_action_key",
+        "parsed_trade_action",
+        "parsed_intent_type",
+        "parsed_intent",
+        "parsed_direction_bucket",
+        "original_intent",
+        "trade_action_key",
+        "trade_action",
+        "intent_type",
+        "intent",
+        "direction_bucket",
+    ):
+        value = candidate.get(key)
+        raw = _canonical_upper(value)
+        if raw in {
+            "LONG_BIAS_OBSERVE",
+            "SHORT_BIAS_OBSERVE",
+            "DO_NOT_CHASE_LONG",
+            "DO_NOT_CHASE_SHORT",
+        }:
+            return raw
+        text = str(value or "").strip()
+        if text and text.lower() in {"pool_buy_pressure", "pool_sell_pressure", "buy_pressure", "sell_pressure"}:
+            return text
+    action = _candidate_action_key(candidate)
+    if action in {
+        "LONG_BIAS_OBSERVE",
+        "SHORT_BIAS_OBSERVE",
+        "DO_NOT_CHASE_LONG",
+        "DO_NOT_CHASE_SHORT",
+    }:
+        return action
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for key in (
+            "stage",
+            "lp_stage",
+            "lp_alert_stage",
+            "sweep_phase",
+            "trade_action_stage",
+            "suppression_reason",
+            "gate_reason",
+            "final_trading_output_label",
+        )
+    ).lower()
+    if "exhaustion" in text:
+        return "exhaustion_risk"
+    if "confirm" in text:
+        return "confirm"
+    if action and action != "unknown":
+        return action
+    return "unknown"
+
+
+def _stable_sample_id(candidate: dict[str, Any], index: int) -> str:
+    audit_id = str(candidate.get("audit_id") or candidate.get("delivery_audit_id") or "").strip()
+    signal_id = str(candidate.get("signal_id") or "").strip()
+    if audit_id:
+        return f"lp_sample_{audit_id}"
+    if signal_id:
+        return f"lp_sample_{signal_id}"
+    payload = json.dumps(candidate, ensure_ascii=False, sort_keys=True, default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"lp_sample_row_{index}_{digest}"
+
+
+def _safe_replay_key(value: Any) -> str:
+    text = str(value or "").strip()
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text) or "unknown"
+
+
+def _select_rows_by_signal_id(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    signal_ids: set[str],
+    select_candidates: tuple[str, ...],
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, dict[str, Any]]:
+    return _select_rows_by_key(
+        conn,
+        table,
+        key_column="signal_id",
+        key_values=signal_ids,
+        select_candidates=select_candidates,
+        replay_diagnostics=replay_diagnostics,
+    )
+
+
+def _select_rows_by_key(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    key_column: str,
+    key_values: set[str],
+    select_candidates: tuple[str, ...],
+    replay_diagnostics: ReplayDiagnostics,
+) -> dict[str, dict[str, Any]]:
+    if not key_values or not _table_exists(conn, table):
+        return {}
+    columns = _table_columns(conn, table, replay_diagnostics)
+    if key_column not in columns:
+        replay_diagnostics.warning(f"input_source_missing_{key_column}_column:{table}")
+        return {}
+    select_columns = list(dict.fromkeys([column for column in (key_column, *select_candidates) if column in columns]))
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    ordered_ids = sorted(key_value for key_value in key_values if key_value)
+    for offset in range(0, len(ordered_ids), 500):
+        chunk = ordered_ids[offset: offset + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        select_sql = ", ".join(select_columns)
+        try:
+            rows = conn.execute(
+                f"SELECT {select_sql} FROM {table} WHERE {key_column} IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            replay_diagnostics.query_error(f"input_source_join_failed:{table}.{key_column}:{exc}")
+            return rows_by_id
+        for row in rows:
+            key_value = str(row[key_column] or "").strip()
+            if key_value and key_value not in rows_by_id:
+                rows_by_id[key_value] = dict(row)
+    return rows_by_id
+
+
+def _select_nearest_rows_by_pool_window(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    candidates: list[dict[str, Any]],
+    select_candidates: tuple[str, ...],
+    time_candidates: tuple[str, ...],
+    replay_diagnostics: ReplayDiagnostics,
+    window_sec: int = 120,
+) -> dict[str, dict[str, Any]]:
+    if not candidates or not _table_exists(conn, table):
+        return {}
+    columns = _table_columns(conn, table, replay_diagnostics)
+    if "pool_address" not in columns:
+        return {}
+    time_column = next((column for column in time_candidates if column in columns), "")
+    if not time_column:
+        return {}
+    select_columns = list(dict.fromkeys([column for column in ("pool_address", *select_candidates, time_column) if column in columns]))
+    if not select_columns:
+        return {}
+    select_sql = ", ".join(select_columns)
+    rows_by_sample: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        sample_id = str(candidate.get("sample_id") or "")
+        pool_address = str(candidate.get("pool_address") or "").strip()
+        event_ts = _to_int(candidate.get("event_ts") or candidate.get("timestamp") or candidate.get("created_at"))
+        if not sample_id or not pool_address or event_ts <= 0:
+            continue
+        try:
+            row = conn.execute(
+                f"SELECT {select_sql} FROM {table} "
+                f"WHERE pool_address = ? AND CAST({time_column} AS REAL) >= ? AND CAST({time_column} AS REAL) <= ? "
+                f"ORDER BY ABS(CAST({time_column} AS REAL) - ?) ASC LIMIT 1",
+                (pool_address, event_ts - window_sec, event_ts + window_sec, event_ts),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            replay_diagnostics.query_error(f"input_source_join_failed:{table}.pool_address_window:{exc}")
+            continue
+        if row is not None:
+            rows_by_sample[sample_id] = dict(row)
+    return rows_by_sample
+
+
+def _copy_lp_sample_source_fields(candidate: dict[str, Any], source_candidate: dict[str, Any], *, prefix: str) -> None:
+    for key in (
+        "trade_action_key",
+        "trade_action",
+        "intent_type",
+        "intent",
+        "direction",
+        "side",
+        "direction_bucket",
+        "market_bias",
+        "signal_type",
+        "stage",
+        "stage_reason",
+        "lp_stage",
+        "lp_alert_stage",
+        "sweep_phase",
+        "pair",
+        "asset",
+        "pool_address",
+    ):
+        value = source_candidate.get(key)
+        if value not in (None, "", [], {}):
+            candidate[f"{prefix}_{key}"] = value
+    candidate[f"{prefix}_payload"] = {
+        key: value
+        for key, value in source_candidate.items()
+        if key in LP_SAMPLE_DIRECTION_FIELDS or key in {"metadata", "signal_json", "audit_json", "message_json"}
+    }
+
+
+def _merge_lp_sample_identity_fields(candidate: dict[str, Any], source_candidate: dict[str, Any]) -> None:
+    for key in (
+        "asset",
+        "pair",
+        "trade_opportunity_id",
+        "profile_key",
+        "lp_stage",
+        "lp_alert_stage",
+        "sweep_phase",
+        "trade_action_stage",
+        "market_context_source",
+        "archive_ts",
+        "timestamp",
+        "created_at",
+    ):
+        if candidate.get(key) in (None, "", [], {}) and source_candidate.get(key) not in (None, "", [], {}):
+            candidate[key] = source_candidate.get(key)
+
+
+def _enrich_lp_suppression_sample_candidates(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    *,
+    replay_diagnostics: ReplayDiagnostics,
+) -> None:
+    signal_ids = {
+        str(item.get("original_signal_id") or item.get("signal_id") or "").strip()
+        for item in candidates
+        if str(item.get("original_signal_id") or item.get("signal_id") or "").strip()
+    }
+    event_ids = {
+        str(item.get("event_id") or "").strip()
+        for item in candidates
+        if str(item.get("event_id") or "").strip()
+    }
+    signal_rows = _select_rows_by_signal_id(
+        conn,
+        "signals",
+        signal_ids=signal_ids,
+        select_candidates=(
+            "trade_opportunity_id",
+            "event_id",
+            "tx_hash",
+            "pool_address",
+            "asset",
+            "pair",
+            "timestamp",
+            "archive_written_at",
+            "created_at",
+            "direction",
+            "side",
+            "trade_action_key",
+            "canonical_semantic_key",
+            "intent_type",
+            "intent",
+            "direction_bucket",
+            "market_bias",
+            "signal_type",
+            "lp_alert_stage",
+            "lp_sweep_phase",
+            "delivery_decision",
+            "trade_opportunity_status",
+            "trade_opportunity_shadow_status",
+            "opportunity_profile_key",
+            "market_context_source",
+            "alert_relative_timing",
+            "signal_json",
+            "metadata",
+        ),
+        replay_diagnostics=replay_diagnostics,
+    )
+    signal_rows_by_event_id = _select_rows_by_key(
+        conn,
+        "signals",
+        key_column="event_id",
+        key_values=event_ids,
+        select_candidates=(
+            "signal_id",
+            "trade_opportunity_id",
+            "event_id",
+            "tx_hash",
+            "pool_address",
+            "asset",
+            "pair",
+            "timestamp",
+            "archive_written_at",
+            "created_at",
+            "direction",
+            "side",
+            "trade_action_key",
+            "canonical_semantic_key",
+            "intent_type",
+            "intent",
+            "direction_bucket",
+            "market_bias",
+            "signal_type",
+            "lp_alert_stage",
+            "lp_sweep_phase",
+            "delivery_decision",
+            "trade_opportunity_status",
+            "trade_opportunity_shadow_status",
+            "opportunity_profile_key",
+            "market_context_source",
+            "alert_relative_timing",
+            "signal_json",
+            "metadata",
+        ),
+        replay_diagnostics=replay_diagnostics,
+    )
+    parsed_rows_by_event_id = _select_rows_by_key(
+        conn,
+        "parsed_events",
+        key_column="event_id",
+        key_values=event_ids,
+        select_candidates=(
+            "event_id",
+            "tx_hash",
+            "pool_address",
+            "asset",
+            "pair",
+            "intent_type",
+            "intent",
+            "side",
+            "direction",
+            "direction_bucket",
+            "trade_action_key",
+            "parsed_at",
+            "created_at",
+            "parsed_json",
+            "metadata",
+        ),
+        replay_diagnostics=replay_diagnostics,
+    )
+    parsed_select_candidates = (
+        "event_id",
+        "tx_hash",
+        "pool_address",
+        "asset",
+        "pair",
+        "intent_type",
+        "intent",
+        "side",
+        "direction",
+        "direction_bucket",
+        "trade_action_key",
+        "parsed_at",
+        "created_at",
+        "parsed_json",
+        "metadata",
+    )
+    parsed_rows_by_tx_hash = _select_rows_by_key(
+        conn,
+        "parsed_events",
+        key_column="tx_hash",
+        key_values={
+            str(item.get("tx_hash") or "").strip()
+            for item in candidates
+            if str(item.get("tx_hash") or "").strip()
+        },
+        select_candidates=parsed_select_candidates,
+        replay_diagnostics=replay_diagnostics,
+    )
+    parsed_rows_by_pool_window = _select_nearest_rows_by_pool_window(
+        conn,
+        "parsed_events",
+        candidates=candidates,
+        select_candidates=parsed_select_candidates,
+        time_candidates=("parsed_at", "created_at"),
+        replay_diagnostics=replay_diagnostics,
+    )
+    raw_select_candidates = (
+        "event_id",
+        "tx_hash",
+        "pool_address",
+        "address",
+        "raw_kind",
+        "listener_scan_path",
+        "captured_at",
+        "created_at",
+        "raw_json",
+        "metadata",
+    )
+    raw_rows_by_event_id = _select_rows_by_key(
+        conn,
+        "raw_events",
+        key_column="event_id",
+        key_values=event_ids,
+        select_candidates=raw_select_candidates,
+        replay_diagnostics=replay_diagnostics,
+    )
+    raw_rows_by_tx_hash = _select_rows_by_key(
+        conn,
+        "raw_events",
+        key_column="tx_hash",
+        key_values={
+            str(item.get("tx_hash") or "").strip()
+            for item in candidates
+            if str(item.get("tx_hash") or "").strip()
+        },
+        select_candidates=raw_select_candidates,
+        replay_diagnostics=replay_diagnostics,
+    )
+    raw_rows_by_pool_window = _select_nearest_rows_by_pool_window(
+        conn,
+        "raw_events",
+        candidates=candidates,
+        select_candidates=raw_select_candidates,
+        time_candidates=("captured_at", "created_at"),
+        replay_diagnostics=replay_diagnostics,
+    )
+    tx_hashes = {
+        str(item.get("tx_hash") or "").strip()
+        for item in candidates
+        if str(item.get("tx_hash") or "").strip()
+    }
+    tx_hashes.update(
+        str(row.get("tx_hash") or "").strip()
+        for row in parsed_rows_by_event_id.values()
+        if str(row.get("tx_hash") or "").strip()
+    )
+    tx_hashes.update(
+        str(row.get("tx_hash") or "").strip()
+        for rows_by_key in (parsed_rows_by_tx_hash, parsed_rows_by_pool_window, raw_rows_by_event_id, raw_rows_by_tx_hash, raw_rows_by_pool_window)
+        for row in rows_by_key.values()
+        if str(row.get("tx_hash") or "").strip()
+    )
+    signal_rows_by_tx_hash = _select_rows_by_key(
+        conn,
+        "signals",
+        key_column="tx_hash",
+        key_values=tx_hashes,
+        select_candidates=(
+            "signal_id",
+            "trade_opportunity_id",
+            "event_id",
+            "tx_hash",
+            "pool_address",
+            "asset",
+            "pair",
+            "timestamp",
+            "archive_written_at",
+            "created_at",
+            "direction",
+            "side",
+            "trade_action_key",
+            "canonical_semantic_key",
+            "intent_type",
+            "intent",
+            "direction_bucket",
+            "market_bias",
+            "signal_type",
+            "lp_alert_stage",
+            "lp_sweep_phase",
+            "delivery_decision",
+            "trade_opportunity_status",
+            "trade_opportunity_shadow_status",
+            "opportunity_profile_key",
+            "market_context_source",
+            "alert_relative_timing",
+            "signal_json",
+            "metadata",
+        ),
+        replay_diagnostics=replay_diagnostics,
+    )
+    joined_signal_ids = {
+        str(row.get("signal_id") or "").strip()
+        for row in signal_rows_by_event_id.values()
+        if str(row.get("signal_id") or "").strip()
+    }
+    joined_signal_ids.update(
+        str(row.get("signal_id") or "").strip()
+        for row in signal_rows_by_tx_hash.values()
+        if str(row.get("signal_id") or "").strip()
+    )
+    all_signal_ids = signal_ids | joined_signal_ids
+    telegram_rows = _select_rows_by_signal_id(
+        conn,
+        "telegram_deliveries",
+        signal_ids=all_signal_ids,
+        select_candidates=(
+            "trade_opportunity_id",
+            "asset",
+            "sent",
+            "sent_at",
+            "suppressed",
+            "suppression_reason",
+            "telegram_update_kind",
+            "message_json",
+            "message_text",
+            "created_at",
+        ),
+        replay_diagnostics=replay_diagnostics,
+    )
+    for candidate in candidates:
+        signal_id = str(candidate.get("original_signal_id") or candidate.get("signal_id") or "").strip()
+        event_id = str(candidate.get("event_id") or "").strip()
+        sample_id = str(candidate.get("sample_id") or "")
+        tx_hash = str(candidate.get("tx_hash") or "").strip()
+        raw_row = raw_rows_by_event_id.get(event_id) or raw_rows_by_tx_hash.get(tx_hash) or raw_rows_by_pool_window.get(sample_id)
+        if raw_row:
+            raw_payloads = _row_payloads(raw_row, ("raw_json", "metadata"))
+            raw_candidate = _source_row_base("raw_events", raw_row, raw_payloads)
+            _copy_lp_sample_source_fields(candidate, raw_candidate, prefix="raw")
+            _merge_lp_sample_identity_fields(candidate, raw_candidate)
+            if candidate.get("tx_hash") in (None, "", [], {}) and raw_row.get("tx_hash"):
+                candidate["tx_hash"] = raw_row.get("tx_hash")
+            if candidate.get("event_id") in (None, "", [], {}) and raw_row.get("event_id"):
+                candidate["event_id"] = raw_row.get("event_id")
+                event_id = str(raw_row.get("event_id") or "").strip()
+            if "raw_events" not in list(candidate.get("input_source") or []):
+                candidate["input_source"] = [*list(candidate.get("input_source") or []), "raw_events"]
+        tx_hash = str(candidate.get("tx_hash") or "").strip()
+        parsed_row = parsed_rows_by_event_id.get(event_id) or parsed_rows_by_tx_hash.get(tx_hash) or parsed_rows_by_pool_window.get(sample_id)
+        if parsed_row:
+            parsed_payloads = _row_payloads(parsed_row, ("parsed_json", "metadata"))
+            parsed_candidate = _source_row_base("parsed_events", parsed_row, parsed_payloads)
+            _copy_lp_sample_source_fields(candidate, parsed_candidate, prefix="parsed")
+            _merge_lp_sample_identity_fields(candidate, parsed_candidate)
+            if candidate.get("tx_hash") in (None, "", [], {}) and parsed_row.get("tx_hash"):
+                candidate["tx_hash"] = parsed_row.get("tx_hash")
+            if candidate.get("event_id") in (None, "", [], {}) and parsed_row.get("event_id"):
+                candidate["event_id"] = parsed_row.get("event_id")
+                event_id = str(parsed_row.get("event_id") or "").strip()
+            if "parsed_events" not in list(candidate.get("input_source") or []):
+                candidate["input_source"] = [*list(candidate.get("input_source") or []), "parsed_events"]
+        tx_hash = str(candidate.get("tx_hash") or "").strip()
+        signal_row = signal_rows.get(signal_id) or signal_rows_by_event_id.get(event_id) or signal_rows_by_tx_hash.get(tx_hash)
+        if signal_row:
+            signal_payloads = _row_payloads(signal_row, ("signal_json", "metadata"))
+            signal_candidate = _source_row_base("signals", signal_row, signal_payloads)
+            joined_signal_id = str(signal_candidate.get("signal_id") or signal_row.get("signal_id") or "").strip()
+            if joined_signal_id:
+                candidate["signal_id"] = joined_signal_id
+                candidate["original_signal_id"] = joined_signal_id
+            _copy_lp_sample_source_fields(candidate, signal_candidate, prefix="signal")
+            _merge_lp_sample_identity_fields(candidate, signal_candidate)
+            candidate["signal_json"] = signal_row.get("signal_json")
+            candidate["signal_payload"] = signal_candidate
+            if "signals" not in list(candidate.get("input_source") or []):
+                candidate["input_source"] = [*list(candidate.get("input_source") or []), "signals"]
+        telegram_signal_id = str(candidate.get("original_signal_id") or candidate.get("signal_id") or signal_id).strip()
+        telegram_row = telegram_rows.get(telegram_signal_id)
+        if telegram_row:
+            telegram_payloads = _row_payloads(telegram_row, ("message_json",))
+            telegram_candidate = _source_row_base("telegram_deliveries", telegram_row, telegram_payloads)
+            _copy_lp_sample_source_fields(candidate, telegram_candidate, prefix="telegram")
+            candidate["telegram_message_json"] = telegram_row.get("message_json")
+            candidate["telegram_message_text"] = telegram_row.get("message_text")
+            candidate["telegram_payload"] = telegram_candidate
+            if "telegram_deliveries" not in list(candidate.get("input_source") or []):
+                candidate["input_source"] = [*list(candidate.get("input_source") or []), "telegram_deliveries"]
+
+
+def _apply_lp_sample_direction_inference(candidate: dict[str, Any]) -> None:
+    if str(candidate.get("suppression_reason") or "") == "listener_prefilter/drop":
+        metadata = _listener_prefilter_drop_metadata_payload(candidate)
+        if metadata:
+            metadata_inference = infer_lp_sample_replay_side(
+                _listener_prefilter_metadata_direction_row(metadata)
+            )
+            if metadata_inference.get("side") in {"long", "short"}:
+                side = str(metadata_inference["side"])
+                direction = side.upper()
+                candidate["inferred_side"] = side
+                candidate["direction_source"] = "listener_prefilter_metadata"
+                candidate["direction_confidence"] = float(
+                    metadata_inference.get("direction_confidence") or 0.0
+                )
+                candidate["lp_sample_invalid_reason"] = None
+                candidate["direction"] = direction
+                candidate["side"] = direction
+                candidate["listener_prefilter_metadata_has_direction"] = True
+                candidate["listener_prefilter_recovery_mode"] = "metadata"
+                return
+    inference = infer_lp_sample_replay_side(candidate)
+    candidate["inferred_side"] = inference.get("side")
+    candidate["direction_source"] = str(inference.get("direction_source") or "")
+    candidate["direction_confidence"] = float(inference.get("direction_confidence") or 0.0)
+    candidate["lp_sample_invalid_reason"] = inference.get("invalid_reason")
+    if inference.get("side") in {"long", "short"}:
+        direction = str(inference["side"]).upper()
+        candidate["direction"] = direction
+        candidate["side"] = direction
+    if str(candidate.get("suppression_reason") or "") == "listener_prefilter/drop":
+        if bool(candidate.get("listener_prefilter_has_metadata")):
+            candidate["listener_prefilter_recovery_mode"] = "metadata"
+        elif any(source in list(candidate.get("input_source") or []) for source in ("signals", "parsed_events", "raw_events", "telegram_deliveries")):
+            candidate["listener_prefilter_recovery_mode"] = "join"
+        else:
+            candidate["listener_prefilter_recovery_mode"] = "none"
+
+
+def _delivery_audit_sample_candidates(
+    conn: sqlite3.Connection,
+    *,
+    window: dict[str, Any],
+    replay_diagnostics: ReplayDiagnostics,
+) -> list[dict[str, Any]]:
+    rows, missing_ts_rows = _select_rows_for_window(
+        conn,
+        "delivery_audit",
+        select_candidates=(
+            "audit_id",
+            "event_id",
+            "tx_hash",
+            "pool_address",
+            "drop_metadata_version",
+            "drop_reason",
+            "signal_id",
+            "trade_opportunity_id",
+            "asset",
+            "pair",
+            "base",
+            "quote",
+            "intent_type",
+            "intent",
+            "side",
+            "direction",
+            "direction_bucket",
+            "market_bias",
+            "signal_type",
+            "opportunity_status",
+            "shadow_status",
+            "blocked_reason",
+            "profile_key",
+            "replay_eligible",
+            "delivery_decision",
+            "reason",
+            "sent_to_telegram",
+            "suppressed",
+            "timestamp",
+            "event_ts",
+            "stage",
+            "lp_stage",
+            "stage_reason",
+            "gate_reason",
+            "final_trading_output_label",
+            "opportunity_gate_failure_reason",
+            "delivered",
+            "notifier_sent_at",
+            "suppression_reason",
+            "telegram_suppression_reason",
+            "audit_json",
+            "metadata",
+            "archive_written_at",
+            "created_at",
+        ),
+        time_candidates=("event_ts", "archive_written_at", "timestamp", "created_at", "notifier_sent_at"),
+        start_ts=int(window["start_ts"]),
+        end_ts=int(window["end_ts"]),
+        replay_diagnostics=replay_diagnostics,
+    )
+    candidates: list[dict[str, Any]] = []
+    for index, row in enumerate([*rows, *missing_ts_rows]):
+        payloads = _row_payloads(row, ("audit_json",))
+        candidate = _source_row_base("delivery_audit", row, payloads)
+        audit_id = str(row.get("audit_id") or _first_payload_value(row, payloads, "audit_id") or "").strip()
+        original_signal_id = str(candidate.get("signal_id") or "").strip()
+        candidate["audit_id"] = audit_id
+        candidate["delivery_audit_id"] = audit_id
+        candidate["original_signal_id"] = original_signal_id
+        if any(_is_truthy(row.get(key)) for key in ("sent_to_telegram", "delivered", "sent")) or bool(candidate.get("sent_to_telegram")):
+            continue
+        reason = _lp_suppression_sample_reason(candidate)
+        if reason not in LP_SUPPRESSION_SAMPLE_REASONS:
+            continue
+        sample_id = _stable_sample_id(candidate, index)
+        if not original_signal_id:
+            candidate["signal_id"] = sample_id
+        intent = _lp_suppression_sample_intent(candidate)
+        candidate["sample_id"] = sample_id
+        candidate["suppression_reason"] = reason
+        candidate["source"] = LP_SUPPRESSION_SAMPLE_SOURCE
+        candidate["replay_scope"] = LP_SUPPRESSION_SAMPLE_SCOPE
+        candidate["event_ts"] = _candidate_timestamp(candidate)
+        candidate["suppressed"] = True
+        candidate["audit_json"] = row.get("audit_json")
+        candidate["audit_metadata"] = row.get("metadata")
+        _apply_listener_prefilter_drop_metadata(candidate)
+        candidate["original_pair"] = str(candidate.get("pair") or "")
+        candidate["original_asset"] = str(candidate.get("asset") or "")
+        candidate["original_stage"] = str(candidate.get("stage") or candidate.get("lp_stage") or "")
+        if "delivery_audit" not in list(candidate.get("input_source") or []):
+            candidate["input_source"] = [*list(candidate.get("input_source") or []), "delivery_audit"]
+        candidates.append(candidate)
+    _enrich_lp_suppression_sample_candidates(conn, candidates, replay_diagnostics=replay_diagnostics)
+    for candidate in candidates:
+        _apply_listener_prefilter_drop_metadata(candidate)
+        normalized_asset_pair = normalize_lp_sample_asset_pair(candidate)
+        original_intent = _lp_suppression_sample_intent(candidate)
+        candidate["asset"] = str(normalized_asset_pair.get("asset") or "")
+        candidate["asset_symbol"] = str(normalized_asset_pair.get("asset") or "")
+        candidate["pair"] = str(normalized_asset_pair.get("pair") or "")
+        candidate["pair_label"] = str(normalized_asset_pair.get("pair") or "")
+        candidate["base"] = str(normalized_asset_pair.get("base") or "")
+        candidate["quote"] = str(normalized_asset_pair.get("quote") or "")
+        candidate["asset_pair_source"] = str(normalized_asset_pair.get("asset_pair_source") or "")
+        candidate["asset_pair_invalid_reason"] = normalized_asset_pair.get("invalid_reason")
+        candidate["original_pair"] = str(candidate.get("original_pair") or candidate.get("pair") or "")
+        candidate["original_asset"] = str(candidate.get("original_asset") or candidate.get("asset") or "")
+        candidate["original_stage"] = str(candidate.get("original_stage") or candidate.get("stage") or candidate.get("lp_stage") or "")
+        candidate["original_intent"] = original_intent
+        candidate["intent"] = original_intent
+        candidate["event_ts"] = _candidate_timestamp(candidate)
+        _apply_lp_sample_direction_inference(candidate)
+    return candidates
+
+
+def _select_lp_suppression_samples(
+    candidates: list[dict[str, Any]],
+    *,
+    limit_per_reason: int,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    candidate_counts = Counter(str(item.get("suppression_reason") or "unknown") for item in candidates)
+    selected: list[dict[str, Any]] = []
+    for reason in sorted(LP_SUPPRESSION_SAMPLE_REASONS):
+        reason_rows = [
+            item
+            for item in candidates
+            if str(item.get("suppression_reason") or "") == reason
+        ]
+        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        for item in sorted(
+            reason_rows,
+            key=lambda row: (
+                _to_int(row.get("event_ts")) or 0,
+                str(row.get("sample_id") or ""),
+            ),
+        ):
+            key = (
+                str(item.get("pair") or "unknown"),
+                str(item.get("intent") or "unknown"),
+                str(item.get("stage") or item.get("lp_stage") or "unknown"),
+            )
+            grouped[key].append(item)
+        keys = sorted(grouped.keys())
+        while keys and len([item for item in selected if str(item.get("suppression_reason") or "") == reason]) < limit_per_reason:
+            progressed = False
+            for key in keys:
+                bucket = grouped.get(key) or []
+                if not bucket:
+                    continue
+                selected.append(bucket.pop(0))
+                progressed = True
+                if len([item for item in selected if str(item.get("suppression_reason") or "") == reason]) >= limit_per_reason:
+                    break
+            keys = [key for key in keys if grouped.get(key)]
+            if not progressed:
+                break
+    return selected, dict(sorted(candidate_counts.items()))
+
+
+def _lp_sample_recommended_action(sample_count: int, valid_count: int, avg: float | None, profitable_rate: float | None) -> str:
+    if sample_count < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES or valid_count < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES:
+        return "needs_more_samples"
+    if avg is not None and avg > 0 and profitable_rate is not None and profitable_rate >= LP_SUPPRESSION_SAMPLE_REVIEW_PROFITABLE_RATE:
+        return "review_threshold"
+    return "keep_suppressed"
+
+
+def _aggregate_lp_suppression_sample_summary(
+    *,
+    logical_date: str,
+    candidates_total: int,
+    candidate_counts_by_reason: dict[str, int],
+    selected_candidates: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+    dry_run: bool,
+    limit_per_reason: int,
+    persistence_summary: dict[str, Any] | None = None,
+    diagnostics: ReplayDiagnostics | None = None,
+) -> dict[str, Any]:
+    rows_by_sample = {str(row.get("sample_id") or ""): row for row in replay_rows}
+    valid_pair_values = [
+        str(item.get("pair") or "").strip().upper()
+        for item in selected_candidates
+        if str(item.get("pair") or "").strip() and "/" in str(item.get("pair") or "")
+    ]
+    by_pair = Counter(valid_pair_values)
+    by_intent = Counter(str(item.get("intent") or "unknown") for item in selected_candidates)
+    invalid_reason_counts: Counter[str] = Counter()
+    asset_pair_mismatch_examples: list[dict[str, Any]] = []
+    direction_source_distribution: Counter[str] = Counter()
+    direction_inference_summary: Counter[str] = Counter(
+        {
+            "long": 0,
+            "short": 0,
+            "ambiguous": 0,
+            "conflict": 0,
+            "do_not_chase_long": 0,
+            "do_not_chase_short": 0,
+        }
+    )
+    for item in selected_candidates:
+        inferred_side = str(item.get("inferred_side") or "")
+        invalid_reason = str(item.get("lp_sample_invalid_reason") or "")
+        direction_source = str(item.get("direction_source") or "")
+        original_intent = _canonical_upper(item.get("original_intent") or item.get("intent"))
+        if invalid_reason == "direction_conflict":
+            direction_inference_summary["conflict"] += 1
+            direction_source_distribution["direction_conflict"] += 1
+        elif inferred_side == "long":
+            direction_inference_summary["long"] += 1
+        elif inferred_side == "short":
+            direction_inference_summary["short"] += 1
+        else:
+            direction_inference_summary["ambiguous"] += 1
+        if direction_source:
+            direction_source_distribution[direction_source] += 1
+            if direction_source == "do_not_chase_long":
+                direction_inference_summary["do_not_chase_long"] += 1
+            elif direction_source == "do_not_chase_short":
+                direction_inference_summary["do_not_chase_short"] += 1
+        elif invalid_reason == "direction_ambiguous":
+            direction_source_distribution["direction_ambiguous"] += 1
+        if original_intent == "DO_NOT_CHASE_LONG" and direction_source != "do_not_chase_long":
+            direction_inference_summary["do_not_chase_long"] += 1
+        elif original_intent == "DO_NOT_CHASE_SHORT" and direction_source != "do_not_chase_short":
+            direction_inference_summary["do_not_chase_short"] += 1
+    invalid_single_asset_pair_count = 0
+    unknown_pair_count = 0
+    for item in selected_candidates:
+        pair = str(item.get("pair") or "").strip()
+        original_pair = str(item.get("original_pair") or "").strip()
+        if not pair:
+            unknown_pair_count += 1
+        if original_pair and "/" not in original_pair and _normalize_lp_symbol(original_pair):
+            invalid_single_asset_pair_count += 1
+    listener_candidates = [
+        item
+        for item in selected_candidates
+        if str(item.get("suppression_reason") or "") == "listener_prefilter/drop"
+    ]
+    listener_metadata_rows = sum(1 for item in listener_candidates if bool(item.get("listener_prefilter_has_metadata")))
+    listener_metadata_direction_rows = sum(
+        1 for item in listener_candidates if bool(item.get("listener_prefilter_metadata_has_direction"))
+    )
+    listener_metadata_pair_rows = sum(
+        1 for item in listener_candidates if bool(item.get("listener_prefilter_metadata_has_pair"))
+    )
+    listener_legacy_rows = max(len(listener_candidates) - listener_metadata_rows, 0)
+    listener_join_success_count = sum(1 for item in listener_candidates if "signals" in list(item.get("input_source") or []))
+    listener_direction_recovered_count = sum(
+        1
+        for item in listener_candidates
+        if str(item.get("inferred_side") or "") in {"long", "short"}
+        and (
+            bool(item.get("listener_prefilter_metadata_has_direction"))
+            or any(source in list(item.get("input_source") or []) for source in ("signals", "parsed_events", "raw_events", "telegram_deliveries"))
+        )
+    )
+    listener_still_ambiguous_count = sum(
+        1
+        for item in listener_candidates
+        if str(item.get("lp_sample_invalid_reason") or "") == "direction_ambiguous"
+        or not str(item.get("inferred_side") or "")
+    )
+    if listener_metadata_rows > 0:
+        listener_recovery_mode = "metadata"
+    elif listener_join_success_count > 0:
+        listener_recovery_mode = "join"
+    else:
+        listener_recovery_mode = "none"
+    by_reason: list[dict[str, Any]] = []
+    reason_actions: list[str] = []
+    for reason in sorted(LP_SUPPRESSION_SAMPLE_REASONS):
+        reason_candidates = [
+            item
+            for item in selected_candidates
+            if str(item.get("suppression_reason") or "") == reason
+        ]
+        reason_replays = [
+            rows_by_sample.get(str(item.get("sample_id") or ""))
+            for item in reason_candidates
+            if rows_by_sample.get(str(item.get("sample_id") or ""))
+        ]
+        valid_rows = [row for row in reason_replays if _is_truthy(row.get("data_valid", 1))]
+        invalid_rows = [row for row in reason_replays if not _is_truthy(row.get("data_valid", 1))]
+        invalid_by_reason = Counter(str(row.get("invalid_reason") or "unknown") for row in invalid_rows)
+        invalid_reason_counts.update(invalid_by_reason)
+        source_by_reason = Counter(
+            str(item.get("direction_source") or item.get("lp_sample_invalid_reason") or "unknown")
+            for item in reason_candidates
+        )
+        net_values = [
+            value
+            for value in (_to_signed_float(row.get("net_pnl_bps")) for row in valid_rows)
+            if value is not None
+        ]
+        avg = round(sum(net_values) / len(net_values), 2) if net_values else None
+        profitable_rate = round(sum(1 for value in net_values if value > 0.0) / len(net_values), 4) if net_values else None
+        action = _lp_sample_recommended_action(len(reason_candidates), len(valid_rows), avg, profitable_rate)
+        reason_actions.append(action)
+        by_reason.append(
+            {
+                "reason": reason,
+                "candidate_count": int(candidate_counts_by_reason.get(reason) or 0),
+                "sample_count": len(reason_candidates),
+                "replay_count": len(reason_replays),
+                "valid_replay_count": len(valid_rows),
+                "avg_net_pnl_bps": avg,
+                "profitable_rate": profitable_rate,
+                "recommended_action": action,
+                "invalid_reason_counts": dict(invalid_by_reason.most_common(10)),
+                "direction_source_distribution": dict(source_by_reason.most_common(10)),
+            }
+        )
+    if any(action == "review_threshold" for action in reason_actions):
+        diagnosis = "possible_over_suppression"
+    elif reason_actions and all(action == "keep_suppressed" for action in reason_actions):
+        diagnosis = "early_suppression_seems_correct"
+    else:
+        diagnosis = "needs_more_samples"
+    diagnostics = diagnostics or ReplayDiagnostics()
+    replay_count = len(replay_rows)
+    valid_rows = [row for row in replay_rows if _is_truthy(row.get("data_valid", 1))]
+    invalid_rows = [row for row in replay_rows if not _is_truthy(row.get("data_valid", 1))]
+    for row in invalid_rows:
+        reason = str(row.get("invalid_reason") or "")
+        if reason not in {"asset_pair_mismatch", "outcome_asset_mismatch", "outcome_pair_mismatch"}:
+            continue
+        if len(asset_pair_mismatch_examples) >= 5:
+            continue
+        asset_pair_mismatch_examples.append(
+            {
+                "sample_id": str(row.get("sample_id") or "")[:80],
+                "asset": str(row.get("asset") or "")[:20],
+                "pair": str(row.get("pair") or "")[:40],
+                "original_asset": str(row.get("original_asset") or "")[:20],
+                "original_pair": str(row.get("original_pair") or "")[:40],
+                "asset_pair_source": str(row.get("asset_pair_source") or "")[:160],
+                "invalid_reason": reason,
+            }
+        )
+    net_values = [
+        value
+        for value in (_to_signed_float(row.get("net_pnl_bps")) for row in valid_rows)
+        if value is not None
+    ]
+    avg_net = round(sum(net_values) / len(net_values), 2) if net_values else None
+    profitable_rate = round(sum(1 for value in net_values if value > 0.0) / len(net_values), 4) if net_values else None
+    if selected_candidates and direction_inference_summary["ambiguous"] >= len(selected_candidates):
+        diagnostics.warning("LP sample rows lack signal/audit direction fields; join or archive metadata needs repair.")
+    if listener_candidates and listener_still_ambiguous_count >= len(listener_candidates):
+        if listener_metadata_rows == 0:
+            diagnostics.warning("listener_prefilter/drop old samples lack direction metadata; new samples will be replayable after metadata coverage accumulates.")
+        elif listener_metadata_pair_rows > 0 and listener_metadata_direction_rows == 0:
+            diagnostics.warning("listener_prefilter/drop metadata has pair but no direction; check intent/side inference.")
+    if selected_candidates and len(valid_rows) < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES and invalid_rows:
+        diagnostics.warning("LP sample replay degraded: direction/asset pair metadata insufficient.")
+    if int(invalid_reason_counts.get("asset_pair_mismatch") or 0) > 0:
+        diagnostics.warning("LP sample replay degraded: fix LP sample asset/pair attribution before gate review.")
+    if int(invalid_reason_counts.get("market_context_missing") or 0) > 0:
+        diagnostics.warning("LP sample replay degraded: market context metadata is missing for valid asset/pair rows.")
+    degraded_reasons: list[str] = []
+    if diagnostics.schema_errors or diagnostics.query_errors or diagnostics.price_errors:
+        degraded_reasons.append("query_schema_or_price_errors")
+    if invalid_rows and len(valid_rows) < LP_SUPPRESSION_SAMPLE_MIN_SAMPLES:
+        degraded_reasons.append("direction_or_asset_pair_metadata_insufficient")
+    if int(invalid_reason_counts.get("asset_pair_mismatch") or 0) > 0:
+        degraded_reasons.append("asset_pair_mismatch")
+    if int(invalid_reason_counts.get("outcome_asset_mismatch") or 0) > 0 or int(invalid_reason_counts.get("outcome_pair_mismatch") or 0) > 0:
+        degraded_reasons.append("outcome_asset_mismatch")
+    if int(invalid_reason_counts.get("market_context_missing") or 0) > 0:
+        degraded_reasons.append("market_context_missing")
+    if listener_candidates and listener_still_ambiguous_count >= len(listener_candidates) and listener_metadata_rows == 0:
+        degraded_reasons.append("listener_prefilter_direction_metadata_missing")
+    elif listener_candidates and listener_still_ambiguous_count >= len(listener_candidates) and listener_metadata_pair_rows > 0 and listener_metadata_direction_rows == 0:
+        degraded_reasons.append("listener_prefilter_direction_metadata_ambiguous")
+    would_insert_valid = len(valid_rows)
+    invalid_not_inserted = len(invalid_rows)
+    return {
+        "available": bool(selected_candidates or replay_rows),
+        "sampled": True,
+        "logical_date": logical_date,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "source": LP_SUPPRESSION_SAMPLE_SOURCE,
+        "dry_run": bool(dry_run),
+        "sample_limit_per_reason": int(limit_per_reason),
+        "sample_min_count": LP_SUPPRESSION_SAMPLE_MIN_SAMPLES,
+        "candidate_total_count": int(candidates_total),
+        "candidate_sample_count": len(selected_candidates),
+        "replay_count": replay_count,
+        "valid_replay_count": len(valid_rows),
+        "invalid_count": len(invalid_rows),
+        "avg_net_pnl_bps": avg_net,
+        "profitable_rate": profitable_rate,
+        "recommended_action": (
+            "review_threshold"
+            if any(action == "review_threshold" for action in reason_actions)
+            else "keep_suppressed"
+            if reason_actions and all(action == "keep_suppressed" for action in reason_actions)
+            else "needs_more_samples"
+        ),
+        "candidate_count_by_reason": dict(sorted(candidate_counts_by_reason.items())),
+        "by_reason": by_reason,
+        "by_pair": dict(by_pair.most_common(20)),
+        "by_intent": dict(by_intent.most_common(20)),
+        "invalid_reason_counts": dict(invalid_reason_counts.most_common(20)),
+        "asset_pair_mismatch_examples": asset_pair_mismatch_examples,
+        "asset_pair_summary": {
+            "valid_pairs": dict(by_pair.most_common(20)),
+            "invalid_single_asset_pair_count": invalid_single_asset_pair_count,
+            "unknown_pair_count": unknown_pair_count,
+        },
+        "direction_inference_summary": dict(direction_inference_summary),
+        "direction_source_distribution": dict(direction_source_distribution.most_common(20)),
+        "listener_prefilter_join_success_count": listener_join_success_count,
+        "listener_prefilter_direction_recovered_count": listener_direction_recovered_count,
+        "listener_prefilter_still_ambiguous_count": listener_still_ambiguous_count,
+        "listener_prefilter_metadata_rows": listener_metadata_rows,
+        "listener_prefilter_metadata_direction_rows": listener_metadata_direction_rows,
+        "listener_prefilter_metadata_pair_rows": listener_metadata_pair_rows,
+        "listener_prefilter_legacy_rows": listener_legacy_rows,
+        "listener_prefilter_recovery_mode": listener_recovery_mode,
+        "would_insert_replay_rows": would_insert_valid if dry_run else 0,
+        "would_insert_valid_replay_rows": would_insert_valid if dry_run else 0,
+        "invalid_rows_not_inserted": invalid_not_inserted,
+        "inserted_replay_rows": int((persistence_summary or {}).get("examples_written") or 0) if not dry_run else 0,
+        "persistence_summary": persistence_summary or {"enabled": False, "examples_written": 0, "examples_deleted": 0},
+        "diagnosis": diagnosis,
+        "degraded_reasons": sorted(set(degraded_reasons)),
+        **diagnostics.as_dict(),
+    }
 
 
 def _add_candidate(
@@ -1930,7 +3655,16 @@ def _trade_replay_missing_reasons(
         reasons.append("filter_excluded_blocked")
     invalid_reasons = Counter(str(item.get("invalid_reason") or "") for item in replay_results if not item.get("data_valid"))
     if invalid_reasons and sum(invalid_reasons.values()) == len(replay_results) and any(
-        key in invalid_reasons for key in ("no_price_for_signal_id", "no_entry_price", "no_exit_price", "market_context_unavailable", "schema_error")
+        key in invalid_reasons
+        for key in (
+            "no_price_for_signal_id",
+            "no_entry_price",
+            "no_exit_price",
+            "market_context_unavailable",
+            "market_context_missing",
+            "outcome_asset_mismatch",
+            "schema_error",
+        )
     ):
         reasons.append("no_price_source")
     return sorted(set(reasons or ["no_replay_eligible_rows"]))
@@ -2083,15 +3817,43 @@ def _suppressed_replay_zero_reasons(
     return sorted(set(zero_reasons or ["no_suppressed_rows"]))
 
 
+def _lp_sample_pre_replay_invalid_reason(candidate: dict[str, Any]) -> str:
+    direction_reason = str(candidate.get("lp_sample_invalid_reason") or "")
+    asset_pair_reason = str(candidate.get("asset_pair_invalid_reason") or "")
+    if direction_reason == "direction_conflict":
+        return direction_reason
+    if direction_reason in {"direction_ambiguous", "direction_conflict"}:
+        return direction_reason
+    if asset_pair_reason in {"asset_pair_ambiguous", "asset_pair_mismatch"}:
+        return asset_pair_reason
+    direction = _direction_from_values(candidate.get("side"), candidate.get("direction"))
+    if direction not in {"LONG", "SHORT"}:
+        return "direction_ambiguous"
+    if not str(candidate.get("asset") or "").strip() or not str(candidate.get("pair") or "").strip():
+        return "asset_pair_ambiguous"
+    return ""
+
+
 def _replay_dynamic_inputs(
     conn: sqlite3.Connection,
     eligible_inputs: list[dict[str, Any]],
     *,
     replay_diagnostics: ReplayDiagnostics,
+    require_market_context: bool = False,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     def price_source_fn(**kwargs) -> dict[str, Any]:
+        if require_market_context:
+            return _lookup_price_from_market_context(
+                conn,
+                asset=str(kwargs.get("asset") or ""),
+                pair=str(kwargs.get("pair") or ""),
+                ts=_to_int(kwargs.get("ts")),
+                prefer_source=str(kwargs.get("prefer_source") or ""),
+                replay_diagnostics=replay_diagnostics,
+                strict_pair_match=True,
+            )
         return get_price_at_ts(
             asset=str(kwargs.get("asset") or ""),
             pair=str(kwargs.get("pair") or ""),
@@ -2105,7 +3867,21 @@ def _replay_dynamic_inputs(
 
     for candidate in eligible_inputs:
         signal_row = _candidate_to_signal_row(candidate)
-        result = replay_single_signal(signal_row, price_source_fn=price_source_fn, replay_diagnostics=replay_diagnostics)
+        sample_invalid_reason = _lp_sample_pre_replay_invalid_reason(candidate)
+        if sample_invalid_reason:
+            result = _invalid_replay(
+                sample_invalid_reason,
+                signal_id=str(signal_row.get("signal_id") or ""),
+                trade_opportunity_id=str(signal_row.get("trade_opportunity_id") or ""),
+                signal_ts=_to_int(signal_row.get("timestamp") or signal_row.get("archive_ts")),
+                net_pnl_bps=None,
+                gross_pnl_bps=None,
+            )
+            result["asset"] = str(signal_row.get("asset") or "")
+            result["pair"] = str(signal_row.get("pair") or "")
+            result["direction"] = str(signal_row.get("direction") or "")
+        else:
+            result = replay_single_signal(signal_row, price_source_fn=price_source_fn, replay_diagnostics=replay_diagnostics)
         result["input_source"] = list(candidate.get("input_source") or [])
         result["opportunity_status"] = str(candidate.get("opportunity_status") or result.get("opportunity_status") or "")
         result["shadow_status"] = str(candidate.get("shadow_status") or result.get("shadow_status") or "NONE")
@@ -2116,6 +3892,21 @@ def _replay_dynamic_inputs(
         result["lp_stage"] = str(candidate.get("lp_stage") or candidate.get("lp_alert_stage") or "")
         result["sweep_phase"] = str(candidate.get("sweep_phase") or candidate.get("lp_sweep_phase") or "")
         result["trade_action_stage"] = str(candidate.get("trade_action_stage") or candidate.get("stage") or "")
+        result["inferred_side"] = candidate.get("inferred_side")
+        result["direction_source"] = str(candidate.get("direction_source") or "")
+        result["direction_confidence"] = float(candidate.get("direction_confidence") or 0.0)
+        result["listener_prefilter_has_metadata"] = bool(candidate.get("listener_prefilter_has_metadata"))
+        result["listener_prefilter_metadata_has_direction"] = bool(candidate.get("listener_prefilter_metadata_has_direction"))
+        result["listener_prefilter_metadata_has_pair"] = bool(candidate.get("listener_prefilter_metadata_has_pair"))
+        result["listener_prefilter_recovery_mode"] = str(candidate.get("listener_prefilter_recovery_mode") or "")
+        result["original_intent"] = str(candidate.get("original_intent") or candidate.get("intent") or "")
+        result["original_stage"] = str(candidate.get("original_stage") or candidate.get("stage") or candidate.get("lp_stage") or "")
+        result["original_pair"] = str(candidate.get("original_pair") or candidate.get("pair") or "")
+        result["original_asset"] = str(candidate.get("original_asset") or candidate.get("asset") or "")
+        result["base"] = str(candidate.get("base") or "")
+        result["quote"] = str(candidate.get("quote") or "")
+        result["asset_pair_source"] = str(candidate.get("asset_pair_source") or "")
+        result["asset_pair_invalid_reason"] = str(candidate.get("asset_pair_invalid_reason") or "")
         results.append(result)
     return results
 
@@ -2783,6 +4574,351 @@ def _persist_trade_replay_rows(
         summary["enabled"] = False
         summary["error"] = str(exc)
         return summary
+
+
+def _persist_lp_suppression_sample_rows(
+    conn: sqlite3.Connection,
+    logical_date: str,
+    replay_rows: list[dict[str, Any]],
+    replay_diagnostics: ReplayDiagnostics,
+    *,
+    strategy_config_hash: str,
+    limit_per_reason: int,
+) -> dict[str, Any]:
+    summary = {
+        "enabled": True,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "strategy_config_hash": strategy_config_hash,
+        "profile_stats_scope": "not_written_for_lp_suppression_sample",
+        "idempotent_key": "trade_replay_examples.replay_id=logical_date+lp_suppression_sample+sample_id+strategy_config_hash",
+        "delete_scope": "logical_date+lp_suppression_sample",
+        "examples_deleted": 0,
+        "examples_written": 0,
+        "invalid_rows_skipped": 0,
+        "profile_stats_written": 0,
+        "profile_daily_stats_written": 0,
+        "trade_opportunity_replay_profile_negative_repaired": 0,
+    }
+    try:
+        _ensure_replay_persistence_schema(conn)
+        now_text = datetime.now(UTC).isoformat()
+        summary["examples_deleted"] = _delete_replay_scope_rows(
+            conn,
+            "trade_replay_examples",
+            logical_date,
+            LP_SUPPRESSION_SAMPLE_SCOPE,
+        )
+        valid_replay_rows = [row for row in replay_rows if _is_truthy(row.get("data_valid", 1))]
+        summary["invalid_rows_skipped"] = len(replay_rows) - len(valid_replay_rows)
+        for index, row in enumerate(valid_replay_rows):
+            sample_id = str(row.get("sample_id") or row.get("delivery_audit_id") or row.get("signal_id") or f"row_{index}")
+            replay_id = (
+                f"replay_{logical_date}_{LP_SUPPRESSION_SAMPLE_SCOPE}_"
+                f"{_safe_replay_key(sample_id)}_{_safe_replay_key(strategy_config_hash)}"
+            )
+            net_pnl = _to_signed_float(row.get("net_pnl_bps"))
+            close_reason = str(row.get("close_reason") or "")
+            data_valid = _is_truthy(row.get("data_valid", 1))
+            features = {
+                "input_source": list(row.get("input_source") or []),
+                "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+                "sample_id": sample_id,
+                "suppression_reason": str(row.get("suppression_reason") or ""),
+                "inferred_side": str(row.get("inferred_side") or "").lower(),
+                "direction_source": str(row.get("direction_source") or ""),
+                "direction_confidence": float(row.get("direction_confidence") or 0.0),
+                "listener_prefilter_has_metadata": bool(row.get("listener_prefilter_has_metadata")),
+                "listener_prefilter_metadata_has_direction": bool(row.get("listener_prefilter_metadata_has_direction")),
+                "listener_prefilter_metadata_has_pair": bool(row.get("listener_prefilter_metadata_has_pair")),
+                "listener_prefilter_recovery_mode": str(row.get("listener_prefilter_recovery_mode") or ""),
+                "original_intent": str(row.get("original_intent") or row.get("intent") or ""),
+                "original_stage": str(row.get("original_stage") or row.get("trade_action_stage") or row.get("lp_stage") or ""),
+                "original_pair": str(row.get("original_pair") or row.get("pair") or ""),
+                "original_asset": str(row.get("original_asset") or row.get("asset") or ""),
+                "base": str(row.get("base") or ""),
+                "quote": str(row.get("quote") or ""),
+                "asset_pair_source": str(row.get("asset_pair_source") or ""),
+                "asset_pair_invalid_reason": str(row.get("asset_pair_invalid_reason") or ""),
+                "source": LP_SUPPRESSION_SAMPLE_SOURCE,
+                "audit_id": str(row.get("delivery_audit_id") or row.get("audit_id") or ""),
+                "original_signal_id": str(row.get("original_signal_id") or ""),
+                "event_ts": _to_int(row.get("event_ts") or row.get("signal_ts")),
+                "stage": str(row.get("trade_action_stage") or row.get("lp_stage") or ""),
+                "intent": str(row.get("intent") or row.get("trade_action") or ""),
+                "invalid_reason": str(row.get("invalid_reason") or ""),
+                "outcome_status": "completed" if data_valid else "data_invalid",
+                "sample_limit_per_reason": int(limit_per_reason),
+                "sample_min_count": LP_SUPPRESSION_SAMPLE_MIN_SAMPLES,
+                "telegram_realtime_delivery": False,
+                "full_replay_isolated": True,
+            }
+            record = {
+                "replay_id": replay_id,
+                "logical_date": logical_date,
+                "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+                "strategy_config_hash": strategy_config_hash,
+                "include_suppressed": 1,
+                "include_blocked": 1,
+                "signal_id": str(row.get("original_signal_id") or row.get("signal_id") or ""),
+                "trade_opportunity_id": str(row.get("trade_opportunity_id") or ""),
+                "delivery_audit_id": str(row.get("delivery_audit_id") or row.get("audit_id") or ""),
+                "asset": str(row.get("asset") or row.get("asset_symbol") or ""),
+                "pair": str(row.get("pair") or row.get("pair_label") or ""),
+                "side": str(row.get("direction") or row.get("side") or ""),
+                "opportunity_status": str(row.get("opportunity_status") or ""),
+                "shadow_status": str(row.get("shadow_status") or "NONE"),
+                "signal_stage": "SUPPRESSED",
+                "lp_stage": str(row.get("lp_stage") or ""),
+                "sweep_phase": str(row.get("sweep_phase") or ""),
+                "profile_key": str(row.get("profile_key") or ""),
+                "signal_ts": _to_int(row.get("signal_ts") or row.get("event_ts") or row.get("archive_ts") or row.get("timestamp")),
+                "entry_ts": _to_int(row.get("entry_ts")),
+                "exit_ts": _to_int(row.get("exit_ts")),
+                "entry_delay_sec": _to_int(row.get("entry_delay_sec")) or DEFAULT_ENTRY_DELAY_SEC,
+                "max_hold_sec": _to_int(row.get("hold_duration_sec")) or DEFAULT_MAX_HOLD_SEC,
+                "entry_price": _to_float(row.get("entry_price")),
+                "exit_price": _to_float(row.get("exit_price")),
+                "stop_loss_bps": _to_int(row.get("stop_loss_bps")) or DEFAULT_STOP_LOSS_BPS,
+                "take_profit_bps": _to_int(row.get("take_profit_bps")) or DEFAULT_TAKE_PROFIT_BPS,
+                "fee_bps": _to_float(row.get("fee_bps")) or DEFAULT_FEE_BPS,
+                "slippage_bps": _to_float(row.get("slippage_bps")) or DEFAULT_SLIPPAGE_BPS,
+                "gross_pnl_bps": _to_signed_float(row.get("gross_pnl_bps")),
+                "net_pnl_bps": net_pnl,
+                "mfe_bps": _to_signed_float(row.get("mfe_bps")),
+                "mae_bps": _to_signed_float(row.get("mae_bps")),
+                "label": str(row.get("label") or ""),
+                "close_reason": close_reason,
+                "price_source": str(row.get("entry_source") or row.get("exit_source") or row.get("price_source") or ""),
+                "data_valid": 1 if data_valid else 0,
+                "invalid_reason": str(row.get("invalid_reason") or ""),
+                "was_profitable": 1 if net_pnl is not None and net_pnl > 0.0 else 0,
+                "was_stopped": 1 if close_reason == "stop_loss" else 0,
+                "was_late": 0,
+                "price_points_seen": 2 if row.get("entry_price") is not None and row.get("exit_price") is not None else 0,
+                "blockers_json": json.dumps(row.get("blockers") or [], ensure_ascii=False, sort_keys=True),
+                "features_json": json.dumps(features, ensure_ascii=False, sort_keys=True),
+                "created_at": now_text,
+            }
+            _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
+            summary["examples_written"] += 1
+        conn.commit()
+        return summary
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        replay_diagnostics.query_error(f"lp_suppression_sample_persist_failed:{exc}")
+        replay_diagnostics.schema_error(f"schema_error:lp_suppression_sample_persist_failed:{exc}")
+        summary["enabled"] = False
+        summary["error"] = str(exc)
+        return summary
+
+
+def run_lp_suppression_sample_replay(
+    date_str: str,
+    *,
+    db_path: str | Path | None = None,
+    dry_run: bool = True,
+    limit_per_reason: int | None = None,
+) -> dict[str, Any]:
+    diagnostics = ReplayDiagnostics()
+    logical_date = str(date_str or "").strip()
+    resolved_path = Path(db_path) if db_path else _resolve_db_path()
+    env_limit = _to_int(os.environ.get("LP_SUPPRESSION_SAMPLE_LIMIT"))
+    sample_limit = int(limit_per_reason or env_limit or LP_SUPPRESSION_SAMPLE_LIMIT_DEFAULT)
+    if sample_limit <= 0:
+        sample_limit = LP_SUPPRESSION_SAMPLE_LIMIT_DEFAULT
+    strategy_hash = _strategy_config_hash(
+        replay_scope=LP_SUPPRESSION_SAMPLE_SCOPE,
+        include_suppressed=True,
+        include_blocked=True,
+    )
+    persistence_summary = {
+        "enabled": False,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "strategy_config_hash": strategy_hash,
+        "examples_deleted": 0,
+        "examples_written": 0,
+        "invalid_rows_skipped": 0,
+    }
+    base_summary = {
+        "available": False,
+        "sampled": True,
+        "logical_date": logical_date,
+        "replay_scope": LP_SUPPRESSION_SAMPLE_SCOPE,
+        "source": LP_SUPPRESSION_SAMPLE_SOURCE,
+        "dry_run": bool(dry_run),
+        "sample_limit_per_reason": sample_limit,
+        "sample_min_count": LP_SUPPRESSION_SAMPLE_MIN_SAMPLES,
+        "candidate_total_count": 0,
+        "candidate_sample_count": 0,
+        "replay_count": 0,
+        "valid_replay_count": 0,
+        "invalid_count": 0,
+        "avg_net_pnl_bps": None,
+        "profitable_rate": None,
+        "recommended_action": "needs_more_samples",
+        "candidate_count_by_reason": {},
+        "by_reason": [],
+        "by_pair": {},
+        "by_intent": {},
+        "invalid_reason_counts": {},
+        "asset_pair_mismatch_examples": [],
+        "asset_pair_summary": {
+            "valid_pairs": {},
+            "invalid_single_asset_pair_count": 0,
+            "unknown_pair_count": 0,
+        },
+        "direction_inference_summary": {
+            "long": 0,
+            "short": 0,
+            "ambiguous": 0,
+            "conflict": 0,
+            "do_not_chase_long": 0,
+            "do_not_chase_short": 0,
+        },
+        "direction_source_distribution": {},
+        "listener_prefilter_join_success_count": 0,
+        "listener_prefilter_direction_recovered_count": 0,
+        "listener_prefilter_still_ambiguous_count": 0,
+        "listener_prefilter_metadata_rows": 0,
+        "listener_prefilter_metadata_direction_rows": 0,
+        "listener_prefilter_metadata_pair_rows": 0,
+        "listener_prefilter_legacy_rows": 0,
+        "listener_prefilter_recovery_mode": "none",
+        "would_insert_replay_rows": 0,
+        "would_insert_valid_replay_rows": 0,
+        "invalid_rows_not_inserted": 0,
+        "inserted_replay_rows": 0,
+        "persistence_summary": persistence_summary,
+        "diagnosis": "needs_more_samples",
+        "degraded_reasons": [],
+        "status": "ok",
+        "db_path": str(resolved_path),
+    }
+    if not logical_date:
+        diagnostics.query_error("missing_date")
+        base_summary["status"] = "error"
+        base_summary.update(diagnostics.as_dict())
+        return base_summary
+    try:
+        window = _logical_window(logical_date)
+        base_summary.update(
+            {
+                "timezone": window["timezone"],
+                "logical_window_start_utc": window["logical_window_start_utc"],
+                "logical_window_end_utc": window["logical_window_end_utc"],
+                "logical_window_start_beijing": window["logical_window_start_beijing"],
+                "logical_window_end_beijing": window["logical_window_end_beijing"],
+            }
+        )
+    except ValueError as exc:
+        diagnostics.query_error(f"invalid_date:{logical_date}:{exc}")
+        base_summary["status"] = "error"
+        base_summary.update(diagnostics.as_dict())
+        return base_summary
+    if not resolved_path.exists():
+        diagnostics.query_error(f"sqlite_db_missing:{resolved_path}")
+        base_summary["status"] = "error"
+        base_summary.update(diagnostics.as_dict())
+        return base_summary
+    try:
+        if dry_run:
+            conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(str(resolved_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        diagnostics.query_error(f"sqlite_open_failed:{exc}")
+        base_summary["status"] = "error"
+        base_summary.update(diagnostics.as_dict())
+        return base_summary
+    try:
+        candidates = _delivery_audit_sample_candidates(conn, window=window, replay_diagnostics=diagnostics)
+        selected, counts_by_reason = _select_lp_suppression_samples(candidates, limit_per_reason=sample_limit)
+        replay_rows = _replay_dynamic_inputs(conn, selected, replay_diagnostics=diagnostics, require_market_context=True)
+        rows_by_sample: dict[str, dict[str, Any]] = {}
+        for candidate, replay in zip(selected, replay_rows, strict=False):
+            sample_id = str(candidate.get("sample_id") or "")
+            replay["sample_id"] = sample_id
+            replay["delivery_audit_id"] = str(candidate.get("delivery_audit_id") or "")
+            replay["audit_id"] = str(candidate.get("audit_id") or "")
+            replay["original_signal_id"] = str(candidate.get("original_signal_id") or "")
+            replay["suppression_reason"] = str(candidate.get("suppression_reason") or "")
+            replay["source"] = LP_SUPPRESSION_SAMPLE_SOURCE
+            replay["replay_scope"] = LP_SUPPRESSION_SAMPLE_SCOPE
+            replay["signal_stage"] = "SUPPRESSED"
+            replay["event_ts"] = _to_int(candidate.get("event_ts")) or _to_int(replay.get("signal_ts"))
+            replay["signal_ts"] = _to_int(replay.get("signal_ts")) or _to_int(candidate.get("event_ts"))
+            replay["pair"] = str(candidate.get("pair") or replay.get("pair") or "")
+            replay["asset"] = str(candidate.get("asset") or replay.get("asset") or "")
+            replay["intent"] = str(candidate.get("intent") or replay.get("trade_action") or "")
+            replay["trade_action"] = str(candidate.get("trade_action") or replay.get("trade_action") or candidate.get("intent") or "")
+            replay["lp_stage"] = str(candidate.get("lp_stage") or candidate.get("stage") or replay.get("lp_stage") or "")
+            replay["sweep_phase"] = str(candidate.get("sweep_phase") or replay.get("sweep_phase") or "")
+            replay["trade_action_stage"] = str(candidate.get("trade_action_stage") or candidate.get("stage") or "")
+            replay["inferred_side"] = candidate.get("inferred_side")
+            replay["direction_source"] = str(candidate.get("direction_source") or "")
+            replay["direction_confidence"] = float(candidate.get("direction_confidence") or 0.0)
+            replay["listener_prefilter_has_metadata"] = bool(candidate.get("listener_prefilter_has_metadata"))
+            replay["listener_prefilter_metadata_has_direction"] = bool(candidate.get("listener_prefilter_metadata_has_direction"))
+            replay["listener_prefilter_metadata_has_pair"] = bool(candidate.get("listener_prefilter_metadata_has_pair"))
+            replay["listener_prefilter_recovery_mode"] = (
+                "metadata"
+                if bool(candidate.get("listener_prefilter_has_metadata"))
+                else "join"
+                if any(source in list(candidate.get("input_source") or []) for source in ("signals", "parsed_events", "raw_events", "telegram_deliveries"))
+                else "none"
+            )
+            replay["original_intent"] = str(candidate.get("original_intent") or candidate.get("intent") or "")
+            replay["original_stage"] = str(candidate.get("original_stage") or candidate.get("stage") or candidate.get("lp_stage") or "")
+            replay["original_pair"] = str(candidate.get("original_pair") or candidate.get("pair") or "")
+            replay["original_asset"] = str(candidate.get("original_asset") or candidate.get("asset") or "")
+            replay["profile_key"] = str(candidate.get("profile_key") or replay.get("profile_key") or "")
+            replay["opportunity_status"] = str(candidate.get("opportunity_status") or replay.get("opportunity_status") or "")
+            replay["input_source"] = ["delivery_audit", LP_SUPPRESSION_SAMPLE_SCOPE]
+            for source_name in ("signals", "telegram_deliveries"):
+                if source_name in list(candidate.get("input_source") or []) and source_name not in replay["input_source"]:
+                    replay["input_source"].append(source_name)
+            replay["blockers"] = list(candidate.get("blockers") or [])
+            rows_by_sample[sample_id] = replay
+        replay_rows = [rows_by_sample.get(str(candidate.get("sample_id") or ""), {}) for candidate in selected]
+        replay_rows = [row for row in replay_rows if row]
+        if not dry_run:
+            persistence_summary = _persist_lp_suppression_sample_rows(
+                conn,
+                logical_date,
+                replay_rows,
+                diagnostics,
+                strategy_config_hash=strategy_hash,
+                limit_per_reason=sample_limit,
+            )
+        summary = _aggregate_lp_suppression_sample_summary(
+            logical_date=logical_date,
+            candidates_total=len(candidates),
+            candidate_counts_by_reason=counts_by_reason,
+            selected_candidates=selected,
+            replay_rows=replay_rows,
+            dry_run=dry_run,
+            limit_per_reason=sample_limit,
+            persistence_summary=persistence_summary,
+            diagnostics=diagnostics,
+        )
+        if diagnostics.schema_errors or diagnostics.query_errors or diagnostics.price_errors or summary.get("degraded_reasons"):
+            summary["status"] = "degraded"
+        else:
+            summary["status"] = "ok"
+        summary["db_path"] = str(resolved_path)
+        return summary
+    except sqlite3.Error as exc:
+        diagnostics.query_error(f"lp_suppression_sample_query_failed:{exc}")
+        diagnostics.schema_error(f"schema_error:lp_suppression_sample_query_failed:{exc}")
+        base_summary["status"] = "error"
+        base_summary.update(diagnostics.as_dict())
+        return base_summary
+    finally:
+        conn.close()
 
 
 
@@ -3618,12 +5754,15 @@ def _lookup_price_from_outcomes(
         return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
     row_asset = str(row["asset"] or "").strip().upper() if "asset" in columns else ""
     row_pair = str(row["pair"] or "").strip().upper() if "pair" in columns else ""
-    if asset and row_asset and row_asset != asset:
+    row_asset = _normalize_lp_symbol(row_asset)
+    row_pair = str(_normalize_lp_pair_value(row_pair).get("pair") or row_pair)
+    expected_pair = str(_normalize_lp_pair_value(pair).get("pair") or pair)
+    if asset and row_asset and row_asset != _normalize_lp_symbol(asset):
         replay_diagnostics.price_error(f"outcomes_asset_mismatch:{signal_id}:{row_asset}!={asset}")
-        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
-    if pair and row_pair and row_pair != pair:
-        replay_diagnostics.price_error(f"outcomes_pair_mismatch:{signal_id}:{row_pair}!={pair}")
-        return {"price": None, "source": "unavailable", "reason": "no_price_for_signal_id"}
+        return {"price": None, "source": "unavailable", "reason": "outcome_asset_mismatch"}
+    if expected_pair and row_pair and row_pair != expected_pair:
+        replay_diagnostics.price_error(f"outcomes_pair_mismatch:{signal_id}:{row_pair}!={expected_pair}")
+        return {"price": None, "source": "unavailable", "reason": "outcome_asset_mismatch"}
     price = _row_first_float(row, ("start_price", "entry_price", "outcome_price_start", "price_start", "end_price", "exit_price", "outcome_price_end", "price_end"))
     if price is None:
         replay_diagnostics.price_error(f"outcomes_price_missing:{signal_id}")
@@ -3684,6 +5823,7 @@ def _lookup_price_from_market_context(
     ts: int,
     prefer_source: str,
     replay_diagnostics: ReplayDiagnostics,
+    strict_pair_match: bool = False,
 ) -> dict[str, Any]:
     if not _table_exists(conn, "market_context_snapshots"):
         replay_diagnostics.schema_error("schema_error:missing_table:market_context_snapshots")
@@ -3705,24 +5845,43 @@ def _lookup_price_from_market_context(
         replay_diagnostics.schema_error("schema_error:missing_columns:market_context_snapshots:price")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
     select_columns = ["asset", time_column, *[column for column in ("pair", "venue") if column in columns], *price_columns]
+    asset_aliases = _lp_asset_aliases(asset) or (asset,)
+    placeholders = ", ".join("?" for _ in asset_aliases)
+    limit = 50 if strict_pair_match else 1
     try:
-        row = conn.execute(
+        rows = conn.execute(
             f"SELECT {', '.join(select_columns)} "
-            f"FROM market_context_snapshots WHERE asset = ? ORDER BY ABS(COALESCE({time_column}, 0) - ?) ASC, COALESCE({time_column}, 0) ASC LIMIT 1",
-            (asset, ts),
-        ).fetchone()
+            f"FROM market_context_snapshots WHERE asset IN ({placeholders}) "
+            f"ORDER BY ABS(COALESCE({time_column}, 0) - ?) ASC, COALESCE({time_column}, 0) ASC LIMIT {limit}",
+            (*asset_aliases, ts),
+        ).fetchall()
     except sqlite3.Error as exc:
         replay_diagnostics.query_error(f"market_context_lookup_failed:{exc}")
         replay_diagnostics.schema_error(f"schema_error:market_context_lookup_failed:{exc}")
         return {"price": None, "source": "unavailable", "reason": "schema_error"}
+    row = None
+    expected_pair = str(_normalize_lp_pair_value(pair).get("pair") or "").strip().upper()
+    if strict_pair_match and expected_pair:
+        if "pair" not in columns:
+            replay_diagnostics.price_error(f"market_context_missing:{asset}:{pair}")
+            return {"price": None, "source": "unavailable", "reason": "market_context_missing"}
+        for candidate_row in rows:
+            row_pair = str(_normalize_lp_pair_value(candidate_row["pair"] if "pair" in candidate_row.keys() else "").get("pair") or "").strip().upper()
+            if row_pair == expected_pair:
+                row = candidate_row
+                break
+    elif rows:
+        row = rows[0]
     if row is None:
         replay_diagnostics.price_error(f"market_context_missing:{asset}:{pair}")
-        return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
+        reason = "market_context_missing" if strict_pair_match else "market_context_unavailable"
+        return {"price": None, "source": "unavailable", "reason": reason}
     price, source = _select_price_from_context(dict(row))
     if price is None:
         venue = row["venue"] if "venue" in row.keys() else ""
         replay_diagnostics.price_error(f"market_context_price_missing:{asset}:{pair}:{venue}")
-        return {"price": None, "source": "unavailable", "reason": "market_context_unavailable"}
+        reason = "market_context_missing" if strict_pair_match else "market_context_unavailable"
+        return {"price": None, "source": "unavailable", "reason": reason}
     if prefer_source and prefer_source not in source:
         replay_diagnostics.warning(f"prefer_source_unmet:{prefer_source}:{source}")
     return {"price": price, "source": source or "market_context_snapshots", "reason": None}
@@ -3769,7 +5928,18 @@ def _normalize_direction(value: Any) -> str:
 
 def _normalize_invalid_reason(reason: Any, *, stage: str) -> str:
     raw = str(reason or "").strip()
-    if raw in {"schema_error", "market_context_unavailable", "no_price_for_signal_id", "no_entry_price", "no_exit_price"}:
+    if raw in {
+        "schema_error",
+        "market_context_unavailable",
+        "market_context_missing",
+        "no_price_for_signal_id",
+        "no_entry_price",
+        "no_exit_price",
+        "asset_pair_ambiguous",
+        "asset_pair_mismatch",
+        "outcome_asset_mismatch",
+        "outcome_pair_mismatch",
+    }:
         return raw
     if stage == "entry":
         if raw in {"entry_price_unavailable", "outcomes_price_missing"}:
@@ -3849,10 +6019,62 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", required=True, help="Logical date YYYY-MM-DD")
     parser.add_argument("--format", default="text", choices=("text", "json"), help="Output format")
     parser.add_argument("--dry-run", action="store_true", help="Read summary only")
+    parser.add_argument("--execute", action="store_true", help="Execute supported write-mode helper")
+    parser.add_argument("--lp-suppression-sample", action="store_true", help="Run offline LP early suppression sample replay")
+    parser.add_argument("--sample-limit", type=int, help="LP suppression sample limit per reason")
     parser.add_argument("--replay-scope", choices=tuple(sorted(REPLAY_SCOPES)), help="Replay persistence scope")
     parser.add_argument("--include-suppressed", action="store_true", help="Include suppressed replay-eligible research signals")
     parser.add_argument("--include-blocked", action="store_true", default=True, help="Include blocked/no-trade replay-eligible research signals")
     return parser
+
+
+def _render_lp_suppression_sample_text(summary: dict[str, Any]) -> str:
+    lines = [
+        f"lp_suppression_sample_replay logical_date={summary.get('logical_date')}",
+        f"replay_scope={summary.get('replay_scope')}",
+        f"source={summary.get('source')}",
+        f"dry_run={summary.get('dry_run')}",
+        f"status={summary.get('status')}",
+        f"sample_limit_per_reason={summary.get('sample_limit_per_reason')}",
+        f"sample_min_count={summary.get('sample_min_count')}",
+        f"candidate_total_count={summary.get('candidate_total_count')}",
+        f"candidate_sample_count={summary.get('candidate_sample_count')}",
+        f"replay_count={summary.get('replay_count')}",
+        f"valid_replay_count={summary.get('valid_replay_count')}",
+        f"invalid_count={summary.get('invalid_count')}",
+        f"avg_net_pnl_bps={summary.get('avg_net_pnl_bps')}",
+        f"profitable_rate={summary.get('profitable_rate')}",
+        f"recommended_action={summary.get('recommended_action')}",
+        f"candidate_count_by_reason={json.dumps(summary.get('candidate_count_by_reason') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"by_reason={json.dumps(summary.get('by_reason') or [], ensure_ascii=False, sort_keys=True)}",
+        f"by_pair={json.dumps(summary.get('by_pair') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"by_intent={json.dumps(summary.get('by_intent') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"asset_pair_summary={json.dumps(summary.get('asset_pair_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"asset_pair_mismatch_examples={json.dumps(summary.get('asset_pair_mismatch_examples') or [], ensure_ascii=False, sort_keys=True)}",
+        f"direction_inference_summary={json.dumps(summary.get('direction_inference_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"direction_source_distribution={json.dumps(summary.get('direction_source_distribution') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"invalid_reason_counts={json.dumps(summary.get('invalid_reason_counts') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"listener_prefilter_join_success_count={summary.get('listener_prefilter_join_success_count')}",
+        f"listener_prefilter_direction_recovered_count={summary.get('listener_prefilter_direction_recovered_count')}",
+        f"listener_prefilter_still_ambiguous_count={summary.get('listener_prefilter_still_ambiguous_count')}",
+        f"listener_prefilter_metadata_rows={summary.get('listener_prefilter_metadata_rows')}",
+        f"listener_prefilter_metadata_direction_rows={summary.get('listener_prefilter_metadata_direction_rows')}",
+        f"listener_prefilter_metadata_pair_rows={summary.get('listener_prefilter_metadata_pair_rows')}",
+        f"listener_prefilter_legacy_rows={summary.get('listener_prefilter_legacy_rows')}",
+        f"listener_prefilter_recovery_mode={summary.get('listener_prefilter_recovery_mode')}",
+        f"would_insert_replay_rows={summary.get('would_insert_replay_rows')}",
+        f"would_insert_valid_replay_rows={summary.get('would_insert_valid_replay_rows')}",
+        f"invalid_rows_not_inserted={summary.get('invalid_rows_not_inserted')}",
+        f"inserted_replay_rows={summary.get('inserted_replay_rows')}",
+        f"persistence_summary={json.dumps(summary.get('persistence_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"diagnosis={summary.get('diagnosis')}",
+        f"degraded_reasons={json.dumps(summary.get('degraded_reasons') or [], ensure_ascii=False)}",
+        f"warnings={json.dumps(summary.get('warnings') or [], ensure_ascii=False)}",
+        f"query_errors={json.dumps(summary.get('query_errors') or [], ensure_ascii=False)}",
+        f"price_errors={json.dumps(summary.get('price_errors') or [], ensure_ascii=False)}",
+        f"schema_errors={json.dumps(summary.get('schema_errors') or [], ensure_ascii=False)}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _render_text(summary: dict[str, Any]) -> str:
@@ -3887,6 +6109,19 @@ def _render_text(summary: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.lp_suppression_sample:
+        if args.dry_run and args.execute:
+            raise SystemExit("--lp-suppression-sample accepts only one of --dry-run or --execute")
+        summary = run_lp_suppression_sample_replay(
+            args.date,
+            dry_run=not bool(args.execute),
+            limit_per_reason=args.sample_limit,
+        )
+        if args.format == "json":
+            print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(_render_lp_suppression_sample_text(summary), end="")
+        return 0 if summary.get("status") in {"ok", "degraded"} else 1
     summary = run_trade_replay(
         args.date,
         dry_run=bool(args.dry_run),

@@ -22,6 +22,7 @@ REPORT_FIELDS = (
     "clmm_summary",
     "lp_suppression_summary",
     "lp_suppression_replay_summary",
+    "lp_suppression_sample_replay_summary",
     "major_coverage_summary",
 )
 LP_DETAIL_REPORT_FIELDS = (
@@ -492,13 +493,22 @@ def format_suppression_replay(rows: Any) -> str:
     for item in rows[:8]:
         if not isinstance(item, dict):
             continue
+        count = item.get("count", item.get("sample_count"))
         parts.append(
-            f"{item.get('reason', 'unknown')}:count={safe_int(item.get('count'))},"
+            f"{item.get('reason', 'unknown')}:count={safe_int(count)},"
             f"replay={safe_int(item.get('replay_count'))},"
             f"avg={item.get('avg_net_pnl_bps', 'missing')},"
             f"action={item.get('recommended_action', 'missing')}"
         )
     return "；".join(parts) if parts else "missing"
+
+
+def reason_row(summary: dict[str, Any], reason: str) -> dict[str, Any]:
+    rows = summary.get("by_reason") if isinstance(summary.get("by_reason"), list) else []
+    for item in rows:
+        if isinstance(item, dict) and str(item.get("reason") or "") == reason:
+            return item
+    return {}
 
 
 def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
@@ -512,6 +522,7 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     clmm_summary = as_dict(payload.get("clmm_summary"))
     lp_report_suppression = as_dict(payload.get("lp_suppression_summary"))
     lp_suppression_replay = as_dict(payload.get("lp_suppression_replay_summary"))
+    lp_suppression_sample_replay = as_dict(payload.get("lp_suppression_sample_replay_summary"))
     lp_signal_rows = payload.get("lp_signal_rows", run_overview.get("lp_signal_rows"))
     delivered_lp = payload.get("delivered_lp_signals", run_overview.get("delivered_lp_signals"))
     suppressed_lp = payload.get("suppressed_lp_signals", run_overview.get("suppressed_lp_signals"))
@@ -631,6 +642,40 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
             f"diagnosis={lp_suppression_replay.get('diagnosis', 'missing')} "
             f"by_reason={format_suppression_replay(lp_suppression_replay.get('by_reason'))}"
         )
+    if lp_suppression_sample_replay:
+        gate_sample = reason_row(lp_suppression_sample_replay, "gate/lp_noise_filtered")
+        listener_sample = reason_row(lp_suppression_sample_replay, "listener_prefilter/drop")
+        print(
+            "sampled early suppression replay="
+            f"available={lp_suppression_sample_replay.get('available', 'missing')} "
+            f"sampled={lp_suppression_sample_replay.get('sampled', 'missing')} "
+            f"sample_limit_per_reason={lp_suppression_sample_replay.get('sample_limit_per_reason', 'missing')} "
+            f"valid_replay_count={lp_suppression_sample_replay.get('valid_replay_count', 'missing')} "
+            f"listener_prefilter_metadata_rows={lp_suppression_sample_replay.get('listener_prefilter_metadata_rows', 'missing')} "
+            f"listener_prefilter_metadata_direction_rows={lp_suppression_sample_replay.get('listener_prefilter_metadata_direction_rows', 'missing')} "
+            f"listener_prefilter_metadata_pair_rows={lp_suppression_sample_replay.get('listener_prefilter_metadata_pair_rows', 'missing')} "
+            f"listener_prefilter_recovery_mode={lp_suppression_sample_replay.get('listener_prefilter_recovery_mode', 'missing')} "
+            f"avg_net_pnl_bps={lp_suppression_sample_replay.get('avg_net_pnl_bps', 'missing')} "
+            f"diagnosis={lp_suppression_sample_replay.get('diagnosis', 'missing')} "
+            f"invalid_reason_counts={json.dumps(lp_suppression_sample_replay.get('invalid_reason_counts', {}), ensure_ascii=False, sort_keys=True)} "
+            f"asset_pair_summary={json.dumps(lp_suppression_sample_replay.get('asset_pair_summary', {}), ensure_ascii=False, sort_keys=True)} "
+            f"direction_inference_summary={json.dumps(lp_suppression_sample_replay.get('direction_inference_summary', {}), ensure_ascii=False, sort_keys=True)} "
+            f"by_reason={format_suppression_replay(lp_suppression_sample_replay.get('by_reason'))}"
+        )
+        print(
+            "gate/lp_noise_filtered sample avg="
+            f"{gate_sample.get('avg_net_pnl_bps', 'missing')} "
+            f"sample_count={gate_sample.get('sample_count', 'missing')} "
+            f"profitable_rate={gate_sample.get('profitable_rate', 'missing')} "
+            f"action={gate_sample.get('recommended_action', 'missing')}"
+        )
+        print(
+            "listener_prefilter/drop sample avg="
+            f"{listener_sample.get('avg_net_pnl_bps', 'missing')} "
+            f"sample_count={listener_sample.get('sample_count', 'missing')} "
+            f"profitable_rate={listener_sample.get('profitable_rate', 'missing')} "
+            f"action={listener_sample.get('recommended_action', 'missing')}"
+        )
     print(
         "data_quality="
         f"status={quality.get('data_quality_status', 'missing')} "
@@ -705,6 +750,38 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
             print("后验判断=suppression 后验未显示明显误杀；不建议直接放松 gate。")
         else:
             print("后验判断=suppression replay 样本不足；继续积累，不建议直接放松 gate。")
+    if lp_suppression_sample_replay:
+        sample_diagnosis = str(lp_suppression_sample_replay.get("diagnosis") or "missing")
+        sample_direction = as_dict(lp_suppression_sample_replay.get("direction_inference_summary"))
+        sample_invalid = as_dict(lp_suppression_sample_replay.get("invalid_reason_counts"))
+        sample_replay_count = safe_int(lp_suppression_sample_replay.get("replay_count"))
+        sample_valid_count = safe_int(lp_suppression_sample_replay.get("valid_replay_count"))
+        sample_ambiguous = safe_int(sample_direction.get("ambiguous"))
+        sample_asset_mismatch = safe_int(sample_invalid.get("asset_pair_mismatch")) + safe_int(sample_invalid.get("outcome_asset_mismatch"))
+        sample_market_missing = safe_int(sample_invalid.get("market_context_missing"))
+        listener_sample = reason_row(lp_suppression_sample_replay, "listener_prefilter/drop")
+        listener_valid_present = "valid_replay_count" in listener_sample
+        listener_valid_count = safe_int(listener_sample.get("valid_replay_count"))
+        listener_sample_count = safe_int(listener_sample.get("sample_count"))
+        listener_metadata_rows = safe_int(lp_suppression_sample_replay.get("listener_prefilter_metadata_rows"))
+        listener_metadata_direction_rows = safe_int(lp_suppression_sample_replay.get("listener_prefilter_metadata_direction_rows"))
+        listener_metadata_pair_rows = safe_int(lp_suppression_sample_replay.get("listener_prefilter_metadata_pair_rows"))
+        if sample_replay_count > 0 and sample_valid_count == 0 and sample_ambiguous >= sample_replay_count:
+            print("sampled early suppression 无有效 replay=方向字段缺失，不是样本不足；需修 signal/audit direction join。")
+        if listener_valid_present and listener_sample_count > 0 and listener_valid_count == 0 and listener_metadata_rows == 0:
+            print("listener_prefilter/drop 旧样本缺 direction metadata；新版本将从后续数据开始可回放。")
+        elif listener_valid_present and listener_sample_count > 0 and listener_valid_count == 0 and listener_metadata_pair_rows > 0 and listener_metadata_direction_rows == 0:
+            print("listener_prefilter/drop metadata 有 pair 但无 direction，需检查 intent/side 推断。")
+        if sample_asset_mismatch > 0:
+            print("sampled early suppression asset/pair 错配=存在；优先修 LP sample asset/pair 归因，不复核放宽 gate。")
+        elif sample_market_missing > 0 and sample_valid_count < 10:
+            print("sampled early suppression market context 缺失=存在；方向/asset pair metadata 不足，不复核放宽 gate。")
+        if sample_diagnosis == "possible_over_suppression":
+            print("sampled early suppression 误杀迹象=可能存在；只建议周复盘人工评估对应 reason，不自动放宽 gate。")
+        elif sample_diagnosis == "early_suppression_seems_correct":
+            print("sampled early suppression 误杀迹象=未显示；gate/lp_noise_filtered 与 listener_prefilter/drop 继续 keep_suppressed。")
+        else:
+            print("sampled early suppression 误杀迹象=数据不足；先继续抽样，不改 gate。")
     if warnings:
         print("limitations=" + "；".join(dict.fromkeys(warnings)))
     print("说明=只读脱敏诊断，不含执行指令。")

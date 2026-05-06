@@ -37,6 +37,7 @@ from config import (
 )
 from constants import ERC20_TRANSFER_EVENT_SIG
 from filter import WATCH_ADDRESSES, get_address_meta, strategy_role_group
+from lp_drop_metadata import build_lp_prefilter_drop_metadata
 from lp_noise_rules import (
     LP_ADJACENT_NOISE_RULE_VERSION,
     LP_ADJACENT_NOISE_STAGE_LISTENER,
@@ -1164,8 +1165,9 @@ def _listener_lp_adjacent_skip_audit_record(
         "reason_detail": str(decision.get("reason") or "lp_adjacent_noise_skipped_in_listener"),
         "reason_bucket": "prefilter_blocked",
     }
-    return {
-        "event_id": f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}",
+    event_id = f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}"
+    record = {
+        "event_id": event_id,
         "tx_hash": tx_hash,
         "watch_address": watch_address,
         "monitor_type": "adjacent_watch",
@@ -1291,6 +1293,17 @@ def _listener_lp_adjacent_skip_audit_record(
         "pricing_confidence": round(float(candidate.get("pricing_confidence") or 0.0), 3),
         "ingest_ts": int(candidate.get("ingest_ts") or time.time()),
     }
+    metadata = build_lp_prefilter_drop_metadata(
+        candidate,
+        event_id=event_id,
+        tx_hash=tx_hash,
+        drop_reason="listener_prefilter/drop",
+        event_ts=int(candidate.get("ingest_ts") or time.time()),
+    )
+    for key, value in metadata.items():
+        if key not in record or record.get(key) in (None, "", [], {}, ()):
+            record[key] = value
+    return record
 
 
 def _archive_listener_lp_adjacent_skip(

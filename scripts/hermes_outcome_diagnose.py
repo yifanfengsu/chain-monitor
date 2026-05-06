@@ -93,6 +93,15 @@ def safe_float(value: Any) -> float | None:
         return None
 
 
+def safe_epoch(value: Any) -> float | None:
+    parsed = safe_float(value)
+    if parsed is None:
+        return None
+    if parsed > 10_000_000_000:
+        return parsed / 1000.0
+    return parsed
+
+
 def safe_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -374,6 +383,14 @@ def fetch_related_outcomes(
         "end_price",
         "outcome_price_source",
         "price_source",
+        "direction_adjusted_move",
+        "net_pnl_bps",
+        "evaluated_at",
+        "outcome_ts",
+        "source",
+        "settled_by",
+        "catchup",
+        "result_label",
     )
     rows: list[dict[str, Any]] = []
     rows.extend(fetch_rows_by_ids(conn, "outcomes", "signal_id", signal_ids, wanted, warnings))
@@ -401,6 +418,13 @@ def fetch_related_opportunity_outcomes(
         "status",
         "failure_reason",
         "completed_at",
+        "evaluated_at",
+        "outcome_ts",
+        "net_pnl_bps",
+        "source",
+        "settled_by",
+        "catchup",
+        "result_label",
         "created_at",
         "updated_at",
     )
@@ -433,6 +457,10 @@ def fetch_replay_examples(conn: sqlite3.Connection, logical_date: str, warnings:
         "profile_key",
         "data_valid",
         "invalid_reason",
+        "net_pnl_bps",
+        "entry_ts",
+        "exit_ts",
+        "label",
         "price_source",
         "created_at",
     )
@@ -516,6 +544,8 @@ def report_field_status(payload: dict[str, Any]) -> str:
         "trade_opportunity_summary",
         "outcome_summary",
         "outcome_source_summary",
+        "outcome_diagnosis_summary",
+        "candidate_coverage_summary",
         "trade_replay_summary",
         "trade_replay_profile_summary",
     )
@@ -570,7 +600,7 @@ def due_counters(rows: Iterable[dict[str, Any]], now_ts: float) -> tuple[int, in
         status = normalize_small(row.get("status"))
         if status not in {"pending", "scheduled", "registered", "missing"}:
             continue
-        due_at = safe_float(row.get("due_at"))
+        due_at = safe_epoch(row.get("due_at"))
         if due_at is None:
             missing_due_pending += 1
         elif due_at > now_ts:
@@ -578,6 +608,112 @@ def due_counters(rows: Iterable[dict[str, Any]], now_ts: float) -> tuple[int, in
         else:
             past_pending += 1
     return future_pending, past_pending, missing_due_pending
+
+
+def opportunity_pending_distributions(rows: Iterable[dict[str, Any]], now_ts: float) -> tuple[Counter[str], Counter[str]]:
+    horizon: Counter[str] = Counter()
+    due: Counter[str] = Counter()
+    for row in rows:
+        if normalize_small(row.get("status")) != "pending":
+            continue
+        horizon[str(safe_int(row.get("window_sec")) or "missing")] += 1
+        raw_due = row.get("due_at")
+        due_at = safe_epoch(raw_due)
+        if raw_due in (None, ""):
+            due["missing_due_ts"] += 1
+        elif due_at is None:
+            due["due_time_parse_error"] += 1
+        elif due_at > now_ts:
+            due["future_due_ts"] += 1
+        else:
+            due["past_due_ts"] += 1
+    return horizon, due
+
+
+def completed_field_presence(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    result = {
+        "status_completed": 0,
+        "completed_at_present": 0,
+        "evaluated_at_present": 0,
+        "outcome_ts_present": 0,
+        "net_pnl_bps_present": 0,
+    }
+    for row in rows:
+        if normalize_small(row.get("status")) == "completed":
+            result["status_completed"] += 1
+        if safe_epoch(row.get("completed_at")) is not None:
+            result["completed_at_present"] += 1
+        if safe_epoch(row.get("evaluated_at")) is not None:
+            result["evaluated_at_present"] += 1
+        if safe_epoch(row.get("outcome_ts")) is not None:
+            result["outcome_ts_present"] += 1
+        if safe_float(row.get("net_pnl_bps")) is not None:
+            result["net_pnl_bps_present"] += 1
+    return result
+
+
+def replay_completion_ids(replay_rows: Iterable[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for row in replay_rows:
+        if normalize_small(row.get("replay_scope")) != "full":
+            continue
+        if safe_float(row.get("net_pnl_bps")) is None:
+            continue
+        if str(row.get("data_valid") or "1").strip().lower() in {"0", "false", "no", "invalid"}:
+            continue
+        opportunity_id = first_text(row.get("trade_opportunity_id"))
+        if opportunity_id:
+            ids.add(opportunity_id)
+    return ids
+
+
+def completed_outcome_links(outcome_rows: Iterable[dict[str, Any]]) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
+    by_signal: set[tuple[str, int]] = set()
+    by_opportunity: set[tuple[str, int]] = set()
+    for row in outcome_rows:
+        if normalize_small(row.get("status")) != "completed":
+            continue
+        window = safe_int(row.get("window_sec"))
+        if window is None:
+            continue
+        signal_id = first_text(row.get("signal_id"))
+        opportunity_id = first_text(row.get("trade_opportunity_id"))
+        if signal_id:
+            by_signal.add((signal_id, int(window)))
+        if opportunity_id:
+            by_opportunity.add((opportunity_id, int(window)))
+    return by_signal, by_opportunity
+
+
+def infer_root_cause(
+    *,
+    opportunity_outcomes: list[dict[str, Any]],
+    opportunity_outcome_completed: int,
+    opp_past_pending: int,
+    opp_future_pending: int,
+    opp_missing_due: int,
+    pending_with_replay: int,
+    pending_with_outcomes: int,
+    unlinked_opp_outcomes: int,
+    price_possible: int,
+    mapping_possible: bool,
+) -> str:
+    total = len(opportunity_outcomes)
+    if total and opportunity_outcome_completed == 0 and opp_past_pending and (pending_with_replay or pending_with_outcomes):
+        return "status_not_updated"
+    if total and opportunity_outcome_completed == 0 and opp_past_pending:
+        return "catchup_worker_not_running"
+    if opp_future_pending and not opp_past_pending:
+        return "due_time_not_reached"
+    if opp_missing_due:
+        return "due_time_parse_error"
+    if unlinked_opp_outcomes:
+        return "missing_link_id"
+    if price_possible:
+        return "missing_price_snapshot"
+    if mapping_possible:
+        return "report_mapping_mismatch"
+    return "none"
 
 
 def price_failure_count(rows: Iterable[dict[str, Any]]) -> tuple[int, Counter[str]]:
@@ -680,6 +816,7 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     now_ts = safe_float(os.environ.get("HERMES_OUTCOME_DIAGNOSE_NOW_TS")) or time.time()
     outcome_future_pending, outcome_past_pending, outcome_missing_due = due_counters(outcomes, now_ts)
     opp_future_pending, opp_past_pending, opp_missing_due = due_counters(opportunity_outcomes, now_ts)
+    pending_horizon_distribution, pending_due_distribution = opportunity_pending_distributions(opportunity_outcomes, now_ts)
     outcome_price_failures, outcome_price_reasons = price_failure_count(outcomes)
     opp_price_failures, opp_price_reasons = price_failure_count(opportunity_outcomes)
     replay_price_failures, replay_price_reasons = price_failure_count(replay_examples)
@@ -697,6 +834,26 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
         opportunity_outcome_rows=len(opportunity_outcomes),
         replay_rows=len(replay_examples),
     )
+    mapping_possible = bool(mapping_diagnostics)
+    replay_completion_opportunity_ids = replay_completion_ids(replay_examples)
+    completed_by_signal, completed_by_opportunity = completed_outcome_links(outcomes)
+    opportunity_to_signal = {str(row.get("trade_opportunity_id") or ""): str(row.get("signal_id") or "") for row in opportunities}
+    pending_opportunity_rows = [row for row in opportunity_outcomes if normalize_small(row.get("status")) == "pending"]
+    pending_with_replay = sum(
+        1
+        for row in pending_opportunity_rows
+        if str(row.get("trade_opportunity_id") or "").strip() in replay_completion_opportunity_ids
+    )
+    pending_with_outcomes = 0
+    for row in pending_opportunity_rows:
+        opportunity_id = str(row.get("trade_opportunity_id") or "").strip()
+        window = safe_int(row.get("window_sec"))
+        signal_id = opportunity_to_signal.get(opportunity_id, "")
+        if window is None:
+            continue
+        if (opportunity_id, int(window)) in completed_by_opportunity or (signal_id, int(window)) in completed_by_signal:
+            pending_with_outcomes += 1
+    opportunity_completion_fields = completed_field_presence(opportunity_outcomes)
 
     report_rates = {
         "outcome_60s_completed_rate": dict_value(payload, "outcome_source_summary", "outcome_60s_completed_rate"),
@@ -707,6 +864,18 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     }
     replay_scope_counts = Counter(normalize_small(row.get("replay_scope")) for row in replay_examples)
     opportunity_status_counter = Counter(row.get("status") or "NONE" for row in opportunities)
+    root_cause = infer_root_cause(
+        opportunity_outcomes=opportunity_outcomes,
+        opportunity_outcome_completed=opportunity_outcome_completed,
+        opp_past_pending=opp_past_pending,
+        opp_future_pending=opp_future_pending,
+        opp_missing_due=opp_missing_due,
+        pending_with_replay=pending_with_replay,
+        pending_with_outcomes=pending_with_outcomes,
+        unlinked_opp_outcomes=unlinked_opp_outcomes,
+        price_possible=opp_price_failures,
+        mapping_possible=mapping_possible,
+    )
 
     print(f"Chain Monitor Outcome闭环诊断｜{logical_date}")
     print("policy=只读 SQLite/daily_report；未修改 DB；未执行外部生成命令。")
@@ -728,6 +897,19 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     print(f"trade_opportunity_status_distribution={format_counter(opportunity_status_counter)}")
     print(f"outcomes_status_distribution={format_counter(outcome_statuses)}")
     print(f"opportunity_outcomes_status_distribution={format_counter(opportunity_outcome_statuses)}")
+    print(f"opportunity_outcomes_pending_horizon_distribution={format_counter(pending_horizon_distribution)}")
+    print(f"opportunity_outcomes_pending_due_ts_distribution={format_counter(pending_due_distribution)}")
+    print(f"opportunity_outcomes_past_due_pending_count={opp_past_pending}")
+    print(
+        "opportunity_outcomes_pending_linkage="
+        f"with_replay_examples={pending_with_replay} "
+        f"with_completed_outcomes={pending_with_outcomes}"
+    )
+    print(
+        "opportunity_outcomes_completed_fields="
+        + " ".join(f"{key}={value}" for key, value in opportunity_completion_fields.items())
+    )
+    print(f"root_cause={root_cause}")
     print(
         "daily_report_rates="
         + "；".join(f"{key}={format_number(value)}" for key, value in report_rates.items())
@@ -754,7 +936,6 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     ) or (outcome_past_pending + opp_past_pending > 0)
     id_link_possible = unlinked_outcomes + unlinked_opp_outcomes + replay_without_opp
     price_possible = outcome_price_failures + opp_price_failures + replay_price_failures
-    mapping_possible = bool(mapping_diagnostics)
 
     print("outcome缺失原因推断:")
     print(
@@ -782,8 +963,11 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
         f"{'可能' if mapping_possible else '不明显'} "
         f"diagnostics={';'.join(mapping_diagnostics) if mapping_diagnostics else 'none'}"
     )
+    print(f"- 明确根因={root_cause}")
 
     recommendations: list[str] = []
+    if root_cause in {"status_not_updated", "catchup_worker_not_running"}:
+        recommendations.append("先运行 outcome-catchup dry-run，确认 would_update_rows 后再决定是否 SSH 手动 execute。")
     if worker_stall_possible:
         recommendations.append("优先检查 outcome scheduler / catchup 是否持续结算到 SQLite。")
     if price_possible:

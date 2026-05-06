@@ -414,6 +414,30 @@ def parse_command(text: str) -> dict[str, Any]:
             "auto_build": False,
         }
 
+    match = re.fullmatch(r"(?:Outcome补全预检|后验补全预检)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "outcome-catchup",
+            "command_intent": "outcome-catchup",
+            "argv": wrapper_argv("outcome-catchup", "--date", report_date, "--dry-run"),
+            "date": report_date,
+            "mode": "dry-run",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:LP抑制抽样预检|LP抽样预检|LP suppression抽样预检)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "lp-suppression-sample-replay",
+            "command_intent": "lp-suppression-sample-replay",
+            "argv": wrapper_argv("lp-suppression-sample-replay", "--date", report_date, "--dry-run"),
+            "date": report_date,
+            "mode": "dry-run",
+            "auto_build": False,
+        }
+
     match = re.fullmatch(r"(?:LP诊断|LP信号诊断|池子诊断|CLMM诊断)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
     if match:
         report_date = validate_date(match.group(1))

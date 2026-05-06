@@ -34,6 +34,7 @@ for pattern in \
   "cmd_candidate_coverage()" \
   "cmd_daily_report_schema_check()" \
   "cmd_outcome_diagnose()" \
+  "cmd_lp_suppression_sample_replay()" \
   "cmd_lp_diagnose()" \
   "cmd_space_check()" \
   "cmd_archive_compress_check()" \
@@ -72,6 +73,8 @@ for pattern in \
   "candidate-coverage" \
   "daily-report-schema-check" \
   "outcome-diagnose" \
+  "outcome-catchup" \
+  "lp-suppression-sample-replay" \
   "lp-diagnose" \
   "__run-job" \
   "HERMES_OPS_JOB_RUNNER_OK" \
@@ -109,7 +112,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -117,7 +120,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -141,7 +144,9 @@ archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
 candidate_block="$(extract_block 'cmd_candidate_coverage()' 'cmd_outcome_diagnose()')"
 schema_check_block="$(extract_block 'cmd_daily_report_schema_check()' 'cmd_outcome_diagnose()')"
-outcome_block="$(extract_block 'cmd_outcome_diagnose()' 'cmd_lp_diagnose()')"
+outcome_block="$(extract_block 'cmd_outcome_diagnose()' 'cmd_outcome_catchup()')"
+catchup_block="$(extract_block 'cmd_outcome_catchup()' 'cmd_lp_suppression_sample_replay()')"
+lp_sample_block="$(extract_block 'cmd_lp_suppression_sample_replay()' 'cmd_lp_diagnose()')"
 lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 
 [[ -n "$help_block" ]] || die "could not extract cmd_help"
@@ -152,6 +157,8 @@ lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 [[ -n "$candidate_block" ]] || die "could not extract cmd_candidate_coverage"
 [[ -n "$schema_check_block" ]] || die "could not extract cmd_daily_report_schema_check"
 [[ -n "$outcome_block" ]] || die "could not extract cmd_outcome_diagnose"
+[[ -n "$catchup_block" ]] || die "could not extract cmd_outcome_catchup"
+[[ -n "$lp_sample_block" ]] || die "could not extract cmd_lp_suppression_sample_replay"
 [[ -n "$lp_block" ]] || die "could not extract cmd_lp_diagnose"
 
 if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
@@ -175,6 +182,7 @@ for required in \
   "CANDIDATE覆盖诊断YYYY-MM-DD" \
   "日报结构检查YYYY-MM-DD" \
   "Outcome闭环诊断YYYY-MM-DD" \
+  "LP抑制抽样预检YYYY-MM-DD" \
   "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "空间快检" \
@@ -315,7 +323,10 @@ for required in \
   "lp_stage_summary" \
   "clmm_summary" \
   "lp_suppression_summary" \
+  "lp_suppression_sample_replay_summary" \
   "candidate_frontier_summary" \
+  "candidate_coverage_summary" \
+  "outcome_diagnosis_summary" \
   "schema_check" \
   "report_mapping_missing" \
   "lp_analyzer_or_gate_missing" \
@@ -344,6 +355,11 @@ for required in \
   "signals_to_outcomes_match_rate" \
   "opportunities_to_opportunity_outcomes_match_rate" \
   "opportunities_to_replay_examples_match_rate" \
+  "opportunity_outcomes_pending_horizon_distribution" \
+  "opportunity_outcomes_pending_due_ts_distribution" \
+  "opportunity_outcomes_pending_linkage" \
+  "opportunity_outcomes_completed_fields" \
+  "root_cause" \
   "signals_outcome_missing_by_asset" \
   "opportunities_outcome_missing_by_status" \
   "outcome缺失原因推断" \
@@ -365,6 +381,68 @@ for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-
 done
 
 for required in \
+  "scripts/hermes_outcome_catchup.py" \
+  "outcome-catchup requires --date YYYY-MM-DD" \
+  "outcome-catchup requires --dry-run or --execute" \
+  "Telegram outcome-catchup only allows --dry-run" \
+  "outcome-catchup --execute requires --confirm or CONFIRM=YES" \
+  "AUDIT_OUTPUT_HINT=\"outcome-catchup"
+do
+  grep -Fq -- "$required" <<<"$catchup_block" || die "outcome-catchup wrapper missing required content: ${required}"
+done
+for required in \
+  "would_update_rows" \
+  "updated_count" \
+  "still_pending_count" \
+  "catchup_from_replay" \
+  "catchup_from_outcomes" \
+  "不创建 opportunity" \
+  "不改 signals" \
+  "不改 gate"
+do
+  grep -Fq -- "$required" scripts/hermes_outcome_catchup.py app/opportunity_outcome_catchup.py || die "outcome-catchup helper missing required content: ${required}"
+done
+for forbidden in "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$catchup_block" || grep -Fqi -- "$forbidden" scripts/hermes_outcome_catchup.py app/opportunity_outcome_catchup.py; then
+    die "outcome-catchup contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
+  "app/trade_replay.py" \
+  "lp-suppression-sample-replay requires --date YYYY-MM-DD" \
+  "lp-suppression-sample-replay requires --dry-run or --execute" \
+  "Telegram lp-suppression-sample-replay only allows --dry-run" \
+  "lp-suppression-sample-replay --execute requires --confirm or CONFIRM=YES" \
+  "AUDIT_OUTPUT_HINT=\"lp-suppression-sample-replay" \
+  "--lp-suppression-sample" \
+  "--sample-limit"
+do
+  grep -Fq -- "$required" <<<"$lp_sample_block" || die "lp-suppression-sample wrapper missing required content: ${required}"
+done
+for required in \
+  "LP_SUPPRESSION_SAMPLE_SCOPE" \
+  "lp_suppression_sample" \
+  "LP_SUPPRESSION_SAMPLE_SOURCE" \
+  "sampled_from_delivery_audit" \
+  "candidate_sample_count" \
+  "by_reason" \
+  "by_pair" \
+  "by_intent" \
+  "would_insert_replay_rows" \
+  "full_replay_isolated" \
+  "gate/lp_noise_filtered" \
+  "listener_prefilter/drop"
+do
+  grep -Fq -- "$required" app/trade_replay.py || die "LP suppression sample helper missing required content: ${required}"
+done
+for forbidden in "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$lp_sample_block" || grep -Fqi -- "$forbidden" app/trade_replay.py; then
+    die "lp-suppression-sample-replay contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
   "scripts/hermes_lp_diagnose.py" \
   "lp-diagnose requires --date YYYY-MM-DD" \
   "AUDIT_OUTPUT_HINT=\"lp-diagnose" \
@@ -379,6 +457,10 @@ for required in \
   "raw_events" \
   "parsed_events" \
   "delivery_audit LP相关推送抑制" \
+  "sampled early suppression replay" \
+  "gate/lp_noise_filtered sample avg" \
+  "listener_prefilter/drop sample avg" \
+  "误杀迹象" \
   "major coverage ETH/BTC/SOL x USDT/USDC" \
   "report_mapping判断" \
   "LP analyzer / gate" \
@@ -453,6 +535,8 @@ for guarded in \
   "candidate-coverage" \
   "daily-report-schema-check" \
   "outcome-diagnose" \
+  "outcome-catchup" \
+  "lp-suppression-sample-replay" \
   "lp-diagnose" \
   "space-check" \
   "archive-compress-check" \
@@ -531,6 +615,8 @@ grep -Fq "学习总结YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu outpu
 grep -Fq "CANDIDATE覆盖诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing CANDIDATE覆盖诊断YYYY-MM-DD"
 grep -Fq "日报结构检查YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 日报结构检查YYYY-MM-DD"
 grep -Fq "Outcome闭环诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing Outcome闭环诊断YYYY-MM-DD"
+grep -Fq "Outcome补全预检YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing Outcome补全预检YYYY-MM-DD"
+grep -Fq "LP抑制抽样预检YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing LP抑制抽样预检YYYY-MM-DD"
 grep -Fq "LP诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing LP诊断YYYY-MM-DD"
 grep -Fq "生成日报YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 生成日报YYYY-MM-DD"
 grep -Fq "深度分析报告YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 深度分析报告YYYY-MM-DD"
@@ -780,6 +866,37 @@ cat >"$LEARNING_REPORT" <<'JSON'
     "near_candidate_replay_count": 0,
     "diagnosis": "gate_closed_because_quality_low"
   },
+  "candidate_coverage_summary": {
+    "available": true,
+    "signals_total": 4,
+    "trade_opportunities_total": 4,
+    "none_count": 4,
+    "blocked_count": 0,
+    "candidate_count": 0,
+    "verified_count": 0,
+    "replay_examples_total": 4,
+    "replay_examples_with_opportunity": 4,
+    "replay_examples_status_candidate": 0,
+    "near_candidate_count": 0,
+    "near_candidate_avg_net_pnl_bps": null,
+    "diagnosis": "gate_closed_because_quality_low"
+  },
+  "outcome_diagnosis_summary": {
+    "available": true,
+    "signals_total": 4,
+    "trade_opportunities_total": 4,
+    "outcomes_total": 12,
+    "outcomes_completed": 12,
+    "opportunity_outcomes_total": 12,
+    "opportunity_outcomes_completed": 12,
+    "opportunity_outcomes_pending": 0,
+    "opportunity_outcomes_past_due_pending": 0,
+    "signals_to_outcomes_match_rate": 1.0,
+    "opportunities_to_opportunity_outcomes_match_rate": 1.0,
+    "opportunities_to_replay_examples_match_rate": 1.0,
+    "diagnosis": "ok",
+    "recommended_next_check": "continue monitoring"
+  },
   "lp_signal_summary": {
     "available": true,
     "lp_signal_rows": 4,
@@ -808,6 +925,30 @@ cat >"$LEARNING_REPORT" <<'JSON'
     "available": true,
     "diagnosis": "suppression_seems_correct",
     "overall_suppressed_avg_net_pnl_bps": -2.5
+  },
+  "lp_suppression_sample_replay_summary": {
+    "available": true,
+    "sampled": true,
+    "sample_limit_per_reason": 100,
+    "diagnosis": "early_suppression_seems_correct",
+    "by_reason": [
+      {
+        "reason": "gate/lp_noise_filtered",
+        "sample_count": 100,
+        "replay_count": 100,
+        "avg_net_pnl_bps": -19.5,
+        "profitable_rate": 0.22,
+        "recommended_action": "keep_suppressed"
+      },
+      {
+        "reason": "listener_prefilter/drop",
+        "sample_count": 100,
+        "replay_count": 100,
+        "avg_net_pnl_bps": -18.2,
+        "profitable_rate": 0.24,
+        "recommended_action": "keep_suppressed"
+      }
+    ]
   }
 }
 JSON
@@ -829,8 +970,11 @@ for required in \
   "shadow_candidate / shadow_verified=1 / 0" \
   "Telegram 推送是否可能噪音过多=否" \
   "排查 candidate/opportunity/replay 连接" \
-  "今日结论：收紧" \
-  "明天只建议改一个点："
+  "early LP suppression sample replay=available=True" \
+  "gate/lp_noise_filtered sampled replay=sample_count=100" \
+  "早期 LP noise/drop 抑制也未显示误杀" \
+  "今日结论：保持" \
+  "明天只建议改一个点：继续积累 LP early suppression 样本，不改 gate"
 do
   grep -Fq "$required" "$TMP_DIR/learning.out" || die "learning-review output missing: ${required}"
 done

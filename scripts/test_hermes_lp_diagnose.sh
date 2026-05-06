@@ -182,7 +182,7 @@ HERMES_LP_DIAGNOSE_DAILY_DIR="$TMP_DIR/reports/daily" \
   "$OPS" lp-diagnose --date "$TEST_DATE" >"$TMP_DIR/lp.out"
 
 require_out "Chain Monitor LP诊断｜${TEST_DATE}"
-require_out "daily_report字段存在性=lp_signal_summary=missing；lp_signals=missing；lp_stage_summary=missing；clmm_summary=missing；lp_suppression_summary=missing；lp_suppression_replay_summary=missing；major_coverage_summary=present"
+require_out "daily_report字段存在性=lp_signal_summary=missing；lp_signals=missing；lp_stage_summary=missing；clmm_summary=missing；lp_suppression_summary=missing；lp_suppression_replay_summary=missing；lp_suppression_sample_replay_summary=missing；major_coverage_summary=present"
 require_out "SQLite LP-like计数 signals:"
 require_out "signal_json LIKE '%lp%'=1"
 require_out "signal_json LIKE '%pool%'=1"

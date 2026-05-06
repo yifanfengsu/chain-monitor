@@ -160,8 +160,19 @@ require_out outcome_diagnose_cn 'outcome-diagnose'
 run_ok outcome_diagnose_result --text '结果闭环诊断2026-05-04' --dry-run --platform telegram
 require_out outcome_diagnose_result 'outcome-diagnose'
 
+run_ok outcome_catchup --text 'Outcome补全预检2026-05-04' --dry-run --platform telegram
+require_out outcome_catchup 'outcome-catchup'
+require_out outcome_catchup '--dry-run'
+
+run_ok outcome_catchup_cn --text '后验补全预检2026-05-04' --dry-run --platform telegram
+require_out outcome_catchup_cn 'outcome-catchup'
+
 run_fail outcome_relative --text '后验闭环诊断昨天' --dry-run --platform telegram
 require_out outcome_relative 'YYYY-MM-DD'
+
+run_ok lp_sample --text 'LP抑制抽样预检2026-05-04' --dry-run --platform telegram
+require_out lp_sample 'lp-suppression-sample-replay'
+require_out lp_sample '--dry-run'
 
 run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run --platform telegram
 require_out lp_diagnose 'lp-diagnose'
@@ -179,6 +190,9 @@ require_out clmm_diagnose_alias 'lp-diagnose'
 
 run_fail lp_diagnose_relative --text 'LP诊断昨天' --dry-run --platform telegram
 require_out lp_diagnose_relative 'YYYY-MM-DD'
+
+run_fail lp_sample_relative --text 'LP抑制抽样预检昨天' --dry-run --platform telegram
+require_out lp_sample_relative 'YYYY-MM-DD'
 
 run_ok space_check --text '空间检查' --dry-run --platform telegram
 require_out space_check 'submit-space-check'
@@ -271,6 +285,7 @@ grep -Fq '数据库瘦身预检' "$TMP_DIR/menu_execute.out" || fail "menu execu
 grep -Fq '学习复盘YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习复盘YYYY-MM-DD"
 grep -Fq '学习总结YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习总结YYYY-MM-DD"
 grep -Fq 'CANDIDATE覆盖诊断YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing CANDIDATE覆盖诊断YYYY-MM-DD"
+grep -Fq 'LP抑制抽样预检YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing LP抑制抽样预检YYYY-MM-DD"
 grep -Fq 'LP诊断YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing LP诊断YYYY-MM-DD"
 grep -Fq '生成日报YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 生成日报YYYY-MM-DD"
 grep -Fq '深度分析报告YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 深度分析报告YYYY-MM-DD"

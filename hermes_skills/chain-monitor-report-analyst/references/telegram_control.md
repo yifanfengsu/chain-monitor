@@ -45,6 +45,8 @@ Hermes lock 硬规则：
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | candidate-coverage | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 CANDIDATE 覆盖率为 0 是 gate 结果还是 replay 关联层漏接 |
 | 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | daily-report-schema-check | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | sync quick；只读 daily_report 和 SQLite 聚合，检查 LP / CLMM / candidate frontier 字段完整性 |
 | Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | outcome-diagnose | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 signals/opportunities -> outcomes/replay/profile 闭环不足 |
+| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | outcome-catchup | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | sync dry-run；Telegram 只允许预检，不开放 execute |
+| LP抑制抽样预检YYYY-MM-DD / LP抽样预检YYYY-MM-DD / LP suppression抽样预检YYYY-MM-DD | lp-suppression-sample-replay | `./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run` | low | sync dry-run；Telegram 只允许预检，不开放 execute |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | lp-diagnose | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 LP signal rows 缺失是 report mapping、解析/gate 还是扫描覆盖不足 |
 | 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
 | 空间快检 / 快速空间检查 / 快速磁盘检查 | space-fast | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick |
@@ -87,6 +89,8 @@ Hermes lock 硬规则：
 - 学习复盘只接受绝对日期，例如 `学习复盘2026-05-04` 或 `学习总结2026-05-04`；`学习复盘昨天` 和 `学习总结昨天` 必须拒绝。
 - CANDIDATE 覆盖诊断只接受绝对日期，例如 `CANDIDATE覆盖诊断2026-05-04`；`候选覆盖昨天` 必须拒绝。
 - Outcome 闭环诊断只接受绝对日期，例如 `Outcome闭环诊断2026-05-04`；`后验闭环诊断昨天` 必须拒绝。
+- Outcome 补全预检只接受绝对日期，例如 `Outcome补全预检2026-05-04`；只映射 dry-run。
+- LP 抑制抽样预检只接受绝对日期，例如 `LP抑制抽样预检2026-05-04`；只映射 dry-run。
 - LP 诊断只接受绝对日期，例如 `LP诊断2026-05-04`；`LP诊断昨天` 必须拒绝。
 - job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。
 - 取消任务必须包含“我确认取消”。

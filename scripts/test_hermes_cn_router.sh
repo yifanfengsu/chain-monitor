@@ -116,6 +116,17 @@ require_out outcome_diagnose_cn 'outcome-diagnose'
 run_ok outcome_diagnose_result --text '结果闭环诊断2026-05-04' --dry-run
 require_out outcome_diagnose_result 'outcome-diagnose'
 
+run_ok outcome_catchup --text 'Outcome补全预检2026-05-04' --dry-run
+require_out outcome_catchup 'outcome-catchup'
+require_out outcome_catchup '--dry-run'
+
+run_ok outcome_catchup_cn --text '后验补全预检2026-05-04' --dry-run
+require_out outcome_catchup_cn 'outcome-catchup'
+
+run_ok lp_sample --text 'LP抑制抽样预检2026-05-04' --dry-run
+require_out lp_sample 'lp-suppression-sample-replay'
+require_out lp_sample '--dry-run'
+
 run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run
 require_out lp_diagnose 'lp-diagnose'
 require_out lp_diagnose '"--date"'
@@ -163,6 +174,11 @@ run_fail lp_relative --text 'LP诊断昨天' --dry-run
 require_out lp_relative '绝对日期'
 require_out lp_relative 'YYYY-MM-DD'
 forbid_out lp_relative 'lp-diagnose'
+
+run_fail lp_sample_relative --text 'LP抑制抽样预检昨天' --dry-run
+require_out lp_sample_relative '绝对日期'
+require_out lp_sample_relative 'YYYY-MM-DD'
+forbid_out lp_sample_relative 'lp-suppression-sample-replay'
 
 run_fail digest_missing_mode --text '生成摘要2026-05-01' --dry-run
 require_out digest_missing_mode '快速'

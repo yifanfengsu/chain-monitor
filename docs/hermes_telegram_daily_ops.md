@@ -99,6 +99,8 @@ TELEGRAM_SEND_CONCURRENCY=3
 - Blocker复盘YYYY-MM-DD：查看 blocker 分布。
 - Shadow复盘YYYY-MM-DD：查看 shadow funnel。
 - Outcome闭环诊断YYYY-MM-DD：只读排查 outcome/replay/profile 闭环不足。
+- Outcome补全预检YYYY-MM-DD：只做 outcome-catchup dry-run，不从 Telegram 执行写入。
+- LP抑制抽样预检YYYY-MM-DD：只做 LP early suppression sample replay dry-run，不从 Telegram 执行写入。
 - 空间检查：提交后台任务查看 SQLite / WAL / archive / reports 占用。
 - 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小，不递归扫描 archive/reports。
 - 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，只 dry-run，不压缩。

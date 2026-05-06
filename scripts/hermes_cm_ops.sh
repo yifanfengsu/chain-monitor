@@ -39,6 +39,10 @@ Usage:
   ./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run
+  ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --execute --confirm
+  ./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run
+  ./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --execute --confirm
   ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 
   # Internal job runner only; Telegram users must use submit-* above:
@@ -93,6 +97,8 @@ cmd_help() {
   /chain-monitor-report-analyst CANDIDATE覆盖诊断YYYY-MM-DD
   /chain-monitor-report-analyst 日报结构检查YYYY-MM-DD
   /chain-monitor-report-analyst Outcome闭环诊断YYYY-MM-DD
+  /chain-monitor-report-analyst Outcome补全预检YYYY-MM-DD
+  /chain-monitor-report-analyst LP抑制抽样预检YYYY-MM-DD
   /chain-monitor-report-analyst LP诊断YYYY-MM-DD
   /chain-monitor-report-analyst 空间检查
   /chain-monitor-report-analyst 空间快检
@@ -133,6 +139,8 @@ cmd_help() {
   - Telegram 长任务入口只使用 submit-daily-flow、submit-space-check、submit-archive-compress-check、submit-weekly-review。
   - daily-flow、space-check、archive-compress-check、weekly-review 是 internal job runner only。
   - 数据库瘦身预检只做 dry-run，不执行 export execute、VACUUM、compact、prune、删除 DB、修改地址簿。
+  - Outcome补全预检只映射到 outcome-catchup dry-run；Telegram 不开放 execute。
+  - LP抑制抽样预检只映射到 lp-suppression-sample-replay dry-run；Telegram 不开放 execute。
   - 锁状态只读诊断 Hermes lock，不删除 lock 文件。
   - 输出默认脱敏。
   - 不输出 token、RPC URL、完整地址、交易 hash 或私有路径。
@@ -171,6 +179,8 @@ cmd_command_menu() {
 - CANDIDATE覆盖诊断YYYY-MM-DD：排查 signals -> opportunity -> replay 覆盖连接
 - 日报结构检查YYYY-MM-DD：检查 canonical daily report 是否包含 LP / CLMM / candidate frontier 字段
 - Outcome闭环诊断YYYY-MM-DD：排查 signals/opportunities -> outcomes/replay/profile 闭环不足
+- Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD：只做 opportunity_outcomes catchup dry-run，显示 would_update_rows
+- LP抑制抽样预检YYYY-MM-DD：只做 LP early suppression sample replay dry-run，显示 candidate_sample_count / by_reason / would_insert_replay_rows
 - LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 
 【维护预检】
@@ -841,7 +851,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review)
+    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -3278,9 +3288,11 @@ run_overview = as_dict(payload.get("run_overview"))
 data_source = as_dict(payload.get("data_source_summary"))
 row_counts = as_dict(data_source.get("row_counts"))
 frontier = as_dict(payload.get("candidate_frontier_summary"))
+outcome_diagnosis = as_dict(payload.get("outcome_diagnosis_summary"))
 lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
 lp_suppression_summary = as_dict(payload.get("lp_suppression_summary"))
 lp_suppression_replay = as_dict(payload.get("lp_suppression_replay_summary"))
+lp_suppression_sample_replay = as_dict(payload.get("lp_suppression_sample_replay_summary"))
 major_coverage = as_dict(payload.get("major_coverage_summary"))
 required_schema_fields = (
     "lp_signal_summary",
@@ -3288,6 +3300,8 @@ required_schema_fields = (
     "clmm_summary",
     "lp_suppression_summary",
     "candidate_frontier_summary",
+    "candidate_coverage_summary",
+    "outcome_diagnosis_summary",
 )
 missing_schema_fields = [field for field in required_schema_fields if field not in payload]
 schema_complete = not missing_schema_fields
@@ -3340,6 +3354,19 @@ shadow_verified = intish(shadow.get("shadow_verified_count"))
 candidate_count = intish(first_dict(payload.get("trade_opportunity_summary")).get("opportunity_candidate_count")) or 0
 near_candidate_count = intish(frontier.get("near_candidate_count")) or 0
 near_candidate_avg = num(frontier.get("near_candidate_avg_net_pnl_bps"))
+opportunity_outcomes_total = intish(outcome_diagnosis.get("opportunity_outcomes_total")) or 0
+opportunity_outcomes_completed = intish(outcome_diagnosis.get("opportunity_outcomes_completed")) or 0
+opportunity_outcomes_pending = intish(outcome_diagnosis.get("opportunity_outcomes_pending")) or 0
+opportunity_outcomes_past_due = intish(outcome_diagnosis.get("opportunity_outcomes_past_due_pending")) or 0
+opportunity_outcomes_completed_rate = (
+    None if opportunity_outcomes_total <= 0 else opportunity_outcomes_completed / max(opportunity_outcomes_total, 1)
+)
+opportunity_outcomes_all_pending = (
+    opportunity_outcomes_total > 0
+    and opportunity_outcomes_completed_rate == 0
+    and opportunity_outcomes_pending > 0
+    and opportunity_outcomes_past_due > 0
+)
 
 delivery_audit_rows = intish(row_counts.get("delivery_audit"))
 telegram_rows = intish(row_counts.get("telegram_deliveries"))
@@ -3365,6 +3392,8 @@ if lp_rows_missing:
     troubleshoot_items.append("LP signal rows 缺失")
 if replay_source != "persisted" or replay_scope != "full":
     troubleshoot_items.append("replay 不是 persisted/full")
+if opportunity_outcomes_all_pending:
+    troubleshoot_items.insert(0, "P0：opportunity_outcomes 未结算，先修 outcome catchup / 结算闭环")
 
 why_not_stronger: list[str] = []
 if data_valid and negative_profiles and not high_sample_positive:
@@ -3378,6 +3407,74 @@ if missing_schema_fields and lp_data_present_for_mapping:
 elif missing_schema_fields:
     why_not_stronger.append("daily_report_schema_incomplete")
 lp_replay_diag = str(lp_suppression_replay.get("diagnosis") or "")
+early_sample_available = bool(lp_suppression_sample_replay.get("available"))
+early_sample_diagnosis = str(lp_suppression_sample_replay.get("diagnosis") or "")
+early_sample_rows = as_list(lp_suppression_sample_replay.get("by_reason"))
+early_listener_sample = {}
+for item in early_sample_rows:
+    if isinstance(item, dict) and str(item.get("reason") or "") == "listener_prefilter/drop":
+        early_listener_sample = item
+        break
+early_sample_actions = {
+    str(item.get("recommended_action") or "")
+    for item in early_sample_rows
+    if isinstance(item, dict)
+}
+early_direction_summary = as_dict(lp_suppression_sample_replay.get("direction_inference_summary"))
+early_invalid_summary = as_dict(lp_suppression_sample_replay.get("invalid_reason_counts"))
+early_replay_count = intish(lp_suppression_sample_replay.get("replay_count")) or 0
+early_valid_count = intish(lp_suppression_sample_replay.get("valid_replay_count")) or 0
+early_ambiguous_count = intish(early_direction_summary.get("ambiguous")) or 0
+early_invalid_count = intish(lp_suppression_sample_replay.get("invalid_count")) or sum(intish(value) or 0 for value in early_invalid_summary.values())
+early_listener_valid_count_raw = intish(early_listener_sample.get("valid_replay_count"))
+early_listener_sample_count = intish(early_listener_sample.get("sample_count")) or 0
+early_listener_valid_count = early_listener_valid_count_raw or 0
+early_listener_metadata_rows = intish(lp_suppression_sample_replay.get("listener_prefilter_metadata_rows")) or 0
+early_listener_metadata_direction_rows = intish(lp_suppression_sample_replay.get("listener_prefilter_metadata_direction_rows")) or 0
+early_listener_metadata_pair_rows = intish(lp_suppression_sample_replay.get("listener_prefilter_metadata_pair_rows")) or 0
+early_listener_metadata_missing = (
+    early_listener_sample_count > 0
+    and early_listener_valid_count_raw == 0
+    and early_listener_metadata_rows == 0
+)
+early_listener_metadata_pair_no_direction = (
+    early_listener_sample_count > 0
+    and early_listener_valid_count_raw == 0
+    and early_listener_metadata_pair_rows > 0
+    and early_listener_metadata_direction_rows == 0
+)
+early_asset_mismatch_count = (
+    (intish(early_invalid_summary.get("asset_pair_mismatch")) or 0)
+    + (intish(early_invalid_summary.get("outcome_asset_mismatch")) or 0)
+    + (intish(early_invalid_summary.get("outcome_pair_mismatch")) or 0)
+)
+early_only_direction_ambiguous = (
+    early_invalid_count > 0
+    and early_ambiguous_count >= early_invalid_count
+    and set(early_invalid_summary.keys()) <= {"direction_ambiguous"}
+)
+early_sample_status = str(lp_suppression_sample_replay.get("status") or "")
+early_sample_degraded_asset_mismatch = early_asset_mismatch_count > 0 and early_sample_status in {"", "degraded"}
+early_sample_all_ambiguous = (
+    data_valid
+    and early_sample_available
+    and early_replay_count > 0
+    and early_valid_count == 0
+    and early_ambiguous_count >= early_replay_count
+)
+early_sample_missing = data_valid and not early_sample_available
+early_sample_negative = data_valid and early_sample_available and (
+    early_sample_diagnosis == "early_suppression_seems_correct"
+    or (early_sample_actions and early_sample_actions <= {"keep_suppressed"})
+) and not early_sample_all_ambiguous
+early_sample_positive = data_valid and early_sample_available and (
+    early_sample_diagnosis == "possible_over_suppression"
+    or "review_threshold" in early_sample_actions
+) and not early_sample_all_ambiguous
+early_sample_needs_more = data_valid and early_sample_available and (
+    early_sample_diagnosis == "needs_more_samples"
+    or "needs_more_samples" in early_sample_actions
+) and not early_sample_all_ambiguous
 if (
     num(lp_suppression_summary.get("suppression_rate")) is not None
     and (num(lp_suppression_summary.get("suppression_rate")) or 0) >= 0.95
@@ -3390,6 +3487,22 @@ if (
 candidate_completion = num(first_dict(payload.get("trade_opportunity_summary")).get("candidate_outcome_completion_rate"))
 if candidate_completion is not None and candidate_completion < 0.5:
     why_not_stronger.append("outcome_completion_low")
+if opportunity_outcomes_all_pending:
+    why_not_stronger.append("opportunity_outcomes_unsettled")
+if early_sample_missing:
+    why_not_stronger.append("early_lp_suppression_sample_replay_missing")
+elif early_listener_metadata_missing:
+    why_not_stronger.append("listener_prefilter_drop_historical_direction_metadata_missing")
+elif early_listener_metadata_pair_no_direction:
+    why_not_stronger.append("listener_prefilter_drop_metadata_pair_without_direction")
+elif early_sample_all_ambiguous:
+    why_not_stronger.append("early_lp_suppression_direction_fields_missing")
+elif early_sample_degraded_asset_mismatch:
+    why_not_stronger.append("early_lp_suppression_asset_pair_metadata_mismatch")
+elif early_sample_positive:
+    why_not_stronger.append("early_lp_suppression_possible_over_suppression")
+elif early_sample_needs_more:
+    why_not_stronger.append("early_lp_suppression_sample_needs_more")
 missing_major_pairs = major_coverage.get("missing_major_pairs") if isinstance(major_coverage.get("missing_major_pairs"), list) else []
 if any(str(pair).startswith(("BTC/", "SOL/")) for pair in missing_major_pairs):
     why_not_stronger.append("btc_sol_coverage_gap")
@@ -3408,8 +3521,53 @@ if lp_signal_summary:
     learned.append("LP 数据存在且报告映射已输出" if not missing_schema_fields else "LP 数据存在但报告 schema 不完整")
 if near_candidate_count and near_candidate_avg is not None:
     learned.append(f"near_candidate 后验 avg_net_pnl_bps={fmt(near_candidate_avg, 2)}")
+if opportunity_outcomes_all_pending:
+    learned.append("opportunity/profile 学习闭环未完整结算")
+if early_sample_missing:
+    learned.append("早期 LP noise/drop 抑制尚未抽样 replay，无法判断是否误杀")
+elif early_listener_metadata_missing:
+    learned.append("listener_prefilter/drop 旧样本缺 direction metadata；新版本将从后续数据开始可回放")
+elif early_listener_metadata_pair_no_direction:
+    learned.append("listener_prefilter/drop metadata 有 pair 但无 direction，需检查 intent/side 推断")
+elif early_sample_all_ambiguous:
+    learned.append("早期 LP noise/drop 抽样 replay 仍 100% direction_ambiguous，问题是方向字段缺失")
+elif early_sample_degraded_asset_mismatch:
+    learned.append("早期 LP noise/drop 抽样 replay 存在 asset/pair 或 outcome asset 错配，先修归因")
+elif early_sample_negative:
+    learned.append("早期 LP noise/drop 抑制也未显示误杀")
+elif early_sample_positive:
+    learned.append("可能存在早期过度过滤，需要周复盘人工检查 suppression reason")
+elif early_sample_needs_more:
+    learned.append("早期 LP noise/drop 抽样已运行但样本仍不足")
 
-if not data_valid:
+if early_sample_degraded_asset_mismatch:
+    conclusion = "排障"
+    tomorrow = "修 LP sample asset/pair 归因"
+elif early_listener_metadata_missing:
+    conclusion = "观察"
+    tomorrow = "继续运行并积累带 metadata 的 prefilter/drop 样本"
+elif early_listener_metadata_pair_no_direction:
+    conclusion = "排障"
+    tomorrow = "检查 listener_prefilter/drop intent/side 推断"
+elif early_only_direction_ambiguous or early_sample_all_ambiguous:
+    conclusion = "排障"
+    tomorrow = "补 listener_prefilter/drop 方向 metadata"
+elif opportunity_outcomes_all_pending:
+    conclusion = "收紧"
+    tomorrow = "修 outcome catchup / opportunity_outcomes 结算"
+elif early_sample_missing:
+    conclusion = "观察"
+    tomorrow = "运行 LP抑制抽样预检/SSH execute"
+elif early_sample_positive:
+    conclusion = "观察"
+    tomorrow = "周复盘人工检查 early suppression reason"
+elif early_sample_negative:
+    conclusion = "保持"
+    tomorrow = "继续积累 LP early suppression 样本，不改 gate"
+elif early_sample_needs_more:
+    conclusion = "观察"
+    tomorrow = "继续积累 LP early suppression 样本，不改 gate"
+elif not data_valid:
     conclusion = "排障"
     tomorrow = "修复 data_quality 输入完整性"
 elif missing_schema_fields and lp_data_present_for_mapping:
@@ -3447,10 +3605,50 @@ print(f"avg_net_pnl_bps={fmt(avg_net, 2)}")
 print(f"suppressed_avg_net_pnl_bps={fmt(suppressed_avg, 2)}")
 print(f"CANDIDATE 覆盖率={fmt(candidate_coverage, 4)}")
 print(f"CANDIDATE=0={'是' if candidate_count == 0 else '否'} near_candidate_count={near_candidate_count} near_candidate_avg_net_pnl_bps={fmt(near_candidate_avg, 2)}")
+print(
+    "opportunity_outcomes 结算="
+    f"completed_rate={fmt(opportunity_outcomes_completed_rate, 4)} "
+    f"pending={opportunity_outcomes_pending} "
+    f"past_due_pending={opportunity_outcomes_past_due}"
+)
+if opportunity_outcomes_all_pending:
+    print("P0排查项=opportunity_outcomes 未结算；先修 outcome catchup / 结算闭环；不得因此放宽 gate")
 print(f"LP signal rows 是否缺失={'是' if lp_rows_missing else '否'} value={value_or_missing(lp_signal_rows)}")
 lp_mapping_normal = schema_complete and bool(lp_signal_summary)
 lp_missing_reason_display = payload.get("lp_missing_reason") or ("none" if lp_mapping_normal else "missing")
 print(f"LP mapping 状态={'正常' if lp_mapping_normal else '缺失/不完整'} lp_missing_reason={lp_missing_reason_display}")
+print(
+    "early LP suppression sample replay="
+    f"available={early_sample_available} "
+    f"diagnosis={value_or_missing(early_sample_diagnosis)} "
+    f"sample_limit_per_reason={value_or_missing(lp_suppression_sample_replay.get('sample_limit_per_reason'))} "
+    f"valid_replay_count={value_or_missing(lp_suppression_sample_replay.get('valid_replay_count'))} "
+    f"listener_prefilter_metadata_rows={value_or_missing(lp_suppression_sample_replay.get('listener_prefilter_metadata_rows'))} "
+    f"listener_prefilter_metadata_direction_rows={value_or_missing(lp_suppression_sample_replay.get('listener_prefilter_metadata_direction_rows'))} "
+    f"listener_prefilter_metadata_pair_rows={value_or_missing(lp_suppression_sample_replay.get('listener_prefilter_metadata_pair_rows'))} "
+    f"listener_prefilter_recovery_mode={value_or_missing(lp_suppression_sample_replay.get('listener_prefilter_recovery_mode'))} "
+    f"invalid_reason_counts={json.dumps(early_invalid_summary, ensure_ascii=False, sort_keys=True)} "
+    f"asset_pair_summary={json.dumps(as_dict(lp_suppression_sample_replay.get('asset_pair_summary')), ensure_ascii=False, sort_keys=True)} "
+    f"direction_inference_summary={json.dumps(early_direction_summary, ensure_ascii=False, sort_keys=True)}"
+)
+if early_listener_metadata_missing:
+    print("listener_prefilter/drop 旧样本缺 direction metadata；新版本将从后续数据开始可回放。")
+elif early_listener_metadata_pair_no_direction:
+    print("listener_prefilter/drop metadata 有 pair 但无 direction，需检查 intent/side 推断。")
+for item in early_sample_rows:
+    if not isinstance(item, dict):
+        continue
+    reason = str(item.get("reason") or "unknown")
+    if reason not in {"gate/lp_noise_filtered", "listener_prefilter/drop"}:
+        continue
+    print(
+        f"{reason} sampled replay="
+        f"sample_count={value_or_missing(item.get('sample_count'))} "
+        f"valid_replay_count={value_or_missing(item.get('valid_replay_count'))} "
+        f"avg_net_pnl_bps={fmt(item.get('avg_net_pnl_bps'), 2)} "
+        f"profitable_rate={fmt(item.get('profitable_rate'), 4)} "
+        f"action={value_or_missing(item.get('recommended_action'))}"
+    )
 if data_valid:
     print(f"主要负收益 profile={negative_profile_lines[0] if negative_profile_lines else 'missing'}")
     for line in negative_profile_lines[1:3]:
@@ -3984,6 +4182,122 @@ cmd_outcome_diagnose() {
   AUDIT_OUTPUT_HINT="outcome-diagnose ${report_date}"
 
   "$(python_bin)" scripts/hermes_outcome_diagnose.py --date "$report_date"
+}
+
+cmd_outcome_catchup() {
+  local report_date=""
+  local mode=""
+  local confirm=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "outcome-catchup --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      --dry-run)
+        [[ -z "$mode" ]] || die "outcome-catchup accepts only one mode"
+        mode="dry-run"
+        shift
+        ;;
+      --execute)
+        [[ -z "$mode" ]] || die "outcome-catchup accepts only one mode"
+        mode="execute"
+        shift
+        ;;
+      --confirm)
+        confirm=true
+        shift
+        ;;
+      *) die "unknown outcome-catchup argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "outcome-catchup requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  [[ -n "$mode" ]] || die "outcome-catchup requires --dry-run or --execute"
+  if [[ "$mode" == "execute" ]]; then
+    if [[ "${HERMES_OPS_PLATFORM:-}" == "telegram" ]]; then
+      refuse telegram_execute_forbidden "Telegram outcome-catchup only allows --dry-run"
+    fi
+    [[ "$confirm" == true || "${CONFIRM:-}" == "YES" ]] || die "outcome-catchup --execute requires --confirm or CONFIRM=YES"
+  fi
+
+  AUDIT_DATE="$report_date"
+  AUDIT_MODE="$mode"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="outcome-catchup ${mode} ${report_date}"
+
+  if [[ "$mode" == "dry-run" ]]; then
+    "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --dry-run
+  else
+    CONFIRM=YES "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --execute --confirm
+  fi
+}
+
+cmd_lp_suppression_sample_replay() {
+  local report_date=""
+  local mode=""
+  local confirm=false
+  local sample_limit=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "lp-suppression-sample-replay --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      --dry-run)
+        [[ -z "$mode" ]] || die "lp-suppression-sample-replay accepts only one mode"
+        mode="dry-run"
+        shift
+        ;;
+      --execute)
+        [[ -z "$mode" ]] || die "lp-suppression-sample-replay accepts only one mode"
+        mode="execute"
+        shift
+        ;;
+      --confirm)
+        confirm=true
+        shift
+        ;;
+      --sample-limit)
+        [[ $# -ge 2 ]] || die "lp-suppression-sample-replay --sample-limit requires N"
+        is_positive_int "$2" || die "lp-suppression-sample-replay --sample-limit requires positive integer"
+        sample_limit="$2"
+        shift 2
+        ;;
+      *) die "unknown lp-suppression-sample-replay argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "lp-suppression-sample-replay requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  [[ -n "$mode" ]] || die "lp-suppression-sample-replay requires --dry-run or --execute"
+  if [[ "$mode" == "execute" ]]; then
+    if [[ "${HERMES_OPS_PLATFORM:-}" == "telegram" ]]; then
+      refuse telegram_execute_forbidden "Telegram lp-suppression-sample-replay only allows --dry-run"
+    fi
+    [[ "$confirm" == true || "${CONFIRM:-}" == "YES" ]] || die "lp-suppression-sample-replay --execute requires --confirm or CONFIRM=YES"
+  fi
+
+  AUDIT_DATE="$report_date"
+  AUDIT_MODE="$mode"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="lp-suppression-sample-replay ${mode} ${report_date}"
+
+  local args=(app/trade_replay.py --date "$report_date" --lp-suppression-sample)
+  if [[ -n "$sample_limit" ]]; then
+    args+=(--sample-limit "$sample_limit")
+  fi
+  if [[ "$mode" == "dry-run" ]]; then
+    args+=(--dry-run)
+  else
+    args+=(--execute)
+  fi
+  "$(python_bin)" "${args[@]}"
 }
 
 cmd_lp_diagnose() {
@@ -4595,7 +4909,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review)
+  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -4799,6 +5113,14 @@ case "$1" in
   outcome-diagnose)
     shift
     cmd_outcome_diagnose "$@"
+    ;;
+  outcome-catchup)
+    shift
+    cmd_outcome_catchup "$@"
+    ;;
+  lp-suppression-sample-replay)
+    shift
+    cmd_lp_suppression_sample_replay "$@"
     ;;
   lp-diagnose)
     shift

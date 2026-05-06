@@ -97,6 +97,37 @@ cat >"$REPORT" <<'JSON'
     "top_missing_requirements": {},
     "diagnosis": "gate_closed_because_quality_low"
   },
+  "candidate_coverage_summary": {
+    "available": true,
+    "signals_total": 648,
+    "trade_opportunities_total": 97,
+    "none_count": 95,
+    "blocked_count": 2,
+    "candidate_count": 0,
+    "verified_count": 0,
+    "replay_examples_total": 96,
+    "replay_examples_with_opportunity": 96,
+    "replay_examples_status_candidate": 0,
+    "near_candidate_count": 0,
+    "near_candidate_avg_net_pnl_bps": null,
+    "diagnosis": "gate_closed_because_quality_low"
+  },
+  "outcome_diagnosis_summary": {
+    "available": true,
+    "signals_total": 648,
+    "trade_opportunities_total": 97,
+    "outcomes_total": 291,
+    "outcomes_completed": 291,
+    "opportunity_outcomes_total": 291,
+    "opportunity_outcomes_completed": 0,
+    "opportunity_outcomes_pending": 291,
+    "opportunity_outcomes_past_due_pending": 291,
+    "signals_to_outcomes_match_rate": 0.1497,
+    "opportunities_to_opportunity_outcomes_match_rate": 1.0,
+    "opportunities_to_replay_examples_match_rate": 0.9897,
+    "diagnosis": "opportunity_outcomes_pending_not_settled",
+    "recommended_next_check": "outcome-catchup dry-run"
+  },
   "lp_signal_summary": {
     "available": true,
     "lp_signal_rows": 97,
@@ -150,6 +181,9 @@ require_out "今日结论"
 require_out "明天只建议改一个点"
 require_out "CANDIDATE=0=是"
 require_out "LP mapping 状态"
+require_out "opportunity_outcomes 未结算"
+require_out "P0排查项=opportunity_outcomes 未结算"
+require_out "明天只建议改一个点：修 outcome catchup / opportunity_outcomes 结算"
 require_out "为什么系统没有提升"
 require_out "系统今天学到了什么"
 

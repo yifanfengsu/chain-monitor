@@ -53,6 +53,7 @@ from filter import (
 )
 from lp_analyzer import LP_ALL_INTENTS, LPAnalyzer
 from lp_analyzer import canonicalize_pool_semantic_key
+from lp_drop_metadata import build_lp_prefilter_drop_metadata
 from lp_noise_rules import (
     LP_ADJACENT_NOISE_STAGE_PIPELINE,
     lp_adjacent_noise_core_decision,
@@ -2621,8 +2622,9 @@ class SignalPipeline:
                 gate_reason,
             ]
         )
+        event_id = f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}"
         record = {
-            "event_id": f"evt_{hashlib.sha1(event_id_seed.encode('utf-8')).hexdigest()[:16]}",
+            "event_id": event_id,
             "tx_hash": tx_hash,
             "watch_address": watch_address,
             "monitor_type": str(parsed.get("monitor_type") or ""),
@@ -2740,6 +2742,33 @@ class SignalPipeline:
             "pricing_confidence": round(float(parsed.get("pricing_confidence") or 0.0), 3),
             "archive_ts": int(archive_ts),
         }
+        if (
+            "lp_adjacent_noise" in str(gate_reason or "")
+            or str(gate_reason or "") in {"listener_prefilter/drop", "listener_prefilter_drop"}
+        ):
+            metadata_event_ts = int(archive_ts)
+            for candidate_ts in (
+                parsed.get("event_ts"),
+                parsed.get("block_ts"),
+                parsed.get("timestamp"),
+                parsed.get("ingest_ts"),
+            ):
+                try:
+                    if candidate_ts not in (None, "", [], {}, ()):
+                        metadata_event_ts = int(float(candidate_ts))
+                        break
+                except (TypeError, ValueError):
+                    continue
+            metadata = build_lp_prefilter_drop_metadata(
+                parsed,
+                event_id=event_id,
+                tx_hash=tx_hash,
+                drop_reason="listener_prefilter/drop",
+                event_ts=metadata_event_ts,
+            )
+            for key, value in metadata.items():
+                if key not in record or record.get(key) in (None, "", [], {}, ()):
+                    record[key] = value
         silent_reason = self._build_silent_reason(
             stage="prefilter",
             reason_code=gate_reason,

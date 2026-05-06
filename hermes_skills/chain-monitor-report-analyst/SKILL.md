@@ -36,6 +36,8 @@ Use this Skill when the user requests chain-monitor report analysis, daily repor
 学习复盘2026-05-04
 CANDIDATE覆盖诊断2026-05-04
 Outcome闭环诊断2026-05-04
+Outcome补全预检2026-05-04
+LP抑制抽样预检2026-05-04
 LP诊断2026-05-04
 周复盘2026-04-27到2026-05-03
 ```
@@ -334,6 +336,8 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run
+./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run
 ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh submit-space-check
 ./scripts/hermes_cm_ops.sh space-fast
@@ -642,6 +646,7 @@ Rules:
 - 如果 CANDIDATE 覆盖率 = 0，必须提示排查 candidate/opportunity/replay 连接。
 - 如果 LP signal rows 缺失，必须列为排查项。
 - 如果没有高样本正收益 profile，不得建议提升 VERIFIED。
+- 如果 `lp_suppression_sample_replay_summary` 未运行，明天只建议运行 LP 抑制抽样预检或 SSH execute；如果结果为负，只建议继续积累样本不改 gate；如果结果为正，只建议周复盘人工检查对应 suppression reason。
 - 输出只做学习复盘，不输出执行指令。
 - `学习复盘昨天` 必须拒绝，不能解析相对日期，不能读取 reports。
 
@@ -709,6 +714,36 @@ Router maps to:
 
 Outcome 闭环诊断必须只读 SQLite 和 canonical daily report 的聚合字段。输出必须包含：
 
+Outcome 补全预检只允许 dry-run：
+
+```text
+Outcome补全预检YYYY-MM-DD
+后验补全预检YYYY-MM-DD
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run
+```
+
+Telegram 不开放 `outcome-catchup --execute`；execute 只能 SSH 手动运行并带 `--confirm`。
+
+LP 抑制抽样预检只允许 dry-run：
+
+```text
+LP抑制抽样预检YYYY-MM-DD
+LP抽样预检YYYY-MM-DD
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run
+```
+
+Telegram 不开放 `lp-suppression-sample-replay --execute`；execute 只能 SSH 手动运行并带 `--confirm`。该命令只做 offline sampling replay，不放宽 LP gate，不实时推送样本。
+
 - 当日 signals 总数
 - 当日 trade_opportunities 总数
 - outcomes 总数
@@ -757,6 +792,8 @@ LP 诊断必须只读 canonical daily report 和 SQLite 聚合字段。输出必
 - SQLite `signals.signal_json LIKE '%lp%' / '%pool%' / '%liquidity%' / '%clmm%'` 计数
 - SQLite `raw_events` / `parsed_events` 的 LP-like 聚合计数
 - `delivery_audit` 中 LP 相关 pushed / suppressed 数量
+- 常规 suppression replay 和 sampled early suppression replay
+- gate/lp_noise_filtered 与 listener_prefilter/drop sampled replay avg
 - ETH/BTC/SOL x USDT/USDC major coverage 状态
 - `report_mapping判断`
 - `analyzer_gate判断`

@@ -25,7 +25,10 @@ REQUIRED_FIELDS = (
     "lp_stage_summary",
     "clmm_summary",
     "lp_suppression_summary",
+    "lp_suppression_sample_replay_summary",
     "candidate_frontier_summary",
+    "candidate_coverage_summary",
+    "outcome_diagnosis_summary",
 )
 
 
@@ -125,10 +128,16 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     missing = [field for field, state in field_status.items() if state == "missing"]
     reason = lp_missing_reason(payload, counts, missing)
     candidate_frontier = as_dict(payload.get("candidate_frontier_summary"))
+    candidate_coverage = as_dict(payload.get("candidate_coverage_summary"))
+    outcome_diagnosis = as_dict(payload.get("outcome_diagnosis_summary"))
     if missing:
         schema_check = reason if reason != "unknown" else "missing_fields"
     elif not candidate_frontier:
         schema_check = "candidate_frontier_missing"
+    elif not candidate_coverage:
+        schema_check = "candidate_coverage_missing"
+    elif not outcome_diagnosis:
+        schema_check = "outcome_diagnosis_missing"
     else:
         schema_check = "ok"
 
@@ -144,6 +153,8 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     )
     print(f"lp_missing_reason={reason}")
     print(f"candidate_frontier_status={'present' if candidate_frontier else 'missing'}")
+    print(f"candidate_coverage_status={'present' if candidate_coverage else 'missing'}")
+    print(f"outcome_diagnosis_status={'present' if outcome_diagnosis else 'missing'}")
     print(f"schema_check={schema_check}")
     if warnings:
         print("limitations=" + "；".join(dict.fromkeys(warnings)))

@@ -81,6 +81,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | 排查当日 signals -> trade_opportunities -> replay 的 CANDIDATE 覆盖连接 | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals 总数、opportunity 总数、状态分布、replay examples 关联数量、replay status=CANDIDATE 数量、delivery_audit 实时推送 stage/status 分布，并提示是 gate 严格还是 replay 关联层可能漏接。 |
 | 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | 检查 canonical daily report 新学习字段是否完整 | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；检查 LP / CLMM / candidate frontier 字段，输出 report_mapping_missing / lp_analyzer_or_gate_missing / no_lp_samples_or_coverage_gap。 |
 | Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | 排查当日 signals/opportunities -> outcomes/replay/profile 闭环不足 | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals、trade_opportunities、outcomes、opportunity_outcomes、trade_replay_examples 总数及匹配率，按 asset/status/signal_type/stage 汇总 outcome 缺失，并推断时间窗口、price snapshot、ID 关联、worker、report mapping 问题。 |
+| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | 预检 past-due opportunity_outcomes 可补全数量 | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | Telegram 只开放 dry-run；显示 would_update_rows、still_pending_count、catchup_from_replay / catchup_from_outcomes 分布，不执行写入。 |
+| LP抑制抽样预检YYYY-MM-DD / LP抽样预检YYYY-MM-DD | 预检 LP early suppression sample replay | `./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run` | low | Telegram 只开放 dry-run；显示 candidate_sample_count、by_reason、by_pair、by_intent、would_insert_replay_rows，不改变 gate、不发 Telegram、不改原始 audit/opportunity。 |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | 排查 daily report 中 LP signal rows 缺失的来源 | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；输出 LP 相关字段存在性、signals/raw/parsed LP-like 计数、delivery_audit 推送/抑制数量、ETH/BTC/SOL x USDT/USDC major coverage，并判断 report mapping、LP analyzer/gate 或样本覆盖不足。 |
 | 空间检查 | 提交后台任务查看 SQLite / WAL / archive / reports 占用 | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job。只读，不删除，不 vacuum，不 prune。 |
 | 空间快检 | 快速同步查看 SQLite/WAL/SHM 文件大小 | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick。不递归扫描 archive/reports。 |
@@ -155,6 +157,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 学习复盘YYYY-MM-DD：整合数据质量、回放、profile、blocker、shadow、Telegram 去噪，输出中文学习结论
 - CANDIDATE覆盖诊断YYYY-MM-DD：排查 replay 中 CANDIDATE 覆盖率为 0 的原因
 - Outcome闭环诊断YYYY-MM-DD：排查 outcome/replay/profile 闭环不足的原因
+- Outcome补全预检YYYY-MM-DD：只做 opportunity_outcomes catchup dry-run
+- LP抑制抽样预检YYYY-MM-DD：只做 LP early suppression sample replay dry-run
 - LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 
 【维护预检】
