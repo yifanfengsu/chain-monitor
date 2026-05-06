@@ -64,6 +64,12 @@ require_out command_menu 'command-menu'
 run_ok system_health --text '系统体检' --dry-run --platform telegram
 require_out system_health 'system-health'
 
+run_ok lock_status --text '锁状态' --dry-run --platform telegram
+require_out lock_status 'lock-status'
+
+run_ok lock_check --text '锁检查' --dry-run --platform telegram
+require_out lock_check 'lock-status'
+
 run_ok listener_health --text '监听器体检' --dry-run --platform telegram
 require_out listener_health 'listener-health'
 
@@ -134,6 +140,28 @@ require_out candidate_coverage_short 'candidate-coverage'
 
 run_fail candidate_relative --text '候选覆盖昨天' --dry-run --platform telegram
 require_out candidate_relative 'YYYY-MM-DD'
+
+run_ok schema_check --text '日报结构检查2026-05-04' --dry-run --platform telegram
+require_out schema_check 'daily-report-schema-check'
+require_out schema_check '--date'
+require_out schema_check '2026-05-04'
+
+run_fail schema_relative --text '日报结构检查昨天' --dry-run --platform telegram
+require_out schema_relative 'YYYY-MM-DD'
+
+run_ok outcome_diagnose --text 'Outcome闭环诊断2026-05-04' --dry-run --platform telegram
+require_out outcome_diagnose 'outcome-diagnose'
+require_out outcome_diagnose '--date'
+require_out outcome_diagnose '2026-05-04'
+
+run_ok outcome_diagnose_cn --text '后验闭环诊断2026-05-04' --dry-run --platform telegram
+require_out outcome_diagnose_cn 'outcome-diagnose'
+
+run_ok outcome_diagnose_result --text '结果闭环诊断2026-05-04' --dry-run --platform telegram
+require_out outcome_diagnose_result 'outcome-diagnose'
+
+run_fail outcome_relative --text '后验闭环诊断昨天' --dry-run --platform telegram
+require_out outcome_relative 'YYYY-MM-DD'
 
 run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run --platform telegram
 require_out lp_diagnose 'lp-diagnose'
@@ -229,6 +257,7 @@ HERMES_OPS_AUDIT_LOG="$MENU_AUDIT" \
 HERMES_OPS_LOCK_PATH="$MENU_LOCK" \
   "$ROUTER" --text '命令提示' --execute --platform telegram >"$TMP_DIR/menu_execute.out" 2>"$TMP_DIR/menu_execute.err"
 grep -Fq '系统体检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 系统体检"
+grep -Fq '锁状态' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 锁状态"
 grep -Fq '标准日报流程YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 标准日报流程YYYY-MM-DD"
 grep -Fq '周复盘START到END' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 周复盘START到END"
 grep -Fq '任务状态JOB_ID' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 任务状态JOB_ID"

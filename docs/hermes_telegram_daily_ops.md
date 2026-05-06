@@ -50,6 +50,7 @@ TELEGRAM_SEND_CONCURRENCY=3
 /chain-monitor-report-analyst 命令提示
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
+/chain-monitor-report-analyst 锁状态
 /chain-monitor-report-analyst 标准日报流程2026-05-01
 /chain-monitor-report-analyst 任务状态cmjob_...
 /chain-monitor-report-analyst 查看结果cmjob_...
@@ -85,10 +86,11 @@ TELEGRAM_SEND_CONCURRENCY=3
 
 预期返回完整中文菜单。
 
-12 个手动功能：
+手动功能：
 
 - 系统体检：检查 SQLite / report source / market / coverage。
 - 监听器体检：检查 listener 进程、最近 raw/parsed/signal/archive 时间和 zero activity 风险。
+- 锁状态：只读检查 Hermes lock 是否被占用，不删除 lock 文件。
 - 标准日报流程YYYY-MM-DD：展开 daily-close 子步骤，然后 trade-replay-full、report-daily-date、daily-compare、sqlite-checkpoint。只能跑已经结束的北京时间逻辑日，当前北京时间日期会被 submit 阶段拒绝且不创建 job。daily-close 默认只是 compression dry-run。
 - 分析报告YYYY-MM-DD：分析已存在 canonical daily report，不自动生成日报。
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、replay_scope=full。
@@ -96,6 +98,7 @@ TELEGRAM_SEND_CONCURRENCY=3
 - Profile复盘YYYY-MM-DD：查看 profile 后验。
 - Blocker复盘YYYY-MM-DD：查看 blocker 分布。
 - Shadow复盘YYYY-MM-DD：查看 shadow funnel。
+- Outcome闭环诊断YYYY-MM-DD：只读排查 outcome/replay/profile 闭环不足。
 - 空间检查：提交后台任务查看 SQLite / WAL / archive / reports 占用。
 - 空间快检：快速同步查看 SQLite / WAL / SHM 文件大小，不递归扫描 archive/reports。
 - 归档压缩预检YYYY-MM-DD：提交后台 dry-run 任务，只 dry-run，不压缩。
@@ -113,6 +116,7 @@ TELEGRAM_SEND_CONCURRENCY=3
 /chain-monitor-report-analyst 查看日志cmjob_...
 /chain-monitor-report-analyst 诊断任务cmjob_...
 /chain-monitor-report-analyst 最近任务
+/chain-monitor-report-analyst 锁状态
 ```
 
 如果任务长时间 running，先看“查看日志JOB_ID”，再 SSH 排查。若任务 failed，先看“诊断任务JOB_ID”和“查看日志JOB_ID”，确认 failed_substep / failed_command。不要重复提交同一日期/同一范围的相同任务；job controller 会尽量返回 existing job。
@@ -256,6 +260,6 @@ tail -n 20 reports/hermes/ops_audit.ndjson
 - 相对日期被拒绝：改成 `YYYY-MM-DD`。
 - 如果修改 skill 后 Telegram 仍按旧规则执行，请运行 install 脚本并在 Telegram 中 `/reset`。
 - Hermes 文档说明已安装 skill 在新会话中生效；当前会话可能需要 `/reset`。
-- lock busy：等待当前操作完成。
+- lock busy：使用“锁状态 / 最近任务 / 任务状态JOB_ID”诊断；不要手动删除 `/run/lock/chain-monitor-hermes-*`。
 - 输出隐藏地址：这是 redaction 默认行为。
 - 出现危险命令审批：不要批准 raw shell；只使用 wrapper。

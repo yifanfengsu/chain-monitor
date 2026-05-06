@@ -75,6 +75,9 @@ run_ok deep --text '深度分析报告2026-05-01' --dry-run
 require_out deep '"--mode"'
 require_out deep '"deep"'
 
+run_ok lock_status --text '锁状态' --dry-run
+require_out lock_status 'lock-status'
+
 run_ok autobuild --text '构建并分析报告2026-05-01 快速' --dry-run
 require_out autobuild '"--auto-build"'
 
@@ -96,6 +99,22 @@ run_ok candidate_coverage --text 'CANDIDATE覆盖诊断2026-05-04' --dry-run
 require_out candidate_coverage 'candidate-coverage'
 require_out candidate_coverage '"--date"'
 require_out candidate_coverage '"2026-05-04"'
+
+run_ok schema_check --text '日报结构检查2026-05-04' --dry-run
+require_out schema_check 'daily-report-schema-check'
+require_out schema_check '"--date"'
+require_out schema_check '"2026-05-04"'
+
+run_ok outcome_diagnose --text 'Outcome闭环诊断2026-05-04' --dry-run
+require_out outcome_diagnose 'outcome-diagnose'
+require_out outcome_diagnose '"--date"'
+require_out outcome_diagnose '"2026-05-04"'
+
+run_ok outcome_diagnose_cn --text '后验闭环诊断2026-05-04' --dry-run
+require_out outcome_diagnose_cn 'outcome-diagnose'
+
+run_ok outcome_diagnose_result --text '结果闭环诊断2026-05-04' --dry-run
+require_out outcome_diagnose_result 'outcome-diagnose'
 
 run_ok lp_diagnose --text 'LP诊断2026-05-04' --dry-run
 require_out lp_diagnose 'lp-diagnose'
@@ -134,6 +153,11 @@ run_fail candidate_relative --text '候选覆盖昨天' --dry-run
 require_out candidate_relative '绝对日期'
 require_out candidate_relative 'YYYY-MM-DD'
 forbid_out candidate_relative 'candidate-coverage'
+
+run_fail outcome_relative --text 'Outcome闭环诊断昨天' --dry-run
+require_out outcome_relative '绝对日期'
+require_out outcome_relative 'YYYY-MM-DD'
+forbid_out outcome_relative 'outcome-diagnose'
 
 run_fail lp_relative --text 'LP诊断昨天' --dry-run
 require_out lp_relative '绝对日期'

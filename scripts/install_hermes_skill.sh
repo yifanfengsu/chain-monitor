@@ -135,6 +135,12 @@ verify_launcher() {
 
   "$router_launcher" --text "命令提示" --dry-run --platform telegram >"$tmp_dir/menu.out" 2>"$tmp_dir/menu.err"
   grep -Fq "command-menu" "$tmp_dir/menu.out" || fail "命令提示 dry-run 缺少 command-menu"
+
+  "$router_launcher" --text "锁状态" --dry-run --platform telegram >"$tmp_dir/lock_status.out" 2>"$tmp_dir/lock_status.err"
+  grep -Fq "lock-status" "$tmp_dir/lock_status.out" || fail "锁状态 dry-run 缺少 lock-status"
+
+  "$router_launcher" --text "Outcome闭环诊断2026-05-04" --dry-run --platform telegram >"$tmp_dir/outcome.out" 2>"$tmp_dir/outcome.err"
+  grep -Fq "outcome-diagnose" "$tmp_dir/outcome.out" || fail "Outcome闭环诊断 dry-run 缺少 outcome-diagnose"
 }
 
 [[ -d "$SRC_DIR" ]] || fail "source skill directory not found: ${SRC_DIR}"
@@ -171,6 +177,9 @@ launcher 已创建：~/.hermes/bin/chain-monitor-cn-router
 推荐测试：
   /chain-monitor-report-analyst 命令提示
   预期：返回完整中文命令菜单。
+
+  /chain-monitor-report-analyst 锁状态
+  预期：只读返回 Hermes lock 状态，不删除 lock 文件。
 
   /chain-monitor-report-analyst 标准日报流程昨天
   预期：拒绝。

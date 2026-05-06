@@ -21,6 +21,7 @@ require_pattern() {
 for pattern in \
   "cmd_help()" \
   "cmd_command_menu()" \
+  "cmd_lock_status()" \
   "cmd_system_health()" \
   "cmd_listener_health()" \
   "cmd_daily_flow()" \
@@ -31,6 +32,8 @@ for pattern in \
   "cmd_shadow_review()" \
   "cmd_learning_review()" \
   "cmd_candidate_coverage()" \
+  "cmd_daily_report_schema_check()" \
+  "cmd_outcome_diagnose()" \
   "cmd_lp_diagnose()" \
   "cmd_space_check()" \
   "cmd_archive_compress_check()" \
@@ -57,6 +60,7 @@ for pattern in \
   "submit-space-check" \
   "submit-archive-compress-check" \
   "submit-weekly-review" \
+  "lock-status" \
   "job-status" \
   "job-list" \
   "job-result" \
@@ -66,6 +70,8 @@ for pattern in \
   "db-slim-dry-run" \
   "learning-review" \
   "candidate-coverage" \
+  "daily-report-schema-check" \
+  "outcome-diagnose" \
   "lp-diagnose" \
   "__run-job" \
   "HERMES_OPS_JOB_RUNNER_OK" \
@@ -103,7 +109,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -111,7 +117,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -133,7 +139,9 @@ db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
 db_slim_block="$(extract_block 'cmd_db_slim_dry_run()' 'run_output_value()')"
 archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
-candidate_block="$(extract_block 'cmd_candidate_coverage()' 'cmd_space_check()')"
+candidate_block="$(extract_block 'cmd_candidate_coverage()' 'cmd_outcome_diagnose()')"
+schema_check_block="$(extract_block 'cmd_daily_report_schema_check()' 'cmd_outcome_diagnose()')"
+outcome_block="$(extract_block 'cmd_outcome_diagnose()' 'cmd_lp_diagnose()')"
 lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 
 [[ -n "$help_block" ]] || die "could not extract cmd_help"
@@ -142,6 +150,8 @@ lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 [[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
 [[ -n "$db_slim_block" ]] || die "could not extract cmd_db_slim_dry_run"
 [[ -n "$candidate_block" ]] || die "could not extract cmd_candidate_coverage"
+[[ -n "$schema_check_block" ]] || die "could not extract cmd_daily_report_schema_check"
+[[ -n "$outcome_block" ]] || die "could not extract cmd_outcome_diagnose"
 [[ -n "$lp_block" ]] || die "could not extract cmd_lp_diagnose"
 
 if grep -Eq '(^|[^A-Za-z])make([[:space:]]|$)' <<<"$menu_block"; then
@@ -150,6 +160,7 @@ fi
 
 for required in \
   "命令提示" \
+  "锁状态" \
   "系统体检" \
   "监听器体检" \
   "标准日报流程YYYY-MM-DD" \
@@ -162,6 +173,8 @@ for required in \
   "学习复盘YYYY-MM-DD" \
   "学习总结YYYY-MM-DD" \
   "CANDIDATE覆盖诊断YYYY-MM-DD" \
+  "日报结构检查YYYY-MM-DD" \
+  "Outcome闭环诊断YYYY-MM-DD" \
   "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "空间快检" \
@@ -271,6 +284,10 @@ for required in \
   "replay_examples_with_opportunity" \
   "replay_examples_status_CANDIDATE" \
   "delivery_audit_stage_status_distribution" \
+  "near_candidate_count" \
+  "top_near_candidate_blockers" \
+  "NONE_to_CANDIDATE主要缺口" \
+  "candidate_frontier_diagnosis" \
   "实时推送主要是 observe/signal，不是 opportunity candidate" \
   "replay 关联层可能漏接" \
   "candidate gate 太严格或当天无合格候选" \
@@ -281,6 +298,69 @@ done
 for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
   if grep -Fqi -- "$forbidden" <<<"$candidate_block"; then
     die "candidate-coverage contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
+  "scripts/hermes_daily_report_schema_check.py" \
+  "daily-report-schema-check requires --date YYYY-MM-DD" \
+  "AUDIT_OUTPUT_HINT=\"daily-report-schema-check" \
+  "AUDIT_ALLOWED=true"
+do
+  grep -Fq -- "$required" <<<"$schema_check_block" || die "daily-report-schema-check wrapper missing required content: ${required}"
+done
+for required in \
+  "Chain Monitor 日报结构检查" \
+  "lp_signal_summary" \
+  "lp_stage_summary" \
+  "clmm_summary" \
+  "lp_suppression_summary" \
+  "candidate_frontier_summary" \
+  "schema_check" \
+  "report_mapping_missing" \
+  "lp_analyzer_or_gate_missing" \
+  "HERMES_SCHEMA_CHECK_DB_PATH" \
+  "?mode=ro" \
+  "只读结构检查"
+do
+  grep -Fq -- "$required" scripts/hermes_daily_report_schema_check.py || die "schema check helper missing required content: ${required}"
+done
+for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$schema_check_block" || grep -Fqi -- "$forbidden" scripts/hermes_daily_report_schema_check.py; then
+    die "daily-report-schema-check contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
+  "scripts/hermes_outcome_diagnose.py" \
+  "outcome-diagnose requires --date YYYY-MM-DD" \
+  "AUDIT_OUTPUT_HINT=\"outcome-diagnose" \
+  "AUDIT_ALLOWED=true"
+do
+  grep -Fq -- "$required" <<<"$outcome_block" || die "outcome-diagnose wrapper missing required content: ${required}"
+done
+for required in \
+  "Chain Monitor Outcome闭环诊断" \
+  "signals_to_outcomes_match_rate" \
+  "opportunities_to_opportunity_outcomes_match_rate" \
+  "opportunities_to_replay_examples_match_rate" \
+  "signals_outcome_missing_by_asset" \
+  "opportunities_outcome_missing_by_status" \
+  "outcome缺失原因推断" \
+  "时间窗口未到" \
+  "price snapshot 缺失" \
+  "signal_id / opportunity_id 未关联" \
+  "outcome worker 未运行" \
+  "report 字段映射错误" \
+  "HERMES_OUTCOME_DIAGNOSE_DB_PATH" \
+  "?mode=ro" \
+  "只读脱敏诊断"
+do
+  grep -Fq -- "$required" scripts/hermes_outcome_diagnose.py || die "Outcome diagnose helper missing required content: ${required}"
+done
+for forbidden in "make " "VACUUM" "prune" "compact" "archive-compress-date" "db-vacuum"; do
+  if grep -Fqi -- "$forbidden" <<<"$outcome_block" || grep -Fqi -- "$forbidden" scripts/hermes_outcome_diagnose.py; then
+    die "outcome-diagnose contains forbidden term: ${forbidden}"
   fi
 done
 
@@ -371,6 +451,8 @@ for guarded in \
   "shadow-review" \
   "learning-review" \
   "candidate-coverage" \
+  "daily-report-schema-check" \
+  "outcome-diagnose" \
   "lp-diagnose" \
   "space-check" \
   "archive-compress-check" \
@@ -426,11 +508,15 @@ grep -Fq "listener-health Telegram outbound test ok" "$TMP_DIR/listener_health_t
 bash scripts/test_hermes_lp_diagnose.sh >"$TMP_DIR/lp_diagnose.out"
 grep -Fq "Hermes LP diagnose test passed" "$TMP_DIR/lp_diagnose.out" || die "LP diagnose test did not pass"
 
+bash scripts/test_hermes_outcome_diagnose.sh >"$TMP_DIR/outcome_diagnose.out"
+grep -Fq "Hermes outcome diagnose test passed" "$TMP_DIR/outcome_diagnose.out" || die "Outcome diagnose test did not pass"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/ops_audit.ndjson" \
 HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \
   "$SCRIPT" command-menu >"$TMP_DIR/menu.out"
 
 grep -Fq "系统体检" "$TMP_DIR/menu.out" || die "command-menu output missing 系统体检"
+grep -Fq "锁状态" "$TMP_DIR/menu.out" || die "command-menu output missing 锁状态"
 grep -Fq "标准日报流程YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 标准日报流程YYYY-MM-DD"
 grep -Fq "任务状态JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 任务状态JOB_ID"
 grep -Fq "查看结果JOB_ID" "$TMP_DIR/menu.out" || die "command-menu output missing 查看结果JOB_ID"
@@ -443,6 +529,8 @@ grep -Fq "数据库瘦身预检" "$TMP_DIR/menu.out" || die "command-menu output
 grep -Fq "学习复盘YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习复盘YYYY-MM-DD"
 grep -Fq "学习总结YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习总结YYYY-MM-DD"
 grep -Fq "CANDIDATE覆盖诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing CANDIDATE覆盖诊断YYYY-MM-DD"
+grep -Fq "日报结构检查YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 日报结构检查YYYY-MM-DD"
+grep -Fq "Outcome闭环诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing Outcome闭环诊断YYYY-MM-DD"
 grep -Fq "LP诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing LP诊断YYYY-MM-DD"
 grep -Fq "生成日报YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 生成日报YYYY-MM-DD"
 grep -Fq "深度分析报告YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 深度分析报告YYYY-MM-DD"
@@ -649,6 +737,7 @@ cat >"$LEARNING_REPORT" <<'JSON'
   "trade_replay_summary": {
     "replay_source": "persisted",
     "replay_scope": "full",
+    "replay_count": 4,
     "avg_net_pnl_bps": -5.25,
     "suppressed_avg_net_pnl_bps": -2.5,
     "replay_coverage_rate_candidate": 0,
@@ -685,6 +774,40 @@ cat >"$LEARNING_REPORT" <<'JSON'
     "messages_after_suppression_actual": 2,
     "telegram_suppression_ratio": 0.5,
     "high_value_suppressed_count": 0
+  },
+  "candidate_frontier_summary": {
+    "near_candidate_count": 0,
+    "near_candidate_replay_count": 0,
+    "diagnosis": "gate_closed_because_quality_low"
+  },
+  "lp_signal_summary": {
+    "available": true,
+    "lp_signal_rows": 4,
+    "lp_like_signals_sqlite": 4
+  },
+  "lp_stage_summary": {
+    "available": true,
+    "by_stage": {
+      "confirm": 4,
+      "prealert": 0,
+      "exhaustion_risk": 0,
+      "unknown": 0
+    }
+  },
+  "clmm_summary": {
+    "available": true,
+    "clmm_like_rows": 4
+  },
+  "lp_suppression_summary": {
+    "available": true,
+    "total": 8,
+    "suppressed": 4,
+    "suppression_rate": 0.5
+  },
+  "lp_suppression_replay_summary": {
+    "available": true,
+    "diagnosis": "suppression_seems_correct",
+    "overall_suppressed_avg_net_pnl_bps": -2.5
   }
 }
 JSON

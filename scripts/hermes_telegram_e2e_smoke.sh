@@ -106,6 +106,7 @@ require_output menu_dry 'command-menu'
 )
 require_output menu_execute 'Chain Monitor 中文命令菜单'
 require_output menu_execute '系统体检'
+require_output menu_execute '锁状态'
 require_output menu_execute '标准日报流程YYYY-MM-DD'
 
 run_launcher_ok daily_flow --text '标准日报流程2026-05-01' --dry-run --platform telegram
@@ -119,6 +120,9 @@ require_output weekly_review '2026-05-03'
 
 run_launcher_ok space_fast --text '空间快检' --dry-run --platform telegram
 require_output space_fast 'space-fast'
+
+run_launcher_ok lock_status --text '锁状态' --dry-run --platform telegram
+require_output lock_status 'lock-status'
 
 run_launcher_ok job_status --text '任务状态cmjob_20260501T120000Z_abcdef12' --dry-run --platform telegram
 require_output job_status 'job-status'

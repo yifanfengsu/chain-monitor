@@ -213,6 +213,16 @@ def parse_command(text: str) -> dict[str, Any]:
             "auto_build": False,
         }
 
+    if text in {"锁状态", "锁检查", "Hermes锁状态"}:
+        return {
+            "action": "lock-status",
+            "command_intent": "lock-status",
+            "argv": wrapper_argv("lock-status"),
+            "date": "",
+            "mode": "",
+            "auto_build": False,
+        }
+
     if text in {"系统体检", "体检", "健康检查", "状态", "系统状态"}:
         return {
             "action": "system-health",
@@ -375,6 +385,30 @@ def parse_command(text: str) -> dict[str, Any]:
             "action": "candidate-coverage",
             "command_intent": "candidate-coverage",
             "argv": wrapper_argv("candidate-coverage", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:日报结构检查|日报schema检查|报告结构检查)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "daily-report-schema-check",
+            "command_intent": "daily-report-schema-check",
+            "argv": wrapper_argv("daily-report-schema-check", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
+    match = re.fullmatch(r"(?:Outcome闭环诊断|后验闭环诊断|结果闭环诊断)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "outcome-diagnose",
+            "command_intent": "outcome-diagnose",
+            "argv": wrapper_argv("outcome-diagnose", "--date", report_date),
             "date": report_date,
             "mode": "",
             "auto_build": False,

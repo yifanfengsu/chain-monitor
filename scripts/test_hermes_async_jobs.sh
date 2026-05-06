@@ -83,6 +83,9 @@ require_output space_check 'submit-space-check'
 run_ok space_fast "$ROUTER" --text '空间快检' --dry-run --platform telegram
 require_output space_fast 'space-fast'
 
+run_ok lock_status "$ROUTER" --text '锁状态' --dry-run --platform telegram
+require_output lock_status 'lock-status'
+
 run_ok db_size_diagnose "$ROUTER" --text '数据库体积诊断' --dry-run --platform telegram
 require_output db_size_diagnose 'db-size-diagnose'
 
@@ -170,6 +173,7 @@ require_output menu_execute '任务状态JOB_ID'
 require_output menu_execute '查看结果JOB_ID'
 require_output menu_execute '诊断任务JOB_ID'
 require_output menu_execute '最近任务'
+require_output menu_execute '锁状态'
 require_output menu_execute '空间快检'
 require_output menu_execute '数据库体积诊断'
 require_output menu_execute '重新标准日报流程YYYY-MM-DD 我确认重跑'

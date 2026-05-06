@@ -22,6 +22,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 ```text
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
+/chain-monitor-report-analyst 锁状态
 /chain-monitor-report-analyst 标准日报流程2026-05-01
 /chain-monitor-report-analyst 任务状态cmjob_...
 /chain-monitor-report-analyst 查看结果cmjob_...
@@ -55,12 +56,14 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 查看日志JOB_ID
 - 诊断任务JOB_ID
 - 最近任务
+- 锁状态
 
 ## 中文功能表
 
 | 中文命令 | 功能 | 底层 wrapper | 风险等级 | 说明 |
 | --- | --- | --- | --- | --- |
 | 命令提示 | 返回完整中文命令菜单 | `./scripts/hermes_cm_ops.sh command-menu` | low | 不执行 make，不读敏感数据。 |
+| 锁状态 / 锁检查 / Hermes锁状态 | 只读检查 Hermes lock 是否被占用 | `./scripts/hermes_cm_ops.sh lock-status` | low | 不删除 lock 文件；lock 未被持有时提示后续命令可重试，lock 被持有时提示查看最近任务/任务状态。 |
 | 系统体检 | 检查 SQLite / report source / market health / coverage | `./scripts/hermes_cm_ops.sh system-health` | low | wrapper 内部可限时执行只读健康检查，包括 db-report、report-source-fast、market health、coverage，但 Telegram 不得直接调用 make。 |
 | 监听器体检 | 检查监听器是否可能停摆、最近 raw/parsed/signal/archive 时间、zero activity 风险、Telegram outbound 健康 | `./scripts/hermes_cm_ops.sh listener-health` | low | 只读，不重启 listener，不发送 Telegram warning；输出 sent_ok / sent_failed、最近成功/失败时间和 pool timeout / NetworkError / TimedOut 聚合 warning。 |
 | 标准日报流程YYYY-MM-DD | 提交后台任务跑展开后的 daily-close 子步骤 + full replay + report + compare + checkpoint | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job。只能跑已经结束的北京时间逻辑日；当前北京时间日期会在 submit 阶段拒绝，不创建 job。daily-close 默认只做 archive compression dry-run；不执行 archive gzip，不 compact，不 vacuum，不 prune。 |
@@ -76,6 +79,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | Shadow复盘YYYY-MM-DD | 查看 shadow_funnel_summary | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | 返回 shadow_candidate_count、shadow_verified_count、near_candidate_but_blocked、score_below_shadow_candidate 等。 |
 | 学习复盘YYYY-MM-DD / 每日学习YYYY-MM-DD / 学习总结YYYY-MM-DD / 今日学习复盘YYYY-MM-DD | 汇总 data-quality、replay、profile、blocker、shadow、delivery audit 和 Telegram delivery 摘要 | `./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD` | low | 输出中文学习结论：数据是否有效、replay_source/replay_scope、avg/suppressed PnL、CANDIDATE 覆盖率、主要负收益 profile、主要 blocker、shadow_candidate/shadow_verified、LP signal rows 是否缺失、Telegram 噪音判断、今日结论和明天唯一改动点；不输出执行指令。 |
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | 排查当日 signals -> trade_opportunities -> replay 的 CANDIDATE 覆盖连接 | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals 总数、opportunity 总数、状态分布、replay examples 关联数量、replay status=CANDIDATE 数量、delivery_audit 实时推送 stage/status 分布，并提示是 gate 严格还是 replay 关联层可能漏接。 |
+| 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | 检查 canonical daily report 新学习字段是否完整 | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；检查 LP / CLMM / candidate frontier 字段，输出 report_mapping_missing / lp_analyzer_or_gate_missing / no_lp_samples_or_coverage_gap。 |
+| Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | 排查当日 signals/opportunities -> outcomes/replay/profile 闭环不足 | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals、trade_opportunities、outcomes、opportunity_outcomes、trade_replay_examples 总数及匹配率，按 asset/status/signal_type/stage 汇总 outcome 缺失，并推断时间窗口、price snapshot、ID 关联、worker、report mapping 问题。 |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | 排查 daily report 中 LP signal rows 缺失的来源 | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；输出 LP 相关字段存在性、signals/raw/parsed LP-like 计数、delivery_audit 推送/抑制数量、ETH/BTC/SOL x USDT/USDC major coverage，并判断 report mapping、LP analyzer/gate 或样本覆盖不足。 |
 | 空间检查 | 提交后台任务查看 SQLite / WAL / archive / reports 占用 | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job。只读，不删除，不 vacuum，不 prune。 |
 | 空间快检 | 快速同步查看 SQLite/WAL/SHM 文件大小 | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick。不递归扫描 archive/reports。 |
@@ -107,6 +112,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 不支持“删除 archive/cache/db”
 - 不支持“delete DB”
 - 不支持“修改地址簿”
+- 不支持手动删除 `/run/lock/chain-monitor-hermes-*`
+- 不支持用 `fuser` / `lsof` 后自行清理 lock
 - 不提供买入/卖出、仓位、杠杆、止盈止损。
 
 ## 标准日报流程失败诊断
@@ -147,6 +154,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - Shadow复盘YYYY-MM-DD
 - 学习复盘YYYY-MM-DD：整合数据质量、回放、profile、blocker、shadow、Telegram 去噪，输出中文学习结论
 - CANDIDATE覆盖诊断YYYY-MM-DD：排查 replay 中 CANDIDATE 覆盖率为 0 的原因
+- Outcome闭环诊断YYYY-MM-DD：排查 outcome/replay/profile 闭环不足的原因
 - LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 
 【维护预检】
@@ -155,12 +163,13 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 【周复盘】
 - 周复盘START到END：提交后台任务，例如：周复盘2026-04-27到2026-05-03
 
-【后台任务】
+【后台任务 / 诊断】
 - 任务状态JOB_ID
 - 查看结果JOB_ID
 - 查看日志JOB_ID
 - 诊断任务JOB_ID
 - 最近任务
+- 锁状态：只读检查 Hermes lock 是否被占用，不删除 lock 文件
 - 取消任务JOB_ID 我确认取消
 
 规则：

@@ -81,6 +81,7 @@ done
 
 for pattern in \
   "命令提示" \
+  "锁状态" \
   "系统体检" \
   "监听器体检" \
   "标准日报流程YYYY-MM-DD" \
@@ -93,6 +94,7 @@ for pattern in \
   "学习复盘YYYY-MM-DD" \
   "学习总结YYYY-MM-DD" \
   "CANDIDATE覆盖诊断YYYY-MM-DD" \
+  "Outcome闭环诊断YYYY-MM-DD" \
   "LP诊断YYYY-MM-DD" \
   "空间检查" \
   "后台任务" \
@@ -150,6 +152,7 @@ for pattern in \
   "命令提示" \
   "相对日期必须拒绝" \
   "command-menu" \
+  "lock-status" \
   "system-health" \
   "listener-health" \
   "daily-flow" \
@@ -161,6 +164,8 @@ for pattern in \
   "shadow-review" \
   "learning-review" \
   "candidate-coverage" \
+  "daily-report-schema-check" \
+  "outcome-diagnose" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -182,6 +187,7 @@ done
 
 for pattern in \
   "command-menu" \
+  "lock-status" \
   "system-health" \
   "listener-health" \
   "daily-flow" \
@@ -193,6 +199,8 @@ for pattern in \
   "shadow-review" \
   "learning-review" \
   "candidate-coverage" \
+  "daily-report-schema-check" \
+  "outcome-diagnose" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -219,6 +227,7 @@ done
 
 for pattern in \
   "command-menu" \
+  "lock-status" \
   "system-health" \
   "listener-health" \
   "daily-flow" \
@@ -230,6 +239,8 @@ for pattern in \
   "shadow-review" \
   "learning-review" \
   "candidate-coverage" \
+  "daily-report-schema-check" \
+  "outcome-diagnose" \
   "lp-diagnose" \
   "space-check" \
   "submit-space-check" \
@@ -270,6 +281,8 @@ for wrapper_argv in \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \
@@ -382,6 +395,9 @@ trap cleanup EXIT
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "命令提示" --dry-run --platform telegram >"$TMP_DIR/menu.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "command-menu"' "$TMP_DIR/menu.out" || fail "router command-menu argv is not wrapper-only"
 
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "锁状态" --dry-run --platform telegram >"$TMP_DIR/lock_status.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "lock-status"' "$TMP_DIR/lock_status.out" || fail "router lock-status argv is not wrapper-only"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "标准日报流程2026-05-01" --dry-run --platform telegram >"$TMP_DIR/daily.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "submit-daily-flow"' "$TMP_DIR/daily.out" || fail "router daily-flow argv is not async submit"
 
@@ -416,6 +432,20 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "candidate-coverage"' "$TMP_DIR/candidat
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "候选覆盖2026-05-04" --dry-run --platform telegram >"$TMP_DIR/candidate_coverage_short.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "candidate-coverage"' "$TMP_DIR/candidate_coverage_short.out" || fail "router candidate-coverage short alias is not wrapper-only"
 
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "日报结构检查2026-05-04" --dry-run --platform telegram >"$TMP_DIR/schema_check.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "daily-report-schema-check"' "$TMP_DIR/schema_check.out" || fail "router daily-report-schema-check argv is not wrapper-only"
+grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/schema_check.out" || fail "router daily-report-schema-check did not include date"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome闭环诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_diagnose.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_diagnose.out" || fail "router outcome-diagnose argv is not wrapper-only"
+grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/outcome_diagnose.out" || fail "router outcome-diagnose did not include date"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "后验闭环诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_diagnose_cn.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_diagnose_cn.out" || fail "router outcome-diagnose Chinese alias is not wrapper-only"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "结果闭环诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_diagnose_result.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_diagnose_result.out" || fail "router outcome-diagnose result alias is not wrapper-only"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_diagnose.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-diagnose"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose argv is not wrapper-only"
 grep -Fq '"--date", "2026-05-04"' "$TMP_DIR/lp_diagnose.out" || fail "router lp-diagnose did not include date"
@@ -435,6 +465,20 @@ candidate_relative_rc=$?
 set -e
 [[ "$candidate_relative_rc" -ne 0 ]] || fail "router accepted relative candidate-coverage date"
 grep -Fq 'YYYY-MM-DD' "$TMP_DIR/candidate_relative.out" "$TMP_DIR/candidate_relative.err" || fail "router relative candidate-coverage did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome闭环诊断昨天" --dry-run --platform telegram >"$TMP_DIR/outcome_relative.out" 2>"$TMP_DIR/outcome_relative.err"
+outcome_relative_rc=$?
+set -e
+[[ "$outcome_relative_rc" -ne 0 ]] || fail "router accepted relative outcome-diagnose date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/outcome_relative.out" "$TMP_DIR/outcome_relative.err" || fail "router relative outcome-diagnose did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "日报结构检查昨天" --dry-run --platform telegram >"$TMP_DIR/schema_relative.out" 2>"$TMP_DIR/schema_relative.err"
+schema_relative_rc=$?
+set -e
+[[ "$schema_relative_rc" -ne 0 ]] || fail "router accepted relative daily-report-schema-check date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/schema_relative.out" "$TMP_DIR/schema_relative.err" || fail "router relative daily-report-schema-check did not ask for absolute date"
 
 set +e
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP诊断昨天" --dry-run --platform telegram >"$TMP_DIR/lp_relative.out" 2>"$TMP_DIR/lp_relative.err"

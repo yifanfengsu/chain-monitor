@@ -18,11 +18,20 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 
 只有 router 允许后，router 才能设置 `HERMES_OPS_ROUTER_OK=1` 并调用 wrapper。模型不得直接把中文输入映射到 `./scripts/hermes_cm_ops.sh`，不得从 Telegram 文本直接运行 raw shell，不得直接调用 make。
 
+Hermes lock 硬规则：
+
+- 不得手动删除 `/run/lock/chain-monitor-hermes-*`。
+- 不得对 Hermes lock 文件执行 `rm -f`。
+- 不得用 `fuser` / `lsof` 判断后自行清理 lock。
+- 遇到 `lock_busy` 只能调用：`锁状态`、`最近任务`、`任务状态JOB_ID`。
+- lock 清理只能由 wrapper 内部安全逻辑处理；当前不提供 Telegram 清理锁命令。
+
 ## 中文输入 -> router intent -> cm_ops wrapper argv
 
 | 中文输入 | router intent | cm_ops wrapper argv | 风险等级 | 执行模式 |
 | --- | --- | --- | --- | --- |
 | 命令提示 / 功能列表 / 菜单 / 帮助 / 命令 / 怎么用 / 使用说明 | command-menu | `./scripts/hermes_cm_ops.sh command-menu` | low | sync quick |
+| 锁状态 / 锁检查 / Hermes锁状态 | lock-status | `./scripts/hermes_cm_ops.sh lock-status` | low | sync quick；只读检查 Hermes lock 是否被占用，不删除 lock 文件 |
 | 系统体检 / 体检 / 健康检查 / 系统状态 / 状态 | system-health | `./scripts/hermes_cm_ops.sh system-health` | low | sync |
 | 监听器体检 / 监听器检查 / 监听状态 / 监听器状态 / 最近数据 / 零活动排查 | listener-health | `./scripts/hermes_cm_ops.sh listener-health` | low | sync |
 | 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job；当前北京时间日期会拒绝且不创建 job |
@@ -34,6 +43,8 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
 | 学习复盘YYYY-MM-DD / 每日学习YYYY-MM-DD / 学习总结YYYY-MM-DD / 今日学习复盘YYYY-MM-DD | learning-review | `./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD` | low | sync quick；整合 data-quality、replay、profile、blocker、shadow、delivery audit 和 Telegram delivery 摘要 |
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | candidate-coverage | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 CANDIDATE 覆盖率为 0 是 gate 结果还是 replay 关联层漏接 |
+| 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | daily-report-schema-check | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | sync quick；只读 daily_report 和 SQLite 聚合，检查 LP / CLMM / candidate frontier 字段完整性 |
+| Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | outcome-diagnose | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 signals/opportunities -> outcomes/replay/profile 闭环不足 |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | lp-diagnose | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 LP signal rows 缺失是 report mapping、解析/gate 还是扫描覆盖不足 |
 | 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
 | 空间快检 / 快速空间检查 / 快速磁盘检查 | space-fast | `./scripts/hermes_cm_ops.sh space-fast` | low | sync quick |
@@ -75,6 +86,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 周复盘 START / END 必须是 `YYYY-MM-DD`，START <= END，范围最多 14 天。
 - 学习复盘只接受绝对日期，例如 `学习复盘2026-05-04` 或 `学习总结2026-05-04`；`学习复盘昨天` 和 `学习总结昨天` 必须拒绝。
 - CANDIDATE 覆盖诊断只接受绝对日期，例如 `CANDIDATE覆盖诊断2026-05-04`；`候选覆盖昨天` 必须拒绝。
+- Outcome 闭环诊断只接受绝对日期，例如 `Outcome闭环诊断2026-05-04`；`后验闭环诊断昨天` 必须拒绝。
 - LP 诊断只接受绝对日期，例如 `LP诊断2026-05-04`；`LP诊断昨天` 必须拒绝。
 - job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。
 - 取消任务必须包含“我确认取消”。
@@ -84,6 +96,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 只有“构建并分析报告YYYY-MM-DD 快速/深度”才允许 auto-build。
 - close 只能由“每日收尾YYYY-MM-DD 我确认压缩”触发。
 - “每日收尾YYYY-MM-DD 我确认压缩”不是 ordinary daily-flow failure 的修复方法。
+- `lock_busy` 只能引导用户使用 `锁状态`、`最近任务`、`任务状态JOB_ID`，不得提示删除 lock 文件。
 
 ## Forbidden Relative Date Examples
 
@@ -92,6 +105,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 分析昨天的报告
 - 学习复盘昨天
 - 候选覆盖昨天
+- Outcome闭环诊断昨天
 - LP诊断昨天
 - 生成今天的日报
 - 标准日报流程昨天
@@ -216,12 +230,13 @@ job_id：cmjob_...
 【周复盘】
 - 周复盘START到END：提交后台任务，例如：周复盘2026-04-27到2026-05-03
 
-【后台任务】
+【后台任务 / 诊断】
 - 任务状态JOB_ID
 - 查看结果JOB_ID
 - 查看日志JOB_ID
 - 诊断任务JOB_ID
 - 最近任务
+- 锁状态：只读检查 Hermes lock 是否被占用，不删除 lock 文件
 - 取消任务JOB_ID 我确认取消
 
 规则：

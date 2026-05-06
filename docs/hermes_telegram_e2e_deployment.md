@@ -94,6 +94,12 @@ journalctl -u hermes-gateway -f
 
 预期：执行 system-health，写 audit log。
 
+```text
+/chain-monitor-report-analyst 锁状态
+```
+
+预期：返回只读 Hermes lock 状态，不删除 lock 文件，不提示手动删除 lock。
+
 ## 第 5 步验收：Telegram 必测
 
 ```text
@@ -101,6 +107,7 @@ journalctl -u hermes-gateway -f
 /chain-monitor-report-analyst 命令提示
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
+/chain-monitor-report-analyst 锁状态
 /chain-monitor-report-analyst 标准日报流程2026-05-01
 /chain-monitor-report-analyst 任务状态cmjob_...
 /chain-monitor-report-analyst 诊断任务cmjob_...

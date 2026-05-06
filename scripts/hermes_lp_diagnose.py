@@ -20,6 +20,8 @@ REPORT_FIELDS = (
     "lp_signals",
     "lp_stage_summary",
     "clmm_summary",
+    "lp_suppression_summary",
+    "lp_suppression_replay_summary",
     "major_coverage_summary",
 )
 LP_DETAIL_REPORT_FIELDS = (
@@ -27,6 +29,7 @@ LP_DETAIL_REPORT_FIELDS = (
     "lp_signals",
     "lp_stage_summary",
     "clmm_summary",
+    "lp_suppression_summary",
 )
 MAJOR_PAIRS = (
     "ETH/USDT",
@@ -469,12 +472,46 @@ def format_distribution(value: dict[str, Any]) -> str:
     return "；".join(f"{key}={safe_int(count)}" for key, count in value.items())
 
 
+def format_report_counter_rows(rows: Any, key_name: str, count_name: str = "rows") -> str:
+    if not isinstance(rows, list) or not rows:
+        return "missing"
+    parts: list[str] = []
+    for item in rows[:8]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get(key_name) or item.get("reason") or item.get("pair") or item.get("intent") or "unknown")
+        count = safe_int(item.get(count_name, item.get("count", item.get("rows", 0))))
+        parts.append(f"{key}={count}")
+    return "；".join(parts) if parts else "missing"
+
+
+def format_suppression_replay(rows: Any) -> str:
+    if not isinstance(rows, list) or not rows:
+        return "missing"
+    parts: list[str] = []
+    for item in rows[:8]:
+        if not isinstance(item, dict):
+            continue
+        parts.append(
+            f"{item.get('reason', 'unknown')}:count={safe_int(item.get('count'))},"
+            f"replay={safe_int(item.get('replay_count'))},"
+            f"avg={item.get('avg_net_pnl_bps', 'missing')},"
+            f"action={item.get('recommended_action', 'missing')}"
+        )
+    return "；".join(parts) if parts else "missing"
+
+
 def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     start_ts, end_ts = logical_window(logical_date)
     payload, report_status, warnings = read_daily_report(logical_date, daily_dir)
     run_overview = as_dict(payload.get("run_overview"))
     quality = as_dict(payload.get("data_quality_summary"))
     report_fields = {field: ("present" if field in payload else "missing") for field in REPORT_FIELDS}
+    lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
+    lp_stage_summary = as_dict(payload.get("lp_stage_summary"))
+    clmm_summary = as_dict(payload.get("clmm_summary"))
+    lp_report_suppression = as_dict(payload.get("lp_suppression_summary"))
+    lp_suppression_replay = as_dict(payload.get("lp_suppression_replay_summary"))
     lp_signal_rows = payload.get("lp_signal_rows", run_overview.get("lp_signal_rows"))
     delivered_lp = payload.get("delivered_lp_signals", run_overview.get("delivered_lp_signals"))
     suppressed_lp = payload.get("suppressed_lp_signals", run_overview.get("suppressed_lp_signals"))
@@ -547,6 +584,53 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
         f"delivered_lp_signals={delivered_lp if delivered_lp is not None else 'missing'} "
         f"suppressed_lp_signals={suppressed_lp if suppressed_lp is not None else 'missing'}"
     )
+    if lp_signal_summary:
+        print(
+            "lp_signal_summary="
+            f"available={lp_signal_summary.get('available', 'missing')} "
+            f"lp_signal_rows={lp_signal_summary.get('lp_signal_rows', 'missing')} "
+            f"delivered={lp_signal_summary.get('delivered_count', 'missing')} "
+            f"suppressed={lp_signal_summary.get('suppressed_count', 'missing')} "
+            f"suppression_rate={lp_signal_summary.get('suppression_rate', 'missing')} "
+            f"sqlite_lp_like_signals={lp_signal_summary.get('lp_like_signals_sqlite', 'missing')} "
+            f"top_pairs={format_report_counter_rows(lp_signal_summary.get('top_pairs'), 'pair')} "
+            f"top_suppression_reasons={format_report_counter_rows(lp_signal_summary.get('top_suppression_reasons'), 'reason', 'count')}"
+        )
+    if lp_stage_summary:
+        print(
+            "lp_stage_summary="
+            f"available={lp_stage_summary.get('available', 'missing')} "
+            f"by_stage={json.dumps(lp_stage_summary.get('by_stage', {}), ensure_ascii=False, sort_keys=True)} "
+            f"unknown_rate={lp_stage_summary.get('unknown_rate', 'missing')}"
+        )
+    if clmm_summary:
+        print(
+            "clmm_summary="
+            f"available={clmm_summary.get('available', 'missing')} "
+            f"clmm_like_rows={clmm_summary.get('clmm_like_rows', 'missing')} "
+            f"position_events={clmm_summary.get('position_events', 'missing')} "
+            f"increase_liquidity={clmm_summary.get('increase_liquidity', 'missing')} "
+            f"decrease_liquidity={clmm_summary.get('decrease_liquidity', 'missing')} "
+            f"collect={clmm_summary.get('collect', 'missing')}"
+        )
+    if lp_report_suppression:
+        print(
+            "lp_suppression_summary="
+            f"available={lp_report_suppression.get('available', 'missing')} "
+            f"total={lp_report_suppression.get('total', 'missing')} "
+            f"delivered={lp_report_suppression.get('delivered', 'missing')} "
+            f"suppressed={lp_report_suppression.get('suppressed', 'missing')} "
+            f"suppression_rate={lp_report_suppression.get('suppression_rate', 'missing')} "
+            f"by_reason={format_distribution(as_dict(lp_report_suppression.get('by_reason')))}"
+        )
+    if lp_suppression_replay:
+        print(
+            "lp_suppression_replay_summary="
+            f"available={lp_suppression_replay.get('available', 'missing')} "
+            f"overall_suppressed_avg_net_pnl_bps={lp_suppression_replay.get('overall_suppressed_avg_net_pnl_bps', 'missing')} "
+            f"diagnosis={lp_suppression_replay.get('diagnosis', 'missing')} "
+            f"by_reason={format_suppression_replay(lp_suppression_replay.get('by_reason'))}"
+        )
     print(
         "data_quality="
         f"status={quality.get('data_quality_status', 'missing')} "
@@ -593,6 +677,8 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
 
     if mapping_problem:
         print("report_mapping判断=可能存在 report mapping 问题：SQLite signals 有 LP-like 样本；" + "；".join(mapping_reasons) + "。")
+    elif signal_any > 0 and lp_signal_summary:
+        print("report_mapping判断=LP 数据存在，daily_report LP mapping 正常。")
     elif signal_any > 0:
         print("report_mapping判断=SQLite signals 有 LP-like 样本；daily_report LP 映射未发现明显断点。")
     else:
@@ -611,6 +697,14 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
         print("样本判断=全部为 0：当天无可用 LP 样本或扫描覆盖不足。")
     else:
         print("样本判断=存在 LP-like 聚合样本；按上方 report/analyzer/gate 判断定位。")
+    if lp_suppression_replay:
+        diagnosis = str(lp_suppression_replay.get("diagnosis") or "missing")
+        if diagnosis == "possible_over_suppression":
+            print("后验判断=存在可能过度抑制的 reason；只建议复核阈值，不自动放宽 gate。")
+        elif diagnosis == "suppression_seems_correct":
+            print("后验判断=suppression 后验未显示明显误杀；不建议直接放松 gate。")
+        else:
+            print("后验判断=suppression replay 样本不足；继续积累，不建议直接放松 gate。")
     if warnings:
         print("limitations=" + "；".join(dict.fromkeys(warnings)))
     print("说明=只读脱敏诊断，不含执行指令。")

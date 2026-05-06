@@ -9,6 +9,7 @@ Usage:
   ./scripts/hermes_cm_ops.sh help
   ./scripts/hermes_cm_ops.sh --help
   ./scripts/hermes_cm_ops.sh command-menu
+  ./scripts/hermes_cm_ops.sh lock-status
   ./scripts/hermes_cm_ops.sh report --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh close --date YYYY-MM-DD --confirm-compress [--allow-today]
   ./scripts/hermes_cm_ops.sh health
@@ -36,6 +37,8 @@ Usage:
   ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 
   # Internal job runner only; Telegram users must use submit-* above:
@@ -72,6 +75,7 @@ cmd_help() {
   /chain-monitor-report-analyst 命令提示
   /chain-monitor-report-analyst 系统体检
   /chain-monitor-report-analyst 监听器体检
+  /chain-monitor-report-analyst 锁状态
   /chain-monitor-report-analyst 标准日报流程YYYY-MM-DD
   /chain-monitor-report-analyst 重新标准日报流程YYYY-MM-DD 我确认重跑
   /chain-monitor-report-analyst 任务状态JOB_ID
@@ -87,6 +91,8 @@ cmd_help() {
   /chain-monitor-report-analyst 学习复盘YYYY-MM-DD
   /chain-monitor-report-analyst 学习总结YYYY-MM-DD
   /chain-monitor-report-analyst CANDIDATE覆盖诊断YYYY-MM-DD
+  /chain-monitor-report-analyst 日报结构检查YYYY-MM-DD
+  /chain-monitor-report-analyst Outcome闭环诊断YYYY-MM-DD
   /chain-monitor-report-analyst LP诊断YYYY-MM-DD
   /chain-monitor-report-analyst 空间检查
   /chain-monitor-report-analyst 空间快检
@@ -127,6 +133,7 @@ cmd_help() {
   - Telegram 长任务入口只使用 submit-daily-flow、submit-space-check、submit-archive-compress-check、submit-weekly-review。
   - daily-flow、space-check、archive-compress-check、weekly-review 是 internal job runner only。
   - 数据库瘦身预检只做 dry-run，不执行 export execute、VACUUM、compact、prune、删除 DB、修改地址簿。
+  - 锁状态只读诊断 Hermes lock，不删除 lock 文件。
   - 输出默认脱敏。
   - 不输出 token、RPC URL、完整地址、交易 hash 或私有路径。
 HELP
@@ -162,6 +169,8 @@ cmd_command_menu() {
 - Shadow复盘YYYY-MM-DD：查看 shadow funnel
 - 学习复盘YYYY-MM-DD / 每日学习YYYY-MM-DD / 学习总结YYYY-MM-DD：整合数据质量、回放、profile、blocker、shadow、Telegram 去噪，输出中文学习结论
 - CANDIDATE覆盖诊断YYYY-MM-DD：排查 signals -> opportunity -> replay 覆盖连接
+- 日报结构检查YYYY-MM-DD：检查 canonical daily report 是否包含 LP / CLMM / candidate frontier 字段
+- Outcome闭环诊断YYYY-MM-DD：排查 signals/opportunities -> outcomes/replay/profile 闭环不足
 - LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 
 【维护预检】
@@ -170,12 +179,13 @@ cmd_command_menu() {
 【周复盘】
 - 周复盘START到END：提交后台任务，例如：周复盘2026-04-27到2026-05-03
 
-【后台任务】
+【后台任务 / 诊断】
 - 任务状态JOB_ID：查看后台任务状态
 - 查看结果JOB_ID：查看任务 result.md 摘要
 - 查看日志JOB_ID：查看 stdout/stderr 日志尾部
 - 诊断任务JOB_ID：查看失败子步骤、失败命令和下一步建议
 - 最近任务：列出最近 10 个任务
+- 锁状态：只读检查 Hermes lock 是否被占用，不删除 lock 文件
 - 取消任务JOB_ID 我确认取消：取消 pending/running 后台任务
 
 规则：
@@ -206,6 +216,17 @@ refuse() {
     AUDIT_REFUSED_REASON="$reason"
   fi
   echo "error: $*" >&2
+  exit 2
+}
+
+refuse_lock_busy() {
+  AUDIT_ALLOWED=false
+  AUDIT_REFUSED_REASON="lock_busy"
+  cat >&2 <<'MESSAGE'
+refused_reason=lock_busy
+当前已有 Hermes 操作在执行，请稍后重试。
+可用：最近任务 / 任务状态JOB_ID / 锁状态
+MESSAGE
   exit 2
 }
 
@@ -569,10 +590,128 @@ acquire_lock() {
 
   if [[ "$LOCK_TIMEOUT_SEC" -gt 0 ]]; then
     if ! flock -w "$LOCK_TIMEOUT_SEC" 9; then
-      refuse lock_busy "another Hermes chain-monitor operation is already running"
+      refuse_lock_busy
     fi
   elif ! flock -n 9; then
-    refuse lock_busy "another Hermes chain-monitor operation is already running"
+    refuse_lock_busy
+  fi
+}
+
+related_hermes_process_count() {
+  local count=""
+
+  if command -v pgrep >/dev/null 2>&1; then
+    count="$(pgrep -fc 'hermes_cm_ops\.sh|hermes_cm_jobctl\.py|chain-monitor-cn-router|chain-monitor-report-analyst' 2>/dev/null || true)"
+  fi
+  if [[ -z "$count" || ! "$count" =~ ^[0-9]+$ ]]; then
+    count=0
+  fi
+  printf '%s\n' "$count"
+}
+
+emit_recent_jobs_summary() {
+  local py=""
+
+  echo "recent_jobs_summary:"
+  if command -v python3 >/dev/null 2>&1; then
+    py="python3"
+  elif [[ -x "./venv/bin/python" ]]; then
+    py="./venv/bin/python"
+  fi
+  if [[ -z "$py" ]]; then
+    echo "unavailable_or_empty"
+    return
+  fi
+  if ! "$py" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+repo_root = Path.cwd()
+jobs_root = Path(os.environ.get("HERMES_JOBCTL_JOBS_ROOT", "reports/hermes/jobs"))
+if not jobs_root.is_absolute():
+    jobs_root = repo_root / jobs_root
+
+if not jobs_root.exists():
+    print("no_recent_jobs")
+    raise SystemExit(0)
+
+metas = []
+for meta_path in jobs_root.glob("cmjob_*/meta.json"):
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    metas.append(meta)
+
+metas.sort(key=lambda item: str(item.get("created_at_utc", "")), reverse=True)
+if not metas:
+    print("no_recent_jobs")
+    raise SystemExit(0)
+
+print("job_id | kind | status | date/range | created_at")
+for meta in metas[:5]:
+    target = meta.get("date") or (
+        f"{meta.get('start', '')}..{meta.get('end', '')}" if meta.get("start") or meta.get("end") else "-"
+    )
+    print(
+        f"{meta.get('job_id')} | {meta.get('kind')} | {meta.get('status')} | "
+        f"{target} | {meta.get('created_at_utc')}"
+    )
+PY
+  then
+    echo "unavailable_or_empty"
+  fi
+}
+
+cmd_lock_status() {
+  local lock_file_exists=false
+  local flock_available=true
+  local lock_currently_held=false
+  local lock_status_fd=""
+  local lock_open_warning=""
+
+  [[ $# -eq 0 ]] || die "lock-status does not accept arguments"
+
+  AUDIT_ALLOWED=true
+
+  if [[ -e "$HERMES_OPS_LOCK_PATH" ]]; then
+    lock_file_exists=true
+    if exec {lock_status_fd}<>"$HERMES_OPS_LOCK_PATH"; then
+      if flock -n "$lock_status_fd"; then
+        flock_available=true
+        lock_currently_held=false
+        flock -u "$lock_status_fd" || true
+      else
+        flock_available=false
+        lock_currently_held=true
+      fi
+      exec {lock_status_fd}>&-
+    else
+      flock_available=false
+      lock_currently_held=true
+      lock_open_warning="lock_file_open_failed"
+    fi
+  fi
+
+  echo "Hermes 锁状态"
+  echo "request_id=${HERMES_OPS_REQUEST_ID}"
+  echo "lock_path=$(display_safe_path "$HERMES_OPS_LOCK_PATH")"
+  echo "lock_path_basename=$(safe_basename "$HERMES_OPS_LOCK_PATH")"
+  echo "lock_file_exists=${lock_file_exists}"
+  echo "flock_available=${flock_available}"
+  echo "lock_currently_held=${lock_currently_held}"
+  echo "related_processes_count=$(related_hermes_process_count)"
+  if [[ -n "$lock_open_warning" ]]; then
+    echo "warning=${lock_open_warning}"
+  fi
+  emit_recent_jobs_summary
+  echo "建议："
+  if [[ "$lock_currently_held" == "false" ]]; then
+    echo "锁未被占用，后续命令可重试。"
+  else
+    echo "当前已有 Hermes 操作在执行，请稍后重试。"
+    echo "可用：最近任务 / 任务状态JOB_ID / 锁状态"
   fi
 }
 
@@ -702,7 +841,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review)
+    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -3138,6 +3277,20 @@ telegram = as_dict(payload.get("telegram_suppression_summary"))
 run_overview = as_dict(payload.get("run_overview"))
 data_source = as_dict(payload.get("data_source_summary"))
 row_counts = as_dict(data_source.get("row_counts"))
+frontier = as_dict(payload.get("candidate_frontier_summary"))
+lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
+lp_suppression_summary = as_dict(payload.get("lp_suppression_summary"))
+lp_suppression_replay = as_dict(payload.get("lp_suppression_replay_summary"))
+major_coverage = as_dict(payload.get("major_coverage_summary"))
+required_schema_fields = (
+    "lp_signal_summary",
+    "lp_stage_summary",
+    "clmm_summary",
+    "lp_suppression_summary",
+    "candidate_frontier_summary",
+)
+missing_schema_fields = [field for field in required_schema_fields if field not in payload]
+schema_complete = not missing_schema_fields
 
 data_status = str(quality.get("data_quality_status") or "missing")
 zero_activity = quality.get("zero_activity_day")
@@ -3149,6 +3302,7 @@ if lp_signal_rows is None:
 if lp_signal_rows is None:
     lp_signal_rows = quality.get("lp_signal_rows")
 lp_rows_missing = lp_signal_rows is None
+lp_data_present_for_mapping = (intish(lp_signal_rows) or 0) > 0 or (intish(lp_signal_summary.get("lp_like_signals_sqlite")) or 0) > 0
 
 replay_source = replay.get("replay_source")
 replay_scope = replay.get("replay_scope")
@@ -3161,6 +3315,8 @@ candidate_coverage = num(
     )
 )
 candidate_coverage_zero = candidate_coverage == 0.0
+replay_count = intish(replay.get("replay_count")) or intish(replay.get("persisted_rows_found")) or 0
+replay_valid_day = replay_source == "persisted" and replay_scope == "full" and replay_count > 0
 
 negative_profiles = (
     as_list(profile_summary.get("blocker_grade_negative_profiles"))
@@ -3181,6 +3337,9 @@ add_counter(blocker_counter, shadow_blockers)
 
 shadow_candidate = intish(shadow.get("shadow_candidate_count"))
 shadow_verified = intish(shadow.get("shadow_verified_count"))
+candidate_count = intish(first_dict(payload.get("trade_opportunity_summary")).get("opportunity_candidate_count")) or 0
+near_candidate_count = intish(frontier.get("near_candidate_count")) or 0
+near_candidate_avg = num(frontier.get("near_candidate_avg_net_pnl_bps"))
 
 delivery_audit_rows = intish(row_counts.get("delivery_audit"))
 telegram_rows = intish(row_counts.get("telegram_deliveries"))
@@ -3207,32 +3366,91 @@ if lp_rows_missing:
 if replay_source != "persisted" or replay_scope != "full":
     troubleshoot_items.append("replay 不是 persisted/full")
 
+why_not_stronger: list[str] = []
+if data_valid and negative_profiles and not high_sample_positive:
+    why_not_stronger.append("all_profiles_negative")
+if candidate_count == 0:
+    why_not_stronger.append("candidate_zero_gate_closed")
+if not shadow_candidate and not shadow_verified:
+    why_not_stronger.append("no_shadow_candidates")
+if missing_schema_fields and lp_data_present_for_mapping:
+    why_not_stronger.append("lp_report_mapping_missing")
+elif missing_schema_fields:
+    why_not_stronger.append("daily_report_schema_incomplete")
+lp_replay_diag = str(lp_suppression_replay.get("diagnosis") or "")
+if (
+    num(lp_suppression_summary.get("suppression_rate")) is not None
+    and (num(lp_suppression_summary.get("suppression_rate")) or 0) >= 0.95
+    and avg_net is not None
+    and suppressed_avg is not None
+    and avg_net < 0
+    and suppressed_avg < 0
+):
+    why_not_stronger.append("lp_suppression_too_high_but_negative")
+candidate_completion = num(first_dict(payload.get("trade_opportunity_summary")).get("candidate_outcome_completion_rate"))
+if candidate_completion is not None and candidate_completion < 0.5:
+    why_not_stronger.append("outcome_completion_low")
+missing_major_pairs = major_coverage.get("missing_major_pairs") if isinstance(major_coverage.get("missing_major_pairs"), list) else []
+if any(str(pair).startswith(("BTC/", "SOL/")) for pair in missing_major_pairs):
+    why_not_stronger.append("btc_sol_coverage_gap")
+if not why_not_stronger:
+    why_not_stronger.append("insufficient_positive_learning_evidence")
+
+learned: list[str] = []
+if negative_profile_lines:
+    learned.append("当前主要 ETH profile 后验为负")
+if avg_net is not None and suppressed_avg is not None and avg_net < 0 and suppressed_avg < 0:
+    learned.append("suppression 没有明显误杀证据")
+replay_with_opp = intish(frontier.get("near_candidate_replay_count")) or 0
+if candidate_count == 0 and replay_with_opp:
+    learned.append("CANDIDATE=0 是 gate 行为，不是 pipeline 断连")
+if lp_signal_summary:
+    learned.append("LP 数据存在且报告映射已输出" if not missing_schema_fields else "LP 数据存在但报告 schema 不完整")
+if near_candidate_count and near_candidate_avg is not None:
+    learned.append(f"near_candidate 后验 avg_net_pnl_bps={fmt(near_candidate_avg, 2)}")
+
 if not data_valid:
     conclusion = "排障"
     tomorrow = "修复 data_quality 输入完整性"
+elif missing_schema_fields and lp_data_present_for_mapping:
+    conclusion = "排障"
+    tomorrow = "修 LP report mapping"
 elif lp_rows_missing or replay_source != "persisted" or replay_scope != "full":
     conclusion = "排障"
-    tomorrow = "补齐 LP/replay 数据链路"
+    tomorrow = "修 daily report schema" if missing_schema_fields else "不改 gate，继续积累样本"
 elif avg_net is not None and suppressed_avg is not None and avg_net < 0 and suppressed_avg < 0:
     conclusion = "收紧"
-    tomorrow = "先排查 candidate/opportunity/replay 连接" if candidate_coverage_zero else "复核主要负收益 profile 的阻断"
+    tomorrow = "排查 candidate frontier" if candidate_coverage_zero else "观察 suppression replay"
+elif candidate_count == 0 and near_candidate_count == 0:
+    conclusion = "保持"
+    tomorrow = "不改 gate，继续积累样本"
+elif candidate_count == 0 and near_candidate_avg is not None and near_candidate_avg > 0:
+    conclusion = "观察"
+    tomorrow = "排查 candidate frontier"
 elif candidate_coverage_zero or not high_sample_positive:
     conclusion = "观察"
-    tomorrow = "先排查 candidate/opportunity/replay 连接" if candidate_coverage_zero else "继续积累高样本正收益 profile"
+    tomorrow = "排查 candidate frontier" if candidate_coverage_zero else "不改 gate，继续积累样本"
 elif telegram_noise == "偏多":
     conclusion = "观察"
-    tomorrow = "复核 Telegram 去噪口径"
+    tomorrow = "观察 suppression replay"
 else:
     conclusion = "保持"
-    tomorrow = "保持当前学习口径"
+    tomorrow = "不改 gate，继续积累样本"
 
 print(f"Chain Monitor 学习复盘｜{date}")
 print(f"数据是否有效={ '有效' if data_valid else '无效' } data_quality_status={data_status} zero_activity_day={value_or_missing(zero_activity)}")
 print(f"replay_source / replay_scope={value_or_missing(replay_source)} / {value_or_missing(replay_scope)}")
+print(f"有效学习日={'是' if data_valid and replay_valid_day and schema_complete else '否'} replay_count={replay_count} daily_report_schema_complete={'是' if schema_complete else '否'}")
+if missing_schema_fields:
+    print("daily_report_schema_missing=" + ",".join(missing_schema_fields))
 print(f"avg_net_pnl_bps={fmt(avg_net, 2)}")
 print(f"suppressed_avg_net_pnl_bps={fmt(suppressed_avg, 2)}")
 print(f"CANDIDATE 覆盖率={fmt(candidate_coverage, 4)}")
+print(f"CANDIDATE=0={'是' if candidate_count == 0 else '否'} near_candidate_count={near_candidate_count} near_candidate_avg_net_pnl_bps={fmt(near_candidate_avg, 2)}")
 print(f"LP signal rows 是否缺失={'是' if lp_rows_missing else '否'} value={value_or_missing(lp_signal_rows)}")
+lp_mapping_normal = schema_complete and bool(lp_signal_summary)
+lp_missing_reason_display = payload.get("lp_missing_reason") or ("none" if lp_mapping_normal else "missing")
+print(f"LP mapping 状态={'正常' if lp_mapping_normal else '缺失/不完整'} lp_missing_reason={lp_missing_reason_display}")
 if data_valid:
     print(f"主要负收益 profile={negative_profile_lines[0] if negative_profile_lines else 'missing'}")
     for line in negative_profile_lines[1:3]:
@@ -3242,6 +3460,8 @@ else:
     print("主要负收益 profile=不评价：data_quality invalid")
     print("主要 blocker=不评价：data_quality invalid")
 print(f"shadow_candidate / shadow_verified={value_or_missing(shadow_candidate)} / {value_or_missing(shadow_verified)}")
+print("为什么系统没有提升=" + "；".join(dict.fromkeys(why_not_stronger)))
+print("系统今天学到了什么=" + ("；".join(dict.fromkeys(learned)) if learned else "数据不足"))
 print(
     "delivery_audit / telegram delivery summary="
     f"delivery_audit_rows={value_or_missing(delivery_audit_rows)} "
@@ -3599,6 +3819,7 @@ start_ts, end_ts = logical_window(logical_date)
 payload, report_warnings, report_status = read_daily_report(logical_date)
 quality = as_dict(payload.get("data_quality_summary"))
 replay = as_dict(payload.get("trade_replay_summary"))
+frontier = as_dict(payload.get("candidate_frontier_summary"))
 preferred_scope = str(replay.get("replay_scope") or "")
 warnings = list(report_warnings)
 
@@ -3676,6 +3897,18 @@ print(f"replay_examples_with_opportunity={replay_with_opportunity}")
 print(f"replay_examples_status_CANDIDATE={replay_candidate}")
 print(f"delivery_audit_telegram_push_total={delivery_total}")
 print(f"delivery_audit_stage_status_distribution={format_distribution(delivery_dist)}")
+print(f"near_candidate_count={frontier.get('near_candidate_count', 'missing')}")
+print(f"near_candidate_replay_count={frontier.get('near_candidate_replay_count', 'missing')}")
+print(f"near_candidate_avg_net_pnl_bps={frontier.get('near_candidate_avg_net_pnl_bps', 'missing')}")
+print(
+    "top_near_candidate_blockers="
+    + json.dumps(as_dict(frontier.get("top_near_candidate_blockers")), ensure_ascii=False, sort_keys=True)
+)
+print(
+    "NONE_to_CANDIDATE主要缺口="
+    + json.dumps(as_dict(frontier.get("top_missing_requirements")), ensure_ascii=False, sort_keys=True)
+)
+print(f"candidate_frontier_diagnosis={frontier.get('diagnosis', 'missing')}")
 
 diagnostics: list[str] = []
 if delivery_total >= 5 and replay_candidate <= max(1, delivery_total // 2):
@@ -3686,6 +3919,15 @@ if trade_candidate == 0:
     diagnostics.append("CANDIDATE 本身为 0，candidate gate 太严格或当天无合格候选。")
 if replay_total > 0 and replay_with_opportunity == 0:
     diagnostics.append("replay examples 没有关联 opportunity_id，signals -> opportunity -> replay 连接需要排查。")
+if trade_candidate == 0 and trade_total > 0 and replay_with_opportunity > 0:
+    diagnostics.append("CANDIDATE=0 是 gate 行为，不是 replay/pipeline 漏接。")
+if frontier.get("near_candidate_avg_net_pnl_bps") is not None:
+    try:
+        near_avg = float(frontier.get("near_candidate_avg_net_pnl_bps"))
+    except (TypeError, ValueError):
+        near_avg = None
+    if near_avg is not None and near_avg <= 0:
+        diagnostics.append("near_candidate 后验为负，建议保持 gate，不建议放宽。")
 if not diagnostics:
     diagnostics.append("未发现 CANDIDATE 覆盖链路的明显断点；请结合日报质量字段继续复核。")
 
@@ -3695,6 +3937,53 @@ if warnings:
     print("limitations=" + "；".join(dict.fromkeys(warnings)))
 print("说明=只读聚合诊断，不含执行指令。")
 PY
+}
+
+cmd_daily_report_schema_check() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "daily-report-schema-check --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown daily-report-schema-check argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "daily-report-schema-check requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="daily-report-schema-check ${report_date}"
+  require_daily_report_json "$report_date"
+
+  "$(python_bin)" scripts/hermes_daily_report_schema_check.py --date "$report_date"
+}
+
+cmd_outcome_diagnose() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "outcome-diagnose --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown outcome-diagnose argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "outcome-diagnose requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="outcome-diagnose ${report_date}"
+
+  "$(python_bin)" scripts/hermes_outcome_diagnose.py --date "$report_date"
 }
 
 cmd_lp_diagnose() {
@@ -4306,7 +4595,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|lp-diagnose|space-check|archive-compress-check|weekly-review)
+  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|lp-diagnose|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -4338,6 +4627,14 @@ if [[ "$1" == "command-menu" ]]; then
   emit_request_header
   cmd_command_menu
   exit 0
+fi
+
+if [[ "$1" == "lock-status" ]]; then
+  shift
+  ensure_runtime
+  emit_request_header
+  cmd_lock_status "$@"
+  exit $?
 fi
 
 case "$1" in
@@ -4494,6 +4791,14 @@ case "$1" in
   candidate-coverage)
     shift
     cmd_candidate_coverage "$@"
+    ;;
+  daily-report-schema-check)
+    shift
+    cmd_daily_report_schema_check "$@"
+    ;;
+  outcome-diagnose)
+    shift
+    cmd_outcome_diagnose "$@"
     ;;
   lp-diagnose)
     shift

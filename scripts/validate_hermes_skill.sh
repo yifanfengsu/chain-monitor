@@ -119,6 +119,7 @@ for example in \
   "命令提示" \
   "系统体检" \
   "监听器体检" \
+  "锁状态" \
   "标准日报流程2026-05-01" \
   "任务状态cmjob_" \
   "查看结果cmjob_" \
@@ -131,6 +132,7 @@ for example in \
   "Shadow复盘2026-05-01" \
   "学习复盘2026-05-04" \
   "CANDIDATE覆盖诊断2026-05-04" \
+  "Outcome闭环诊断2026-05-04" \
   "LP诊断2026-05-04" \
   "空间检查" \
   "数据库瘦身预检" \
@@ -174,6 +176,7 @@ for command in \
   "./scripts/hermes_cm_cn_router.py --stdin --execute --platform telegram" \
   "./scripts/hermes_cm_cn_router.py --text \"<中文命令>\" --dry-run --platform telegram" \
   "./scripts/hermes_cm_ops.sh command-menu" \
+  "./scripts/hermes_cm_ops.sh lock-status" \
   "./scripts/hermes_cm_ops.sh system-health" \
   "./scripts/hermes_cm_ops.sh listener-health" \
   "./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD" \
@@ -184,6 +187,8 @@ for command in \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh submit-space-check" \
   "./scripts/hermes_cm_ops.sh space-fast" \

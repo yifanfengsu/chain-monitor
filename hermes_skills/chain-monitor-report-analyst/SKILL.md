@@ -28,12 +28,14 @@ Use this Skill when the user requests chain-monitor report analysis, daily repor
 命令提示
 系统体检
 监听器体检
+锁状态
 标准日报流程2026-05-01
 分析报告2026-05-01
 检查回放2026-05-01
 数据质量2026-05-01
 学习复盘2026-05-04
 CANDIDATE覆盖诊断2026-05-04
+Outcome闭环诊断2026-05-04
 LP诊断2026-05-04
 周复盘2026-04-27到2026-05-03
 ```
@@ -69,6 +71,11 @@ This Skill does not perform trading execution, account actions, order placement,
 - Do not convert this project into an auto-trading system.
 - Do not weaken hard blockers such as `NO_TRADE`, `NO_TRADE_LOCK`, `DO_NOT_CHASE_LONG`, or `DO_NOT_CHASE_SHORT`.
 - Do not reinterpret `BLOCKED` as an actionable inverse trade.
+- Do not manually delete `/run/lock/chain-monitor-hermes-*` lock files.
+- Do not run `rm -f` against Hermes lock files.
+- Do not use `fuser` or `lsof` to decide that a Hermes lock file should be cleaned up.
+- On `lock_busy`, only use `锁状态`, `最近任务`, or `任务状态JOB_ID`; never advise deleting a lock file.
+- Lock cleanup is allowed only inside wrapper-owned safety logic. There is currently no Telegram command for lock cleanup.
 
 ## Source Priority
 
@@ -232,6 +239,11 @@ Rules:
 - 不给交易建议。
 - 不得解析昨天。
 - 数据库瘦身预检只能 dry-run，不允许 export execute、vacuum、prune、compact execute、delete DB、修改地址簿。
+- 不得手动删除 `/run/lock/chain-monitor-hermes-*`。
+- 不得对 Hermes lock 文件执行 `rm -f`。
+- 不得用 `fuser` / `lsof` 判断后自行清理 lock。
+- 遇到 `lock_busy` 只能调用：`锁状态`、`最近任务`、`任务状态JOB_ID`。
+- lock 清理只能由 wrapper 内部安全逻辑处理；当前不提供 Telegram 清理锁命令。
 
 Telegram 示例：
 
@@ -239,6 +251,7 @@ Telegram 示例：
 /chain-monitor-report-analyst 命令提示
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
+/chain-monitor-report-analyst 锁状态
 /chain-monitor-report-analyst 标准日报流程2026-05-01
 /chain-monitor-report-analyst 任务状态cmjob_...
 /chain-monitor-report-analyst 查看结果cmjob_...
@@ -250,6 +263,7 @@ Telegram 示例：
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 学习复盘2026-05-04
 /chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04
+/chain-monitor-report-analyst Outcome闭环诊断2026-05-04
 /chain-monitor-report-analyst LP诊断2026-05-04
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
@@ -307,6 +321,7 @@ Wrapper internal commands document only:
 
 ```bash
 ./scripts/hermes_cm_ops.sh command-menu
+./scripts/hermes_cm_ops.sh lock-status
 ./scripts/hermes_cm_ops.sh system-health
 ./scripts/hermes_cm_ops.sh listener-health
 ./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD
@@ -317,6 +332,8 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh learning-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh submit-space-check
 ./scripts/hermes_cm_ops.sh space-fast
@@ -381,6 +398,7 @@ Rules:
 - Never print DB raw rows, DB raw payloads, full archive payloads, private addresses, tokens, keys, or RPC URLs.
 - Telegram 中文请求必须先通过 router；direct raw shell commands are not approved for Telegram control.
 - Every wrapper invocation appends an audit event to `reports/hermes/ops_audit.ndjson`.
+- `lock-status` is read-only and must not remove lock files.
 
 ## Hermes Gateway / Telegram Control Rules
 
@@ -404,6 +422,7 @@ Rules:
 /chain-monitor-report-analyst 命令提示
 /chain-monitor-report-analyst 系统体检
 /chain-monitor-report-analyst 监听器体检
+/chain-monitor-report-analyst 锁状态
 /chain-monitor-report-analyst 标准日报流程2026-05-01
 /chain-monitor-report-analyst 任务状态cmjob_...
 /chain-monitor-report-analyst 查看结果cmjob_...
@@ -416,6 +435,7 @@ Rules:
 /chain-monitor-report-analyst Shadow复盘2026-05-01
 /chain-monitor-report-analyst 学习复盘2026-05-04
 /chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04
+/chain-monitor-report-analyst Outcome闭环诊断2026-05-04
 /chain-monitor-report-analyst LP诊断2026-05-04
 /chain-monitor-report-analyst 空间检查
 /chain-monitor-report-analyst 空间快检
@@ -445,6 +465,16 @@ High-risk 示例：
 ```
 
 不要因为 daily-close failure 就压缩 archive。
+
+`lock_busy` 不是 stale lock 结论。遇到 `lock_busy` 时，只能建议：
+
+```text
+/chain-monitor-report-analyst 锁状态
+/chain-monitor-report-analyst 最近任务
+/chain-monitor-report-analyst 任务状态JOB_ID
+```
+
+不得手动检查并删除 lock 文件。
 
 Hard failure examples:
 
@@ -655,6 +685,49 @@ Rules:
 - `候选覆盖昨天` 必须拒绝，不能解析相对日期。
 - 不输出执行指令、原始地址、交易 hash、raw SQLite rows 或 full payload。
 
+## Outcome Loop Diagnosis
+
+用户说：
+
+```text
+Outcome闭环诊断YYYY-MM-DD
+后验闭环诊断YYYY-MM-DD
+结果闭环诊断YYYY-MM-DD
+```
+
+Hermes should run only the router:
+
+```bash
+~/.hermes/bin/chain-monitor-cn-router --text "Outcome闭环诊断YYYY-MM-DD" --execute --platform telegram
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
+```
+
+Outcome 闭环诊断必须只读 SQLite 和 canonical daily report 的聚合字段。输出必须包含：
+
+- 当日 signals 总数
+- 当日 trade_opportunities 总数
+- outcomes 总数
+- opportunity_outcomes 总数
+- trade_replay_examples 总数
+- signals -> outcomes 匹配率
+- opportunities -> opportunity_outcomes 匹配率
+- opportunities -> replay_examples 匹配率
+- 按 asset / status / signal_type / stage 的 outcome 缺失分布
+- outcome 缺失原因推断：时间窗口未到、price snapshot 缺失、signal_id / opportunity_id 未关联、outcome worker 未运行、report 字段映射错误
+- 下一步工程排查建议
+
+Rules:
+
+- `Outcome闭环诊断昨天`、`后验闭环诊断昨天`、`结果闭环诊断昨天` 必须拒绝，不能解析相对日期。
+- 不能执行生成命令，不能修改 DB，不能读取 raw payload。
+- 不输出执行指令、原始地址、交易 hash、raw SQLite rows 或 full payload。
+- 不给交易建议，不输出买卖、仓位、杠杆、止盈或止损建议。
+
 ## LP Signal Diagnosis
 
 用户说：
@@ -717,6 +790,8 @@ make daily-close direct/raw
 systemctl stop/restart/disable/mask
 pkill / kill / kill -9
 rm -rf
+删除 /run/lock/chain-monitor-hermes-* lock 文件
+fuser/lsof 后自行清理 lock
 bash -c / sh -c / python -c
 curl | sh / wget | sh
 editing .env

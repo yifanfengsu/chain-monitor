@@ -63,6 +63,34 @@ PREALERT_COUNT_FIELDS = (
     "prealert_to_confirm_sec",
     "asset_case_prealert_to_confirm_sec",
 )
+LP_LIKE_TERMS = ("lp", "pool", "liquidity", "clmm")
+LP_SUPPRESSION_REPLAY_MIN_SAMPLES = 3
+CANDIDATE_FRONTIER_MARGIN = 0.05
+NEAR_CANDIDATE_SOFT_BLOCKERS = {
+    "score_below_shadow_candidate",
+    "near_candidate_but_blocked",
+    "profile_sample_count_insufficient",
+    "outcome_history_insufficient",
+    "history_samples_insufficient",
+    "sample_count_insufficient",
+    "sample_insufficient",
+    "maturity_insufficient",
+    "profile_completion_too_low",
+    "low_quality",
+    "quality_below_candidate",
+    "shadow_require_live_context",
+    "shadow_require_broader_confirm",
+}
+NEAR_CANDIDATE_HARD_BLOCKERS = {
+    "no_trade",
+    "no_trade_lock",
+    "do_not_chase_long",
+    "do_not_chase_short",
+    "direction_conflict",
+    "conflict_no_trade",
+    "replay_profile_negative",
+    "sweep_exhaustion_risk",
+}
 
 
 def _to_int(value: Any) -> int | None:
@@ -543,6 +571,395 @@ def _is_lp_row(row: dict[str, Any]) -> bool:
     )
 
 
+def _jsonish_text(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value or "")
+
+
+def _row_search_text(row: dict[str, Any], *keys: str) -> str:
+    parts: list[str] = []
+    for key in keys:
+        value = _first(row, key)
+        if value not in (None, "", [], {}, ()):
+            parts.append(_jsonish_text(value))
+    return " ".join(parts).lower()
+
+
+def _has_lp_term(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(term in lowered for term in LP_LIKE_TERMS)
+
+
+def _is_lp_like_signal_row(row: dict[str, Any]) -> bool:
+    if _first(row, "lp_alert_stage", "lp_stage", "pool_address"):
+        return True
+    text = _row_search_text(
+        row,
+        "signal_json",
+        "canonical_semantic_key",
+        "trade_action_key",
+        "asset_market_state_key",
+        "scan_path",
+        "notifier_template",
+        "delivery_decision",
+        "event",
+        "metadata",
+        "signal",
+    )
+    return _has_lp_term(text)
+
+
+def _is_lp_like_delivery_row(row: dict[str, Any], signal_by_id: dict[str, dict[str, Any]] | None = None) -> bool:
+    text = _row_search_text(
+        row,
+        "audit_json",
+        "stage",
+        "gate_reason",
+        "reason",
+        "suppression_reason",
+        "notifier_template",
+        "delivery_decision",
+        "blocked_reason",
+        "telegram_update_kind",
+    )
+    if _has_lp_term(text):
+        return True
+    signal_id = str(_first(row, "signal_id") or "").strip()
+    signal = (signal_by_id or {}).get(signal_id)
+    return bool(signal and _is_lp_like_signal_row(signal))
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row)
+
+
+def _sqlite_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _sqlite_table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _sqlite_epoch_expr(column: str, alias: str = "") -> str:
+    ref = f"{alias}.{column}" if alias else column
+    return f"(CASE WHEN CAST({ref} AS REAL) > 10000000000 THEN CAST({ref} AS REAL) / 1000.0 ELSE CAST({ref} AS REAL) END)"
+
+
+def _sqlite_time_expr(cols: set[str], candidates: tuple[str, ...], alias: str = "") -> str:
+    present = [column for column in candidates if column in cols]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return _sqlite_epoch_expr(present[0], alias)
+    return "COALESCE(" + ", ".join(_sqlite_epoch_expr(column, alias) for column in present) + ")"
+
+
+def _sqlite_time_condition(cols: set[str], candidates: tuple[str, ...], alias: str = "") -> str:
+    parts = []
+    for column in candidates:
+        if column in cols:
+            expr = _sqlite_epoch_expr(column, alias)
+            parts.append(f"({expr} >= ? AND {expr} <= ?)")
+    return "(" + " OR ".join(parts) + ")" if parts else ""
+
+
+def _sqlite_text_predicate(cols: set[str], candidates: tuple[str, ...], alias: str = "") -> tuple[str, list[Any]]:
+    parts: list[str] = []
+    params: list[Any] = []
+    for column in candidates:
+        if column not in cols:
+            continue
+        ref = f"{alias}.{column}" if alias else column
+        for term in LP_LIKE_TERMS:
+            parts.append(f"LOWER(COALESCE(CAST({ref} AS TEXT), '')) LIKE ?")
+            params.append(f"%{term}%")
+    return ("(" + " OR ".join(parts) + ")", params) if parts else ("", [])
+
+
+def _sqlite_nonempty_predicate(cols: set[str], candidates: tuple[str, ...], alias: str = "") -> str:
+    parts: list[str] = []
+    for column in candidates:
+        if column in cols:
+            ref = f"{alias}.{column}" if alias else column
+            parts.append(f"TRIM(COALESCE(CAST({ref} AS TEXT), '')) != ''")
+    return "(" + " OR ".join(parts) + ")" if parts else ""
+
+
+def _count_lp_like_table(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    time_candidates: tuple[str, ...],
+    text_columns: tuple[str, ...],
+    indexed_columns: tuple[str, ...] = (),
+    window: dict[str, Any],
+    warnings: list[str],
+) -> int:
+    cols = _sqlite_columns(conn, table)
+    if not cols:
+        warnings.append(f"sqlite_missing_table:{table}")
+        return 0
+    time_condition = _sqlite_time_condition(cols, time_candidates)
+    if not time_condition:
+        warnings.append(f"sqlite_missing_time_column:{table}")
+        return 0
+    text_pred, text_params = _sqlite_text_predicate(cols, text_columns)
+    indexed_pred = _sqlite_nonempty_predicate(cols, indexed_columns)
+    parts = [part for part in (text_pred, indexed_pred) if part]
+    if not parts:
+        warnings.append(f"sqlite_missing_lp_columns:{table}")
+        return 0
+    time_params: list[Any] = []
+    for column in time_candidates:
+        if column in cols:
+            time_params.extend([window["start_ts"], window["end_ts"]])
+    sql = f"SELECT COUNT(*) FROM {table} WHERE {time_condition} AND ({' OR '.join(parts)})"
+    try:
+        row = conn.execute(sql, [*time_params, *text_params]).fetchone()
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:{table}:{exc.__class__.__name__}")
+        return 0
+    return int(row[0] if row else 0)
+
+
+def _count_lp_like_delivery_sqlite(conn: sqlite3.Connection, window: dict[str, Any], warnings: list[str]) -> int:
+    audit_cols = _sqlite_columns(conn, "delivery_audit")
+    if not audit_cols:
+        warnings.append("sqlite_missing_table:delivery_audit")
+        return 0
+    time_condition = _sqlite_time_condition(
+        audit_cols,
+        ("notifier_sent_at", "timestamp", "archive_written_at", "created_at", "updated_at"),
+        alias="da",
+    )
+    if not time_condition:
+        warnings.append("sqlite_missing_time_column:delivery_audit")
+        return 0
+    audit_text, audit_params = _sqlite_text_predicate(
+        audit_cols,
+        (
+            "audit_json",
+            "stage",
+            "gate_reason",
+            "reason",
+            "suppression_reason",
+            "notifier_template",
+            "delivery_decision",
+            "blocked_reason",
+        ),
+        alias="da",
+    )
+    signal_cols = _sqlite_columns(conn, "signals")
+    join_sql = ""
+    signal_text = ""
+    signal_params: list[Any] = []
+    signal_indexed = ""
+    if signal_cols and "signal_id" in audit_cols and "signal_id" in signal_cols:
+        join_sql = " LEFT JOIN signals s ON da.signal_id = s.signal_id"
+        signal_text, signal_params = _sqlite_text_predicate(
+            signal_cols,
+            (
+                "signal_json",
+                "lp_alert_stage",
+                "canonical_semantic_key",
+                "trade_action_key",
+                "asset_market_state_key",
+                "pool_address",
+                "scan_path",
+            ),
+            alias="s",
+        )
+        signal_indexed = _sqlite_nonempty_predicate(signal_cols, ("lp_alert_stage", "pool_address"), alias="s")
+    parts = [part for part in (audit_text, signal_text, signal_indexed) if part]
+    if not parts:
+        warnings.append("sqlite_missing_lp_columns:delivery_audit")
+        return 0
+    time_params: list[Any] = []
+    for column in ("notifier_sent_at", "timestamp", "archive_written_at", "created_at", "updated_at"):
+        if column in audit_cols:
+            time_params.extend([window["start_ts"], window["end_ts"]])
+    sql = (
+        f"SELECT COUNT(*) FROM delivery_audit da{join_sql} "
+        f"WHERE {time_condition} AND ({' OR '.join(parts)})"
+    )
+    try:
+        row = conn.execute(sql, [*time_params, *audit_params, *signal_params]).fetchone()
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:delivery_audit:{exc.__class__.__name__}")
+        return 0
+    return int(row[0] if row else 0)
+
+
+def _sqlite_lp_delivery_summary(conn: sqlite3.Connection, window: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    audit_cols = _sqlite_columns(conn, "delivery_audit")
+    if not audit_cols:
+        return {"available": False, "total": 0, "delivered": 0, "suppressed": 0, "suppression_rate": None, "by_reason": {}}
+    time_candidates = ("notifier_sent_at", "timestamp", "archive_written_at", "created_at", "updated_at")
+    time_condition = _sqlite_time_condition(audit_cols, time_candidates, alias="da")
+    if not time_condition:
+        return {"available": False, "total": 0, "delivered": 0, "suppressed": 0, "suppression_rate": None, "by_reason": {}}
+    audit_text, audit_params = _sqlite_text_predicate(
+        audit_cols,
+        (
+            "audit_json",
+            "stage",
+            "gate_reason",
+            "reason",
+            "suppression_reason",
+            "notifier_template",
+            "delivery_decision",
+            "blocked_reason",
+        ),
+        alias="da",
+    )
+    signal_cols = _sqlite_columns(conn, "signals")
+    join_sql = ""
+    signal_text = ""
+    signal_params: list[Any] = []
+    signal_indexed = ""
+    if signal_cols and "signal_id" in audit_cols and "signal_id" in signal_cols:
+        join_sql = " LEFT JOIN signals s ON da.signal_id = s.signal_id"
+        signal_text, signal_params = _sqlite_text_predicate(
+            signal_cols,
+            (
+                "signal_json",
+                "lp_alert_stage",
+                "canonical_semantic_key",
+                "trade_action_key",
+                "asset_market_state_key",
+                "pool_address",
+                "scan_path",
+            ),
+            alias="s",
+        )
+        signal_indexed = _sqlite_nonempty_predicate(signal_cols, ("lp_alert_stage", "pool_address"), alias="s")
+    parts = [part for part in (audit_text, signal_text, signal_indexed) if part]
+    if not parts:
+        return {"available": False, "total": 0, "delivered": 0, "suppressed": 0, "suppression_rate": None, "by_reason": {}}
+    time_params: list[Any] = []
+    for column in time_candidates:
+        if column in audit_cols:
+            time_params.extend([window["start_ts"], window["end_ts"]])
+    select_columns = [
+        column
+        for column in (
+            "sent_to_telegram",
+            "delivered",
+            "sent",
+            "suppressed",
+            "stage",
+            "suppression_reason",
+            "gate_reason",
+            "reason",
+            "blocked_reason",
+            "delivery_decision",
+            "telegram_update_kind",
+            "opportunity_gate_failure_reason",
+            "notifier_template",
+        )
+        if column in audit_cols
+    ]
+    if not select_columns:
+        select_columns = ["audit_id"] if "audit_id" in audit_cols else []
+    sql = (
+        f"SELECT {', '.join('da.' + column for column in select_columns)} "
+        f"FROM delivery_audit da{join_sql} "
+        f"WHERE {time_condition} AND ({' OR '.join(parts)})"
+    )
+    try:
+        rows = [dict(row) for row in conn.execute(sql, [*time_params, *audit_params, *signal_params]).fetchall()]
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_query_failed:delivery_audit_summary:{exc.__class__.__name__}")
+        return {"available": False, "total": 0, "delivered": 0, "suppressed": 0, "suppression_rate": None, "by_reason": {}}
+    delivered = sum(1 for row in rows if _delivery_sent(row))
+    total = len(rows)
+    suppressed = max(total - delivered, 0)
+    by_reason: Counter[str] = Counter()
+    for row in rows:
+        if _delivery_sent(row):
+            continue
+        by_reason[_lp_delivery_suppression_reason(row)] += 1
+    return {
+        "available": bool(total),
+        "total": total,
+        "delivered": delivered,
+        "suppressed": suppressed,
+        "suppression_rate": _rate(suppressed, total),
+        "by_reason": dict(by_reason.most_common(20)),
+    }
+
+
+def _sqlite_lp_like_counts(window: dict[str, Any]) -> dict[str, Any]:
+    path = _db_path()
+    warnings: list[str] = []
+    payload = {
+        "available": False,
+        "signals": 0,
+        "raw_events": 0,
+        "parsed_events": 0,
+        "delivery_audit": 0,
+        "warnings": warnings,
+    }
+    if not path.exists():
+        warnings.append("sqlite_missing")
+        return payload
+    try:
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
+        return payload
+    try:
+        payload.update(
+            {
+                "available": True,
+                "signals": _count_lp_like_table(
+                    conn,
+                    "signals",
+                    time_candidates=("timestamp", "archive_written_at", "created_at", "updated_at", "notifier_sent_at"),
+                    text_columns=(
+                        "signal_json",
+                        "lp_alert_stage",
+                        "canonical_semantic_key",
+                        "trade_action_key",
+                        "asset_market_state_key",
+                        "pool_address",
+                        "scan_path",
+                        "notifier_template",
+                        "delivery_decision",
+                    ),
+                    indexed_columns=("lp_alert_stage", "pool_address"),
+                    window=window,
+                    warnings=warnings,
+                ),
+                "raw_events": _count_lp_like_table(
+                    conn,
+                    "raw_events",
+                    time_candidates=("captured_at", "created_at", "updated_at"),
+                    text_columns=("raw_json", "raw_kind", "listener_scan_path", "pool_address"),
+                    indexed_columns=("pool_address",),
+                    window=window,
+                    warnings=warnings,
+                ),
+                "parsed_events": _count_lp_like_table(
+                    conn,
+                    "parsed_events",
+                    time_candidates=("parsed_at", "created_at", "updated_at"),
+                    text_columns=("parsed_json", "parsed_kind", "role_group", "lp_alert_stage_candidate", "pool_address"),
+                    indexed_columns=("lp_alert_stage_candidate", "pool_address"),
+                    window=window,
+                    warnings=warnings,
+                ),
+                "delivery_audit": _count_lp_like_delivery_sqlite(conn, window, warnings),
+                "delivery_summary": _sqlite_lp_delivery_summary(conn, window, warnings),
+            }
+        )
+    finally:
+        conn.close()
+    return payload
+
+
 def _build_segments(signal_rows: list[dict[str, Any]], lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
     timestamps = sorted(ts for ts in (_row_ts(row) for row in signal_rows) if ts is not None)
     if not timestamps:
@@ -633,6 +1050,271 @@ def _telegram_summary(lp_rows: list[dict[str, Any]], delivery_rows: list[dict[st
         "high_value_suppressed_count": 0,
         "delivered_lp_signals": sent_count,
         "suppressed_lp_signals": suppressed,
+    }
+
+
+def _counter_table(counter: Counter[str], key_name: str, count_name: str = "rows", limit: int = 10) -> list[dict[str, Any]]:
+    return [
+        {key_name: key, count_name: int(count)}
+        for key, count in counter.most_common(limit)
+        if str(key or "").strip()
+    ]
+
+
+def _lp_stage_summary(lp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_stage: Counter[str] = Counter({"prealert": 0, "confirm": 0, "exhaustion_risk": 0, "unknown": 0})
+    for row in lp_rows:
+        stage = str(_first(row, "lp_alert_stage", "lp_stage", "stage", "first_seen_stage") or "").strip().lower()
+        if stage in {"prealert", "confirm", "exhaustion_risk"}:
+            by_stage[stage] += 1
+        elif stage == "climax":
+            by_stage["exhaustion_risk"] += 1
+        else:
+            by_stage["unknown"] += 1
+    total = sum(by_stage.values())
+    return {
+        "available": bool(lp_rows),
+        "by_stage": dict(sorted(by_stage.items())),
+        "unknown_rate": _rate(by_stage.get("unknown", 0), total),
+        "total": total,
+    }
+
+
+def _lp_signal_examples(lp_rows: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for row in lp_rows[:limit]:
+        examples.append(
+            {
+                "signal_id": str(_first(row, "signal_id") or "")[:80],
+                "asset": _canonical_asset(_first(row, "asset", "asset_symbol")),
+                "pair": _canonical_pair(_first(row, "pair", "pair_label"), _first(row, "asset", "asset_symbol")),
+                "stage": str(_first(row, "lp_alert_stage", "lp_stage", "stage") or "unknown"),
+                "intent": str(_first(row, "trade_action_key", "canonical_semantic_key", "final_trading_output_label", "intent_type") or "unknown"),
+                "market_context_source": str(_first(row, "market_context_source") or ""),
+                "telegram_should_send": bool(_is_true(_first(row, "telegram_should_send", "sent_to_telegram", "telegram_sent"))),
+                "suppression_reason": str(_first(row, "telegram_suppression_reason", "suppression_reason") or ""),
+                "opportunity_status": _status(row),
+                "score": _to_float(_first(row, "trade_opportunity_score", "score", "calibrated_score")),
+            }
+        )
+    return examples
+
+
+def _normalize_suppression_reason(value: Any, *, delivered: bool = False) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower().replace(" ", "_")
+    if delivered and not lowered:
+        return "delivered"
+    if not lowered:
+        return "unknown"
+    if "lp_noise_filtered" in lowered:
+        return "gate/lp_noise_filtered"
+    if "listener_prefilter" in lowered or "prefilter/drop" in lowered or "prefilter_drop" in lowered or "lp_adjacent_noise" in lowered:
+        return "listener_prefilter/drop"
+    if (
+        "delivery_policy" in lowered
+        or "budget" in lowered
+        or "cooldown" in lowered
+        or "rate_limit" in lowered
+        or "reason_not_allowed" in lowered
+        or "whitelist_reason" in lowered
+        or "usd_below_min" in lowered
+        or "reason_explicitly_excluded" in lowered
+        or "quality_below_min" in lowered
+        or "confirmation_below_min" in lowered
+        or "observe_not_supported" in lowered
+    ):
+        return "delivery_policy"
+    if "asset_market_state" in lowered or "no_trade_lock" in lowered or "no_trade" in lowered or "blocked_or_risk_state" in lowered:
+        return "asset_market_state"
+    if "notifier_exception" in lowered or "exception_cap" in lowered or "exception_limit" in lowered or "exception_capped" in lowered:
+        return "notifier_exception_cap"
+    return text[:80]
+
+
+def _delivery_sent(row: dict[str, Any]) -> bool:
+    return any(_is_true(_first(row, key)) for key in ("sent_to_telegram", "delivered", "sent", "telegram_sent"))
+
+
+def _lp_delivery_suppression_reason(row: dict[str, Any]) -> str:
+    combined = _row_search_text(
+        row,
+        "stage",
+        "suppression_reason",
+        "gate_reason",
+        "reason",
+        "blocked_reason",
+        "delivery_decision",
+        "telegram_update_kind",
+        "opportunity_gate_failure_reason",
+        "notifier_template",
+    )
+    normalized = _normalize_suppression_reason(combined, delivered=_delivery_sent(row))
+    if normalized not in {combined[:80], "unknown"}:
+        return normalized
+    reason = _first(
+        row,
+        "suppression_reason",
+        "gate_reason",
+        "reason",
+        "blocked_reason",
+        "delivery_decision",
+        "telegram_update_kind",
+        "opportunity_gate_failure_reason",
+        "notifier_template",
+    )
+    return _normalize_suppression_reason(reason, delivered=_delivery_sent(row))
+
+
+def _lp_suppression_summary(
+    delivery_rows: list[dict[str, Any]],
+    signal_rows: list[dict[str, Any]],
+    sqlite_lp_counts: dict[str, Any],
+) -> dict[str, Any]:
+    sqlite_summary = sqlite_lp_counts.get("delivery_summary")
+    if isinstance(sqlite_summary, dict) and int(sqlite_summary.get("total") or 0) > 0:
+        return {
+            "available": bool(sqlite_summary.get("available")),
+            "total": int(sqlite_summary.get("total") or 0),
+            "delivered": int(sqlite_summary.get("delivered") or 0),
+            "suppressed": int(sqlite_summary.get("suppressed") or 0),
+            "suppression_rate": sqlite_summary.get("suppression_rate"),
+            "by_reason": sqlite_summary.get("by_reason") if isinstance(sqlite_summary.get("by_reason"), dict) else {},
+        }
+    signal_by_id = {
+        str(_first(row, "signal_id") or ""): row
+        for row in signal_rows
+        if str(_first(row, "signal_id") or "").strip()
+    }
+    lp_delivery_rows = [row for row in delivery_rows if _is_lp_like_delivery_row(row, signal_by_id)]
+    delivered = sum(1 for row in lp_delivery_rows if _delivery_sent(row))
+    total = len(lp_delivery_rows)
+    if total == 0 and int(sqlite_lp_counts.get("delivery_audit") or 0) > 0:
+        total = int(sqlite_lp_counts.get("delivery_audit") or 0)
+    suppressed = max(total - delivered, 0)
+    by_reason = Counter()
+    for row in lp_delivery_rows:
+        if _delivery_sent(row):
+            continue
+        by_reason[_lp_delivery_suppression_reason(row)] += 1
+    return {
+        "available": bool(total or lp_delivery_rows),
+        "total": total,
+        "delivered": delivered,
+        "suppressed": suppressed,
+        "suppression_rate": _rate(suppressed, total),
+        "by_reason": dict(by_reason.most_common(20)),
+    }
+
+
+def _clmm_summary(signal_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    clmm_rows: list[dict[str, Any]] = []
+    increase = 0
+    decrease = 0
+    collect = 0
+    position_events = 0
+    for row in signal_rows:
+        text = _row_search_text(
+            row,
+            "signal_json",
+            "canonical_semantic_key",
+            "trade_action_key",
+            "lp_alert_stage",
+            "scan_path",
+            "event",
+            "metadata",
+        )
+        if not any(term in text for term in ("clmm", "uniswap_v3", "uniswap_v4", "increase_liquidity", "decrease_liquidity", "collect", "position")):
+            continue
+        clmm_rows.append(row)
+        if "increase_liquidity" in text or "mint" in text or "add_liquidity" in text:
+            increase += 1
+        if "decrease_liquidity" in text or "burn" in text or "remove_liquidity" in text:
+            decrease += 1
+        if "collect" in text:
+            collect += 1
+        if any(term in text for term in ("position", "increase_liquidity", "decrease_liquidity", "collect")):
+            position_events += 1
+    known = increase + decrease + collect
+    return {
+        "available": bool(clmm_rows),
+        "clmm_like_rows": len(clmm_rows),
+        "position_events": position_events,
+        "increase_liquidity": increase,
+        "decrease_liquidity": decrease,
+        "collect": collect,
+        "unknown": max(len(clmm_rows) - known, 0),
+    }
+
+
+def _lp_missing_reason(lp_rows: list[dict[str, Any]], sqlite_lp_counts: dict[str, Any]) -> str:
+    sqlite_signals = int(sqlite_lp_counts.get("signals") or 0)
+    raw_parsed = int(sqlite_lp_counts.get("raw_events") or 0) + int(sqlite_lp_counts.get("parsed_events") or 0)
+    delivery = int(sqlite_lp_counts.get("delivery_audit") or 0)
+    if lp_rows:
+        return ""
+    if sqlite_signals > 0:
+        return "report_mapping_missing"
+    if raw_parsed > 0 and sqlite_signals == 0:
+        return "lp_analyzer_or_gate_missing"
+    if raw_parsed == 0 and sqlite_signals == 0 and delivery == 0:
+        return "no_lp_samples_or_coverage_gap"
+    return "unknown"
+
+
+def _lp_signal_summary(
+    lp_rows: list[dict[str, Any]],
+    signal_rows: list[dict[str, Any]],
+    delivery_rows: list[dict[str, Any]],
+    sqlite_lp_counts: dict[str, Any],
+    telegram: dict[str, Any],
+) -> dict[str, Any]:
+    pair_counter: Counter[str] = Counter()
+    intent_counter: Counter[str] = Counter()
+    reason_counter: Counter[str] = Counter()
+    for row in lp_rows:
+        asset = _first(row, "asset", "asset_symbol")
+        pair = _canonical_pair(_first(row, "pair", "pair_label"), asset)
+        if pair:
+            pair_counter[pair] += 1
+        intent = str(_first(row, "trade_action_key", "canonical_semantic_key", "final_trading_output_label", "intent_type") or "").strip()
+        if intent:
+            intent_counter[intent] += 1
+        reason = str(_first(row, "telegram_suppression_reason", "suppression_reason") or "").strip()
+        if reason:
+            reason_counter[_normalize_suppression_reason(reason)] += 1
+    signal_by_id = {
+        str(_first(row, "signal_id") or ""): row
+        for row in signal_rows
+        if str(_first(row, "signal_id") or "").strip()
+    }
+    for row in delivery_rows:
+        if not _is_lp_like_delivery_row(row, signal_by_id) or _delivery_sent(row):
+            continue
+        reason_counter[_lp_delivery_suppression_reason(row)] += 1
+    sqlite_delivery_summary = sqlite_lp_counts.get("delivery_summary")
+    sqlite_by_reason = (
+        sqlite_delivery_summary.get("by_reason")
+        if isinstance(sqlite_delivery_summary, dict) and isinstance(sqlite_delivery_summary.get("by_reason"), dict)
+        else {}
+    )
+    if sqlite_by_reason:
+        reason_counter = Counter({str(reason): int(count or 0) for reason, count in sqlite_by_reason.items()})
+    delivered = int(telegram.get("delivered_lp_signals") or 0)
+    suppressed = int(telegram.get("suppressed_lp_signals") or 0)
+    total = delivered + suppressed
+    return {
+        "available": bool(lp_rows or int(sqlite_lp_counts.get("signals") or 0)),
+        "lp_signal_rows": len(lp_rows),
+        "delivered_count": delivered,
+        "suppressed_count": suppressed,
+        "suppression_rate": _rate(suppressed, total),
+        "lp_like_signals_sqlite": int(sqlite_lp_counts.get("signals") or sum(1 for row in signal_rows if _is_lp_like_signal_row(row))),
+        "lp_like_raw_events": int(sqlite_lp_counts.get("raw_events") or 0),
+        "lp_like_parsed_events": int(sqlite_lp_counts.get("parsed_events") or 0),
+        "top_pairs": _counter_table(pair_counter, "pair"),
+        "top_intents": _counter_table(intent_counter, "intent"),
+        "top_suppression_reasons": _counter_table(reason_counter, "reason", "count"),
     }
 
 
@@ -1110,6 +1792,325 @@ def _trade_opportunity_summary(
         )
     )
     return summary
+
+
+def _blocker_key(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw.startswith("hard_blocker:"):
+        raw = raw.split(":", 1)[1]
+    return raw
+
+
+def _opportunity_blockers(row: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for key in (
+        "primary_hard_blocker",
+        "trade_opportunity_primary_blocker",
+        "primary_blocker",
+        "primary_verification_blocker",
+        "trade_opportunity_primary_verification_blocker",
+        "blocker_type",
+        "reason",
+        "trade_opportunity_shadow_reason",
+        "shadow_reason",
+    ):
+        value = _first(row, key)
+        if value not in (None, "", [], {}, ()):
+            blockers.append(str(value))
+    for key in (
+        "trade_opportunity_blockers",
+        "blockers",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "trade_opportunity_hard_blockers",
+        "trade_opportunity_verification_blockers",
+    ):
+        for item in _string_list(_first(row, key)):
+            blockers.append(item)
+    clean: list[str] = []
+    seen: set[str] = set()
+    for blocker in blockers:
+        key = str(blocker or "").strip()
+        if not key or key.lower() in {"none", "null", "n/a", "na"}:
+            continue
+        if key not in seen:
+            clean.append(key)
+            seen.add(key)
+    return clean
+
+
+def _missing_requirement_for_blocker(blocker: str) -> str:
+    key = _blocker_key(blocker)
+    if "score_below" in key:
+        return "score_threshold"
+    if "quality" in key:
+        return "quality_floor"
+    if "live_context" in key or "market_context" in key:
+        return "live_market_context"
+    if "broader" in key or "confirm" in key:
+        return "broader_confirmation"
+    if "sample" in key or "history" in key or "maturity" in key:
+        return "outcome_history"
+    if "replay_profile_negative" in key or "profile_adverse" in key:
+        return "positive_profile_posterior"
+    if key in NEAR_CANDIDATE_HARD_BLOCKERS:
+        return f"hard_blocker:{key}"
+    return key or "unknown"
+
+
+def _is_near_candidate_row(row: dict[str, Any], candidate_threshold: float) -> tuple[bool, list[str]]:
+    status = _status(row)
+    if status not in {"NONE", "BLOCKED"}:
+        return False, []
+    blockers = _opportunity_blockers(row)
+    blocker_keys = {_blocker_key(item) for item in blockers}
+    hard_blockers = blocker_keys & NEAR_CANDIDATE_HARD_BLOCKERS
+    score = _to_float(
+        _first(
+            row,
+            "trade_opportunity_score",
+            "opportunity_score",
+            "calibrated_score",
+            "trade_opportunity_calibrated_score",
+            "score",
+            "raw_score",
+        )
+    )
+    reasons: list[str] = []
+    if score is not None and 0 <= candidate_threshold - score <= CANDIDATE_FRONTIER_MARGIN:
+        reasons.append("score_within_frontier_margin")
+    if "score_below_shadow_candidate" in blocker_keys:
+        reasons.append("score_below_shadow_candidate")
+    if blockers and not hard_blockers and len(blockers) <= 2:
+        reasons.append("soft_blocker_only")
+    if blocker_keys & NEAR_CANDIDATE_SOFT_BLOCKERS:
+        reasons.append("near_candidate_soft_blocker")
+    quality = _to_float(
+        _first(
+            row,
+            "quality_score",
+            "asset_case_quality_score",
+            "pair_quality_score",
+            "pool_quality_score",
+            "quality_floor",
+        )
+    )
+    if quality is not None and quality >= 0.55:
+        reasons.append("quality_close_to_floor")
+    if hard_blockers and not reasons:
+        return False, []
+    return bool(reasons), sorted(set(reasons))
+
+
+def _read_trade_replay_rows(logical_date: str) -> list[dict[str, Any]]:
+    path = _db_path()
+    if not path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return []
+    try:
+        if not _sqlite_table_exists(conn, "trade_replay_examples"):
+            return []
+        cols = _sqlite_columns(conn, "trade_replay_examples")
+        if "logical_date" not in cols:
+            return []
+        if "replay_scope" in cols:
+            for scope in ("full", "default"):
+                rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM trade_replay_examples WHERE logical_date=? AND replay_scope=?",
+                        (logical_date, scope),
+                    ).fetchall()
+                ]
+                if rows:
+                    return rows
+        return [dict(row) for row in conn.execute("SELECT * FROM trade_replay_examples WHERE logical_date=?", (logical_date,)).fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _replay_values_for_opportunities(replay_rows: list[dict[str, Any]], opportunity_ids: set[str]) -> list[float]:
+    values: list[float] = []
+    for row in replay_rows:
+        opportunity_id = str(row.get("trade_opportunity_id") or "").strip()
+        if opportunity_id not in opportunity_ids:
+            continue
+        if not _is_true(row.get("data_valid", 1)):
+            continue
+        value = _to_float(row.get("net_pnl_bps"))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _candidate_frontier_summary(
+    opportunity_rows: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+    replay_summary: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_threshold = float(getattr(app_config, "SHADOW_CANDIDATE_MIN_SCORE", 0.58))
+    status_counts = Counter(_status(row) for row in opportunity_rows)
+    near_rows: list[tuple[dict[str, Any], list[str]]] = []
+    blocker_counter: Counter[str] = Counter()
+    missing_counter: Counter[str] = Counter()
+    all_blockers: Counter[str] = Counter()
+    for row in opportunity_rows:
+        blockers = _opportunity_blockers(row)
+        for blocker in blockers:
+            all_blockers[blocker] += 1
+        is_near, reasons = _is_near_candidate_row(row, candidate_threshold)
+        if not is_near:
+            continue
+        near_rows.append((row, reasons))
+        if blockers:
+            for blocker in blockers:
+                blocker_counter[blocker] += 1
+                missing_counter[_missing_requirement_for_blocker(blocker)] += 1
+        else:
+            blocker_counter["none"] += 1
+            missing_counter["unknown"] += 1
+    near_ids = {
+        str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+        for row, _reasons in near_rows
+        if str(_first(row, "trade_opportunity_id", "opportunity_id") or "").strip()
+    }
+    replay_values = _replay_values_for_opportunities(replay_rows, near_ids)
+    near_replay_count = len(replay_values)
+    near_avg = round(sum(replay_values) / len(replay_values), 2) if replay_values else None
+    if not opportunity_rows:
+        diagnosis = "insufficient_data"
+    elif near_replay_count >= LP_SUPPRESSION_REPLAY_MIN_SAMPLES and near_avg is not None and near_avg > 0:
+        diagnosis = "threshold_too_strict"
+    elif any("market_context" in _blocker_key(key) or "live_context" in _blocker_key(key) for key in all_blockers):
+        diagnosis = "market_bad"
+    elif status_counts.get("CANDIDATE", 0) == 0 and status_counts.get("VERIFIED", 0) == 0:
+        diagnosis = "gate_closed_because_quality_low"
+    else:
+        diagnosis = "insufficient_data"
+    examples = []
+    for row, reasons in near_rows[:10]:
+        examples.append(
+            {
+                "trade_opportunity_id": str(_first(row, "trade_opportunity_id", "opportunity_id") or "")[:80],
+                "asset": _canonical_asset(_first(row, "asset", "asset_symbol", "opportunity_profile_asset")),
+                "pair": _canonical_pair(_first(row, "pair", "pair_label"), _first(row, "asset", "asset_symbol")),
+                "status": _status(row),
+                "score": _to_float(_first(row, "trade_opportunity_score", "score", "calibrated_score")),
+                "blockers": _opportunity_blockers(row)[:5],
+                "near_reasons": reasons,
+            }
+        )
+    return {
+        "available": bool(opportunity_rows),
+        "opportunities_total": len(opportunity_rows),
+        "none_count": status_counts.get("NONE", 0),
+        "blocked_count": status_counts.get("BLOCKED", 0),
+        "candidate_count": status_counts.get("CANDIDATE", 0),
+        "verified_count": status_counts.get("VERIFIED", 0),
+        "near_candidate_count": len(near_rows),
+        "near_candidate_replay_count": near_replay_count,
+        "near_candidate_avg_net_pnl_bps": near_avg,
+        "top_near_candidate_blockers": dict(blocker_counter.most_common(10)),
+        "top_missing_requirements": dict(missing_counter.most_common(10)),
+        "candidate_gate_blocker_distribution": dict(all_blockers.most_common(20)),
+        "near_candidate_examples": examples,
+        "shadow_candidate_count": int((replay_summary.get("shadow_funnel_summary") or {}).get("shadow_candidate_count") or 0),
+        "shadow_verified_count": int((replay_summary.get("shadow_funnel_summary") or {}).get("shadow_verified_count") or 0),
+        "diagnosis": diagnosis,
+    }
+
+
+def _lp_suppression_replay_summary(
+    lp_suppression_summary: dict[str, Any],
+    delivery_rows: list[dict[str, Any]],
+    replay_rows: list[dict[str, Any]],
+    signal_rows: list[dict[str, Any]],
+    replay_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    signal_by_id = {
+        str(_first(row, "signal_id") or ""): row
+        for row in signal_rows
+        if str(_first(row, "signal_id") or "").strip()
+    }
+    reason_by_audit_id: dict[str, str] = {}
+    reason_by_signal_id: dict[str, str] = {}
+    for row in delivery_rows:
+        if not _is_lp_like_delivery_row(row, signal_by_id) or _delivery_sent(row):
+            continue
+        reason = _lp_delivery_suppression_reason(row)
+        audit_id = str(_first(row, "audit_id", "delivery_audit_id") or "").strip()
+        signal_id = str(_first(row, "signal_id") or "").strip()
+        if audit_id:
+            reason_by_audit_id[audit_id] = reason
+        if signal_id:
+            reason_by_signal_id.setdefault(signal_id, reason)
+    values_by_reason: dict[str, list[float]] = {str(reason): [] for reason in (lp_suppression_summary.get("by_reason") or {})}
+    count_by_reason: Counter[str] = Counter({str(reason): int(count or 0) for reason, count in (lp_suppression_summary.get("by_reason") or {}).items()})
+    overall_values: list[float] = []
+    for row in replay_rows:
+        signal_stage = str(row.get("signal_stage") or "").strip().upper()
+        include_suppressed = _is_true(row.get("include_suppressed"))
+        delivery_id = str(row.get("delivery_audit_id") or "").strip()
+        signal_id = str(row.get("signal_id") or "").strip()
+        reason = reason_by_audit_id.get(delivery_id) or reason_by_signal_id.get(signal_id)
+        if not reason and signal_stage != "SUPPRESSED" and not include_suppressed:
+            continue
+        if not reason:
+            reason = _normalize_suppression_reason(_first(row, "suppression_reason", "blocked_reason", "reason") or "unknown")
+        if not _is_true(row.get("data_valid", 1)):
+            continue
+        value = _to_float(row.get("net_pnl_bps"))
+        if value is None:
+            continue
+        values_by_reason.setdefault(reason, []).append(value)
+        overall_values.append(value)
+    by_reason = []
+    for reason in sorted(set([*count_by_reason.keys(), *values_by_reason.keys()])):
+        values = values_by_reason.get(reason, [])
+        replay_count = len(values)
+        avg = round(sum(values) / replay_count, 2) if replay_count else None
+        profitable_rate = _rate(sum(1 for value in values if value > 0), replay_count)
+        if replay_count < LP_SUPPRESSION_REPLAY_MIN_SAMPLES:
+            action = "needs_more_samples"
+        elif avg is not None and avg > 0:
+            action = "review_threshold"
+        else:
+            action = "keep_suppressed"
+        by_reason.append(
+            {
+                "reason": reason,
+                "count": int(count_by_reason.get(reason) or 0),
+                "replay_count": replay_count,
+                "avg_net_pnl_bps": avg,
+                "profitable_rate": profitable_rate,
+                "recommended_action": action,
+            }
+        )
+    by_reason.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason") or "")))
+    replay_summary = replay_summary or {}
+    overall_avg = _to_float(replay_summary.get("suppressed_avg_net_pnl_bps"))
+    if overall_avg is None and overall_values:
+        overall_avg = round(sum(overall_values) / len(overall_values), 2)
+    enough_rows = [item for item in by_reason if int(item.get("replay_count") or 0) >= LP_SUPPRESSION_REPLAY_MIN_SAMPLES]
+    if not enough_rows:
+        diagnosis = "insufficient_replay"
+    elif any(str(item.get("recommended_action")) == "review_threshold" for item in enough_rows):
+        diagnosis = "possible_over_suppression"
+    else:
+        diagnosis = "suppression_seems_correct"
+    return {
+        "available": bool(lp_suppression_summary.get("available") or by_reason),
+        "by_reason": by_reason,
+        "overall_suppressed_avg_net_pnl_bps": overall_avg,
+        "diagnosis": diagnosis,
+    }
 
 
 def _asset_market_state_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2142,6 +3143,12 @@ def _markdown(payload: dict[str, Any]) -> str:
     )
     replay = payload.get("trade_replay_summary") or {}
     shadow = payload.get("shadow_opportunity_summary") or {}
+    frontier = payload.get("candidate_frontier_summary") or {}
+    lp_signal = payload.get("lp_signal_summary") or {}
+    lp_stage = payload.get("lp_stage_summary") or {}
+    lp_suppression = payload.get("lp_suppression_summary") or {}
+    lp_suppression_replay = payload.get("lp_suppression_replay_summary") or {}
+    clmm = payload.get("clmm_summary") or {}
     data_quality = payload.get("data_quality_summary") or {}
     lines.extend(
         [
@@ -2209,6 +3216,24 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- shadow_replay_count: `{shadow.get('shadow_replay_count', 0)}`",
             f"- shadow_positive_profile_count: `{shadow.get('shadow_positive_profile_count', 0)}`",
             f"- shadow_negative_profile_count: `{shadow.get('shadow_negative_profile_count', 0)}`",
+            "",
+            "## Candidate Frontier 学习边界",
+            "",
+            f"- near_candidate_count: `{frontier.get('near_candidate_count', 0)}`",
+            f"- near_candidate_replay_count: `{frontier.get('near_candidate_replay_count', 0)}`",
+            f"- near_candidate_avg_net_pnl_bps: `{frontier.get('near_candidate_avg_net_pnl_bps')}`",
+            f"- top_near_candidate_blockers: `{json.dumps(frontier.get('top_near_candidate_blockers', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- top_missing_requirements: `{json.dumps(frontier.get('top_missing_requirements', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- diagnosis: `{frontier.get('diagnosis')}`",
+            "",
+            "## LP / CLMM Mapping",
+            "",
+            f"- lp_signal_summary: `{json.dumps(lp_signal, ensure_ascii=False, sort_keys=True)}`",
+            f"- lp_stage_summary: `{json.dumps(lp_stage, ensure_ascii=False, sort_keys=True)}`",
+            f"- clmm_summary: `{json.dumps(clmm, ensure_ascii=False, sort_keys=True)}`",
+            f"- lp_suppression_summary: `{json.dumps(lp_suppression, ensure_ascii=False, sort_keys=True)}`",
+            f"- lp_suppression_replay_summary: `{json.dumps(lp_suppression_replay, ensure_ascii=False, sort_keys=True)}`",
+            f"- lp_missing_reason: `{payload.get('lp_missing_reason')}`",
             "",
             "## 数据质量 / Runtime Health",
             "",
@@ -2292,6 +3317,18 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("shadow", "shadow_missing_field_reasons", payload.get("shadow_funnel_summary", {}).get("shadow_missing_field_reasons")),
         ("shadow", "shadow_reason_distribution", payload.get("shadow_funnel_summary", {}).get("shadow_reason_distribution")),
         ("shadow", "shadow_score_distribution", payload.get("shadow_funnel_summary", {}).get("shadow_score_distribution")),
+        ("candidate_frontier", "near_candidate_count", payload.get("candidate_frontier_summary", {}).get("near_candidate_count")),
+        ("candidate_frontier", "near_candidate_replay_count", payload.get("candidate_frontier_summary", {}).get("near_candidate_replay_count")),
+        ("candidate_frontier", "near_candidate_avg_net_pnl_bps", payload.get("candidate_frontier_summary", {}).get("near_candidate_avg_net_pnl_bps")),
+        ("candidate_frontier", "top_near_candidate_blockers", payload.get("candidate_frontier_summary", {}).get("top_near_candidate_blockers")),
+        ("candidate_frontier", "top_missing_requirements", payload.get("candidate_frontier_summary", {}).get("top_missing_requirements")),
+        ("candidate_frontier", "diagnosis", payload.get("candidate_frontier_summary", {}).get("diagnosis")),
+        ("lp", "lp_signal_summary", payload.get("lp_signal_summary")),
+        ("lp", "lp_stage_summary", payload.get("lp_stage_summary")),
+        ("lp", "clmm_summary", payload.get("clmm_summary")),
+        ("lp", "lp_suppression_summary", payload.get("lp_suppression_summary")),
+        ("lp", "lp_suppression_replay_summary", payload.get("lp_suppression_replay_summary")),
+        ("lp", "lp_missing_reason", payload.get("lp_missing_reason")),
         ("data_quality", "data_quality_status", payload.get("data_quality_summary", {}).get("data_quality_status")),
     ]
     for group, name, value in rows:
@@ -2307,6 +3344,12 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
     segment_summary = _build_segments(signal_rows, lp_rows)
     delivery_rows = rows.get("delivery_audit", [])
     telegram = _telegram_summary(lp_rows, rows.get("telegram_deliveries", []) or delivery_rows)
+    sqlite_lp_counts = _sqlite_lp_like_counts(window)
+    lp_signal_summary = _lp_signal_summary(lp_rows, signal_rows, delivery_rows, sqlite_lp_counts, telegram)
+    lp_stage_summary = _lp_stage_summary(lp_rows)
+    clmm_summary = _clmm_summary(signal_rows)
+    lp_suppression = _lp_suppression_summary(delivery_rows, signal_rows, sqlite_lp_counts)
+    lp_missing_reason = _lp_missing_reason(lp_rows, sqlite_lp_counts)
     opportunity_rows = rows.get("trade_opportunities", []) or [
         row
         for row in signal_rows
@@ -2325,7 +3368,16 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
     majors = _major_coverage_summary(lp_rows)
     data_source = _data_source_summary(results)
     replay_summary = _read_trade_replay_summary(logical_date)
+    replay_rows = _read_trade_replay_rows(logical_date)
     shadow_summary = _shadow_opportunity_summary(opportunity_rows, replay_summary)
+    candidate_frontier = _candidate_frontier_summary(opportunity_rows, replay_rows, replay_summary)
+    lp_suppression_replay = _lp_suppression_replay_summary(
+        lp_suppression,
+        delivery_rows,
+        replay_rows,
+        signal_rows,
+        replay_summary,
+    )
     runtime_health_summary = _runtime_health_summary(logical_date)
     trade_actions = _trade_action_summary(signal_rows, delivery_rows)
     prealert_lifecycle = _prealert_lifecycle_summary(rows.get("prealert_lifecycle", []), signal_rows)
@@ -2340,6 +3392,8 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         limitations.append(f"trade_action_summary_unavailable:{trade_actions.get('reason', 'unknown')}")
     if not prealert_lifecycle.get("available"):
         limitations.append("prealert_lifecycle_missing")
+    if lp_missing_reason:
+        limitations.append(f"lp_missing_reason={lp_missing_reason}")
     limitations.extend(segment_summary.get("gap_warnings") or [])
     limitations.extend(data_source.get("source_warnings") or [])
     result_count = lambda key: results.get(key, _empty_result()).row_count
@@ -2391,6 +3445,17 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
             f"valid={int(replay_summary.get('valid_replay_count') or replay_summary.get('valid_count') or 0)}"
         ),
         f"data_quality={data_quality.get('data_quality_status')} zero_activity_day={bool(data_quality.get('zero_activity_day'))}",
+        (
+            "candidate_frontier: "
+            f"near={candidate_frontier.get('near_candidate_count')} "
+            f"diagnosis={candidate_frontier.get('diagnosis')}"
+        ),
+        (
+            "lp_mapping: "
+            f"lp_signal_rows={lp_signal_summary.get('lp_signal_rows')} "
+            f"sqlite_lp_like_signals={lp_signal_summary.get('lp_like_signals_sqlite')} "
+            f"missing_reason={lp_missing_reason or 'none'}"
+        ),
         f"trade_action_distribution_top={json.dumps(trade_actions.get('trade_action_distribution_top') or {}, ensure_ascii=False, sort_keys=True)}",
         f"prealert_lifecycle_available={bool(prealert_lifecycle.get('available'))} source={prealert_lifecycle.get('source', 'missing')}",
     ]
@@ -2489,10 +3554,20 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "shadow_funnel_summary": shadow_summary,
         "candidate_verified_summary": _candidate_verified_summary(trade_summary),
         "candidate_tradeable_summary": _candidate_verified_summary(trade_summary),
+        "candidate_frontier_summary": candidate_frontier,
+        "near_candidate_examples": candidate_frontier.get("near_candidate_examples", []),
+        "candidate_gate_blocker_distribution": candidate_frontier.get("candidate_gate_blocker_distribution", {}),
         "blocker_summary": blocker_summary,
         "outcome_summary": outcome,
         "outcome_source_summary": outcome,
         "telegram_suppression_summary": telegram,
+        "lp_signal_summary": lp_signal_summary,
+        "lp_signals": _lp_signal_examples(lp_rows),
+        "lp_stage_summary": lp_stage_summary,
+        "clmm_summary": clmm_summary,
+        "lp_suppression_summary": lp_suppression,
+        "lp_suppression_replay_summary": lp_suppression_replay,
+        "lp_missing_reason": lp_missing_reason,
         "asset_market_state_summary": asset_state,
         "no_trade_lock_summary": no_trade_lock,
         "trade_action_summary": trade_actions,
