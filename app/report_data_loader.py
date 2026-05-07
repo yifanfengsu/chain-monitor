@@ -281,9 +281,16 @@ def _connect(db_path: str | Path | None = None) -> sqlite3.Connection | None:
     path = _db_path(db_path)
     if not path.exists():
         return None
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        try:
+            import sqlite_store  # type: ignore
+        except ImportError:
+            from app import sqlite_store  # type: ignore
+
+        conn = sqlite_store.open_sqlite_connection(path, readonly=True, row_factory=True)
+        return conn
+    except Exception:
+        return None
 
 
 def _db_table_exists(conn: sqlite3.Connection, table: str) -> bool:

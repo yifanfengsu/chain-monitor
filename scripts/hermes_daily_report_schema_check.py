@@ -59,6 +59,7 @@ def read_report(logical_date: str, daily_dir: Path) -> tuple[dict[str, Any], str
 
 
 def sqlite_lp_counts(logical_date: str, db_path: Path) -> tuple[dict[str, int], list[str]]:
+    # lpdiag.open_ro_sqlite uses URI ?mode=ro through sqlite_store.
     warnings: list[str] = []
     start_ts, end_ts = lpdiag.logical_window(logical_date)
     counts = {"signals": 0, "raw_events": 0, "parsed_events": 0, "delivery_audit": 0}
@@ -66,8 +67,7 @@ def sqlite_lp_counts(logical_date: str, db_path: Path) -> tuple[dict[str, int], 
         warnings.append("sqlite_missing:data/chain_monitor.sqlite")
         return counts, warnings
     try:
-        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = lpdiag.open_ro_sqlite(db_path)
     except sqlite3.Error as exc:
         warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
         return counts, warnings

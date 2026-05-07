@@ -27,6 +27,7 @@ for pattern in \
   "cmd_daily_flow()" \
   "cmd_replay_check()" \
   "cmd_data_quality()" \
+  "cmd_data_integrity()" \
   "cmd_profile_review()" \
   "cmd_blocker_review()" \
   "cmd_shadow_review()" \
@@ -69,6 +70,7 @@ for pattern in \
   "job-diagnose" \
   "job-cancel" \
   "db-slim-dry-run" \
+  "data-integrity" \
   "learning-review" \
   "candidate-coverage" \
   "daily-report-schema-check" \
@@ -112,7 +114,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -120,7 +122,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -142,6 +144,7 @@ db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
 db_slim_block="$(extract_block 'cmd_db_slim_dry_run()' 'run_output_value()')"
 archive_check_block="$(extract_block 'cmd_archive_compress_check()' 'cmd_weekly_review()')"
 weekly_block="$(extract_block 'cmd_weekly_review()' 'cmd_digest()')"
+data_integrity_block="$(extract_block 'cmd_data_integrity()' 'cmd_profile_review()')"
 candidate_block="$(extract_block 'cmd_candidate_coverage()' 'cmd_outcome_diagnose()')"
 schema_check_block="$(extract_block 'cmd_daily_report_schema_check()' 'cmd_outcome_diagnose()')"
 outcome_block="$(extract_block 'cmd_outcome_diagnose()' 'cmd_outcome_catchup()')"
@@ -154,6 +157,7 @@ lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 [[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
 [[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
 [[ -n "$db_slim_block" ]] || die "could not extract cmd_db_slim_dry_run"
+[[ -n "$data_integrity_block" ]] || die "could not extract cmd_data_integrity"
 [[ -n "$candidate_block" ]] || die "could not extract cmd_candidate_coverage"
 [[ -n "$schema_check_block" ]] || die "could not extract cmd_daily_report_schema_check"
 [[ -n "$outcome_block" ]] || die "could not extract cmd_outcome_diagnose"
@@ -174,6 +178,7 @@ for required in \
   "分析报告YYYY-MM-DD" \
   "检查回放YYYY-MM-DD" \
   "数据质量YYYY-MM-DD" \
+  "数据完整性检查YYYY-MM-DD" \
   "Profile复盘YYYY-MM-DD" \
   "Blocker复盘YYYY-MM-DD" \
   "Shadow复盘YYYY-MM-DD" \
@@ -282,8 +287,45 @@ for forbidden in "db-export-operational-payloads-execute" "db-export-operational
 done
 
 for required in \
+  "scripts/hermes_data_integrity.py" \
+  "data-integrity requires --date YYYY-MM-DD" \
+  "AUDIT_OUTPUT_HINT=\"data-integrity" \
+  "AUDIT_ALLOWED=true"
+do
+  grep -Fq -- "$required" <<<"$data_integrity_block" || die "data-integrity wrapper missing required content: ${required}"
+done
+for required in \
+  "Chain Monitor 数据完整性检查" \
+  "TIMESTAMP_CANDIDATES" \
+  "logical_date" \
+  "archive_date" \
+  "created_at" \
+  "archive_written_at" \
+  "trade_replay_examples" \
+  "trade_replay_profile_daily_stats" \
+  "opportunity_outcomes" \
+  "archive_sqlite_status" \
+  "final_status" \
+  "recoverable" \
+  "make db-migrate-date DATE=" \
+  "sqlite_locked_warning_count" \
+  "sqlite_final_write_failure_count" \
+  "HERMES_DATA_INTEGRITY_DB_PATH" \
+  "HERMES_DATA_INTEGRITY_ARCHIVE_ROOT" \
+  "?mode=ro" \
+  "只读检查"
+do
+  grep -Fq -- "$required" scripts/hermes_data_integrity.py || die "data-integrity helper missing required content: ${required}"
+done
+for forbidden in "subprocess" "make run" "db-vacuum" "db-prune" "db-compact-execute" "archive-compress-date execute" "买入" "卖出" "仓位" "杠杆" "止盈" "止损"; do
+  if grep -Fqi -- "$forbidden" <<<"$data_integrity_block" || grep -Fqi -- "$forbidden" scripts/hermes_data_integrity.py; then
+    die "data-integrity contains forbidden term: ${forbidden}"
+  fi
+done
+
+for required in \
   "HERMES_CANDIDATE_COVERAGE_DB_PATH" \
-  "sqlite3.connect(db_path.resolve().as_uri() + \"?mode=ro\"" \
+  "open_sqlite_connection(db_path, readonly=True" \
   "daily_report_status" \
   "signals_total" \
   "trade_opportunities_total" \
@@ -528,6 +570,7 @@ for guarded in \
   "db-slim-dry-run" \
   "replay-check" \
   "data-quality" \
+  "data-integrity" \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
@@ -595,6 +638,9 @@ grep -Fq "Hermes LP diagnose test passed" "$TMP_DIR/lp_diagnose.out" || die "LP 
 bash scripts/test_hermes_outcome_diagnose.sh >"$TMP_DIR/outcome_diagnose.out"
 grep -Fq "Hermes outcome diagnose test passed" "$TMP_DIR/outcome_diagnose.out" || die "Outcome diagnose test did not pass"
 
+bash scripts/test_data_integrity_check.sh >"$TMP_DIR/data_integrity.out"
+grep -Fq "data-integrity check tests passed" "$TMP_DIR/data_integrity.out" || die "data-integrity test did not pass"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/ops_audit.ndjson" \
 HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \
   "$SCRIPT" command-menu >"$TMP_DIR/menu.out"
@@ -610,6 +656,7 @@ grep -Fq "最近任务" "$TMP_DIR/menu.out" || die "command-menu output missing 
 grep -Fq "空间快检" "$TMP_DIR/menu.out" || die "command-menu output missing 空间快检"
 grep -Fq "数据库体积诊断" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库体积诊断"
 grep -Fq "数据库瘦身预检" "$TMP_DIR/menu.out" || die "command-menu output missing 数据库瘦身预检"
+grep -Fq "数据完整性检查YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 数据完整性检查YYYY-MM-DD"
 grep -Fq "学习复盘YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习复盘YYYY-MM-DD"
 grep -Fq "学习总结YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing 学习总结YYYY-MM-DD"
 grep -Fq "CANDIDATE覆盖诊断YYYY-MM-DD" "$TMP_DIR/menu.out" || die "command-menu output missing CANDIDATE覆盖诊断YYYY-MM-DD"

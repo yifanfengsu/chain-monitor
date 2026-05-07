@@ -9,10 +9,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import sqlite3
 import subprocess
+import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from config import (
     ARCHIVE_BASE_DIR,
@@ -74,6 +76,18 @@ _INIT_FAILED_REASON = ""
 _WRITE_ERROR_COUNT = 0
 _WARNINGS: list[str] = []
 _BATCH_MODE = False
+_SQLITE_WRITE_LOCK = threading.RLock()
+_SQLITE_STATS_LOCK = threading.Lock()
+_SQLITE_WRITE_HEALTH: dict[str, Any] = {
+    "write_attempts": 0,
+    "write_success": 0,
+    "busy_retries": 0,
+    "locked_failures": 0,
+    "last_locked_ts": None,
+    "last_locked_op": "",
+    "last_locked_table": "",
+    "max_retry_attempt_seen": 0,
+}
 
 REQUIRED_TABLES = (
     "schema_meta",
@@ -562,6 +576,311 @@ def _active_db_path(db_path: str | Path | None = None) -> Path:
     return _resolve_db_path(None)
 
 
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(value, minimum)
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    try:
+        value = float(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        value = float(default)
+    if minimum is not None:
+        value = max(value, minimum)
+    return value
+
+
+def sqlite_connect_timeout_sec(timeout: float | None = None) -> float:
+    if timeout is not None:
+        return max(float(timeout), 0.1)
+    return _env_float("SQLITE_CONNECT_TIMEOUT_SEC", 30.0, minimum=0.1)
+
+
+def sqlite_busy_timeout_ms() -> int:
+    default = int(SQLITE_BUSY_TIMEOUT_MS or 30000)
+    return _env_int("SQLITE_BUSY_TIMEOUT_MS", default, minimum=1)
+
+
+def sqlite_write_max_attempts(max_attempts: int | None = None) -> int:
+    if max_attempts is not None:
+        return max(int(max_attempts), 1)
+    return _env_int("SQLITE_WRITE_MAX_ATTEMPTS", 8, minimum=1)
+
+
+def sqlite_write_batch_size() -> int:
+    return _env_int("SQLITE_WRITE_BATCH_SIZE", 500, minimum=1)
+
+
+def sqlite_batch_pause_sec() -> float:
+    return _env_float("SQLITE_BATCH_PAUSE_MS", 0.0, minimum=0.0) / 1000.0
+
+
+def _sqlite_synchronous_value() -> str:
+    synchronous = str(SQLITE_PRAGMA_SYNCHRONOUS or "NORMAL").strip().upper()
+    return synchronous if synchronous in {"OFF", "NORMAL", "FULL", "EXTRA"} else "NORMAL"
+
+
+def _apply_sqlite_pragmas(conn: sqlite3.Connection, *, readonly: bool) -> None:
+    conn.execute(f"PRAGMA busy_timeout={sqlite_busy_timeout_ms()}")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(f"PRAGMA synchronous={_sqlite_synchronous_value()}")
+    if not readonly:
+        if bool(SQLITE_WAL_MODE):
+            conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+
+
+def open_sqlite_connection(
+    db_path: str | Path | None = None,
+    *,
+    readonly: bool = False,
+    timeout: float | None = None,
+    row_factory: bool = False,
+    pragmas: bool = True,
+) -> sqlite3.Connection:
+    resolved = _resolve_db_path(db_path)
+    connect_timeout = sqlite_connect_timeout_sec(timeout)
+    if readonly:
+        uri = resolved.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=connect_timeout,
+            check_same_thread=False,
+        )
+    else:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(
+            str(resolved),
+            timeout=connect_timeout,
+            check_same_thread=False,
+        )
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    if pragmas:
+        _apply_sqlite_pragmas(conn, readonly=readonly)
+    return conn
+
+
+def _is_locked_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "database is locked",
+            "database table is locked",
+            "sqlite_busy",
+            "locked",
+        )
+    )
+
+
+def _retry_sleep_sec(attempt: int) -> float:
+    base = min(0.05 * (2 ** max(int(attempt) - 1, 0)), 2.0)
+    return min(base + random.uniform(0.0, min(base * 0.1, 0.05)), 2.0)
+
+
+def _record_write_attempt() -> None:
+    with _SQLITE_STATS_LOCK:
+        _SQLITE_WRITE_HEALTH["write_attempts"] = int(_SQLITE_WRITE_HEALTH.get("write_attempts") or 0) + 1
+
+
+def _record_write_success() -> None:
+    with _SQLITE_STATS_LOCK:
+        _SQLITE_WRITE_HEALTH["write_success"] = int(_SQLITE_WRITE_HEALTH.get("write_success") or 0) + 1
+
+
+def _record_locked_retry(op_name: str, table_name: str, attempt: int) -> None:
+    with _SQLITE_STATS_LOCK:
+        _SQLITE_WRITE_HEALTH["busy_retries"] = int(_SQLITE_WRITE_HEALTH.get("busy_retries") or 0) + 1
+        _SQLITE_WRITE_HEALTH["last_locked_ts"] = _now()
+        _SQLITE_WRITE_HEALTH["last_locked_op"] = str(op_name or "")
+        _SQLITE_WRITE_HEALTH["last_locked_table"] = str(table_name or "")
+        _SQLITE_WRITE_HEALTH["max_retry_attempt_seen"] = max(
+            int(_SQLITE_WRITE_HEALTH.get("max_retry_attempt_seen") or 0),
+            int(attempt),
+        )
+
+
+def _record_locked_failure(op_name: str, table_name: str, attempts: int) -> None:
+    with _SQLITE_STATS_LOCK:
+        _SQLITE_WRITE_HEALTH["locked_failures"] = int(_SQLITE_WRITE_HEALTH.get("locked_failures") or 0) + 1
+        _SQLITE_WRITE_HEALTH["last_locked_ts"] = _now()
+        _SQLITE_WRITE_HEALTH["last_locked_op"] = str(op_name or "")
+        _SQLITE_WRITE_HEALTH["last_locked_table"] = str(table_name or "")
+        _SQLITE_WRITE_HEALTH["max_retry_attempt_seen"] = max(
+            int(_SQLITE_WRITE_HEALTH.get("max_retry_attempt_seen") or 0),
+            int(attempts),
+        )
+
+
+def reset_sqlite_write_health() -> None:
+    with _SQLITE_STATS_LOCK:
+        _SQLITE_WRITE_HEALTH.update(
+            {
+                "write_attempts": 0,
+                "write_success": 0,
+                "busy_retries": 0,
+                "locked_failures": 0,
+                "last_locked_ts": None,
+                "last_locked_op": "",
+                "last_locked_table": "",
+                "max_retry_attempt_seen": 0,
+            }
+        )
+
+
+def get_sqlite_write_health() -> dict[str, Any]:
+    with _SQLITE_STATS_LOCK:
+        return {
+            "write_attempts": int(_SQLITE_WRITE_HEALTH.get("write_attempts") or 0),
+            "write_success": int(_SQLITE_WRITE_HEALTH.get("write_success") or 0),
+            "busy_retries": int(_SQLITE_WRITE_HEALTH.get("busy_retries") or 0),
+            "locked_failures": int(_SQLITE_WRITE_HEALTH.get("locked_failures") or 0),
+            "last_locked_op": str(_SQLITE_WRITE_HEALTH.get("last_locked_op") or ""),
+            "last_locked_table": str(_SQLITE_WRITE_HEALTH.get("last_locked_table") or ""),
+            "last_locked_ts": _SQLITE_WRITE_HEALTH.get("last_locked_ts"),
+            "max_retry_attempt_seen": int(_SQLITE_WRITE_HEALTH.get("max_retry_attempt_seen") or 0),
+        }
+
+
+def _rollback_quietly(conn: sqlite3.Connection) -> None:
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        pass
+
+
+def transaction_with_retry(
+    conn: sqlite3.Connection,
+    work: Callable[[], Any],
+    *,
+    op_name: str,
+    table_name: str,
+    max_attempts: int | None = None,
+    commit: bool = True,
+) -> Any | bool:
+    attempts = sqlite_write_max_attempts(max_attempts)
+    with _SQLITE_WRITE_LOCK:
+        for attempt in range(1, attempts + 1):
+            _record_write_attempt()
+            try:
+                result = work()
+                if commit:
+                    conn.commit()
+                _record_write_success()
+                return True if result is None else result
+            except sqlite3.OperationalError as exc:
+                locked = _is_locked_error(exc)
+                _rollback_quietly(conn)
+                if locked and attempt < attempts:
+                    sleep_sec = _retry_sleep_sec(attempt)
+                    _record_locked_retry(op_name, table_name, attempt)
+                    _warn(
+                        "sqlite_write_busy_retry "
+                        f"op_name={op_name} table_name={table_name} "
+                        f"attempt={attempt} sleep_sec={sleep_sec:.3f} error={exc}"
+                    )
+                    time.sleep(sleep_sec)
+                    continue
+                if locked:
+                    _record_locked_failure(op_name, table_name, attempts)
+                    _warn(
+                        "sqlite_write_failed_final "
+                        f"op_name={op_name} table_name={table_name} "
+                        f"attempts={attempts} error={exc}"
+                    )
+                    return False
+                _warn(f"sqlite_write_failed op_name={op_name} table_name={table_name} error={exc}")
+                return False
+            except sqlite3.Error as exc:
+                _rollback_quietly(conn)
+                _warn(f"sqlite_write_failed op_name={op_name} table_name={table_name} error={exc}")
+                return False
+
+
+def execute_with_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[Any, ...] = (),
+    *,
+    op_name: str,
+    table_name: str,
+    max_attempts: int | None = None,
+    commit: bool = True,
+) -> bool:
+    result = transaction_with_retry(
+        conn,
+        lambda: conn.execute(sql, params),
+        op_name=op_name,
+        table_name=table_name,
+        max_attempts=max_attempts,
+        commit=commit,
+    )
+    return bool(result)
+
+
+def executemany_with_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    seq_of_params: list[tuple[Any, ...]] | tuple[tuple[Any, ...], ...],
+    *,
+    op_name: str,
+    table_name: str,
+    max_attempts: int | None = None,
+    commit: bool = True,
+) -> bool:
+    result = transaction_with_retry(
+        conn,
+        lambda: conn.executemany(sql, seq_of_params),
+        op_name=op_name,
+        table_name=table_name,
+        max_attempts=max_attempts,
+        commit=commit,
+    )
+    return bool(result)
+
+
+def _pause_between_batches() -> None:
+    pause = sqlite_batch_pause_sec()
+    if pause > 0:
+        time.sleep(pause)
+
+
+def _sqlite_connection_pragmas(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    owned = False
+    if conn is None:
+        try:
+            conn = open_sqlite_connection(readonly=True, row_factory=True)
+            owned = True
+        except sqlite3.Error as exc:
+            return {"available": False, "error": str(exc)}
+    try:
+        return {
+            "available": True,
+            "journal_mode": str(conn.execute("PRAGMA journal_mode").fetchone()[0]),
+            "busy_timeout_ms": int(conn.execute("PRAGMA busy_timeout").fetchone()[0] or 0),
+            "synchronous": int(conn.execute("PRAGMA synchronous").fetchone()[0] or 0),
+            "temp_store": int(conn.execute("PRAGMA temp_store").fetchone()[0] or 0),
+            "foreign_keys": int(conn.execute("PRAGMA foreign_keys").fetchone()[0] or 0),
+            "wal_autocheckpoint": int(conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] or 0),
+        }
+    except sqlite3.Error as exc:
+        return {"available": False, "error": str(exc)}
+    finally:
+        if owned and conn is not None:
+            conn.close()
+
+
 def _json(value: Any) -> str:
     try:
         return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
@@ -945,18 +1264,35 @@ def _direction_from_record(data: dict[str, Any]) -> str | None:
     return raw or None
 
 
-def _execute(sql: str, params: tuple[Any, ...] = ()) -> bool:
+def _sql_table_name(sql: str) -> str:
+    tokens = str(sql or "").replace("(", " ").replace("\n", " ").split()
+    upper = [token.upper() for token in tokens]
+    for keyword in ("INTO", "UPDATE", "FROM"):
+        if keyword in upper:
+            index = upper.index(keyword)
+            if index + 1 < len(tokens):
+                return tokens[index + 1].strip('"`[]')
+    return "unknown"
+
+
+def _execute(
+    sql: str,
+    params: tuple[Any, ...] = (),
+    *,
+    op_name: str = "execute",
+    table_name: str = "",
+) -> bool:
     conn = get_connection()
     if conn is None:
         return False
-    try:
-        conn.execute(sql, params)
-        if not _BATCH_MODE:
-            conn.commit()
-        return True
-    except Exception as exc:
-        _warn(str(exc))
-        return False
+    return execute_with_retry(
+        conn,
+        sql,
+        params,
+        op_name=op_name,
+        table_name=table_name or _sql_table_name(sql),
+        commit=not _BATCH_MODE,
+    )
 
 
 def init_sqlite_store(db_path: str | Path | None = None) -> sqlite3.Connection | None:
@@ -970,20 +1306,7 @@ def init_sqlite_store(db_path: str | Path | None = None) -> sqlite3.Connection |
             return _CONNECTION
         close()
     try:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
-            str(resolved),
-            timeout=max(float(SQLITE_BUSY_TIMEOUT_MS or 0) / 1000.0, 0.1),
-            check_same_thread=False,
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_MS or 0)}")
-        if bool(SQLITE_WAL_MODE):
-            conn.execute("PRAGMA journal_mode=WAL")
-        synchronous = str(SQLITE_PRAGMA_SYNCHRONOUS or "NORMAL").upper()
-        if synchronous not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
-            synchronous = "NORMAL"
-        conn.execute(f"PRAGMA synchronous={synchronous}")
+        conn = open_sqlite_connection(resolved, readonly=False, row_factory=True)
         _CONNECTION = conn
         _DB_PATH = resolved
         _INIT_FAILED_REASON = ""
@@ -1972,7 +2295,12 @@ def _upsert(table: str, rows: dict[str, Any], key_columns: tuple[str, ...]) -> b
         if assignments
         else f"INSERT OR IGNORE INTO {table}({', '.join(columns)}) VALUES({placeholders})"
     )
-    return _execute(sql, tuple(rows[column] for column in columns))
+    return _execute(
+        sql,
+        tuple(rows[column] for column in columns),
+        op_name=f"upsert:{table}",
+        table_name=table,
+    )
 
 
 def write_raw_event(record: Any) -> bool:
@@ -3080,6 +3408,13 @@ def mirror_match_rate() -> dict[str, Any]:
 def health_summary(*, include_archive_mirror: bool = True) -> dict[str, Any]:
     conn = get_connection()
     size_info = db_file_sizes()
+    pragma_info = _sqlite_connection_pragmas(conn)
+    write_health = get_sqlite_write_health()
+    warnings = list(_WARNINGS[-10:])
+    if int(write_health.get("locked_failures") or 0) > 0:
+        warnings.append(
+            "sqlite_write_contention_warning: locked_failures>0; avoid concurrent heavy maintenance and inspect background jobs"
+        )
     missing_tables: list[str] = []
     existing: set[str] = set()
     if conn is not None:
@@ -3118,7 +3453,11 @@ def health_summary(*, include_archive_mirror: bool = True) -> dict[str, Any]:
         "last_updated": last_updated,
         "missing_tables": missing_tables,
         "write_error_count": int(_WRITE_ERROR_COUNT),
-        "warnings": list(_WARNINGS[-10:]),
+        "sqlite_write_health": write_health,
+        "connection_pragmas": pragma_info,
+        "journal_mode": pragma_info.get("journal_mode"),
+        "busy_timeout_ms": pragma_info.get("busy_timeout_ms"),
+        "warnings": warnings[-10:],
         "archive_mirror": mirror_match_rate() if include_archive_mirror else {
             "db_archive_mirror_match_rate": None,
             "per_category": {},
@@ -3400,9 +3739,7 @@ def migrate_archive(*, date: str | None = None, all_dates: bool = False) -> dict
     conn = get_connection()
     previous_batch_mode = _BATCH_MODE
     try:
-        _BATCH_MODE = True
-        if conn is not None:
-            conn.execute("BEGIN")
+        _BATCH_MODE = False
         for category in ARCHIVE_CATEGORY_TABLES:
             imported, bad_rows, skipped_payload_bytes = _iter_archive_payloads(category, date=date, all_dates=all_dates)
             mode = _mode_for_table(ARCHIVE_CATEGORY_TABLES.get(category, category))
@@ -3427,11 +3764,15 @@ def migrate_archive(*, date: str | None = None, all_dates: bool = False) -> dict
         result["imported_rows"] += int(cache_payload.get("imported_rows") or 0)
         result["bad_row_count"] += int(cache_payload.get("bad_row_count") or 0)
         if conn is not None:
-            conn.commit()
             if bool(SQLITE_WAL_MODE):
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                execute_with_retry(
+                    conn,
+                    "PRAGMA wal_checkpoint(TRUNCATE)",
+                    op_name="migrate_archive:wal_checkpoint",
+                    table_name="database",
+                )
     except Exception:
-        if conn is not None:
+        if conn is not None and conn.in_transaction:
             conn.rollback()
         raise
     finally:
@@ -3562,9 +3903,14 @@ def prune(*, dry_run: bool = True) -> dict[str, Any]:
         count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < ?", (cutoff,)).fetchone()[0])
         result["tables"][table] = {"cutoff": cutoff, "candidate_rows": count}
         if not dry_run and count:
-            conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
-    if not dry_run:
-        conn.commit()
+            execute_with_retry(
+                conn,
+                f"DELETE FROM {table} WHERE {column} < ?",
+                (cutoff,),
+                op_name="prune:delete",
+                table_name=table,
+            )
+            _pause_between_batches()
     return result
 
 
@@ -3765,11 +4111,16 @@ def checkpoint(db_path: str | Path | None = None) -> dict[str, Any]:
         return payload
     conn = None
     try:
-        conn = sqlite3.connect(
-            str(db_path),
-            timeout=max(float(SQLITE_BUSY_TIMEOUT_MS or 0) / 1000.0, 0.1),
+        conn = open_sqlite_connection(db_path, readonly=False, row_factory=False)
+        row = transaction_with_retry(
+            conn,
+            lambda: conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(),
+            op_name="checkpoint:wal_checkpoint",
+            table_name="database",
         )
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if row is False:
+            payload["message"] = "checkpoint_failed:sqlite_busy"
+            return payload
         payload["checkpoint_result"] = list(row) if row is not None else []
         payload["wal_size_after"] = wal_path.stat().st_size if wal_path.exists() else 0
         payload["success"] = True
@@ -4853,16 +5204,7 @@ def _connect_existing_sqlite(
             "db_path": str(resolved),
         }
     try:
-        if readonly:
-            uri = f"file:{resolved}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True)
-        else:
-            conn = sqlite3.connect(
-                str(resolved),
-                timeout=max(float(SQLITE_BUSY_TIMEOUT_MS or 0) / 1000.0, 0.1),
-            )
-            conn.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_MS or 0)}")
-        conn.row_factory = sqlite3.Row
+        conn = open_sqlite_connection(resolved, readonly=readonly, row_factory=True)
         return conn, {"ok": True, "db_path": str(resolved)}
     except sqlite3.Error as exc:
         return None, {
@@ -5080,8 +5422,13 @@ def _operational_export_table(
     if not _table_exists(conn, table):
         return {"ok": False, "reason": "table_missing", "table": table}
     if not dry_run:
-        _ensure_operational_payload_metadata_columns(conn, table)
-        conn.commit()
+        if not transaction_with_retry(
+            conn,
+            lambda: _ensure_operational_payload_metadata_columns(conn, table),
+            op_name="export_operational_payloads:ensure_columns",
+            table_name=table,
+        ):
+            return {"ok": False, "reason": "ensure_columns_failed", "table": table}
     columns = _table_columns(conn, table)
     spec = OPERATIONAL_PAYLOAD_EXPORT_SPECS[table]
     json_column = str(spec["json_column"])
@@ -5164,11 +5511,16 @@ def _operational_export_table(
             assignments.append("updated_at=?")
         if "compacted_at" in columns:
             assignments.append("compacted_at=?")
-        conn.executemany(
+        if not executemany_with_retry(
+            conn,
             f"UPDATE {table} SET {', '.join(assignments)} WHERE rowid=?",
             tuple(updates),
-        )
-        conn.commit()
+            op_name="export_operational_payloads:update",
+            table_name=table,
+        ):
+            failed_error = "sqlite_update_failed"
+            skipped_write_failed += len(rows)
+            return False
         exported_rows += len(rows)
         updated_rows += len(rows)
         return True
@@ -5182,10 +5534,11 @@ def _operational_export_table(
         if dry_run:
             continue
         batch.append(row)
-        if len(batch) >= OPERATIONAL_PAYLOAD_EXPORT_BATCH_SIZE:
+        if len(batch) >= min(OPERATIONAL_PAYLOAD_EXPORT_BATCH_SIZE, sqlite_write_batch_size()):
             if not flush_batch(batch):
                 break
             batch = []
+            _pause_between_batches()
     if not dry_run and not failed_error and batch:
         flush_batch(batch)
 
@@ -5416,12 +5769,20 @@ def _backfill_table(table: str, *, dry_run: bool = True, date: str | None = None
             )
         )
     if not dry_run and updates:
-        conn.executemany(
-            f"UPDATE {table} SET archive_path=?, archive_date=?, payload_hash=?, payload_mode=? WHERE rowid=?",
-            tuple(updates),
-        )
-        conn.commit()
-        result["rows_backfilled"] = len(updates)
+        for index in range(0, len(updates), sqlite_write_batch_size()):
+            batch = updates[index : index + sqlite_write_batch_size()]
+            if not executemany_with_retry(
+                conn,
+                f"UPDATE {table} SET archive_path=?, archive_date=?, payload_hash=?, payload_mode=? WHERE rowid=?",
+                tuple(batch),
+                op_name="backfill_payload_metadata:update",
+                table_name=table,
+            ):
+                result["ok"] = False
+                unresolved_reasons["sqlite_update_failed"] += len(batch)
+                break
+            result["rows_backfilled"] += len(batch)
+            _pause_between_batches()
     result["estimated_compactable_after_backfill"] = result["rows_already_compactable"] + result["rows_backfillable"]
     result["estimated_mb_freed_after_compact"] = round(
         int(result["estimated_bytes_freed_after_compact"] or 0) / (1024 * 1024),
@@ -5633,15 +5994,25 @@ def compact_table(table: str, *, dry_run: bool = True) -> dict[str, Any]:
             continue
         result["estimated_bytes_freed"] += payload_bytes
         updates.append(int(row["rowid"]))
+    compacted_rows = len(updates)
     if not dry_run and updates:
-        placeholders = ", ".join("?" for _ in updates)
-        conn.execute(
-            f"UPDATE {table} SET {json_column}=NULL WHERE rowid IN ({placeholders})",
-            tuple(updates),
-        )
-        conn.commit()
+        compacted_rows = 0
+        for index in range(0, len(updates), sqlite_write_batch_size()):
+            batch = updates[index : index + sqlite_write_batch_size()]
+            placeholders = ", ".join("?" for _ in batch)
+            if not execute_with_retry(
+                conn,
+                f"UPDATE {table} SET {json_column}=NULL WHERE rowid IN ({placeholders})",
+                tuple(batch),
+                op_name="compact_table:update",
+                table_name=table,
+            ):
+                result["ok"] = False
+                break
+            compacted_rows += len(batch)
+            _pause_between_batches()
     result["skipped_payload_already_empty"] = max(total_rows - int(result["rows_examined"] or 0), 0)
-    result["rows_compacted"] = len(updates)
+    result["rows_compacted"] = compacted_rows
     result["skipped_missing_archive"] = result["skipped_archive_missing"]
     result["estimated_after_backfill_compactable_rows"] = int(result["rows_compacted"] or 0)
     if dry_run and (result["skipped_no_payload_hash"] or result["skipped_no_archive_path"]):
@@ -5695,11 +6066,18 @@ def vacuum_database(*, confirm: bool = False, db_path: str | Path | None = None)
         }
     before = db_file_sizes(resolved)
     close()
-    conn = sqlite3.connect(str(resolved))
+    conn = open_sqlite_connection(resolved, readonly=False, row_factory=False)
     try:
-        conn.execute("VACUUM")
+        ok = execute_with_retry(conn, "VACUUM", op_name="vacuum", table_name="database")
     finally:
         conn.close()
+    if not ok:
+        return {
+            "ok": False,
+            "reason": "vacuum_failed",
+            "db_path": str(resolved),
+            "before": before,
+        }
     after = db_file_sizes(resolved)
     return {
         "ok": True,

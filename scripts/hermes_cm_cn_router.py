@@ -327,6 +327,18 @@ def parse_command(text: str) -> dict[str, Any]:
             "auto_build": False,
         }
 
+    match = re.fullmatch(r"(?:数据完整性检查|数据入库检查|入库完整性)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "data-integrity",
+            "command_intent": "data-integrity",
+            "argv": wrapper_argv("data-integrity", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
     match = re.fullmatch(r"(?:Profile复盘|profile复盘|画像复盘|后验画像)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
     if match:
         report_date = validate_date(match.group(1))

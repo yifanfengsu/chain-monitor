@@ -24,9 +24,12 @@ TEST_SQLITE_MODULES := \
 	$(APP).test_sqlite_schema \
 	$(APP).test_sqlite_writers \
 	$(APP).test_sqlite_archive_mirror \
+	$(APP).test_sqlite_busy_retry \
+	$(APP).test_sqlite_connection_pragmas \
 	$(APP).test_sqlite_opportunity_persistence \
 	$(APP).test_sqlite_reports \
-	$(APP).test_sqlite_migration
+	$(APP).test_sqlite_migration \
+	$(APP).test_sqlite_write_locking
 
 TEST_SQLITE_COMPACT_MODULES := \
 	$(APP).test_sqlite_data_value_audit \

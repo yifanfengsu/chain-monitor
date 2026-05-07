@@ -50,6 +50,7 @@ for pattern in \
   "## Approved Commands" \
   "## Hermes Gateway / Telegram Control Rules" \
   "## Telegram 中文命令示例" \
+  "## Data Integrity Check" \
   "## Learning Review" \
   "## Candidate Coverage Diagnosis" \
   "## LP Signal Diagnosis" \
@@ -127,6 +128,7 @@ for example in \
   "分析报告2026-05-01" \
   "检查回放2026-05-01" \
   "数据质量2026-05-01" \
+  "数据完整性检查2026-05-01" \
   "Profile复盘2026-05-01" \
   "Blocker复盘2026-05-01" \
   "Shadow复盘2026-05-01" \
@@ -182,6 +184,7 @@ for command in \
   "./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \

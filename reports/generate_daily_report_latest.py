@@ -274,13 +274,19 @@ def _db_path() -> Path:
     return ROOT / raw
 
 
+def _open_report_sqlite(path: Path, *, readonly: bool = True) -> sqlite3.Connection:
+    import sqlite_store  # noqa: E402
+
+    return sqlite_store.open_sqlite_connection(path, readonly=readonly, row_factory=True)
+
+
 def _sqlite_latest_timestamp() -> int | None:
     path = _db_path()
     if not path.exists():
         return None
     max_ts: int | None = None
     try:
-        conn = sqlite3.connect(str(path))
+        conn = _open_report_sqlite(path)
     except sqlite3.Error:
         return None
     try:
@@ -460,7 +466,7 @@ def _sqlite_count_only(loader_key: str, window: dict[str, Any]) -> report_data_l
     if not path.exists():
         return None
     try:
-        conn = sqlite3.connect(str(path))
+        conn = _open_report_sqlite(path)
     except sqlite3.Error:
         return None
     try:
@@ -912,8 +918,7 @@ def _sqlite_lp_like_counts(window: dict[str, Any]) -> dict[str, Any]:
         warnings.append("sqlite_missing")
         return payload
     try:
-        conn = sqlite3.connect(str(path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_report_sqlite(path)
     except sqlite3.Error as exc:
         warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
         return payload
@@ -1453,8 +1458,7 @@ def _read_opportunity_db_summary() -> dict[str, Any]:
     if not path.exists():
         return {"available": False, "reason": "sqlite_db_missing"}
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = _open_report_sqlite(path)
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"sqlite_open_failed:{exc}"}
     try:
@@ -1915,8 +1919,7 @@ def _read_trade_replay_rows(logical_date: str) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        conn = sqlite3.connect(str(path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_report_sqlite(path)
     except sqlite3.Error:
         return []
     try:
@@ -1962,8 +1965,7 @@ def _read_opportunity_outcome_rows(window: dict[str, Any], opportunity_rows: lis
         }
     )
     try:
-        conn = sqlite3.connect(str(path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_report_sqlite(path)
     except sqlite3.Error:
         return []
     try:
@@ -2235,8 +2237,7 @@ def _read_lp_suppression_sample_replay_summary(logical_date: str) -> dict[str, A
     if not path.exists():
         return {**empty, "reason": "sqlite_missing"}
     try:
-        conn = sqlite3.connect(str(path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_report_sqlite(path)
     except sqlite3.Error:
         return {**empty, "reason": "sqlite_open_failed"}
     try:

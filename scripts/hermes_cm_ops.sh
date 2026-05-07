@@ -32,6 +32,7 @@ Usage:
   ./scripts/hermes_cm_ops.sh db-slim-dry-run
   ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
@@ -89,6 +90,7 @@ cmd_help() {
   /chain-monitor-report-analyst 分析报告YYYY-MM-DD
   /chain-monitor-report-analyst 检查回放YYYY-MM-DD
   /chain-monitor-report-analyst 数据质量YYYY-MM-DD
+  /chain-monitor-report-analyst 数据完整性检查YYYY-MM-DD
   /chain-monitor-report-analyst Profile复盘YYYY-MM-DD
   /chain-monitor-report-analyst Blocker复盘YYYY-MM-DD
   /chain-monitor-report-analyst Shadow复盘YYYY-MM-DD
@@ -170,6 +172,7 @@ cmd_command_menu() {
 - 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
+- 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD：只读检查 archive、SQLite mirror、replay/outcome 闭环和 locked warning
 
 【后验复盘】
 - Profile复盘YYYY-MM-DD：查看 profile 后验
@@ -851,7 +854,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
+    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -1283,6 +1286,10 @@ from pathlib import Path
 
 _final_output = sys.argv[1]
 root = Path.cwd()
+app_dir = root / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
 configured_db_path = os.getenv("HERMES_LISTENER_HEALTH_DB_PATH", "data/chain_monitor.sqlite")
 db_path = Path(configured_db_path)
 if not db_path.is_absolute():
@@ -1293,6 +1300,10 @@ WINDOWS = (
 )
 NOW_TS = time.time()
 BJ_TZ = timezone(timedelta(hours=8))
+
+
+def open_ro_sqlite(path: Path) -> sqlite3.Connection:
+    return sqlite_store.open_sqlite_connection(path, readonly=True, row_factory=True)
 
 
 def safe_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> object:
@@ -1590,6 +1601,29 @@ def print_telegram_outbound_health(conn: sqlite3.Connection) -> None:
         print("Telegram outbound 状态: 未发现明显异常")
 
 
+def print_sqlite_write_health(conn: sqlite3.Connection) -> None:
+    health = sqlite_store.get_sqlite_write_health()
+    wal_path = Path(f"{db_path}-wal")
+    journal_mode = safe_scalar(conn, "PRAGMA journal_mode")
+    busy_timeout = safe_scalar(conn, "PRAGMA busy_timeout")
+    print()
+    print("## SQLite write health")
+    print("source=sqlite_store.get_sqlite_write_health + read-only PRAGMA")
+    print(
+        "sqlite_write_health: "
+        f"busy_retries={int(health.get('busy_retries') or 0)} "
+        f"locked_failures={int(health.get('locked_failures') or 0)} "
+        f"last_locked_op={health.get('last_locked_op') or ''} "
+        f"last_locked_table={health.get('last_locked_table') or ''} "
+        f"last_locked_ts={fmt_ts(health.get('last_locked_ts'))} "
+        f"wal_size_bytes={wal_path.stat().st_size if wal_path.exists() else 0} "
+        f"journal_mode={journal_mode} "
+        f"busy_timeout_ms={busy_timeout}"
+    )
+    if int(health.get("locked_failures") or 0) > 0:
+        print("warning: SQLite 写入竞争仍存在，请避免同时运行 heavy maintenance；如持续增长，检查后台 job。")
+
+
 def max_field(conn: sqlite3.Connection, table: str, candidates: list[str]) -> str:
     if not table_exists(conn, table):
         return "missing_table"
@@ -1657,7 +1691,7 @@ def spill_summary() -> str:
 
 print("## Listener Data Freshness")
 if db_path.exists():
-    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn = open_ro_sqlite(db_path)
     try:
         print(f"SQLite 最新 logical_date: {max_field(conn, 'signals', ['logical_date'])}")
         print(f"最近 raw_events 时间: {max_field(conn, 'raw_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
@@ -1665,11 +1699,15 @@ if db_path.exists():
         print(f"最近 signals 时间: {max_field(conn, 'signals', ['timestamp', 'created_at', 'updated_at', 'notifier_sent_at'])}")
         if table_exists(conn, "runtime_heartbeats"):
             print(f"runtime_heartbeats 最新 check_ts: {safe_scalar(conn, 'SELECT MAX(check_ts) FROM runtime_heartbeats')}")
+        print_sqlite_write_health(conn)
         print_telegram_outbound_health(conn)
     finally:
         conn.close()
 else:
     print("SQLite 状态: missing data/chain_monitor.sqlite")
+    print()
+    print("## SQLite write health")
+    print("sqlite_write_health: db_missing")
     print()
     print("## Telegram outbound health")
     print("source=SQLite 聚合；只读；未发送 Telegram warning")
@@ -1689,9 +1727,9 @@ PY
   else
     echo "listener_process=no_process_match_or_pgrep_failed"
   fi
-  grep -E '^(最近 raw_events 时间|最近 parsed_events 时间|最近 signals 时间|最近 archive 修改时间|latest zero_activity_day|SQLite 最新 logical_date|queue spill):' "$final_output" || true
+  grep -E '^(最近 raw_events 时间|最近 parsed_events 时间|最近 signals 时间|最近 archive 修改时间|latest zero_activity_day|SQLite 最新 logical_date|queue spill|sqlite_write_health):' "$final_output" || true
   echo "Telegram outbound:"
-  grep -E '^(最近30分钟|最近2小时)：|^(warning: Telegram outbound|warning: 最近发现 Telegram)|^(最近成功 Telegram 发送时间|最近失败时间|notifier\.get_notifier_health|Telegram outbound 状态):' "$final_output" || true
+  grep -E '^(最近30分钟|最近2小时)：|^(warning: Telegram outbound|warning: 最近发现 Telegram|warning: SQLite)|^(最近成功 Telegram 发送时间|最近失败时间|notifier\.get_notifier_health|Telegram outbound 状态):' "$final_output" || true
   echo "action=只读体检；未重启 listener。"
   exit 0
 }
@@ -2156,11 +2194,20 @@ import sqlite3
 import sys
 from pathlib import Path
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 db = Path(sys.argv[1])
 wal = Path(str(db) + "-wal")
 shm = Path(str(db) + "-shm")
 archive = Path("app/data/archive")
 reports = Path("reports")
+
+
+def open_ro_sqlite(path: Path) -> sqlite3.Connection:
+    return sqlite_store.open_sqlite_connection(path, readonly=True, row_factory=True)
 
 
 def size_bytes(path: Path) -> int:
@@ -2206,8 +2253,7 @@ if not db.exists():
     print()
 else:
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = open_ro_sqlite(db)
     except sqlite3.Error as exc:
         print(f"db_open_error={exc}")
         print()
@@ -2291,7 +2337,7 @@ if wal_mb_value >= max(64.0, db_mb_value * 0.25):
     findings.append("WAL 大：WAL 文件相对主 DB 偏大，可能需要在安全窗口做 checkpoint。")
 if db.exists():
     try:
-        conn2 = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn2 = open_ro_sqlite(db)
         page_size2 = int(conn2.execute("PRAGMA page_size").fetchone()[0] or 0)
         freelist2 = int(conn2.execute("PRAGMA freelist_count").fetchone()[0] or 0)
         free_mb_value = mb(page_size2 * freelist2)
@@ -2836,6 +2882,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 date = sys.argv[1]
 path = Path("reports/daily") / f"daily_report_{date}.json"
 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2847,7 +2898,7 @@ scope_counts = {}
 db_path = Path("data/chain_monitor.sqlite")
 if db_path.exists():
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite_store.open_sqlite_connection(db_path, readonly=True, row_factory=False)
         try:
             table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_replay_examples'").fetchone()
             if table:
@@ -2943,6 +2994,29 @@ if status == "invalid_or_no_activity" or zero is True:
 PY
 }
 
+cmd_data_integrity() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "data-integrity --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown data-integrity argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "data-integrity requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+  AUDIT_OUTPUT_HINT="data-integrity ${report_date}"
+
+  "$(python_bin)" scripts/hermes_data_integrity.py --date "$report_date"
+}
+
 cmd_profile_review() {
   local report_date=""
 
@@ -2969,6 +3043,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 date = sys.argv[1]
 db = Path("data/chain_monitor.sqlite")
 print("Profile复盘")
@@ -2977,8 +3056,7 @@ if not db.exists():
     print("数据不足：缺少 data/chain_monitor.sqlite")
     print(f"请先运行：标准日报流程{date}")
     raise SystemExit(0)
-conn = sqlite3.connect(db)
-conn.row_factory = sqlite3.Row
+conn = sqlite_store.open_sqlite_connection(db, readonly=True, row_factory=True)
 try:
     table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_replay_profile_daily_stats'").fetchone()
     if not table:
@@ -3044,6 +3122,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 date = sys.argv[1]
 print("Blocker复盘")
 print(f"date={date}")
@@ -3051,8 +3134,7 @@ counters: Counter[str] = Counter()
 db = Path("data/chain_monitor.sqlite")
 if db.exists():
     try:
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite_store.open_sqlite_connection(db, readonly=True, row_factory=True)
         try:
             table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_opportunities'").fetchone()
             if table:
@@ -3717,6 +3799,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 
 STATUSES = ("NONE", "CANDIDATE", "VERIFIED", "BLOCKED", "INVALIDATED")
 BJ_TZ = timezone(timedelta(hours=8))
@@ -4041,8 +4128,7 @@ if not db_path.exists():
     warnings.append("sqlite_missing:data/chain_monitor.sqlite")
 else:
     try:
-        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite_store.open_sqlite_connection(db_path, readonly=True, row_factory=True)
     except sqlite3.Error as exc:
         warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
     else:
@@ -4474,6 +4560,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+import sqlite_store  # type: ignore
+
 start = dt.date.fromisoformat(sys.argv[1])
 end = dt.date.fromisoformat(sys.argv[2])
 dates = [(start + dt.timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
@@ -4520,8 +4611,7 @@ positive_low_sample = []
 db = Path("data/chain_monitor.sqlite")
 if db.exists():
     try:
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite_store.open_sqlite_connection(db, readonly=True, row_factory=True)
         try:
             table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_replay_profile_daily_stats'").fetchone()
             if table:
@@ -4909,7 +4999,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
+  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -5085,6 +5175,10 @@ case "$1" in
   data-quality)
     shift
     cmd_data_quality "$@"
+    ;;
+  data-integrity)
+    shift
+    cmd_data_integrity "$@"
     ;;
   profile-review)
     shift

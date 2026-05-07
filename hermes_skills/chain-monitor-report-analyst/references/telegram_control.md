@@ -38,6 +38,7 @@ Hermes lock 硬规则：
 | 分析报告YYYY-MM-DD / 快速分析报告YYYY-MM-DD / 日报分析YYYY-MM-DD / 报告分析YYYY-MM-DD | analyze fast | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium | sync |
 | 检查回放YYYY-MM-DD / 回放检查YYYY-MM-DD / 回放摘要YYYY-MM-DD / 检查replayYYYY-MM-DD / Replay检查YYYY-MM-DD | replay-check | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | sync quick |
 | 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | sync quick |
+| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | data-integrity | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | sync quick；只读检查 archive、SQLite mirror、replay/outcome 闭环、daily_report 字段和 SQLite locked warning，不自动修复 |
 | Profile复盘YYYY-MM-DD / profile复盘YYYY-MM-DD / 画像复盘YYYY-MM-DD / 后验画像YYYY-MM-DD | profile-review | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | sync quick |
 | Blocker复盘YYYY-MM-DD / blocker复盘YYYY-MM-DD / 阻断复盘YYYY-MM-DD / 风控阻断复盘YYYY-MM-DD | blocker-review | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | sync quick |
 | Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
@@ -86,6 +87,7 @@ Hermes lock 硬规则：
 - 支持日期与中文命令之间有空格，例如 `分析报告 2026-05-01`。
 - 周复盘使用 `START到END`，例如 `周复盘2026-04-27到2026-05-03`。
 - 周复盘 START / END 必须是 `YYYY-MM-DD`，START <= END，范围最多 14 天。
+- 数据完整性检查只接受绝对日期，例如 `数据完整性检查2026-05-04`；`数据完整性检查昨天` 必须拒绝。
 - 学习复盘只接受绝对日期，例如 `学习复盘2026-05-04` 或 `学习总结2026-05-04`；`学习复盘昨天` 和 `学习总结昨天` 必须拒绝。
 - CANDIDATE 覆盖诊断只接受绝对日期，例如 `CANDIDATE覆盖诊断2026-05-04`；`候选覆盖昨天` 必须拒绝。
 - Outcome 闭环诊断只接受绝对日期，例如 `Outcome闭环诊断2026-05-04`；`后验闭环诊断昨天` 必须拒绝。
@@ -107,6 +109,7 @@ Hermes lock 硬规则：
 这些相对日期必须拒绝，refused_reason=`relative_date_forbidden`，不允许 date 命令，不允许 report/analyze/digest/close/daily-flow，不允许读取 reports：
 
 - 分析昨天的报告
+- 数据完整性检查昨天
 - 学习复盘昨天
 - 候选覆盖昨天
 - Outcome闭环诊断昨天
@@ -219,6 +222,7 @@ job_id：cmjob_...
 - 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
+- 数据完整性检查YYYY-MM-DD：只读检查 archive / SQLite mirror / replay / outcome / locked warning
 
 【后验复盘】
 - Profile复盘YYYY-MM-DD

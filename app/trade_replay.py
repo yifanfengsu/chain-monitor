@@ -677,8 +677,7 @@ def get_price_at_ts(
             diagnostics.query_error(f"sqlite_db_missing:{db_path}")
             return {"price": None, "source": "unavailable", "reason": "schema_error"}
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
+            conn = _open_replay_sqlite_connection(db_path, readonly=True)
             owned_conn = True
         except sqlite3.Error as exc:
             diagnostics.query_error(f"sqlite_open_failed:{exc}")
@@ -706,8 +705,6 @@ def get_price_at_ts(
                 replay_diagnostics=diagnostics,
             )
             if outcome_result["price"] is not None:
-                return outcome_result
-            if str(outcome_result.get("reason") or "") in {"outcome_asset_mismatch", "outcome_pair_mismatch"}:
                 return outcome_result
 
         if trade_opportunity_id:
@@ -4410,23 +4407,40 @@ def _persist_trade_replay_rows(
         "trade_opportunity_replay_profile_negative_repair_summary": _empty_replay_profile_negative_repair_summary(),
     }
     try:
-        _ensure_replay_persistence_schema(conn)
+        try:
+            import sqlite_store  # type: ignore
+        except ImportError:
+            from app import sqlite_store  # type: ignore
+
+        def prepare_scope() -> tuple[int, int]:
+            _ensure_replay_persistence_schema(conn)
+            examples_deleted = _delete_replay_scope_rows(
+                conn,
+                "trade_replay_examples",
+                logical_date,
+                replay_scope,
+            )
+            profile_deleted = _delete_replay_scope_rows(
+                conn,
+                "trade_replay_profile_daily_stats",
+                logical_date,
+                replay_scope,
+            )
+            return examples_deleted, profile_deleted
+
+        prepared = sqlite_store.transaction_with_retry(
+            conn,
+            prepare_scope,
+            op_name="trade_replay_persist:prepare",
+            table_name="trade_replay_examples",
+        )
+        if not prepared:
+            raise sqlite3.OperationalError("trade_replay_prepare_failed")
+        summary["examples_deleted"], summary["profile_daily_stats_deleted"] = prepared
         now_text = datetime.now(UTC).isoformat()
-        summary["examples_deleted"] = _delete_replay_scope_rows(
-            conn,
-            "trade_replay_examples",
-            logical_date,
-            replay_scope,
-        )
-        summary["profile_daily_stats_deleted"] = _delete_replay_scope_rows(
-            conn,
-            "trade_replay_profile_daily_stats",
-            logical_date,
-            replay_scope,
-        )
         if not replay_rows:
-            conn.commit()
             return summary
+        example_records: list[dict[str, Any]] = []
         for index, row in enumerate(replay_rows):
             replay_id = _deterministic_replay_id(
                 logical_date,
@@ -4492,8 +4506,25 @@ def _persist_trade_replay_rows(
                 ),
                 "created_at": now_text,
             }
-            _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
-            summary["examples_written"] += 1
+            example_records.append(record)
+
+        batch_size = sqlite_store.sqlite_write_batch_size()
+        for start in range(0, len(example_records), batch_size):
+            batch = example_records[start : start + batch_size]
+
+            def write_example_batch(rows: list[dict[str, Any]] = batch) -> None:
+                for record in rows:
+                    _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
+
+            if not sqlite_store.transaction_with_retry(
+                conn,
+                write_example_batch,
+                op_name="trade_replay_persist:examples",
+                table_name="trade_replay_examples",
+            ):
+                raise sqlite3.OperationalError("trade_replay_examples_write_failed")
+            summary["examples_written"] += len(batch)
+            sqlite_store._pause_between_batches()
 
         stats: dict[str, dict[str, Any]] = {}
         _update_profile_stats(stats, replay_rows)
@@ -4502,6 +4533,8 @@ def _persist_trade_replay_rows(
             profile_key = str(row.get("profile_key") or "")
             if profile_key:
                 grouped[profile_key].append(row)
+        profile_records: list[dict[str, Any]] = []
+        profile_daily_records: list[dict[str, Any]] = []
         for profile_key, stat in stats.items():
             samples = grouped.get(profile_key, [])
             valid_samples = [item for item in samples if _is_truthy(item.get("data_valid", 1))]
@@ -4542,25 +4575,51 @@ def _persist_trade_replay_rows(
                 "updated_at": now_text,
             }
             latest_record = {key: value for key, value in record.items() if key not in {"logical_date", "replay_scope", "strategy_config_hash"}}
-            _insert_or_update(conn, "trade_replay_profile_stats", latest_record, ("profile_key",))
-            _insert_record(conn, "trade_replay_profile_daily_stats", record)
-            summary["profile_stats_written"] += 1
-            summary["profile_daily_stats_written"] += 1
-        repair_summary = _repair_trade_opportunity_replay_profile_blockers(
+            profile_records.append(latest_record)
+            profile_daily_records.append(record)
+        for start in range(0, len(profile_records), batch_size):
+            latest_batch = profile_records[start : start + batch_size]
+            daily_batch = profile_daily_records[start : start + batch_size]
+
+            def write_profile_batch(
+                latest_rows: list[dict[str, Any]] = latest_batch,
+                daily_rows: list[dict[str, Any]] = daily_batch,
+            ) -> None:
+                for record in latest_rows:
+                    _insert_or_update(conn, "trade_replay_profile_stats", record, ("profile_key",))
+                for record in daily_rows:
+                    _insert_record(conn, "trade_replay_profile_daily_stats", record)
+
+            if not sqlite_store.transaction_with_retry(
+                conn,
+                write_profile_batch,
+                op_name="trade_replay_persist:profile_stats",
+                table_name="trade_replay_profile_stats",
+            ):
+                raise sqlite3.OperationalError("trade_replay_profile_write_failed")
+            summary["profile_stats_written"] += len(latest_batch)
+            summary["profile_daily_stats_written"] += len(daily_batch)
+            sqlite_store._pause_between_batches()
+        repair_result = sqlite_store.transaction_with_retry(
             conn,
-            {
-                profile_key: {**stat, "profile_key": profile_key}
-                for profile_key, stat in stats.items()
-                if str(profile_key or "")
-            },
-            now_text=now_text,
+            lambda: _repair_trade_opportunity_replay_profile_blockers(
+                conn,
+                {
+                    profile_key: {**stat, "profile_key": profile_key}
+                    for profile_key, stat in stats.items()
+                    if str(profile_key or "")
+                },
+                now_text=now_text,
+            ),
+            op_name="trade_replay_persist:repair_blockers",
+            table_name="trade_opportunities",
         )
+        repair_summary = repair_result if isinstance(repair_result, dict) else _empty_replay_profile_negative_repair_summary()
         summary["trade_opportunity_replay_profile_negative_repair_summary"] = repair_summary
         summary["trade_opportunity_replay_profile_negative_repaired"] = int(repair_summary.get("rows_updated") or 0)
         summary["trade_opportunity_replay_profile_negative_primary_blocker_updated"] = int(
             repair_summary.get("primary_blocker_updated") or 0
         )
-        conn.commit()
         if summary["profile_stats_written"] == 0:
             replay_diagnostics.warning("trade_replay_profile_stats_no_profile_keys")
         return summary
@@ -4600,16 +4659,33 @@ def _persist_lp_suppression_sample_rows(
         "trade_opportunity_replay_profile_negative_repaired": 0,
     }
     try:
-        _ensure_replay_persistence_schema(conn)
-        now_text = datetime.now(UTC).isoformat()
-        summary["examples_deleted"] = _delete_replay_scope_rows(
+        try:
+            import sqlite_store  # type: ignore
+        except ImportError:
+            from app import sqlite_store  # type: ignore
+
+        def prepare_scope() -> int:
+            _ensure_replay_persistence_schema(conn)
+            return _delete_replay_scope_rows(
+                conn,
+                "trade_replay_examples",
+                logical_date,
+                LP_SUPPRESSION_SAMPLE_SCOPE,
+            )
+
+        prepared = sqlite_store.transaction_with_retry(
             conn,
-            "trade_replay_examples",
-            logical_date,
-            LP_SUPPRESSION_SAMPLE_SCOPE,
+            prepare_scope,
+            op_name="lp_suppression_sample_persist:prepare",
+            table_name="trade_replay_examples",
         )
+        if prepared is False:
+            raise sqlite3.OperationalError("lp_suppression_sample_prepare_failed")
+        summary["examples_deleted"] = int(prepared or 0)
+        now_text = datetime.now(UTC).isoformat()
         valid_replay_rows = [row for row in replay_rows if _is_truthy(row.get("data_valid", 1))]
         summary["invalid_rows_skipped"] = len(replay_rows) - len(valid_replay_rows)
+        example_records: list[dict[str, Any]] = []
         for index, row in enumerate(valid_replay_rows):
             sample_id = str(row.get("sample_id") or row.get("delivery_audit_id") or row.get("signal_id") or f"row_{index}")
             replay_id = (
@@ -4699,9 +4775,24 @@ def _persist_lp_suppression_sample_rows(
                 "features_json": json.dumps(features, ensure_ascii=False, sort_keys=True),
                 "created_at": now_text,
             }
-            _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
-            summary["examples_written"] += 1
-        conn.commit()
+            example_records.append(record)
+        batch_size = sqlite_store.sqlite_write_batch_size()
+        for start in range(0, len(example_records), batch_size):
+            batch = example_records[start : start + batch_size]
+
+            def write_example_batch(rows: list[dict[str, Any]] = batch) -> None:
+                for record in rows:
+                    _insert_or_update(conn, "trade_replay_examples", record, ("replay_id",))
+
+            if not sqlite_store.transaction_with_retry(
+                conn,
+                write_example_batch,
+                op_name="lp_suppression_sample_persist:examples",
+                table_name="trade_replay_examples",
+            ):
+                raise sqlite3.OperationalError("lp_suppression_sample_examples_write_failed")
+            summary["examples_written"] += len(batch)
+            sqlite_store._pause_between_batches()
         return summary
     except sqlite3.Error as exc:
         try:
@@ -4824,11 +4915,7 @@ def run_lp_suppression_sample_replay(
         base_summary.update(diagnostics.as_dict())
         return base_summary
     try:
-        if dry_run:
-            conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
-        else:
-            conn = sqlite3.connect(str(resolved_path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_replay_sqlite_connection(resolved_path, readonly=dry_run)
     except sqlite3.Error as exc:
         diagnostics.query_error(f"sqlite_open_failed:{exc}")
         base_summary["status"] = "error"
@@ -5322,21 +5409,31 @@ def run_trade_replay(
         return summary
 
     try:
-        if dry_run:
-            conn = sqlite3.connect(f"file:{resolved_path}?mode=ro", uri=True)
-        else:
-            conn = sqlite3.connect(str(resolved_path))
-        conn.row_factory = sqlite3.Row
+        conn = _open_replay_sqlite_connection(resolved_path, readonly=dry_run)
     except sqlite3.Error as exc:
         diagnostics.query_error(f"sqlite_open_failed:{exc}")
+        diagnostics.schema_error(f"schema_error:sqlite_open_failed:{exc}")
         summary["status"] = "error"
         summary.update(diagnostics.as_dict())
         return summary
 
     try:
         if not dry_run:
-            _ensure_replay_persistence_schema(conn)
-            conn.commit()
+            try:
+                import sqlite_store  # type: ignore
+            except ImportError:
+                from app import sqlite_store  # type: ignore
+
+            if not sqlite_store.transaction_with_retry(
+                conn,
+                lambda: _ensure_replay_persistence_schema(conn),
+                op_name="trade_replay:ensure_schema",
+                table_name="trade_replay_examples",
+            ):
+                diagnostics.query_error("trade_replay_schema_init_failed")
+                summary["status"] = "error"
+                summary.update(diagnostics.as_dict())
+                return summary
         if dry_run:
             persisted_rows = _load_persisted_replay_rows(
                 conn,
@@ -5955,6 +6052,15 @@ def _resolve_db_path() -> Path:
     if path.is_absolute():
         return path
     return Path(__file__).resolve().parents[1] / path
+
+
+def _open_replay_sqlite_connection(path: Path, *, readonly: bool) -> sqlite3.Connection:
+    try:
+        import sqlite_store  # type: ignore
+    except ImportError:
+        from app import sqlite_store  # type: ignore
+
+    return sqlite_store.open_sqlite_connection(path, readonly=readonly, row_factory=True)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:

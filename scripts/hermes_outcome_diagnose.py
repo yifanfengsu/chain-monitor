@@ -756,9 +756,13 @@ def group_missing(rows: Iterable[dict[str, Any]], matched_ids: set[str], id_fiel
 
 
 def open_ro_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+    # sqlite_store opens read-only connections with URI ?mode=ro and shared PRAGMAs.
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    if str(app_dir) not in sys.path:
+        sys.path.insert(0, str(app_dir))
+    import sqlite_store  # type: ignore
+
+    return sqlite_store.open_sqlite_connection(db_path, readonly=True, row_factory=True)
 
 
 def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:

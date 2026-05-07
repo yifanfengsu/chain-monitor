@@ -33,6 +33,7 @@ Use this Skill when the user requests chain-monitor report analysis, daily repor
 分析报告2026-05-01
 检查回放2026-05-01
 数据质量2026-05-01
+数据完整性检查2026-05-01
 学习复盘2026-05-04
 CANDIDATE覆盖诊断2026-05-04
 Outcome闭环诊断2026-05-04
@@ -260,6 +261,7 @@ Telegram 示例：
 /chain-monitor-report-analyst 分析报告2026-05-01
 /chain-monitor-report-analyst 检查回放2026-05-01
 /chain-monitor-report-analyst 数据质量2026-05-01
+/chain-monitor-report-analyst 数据完整性检查2026-05-01
 /chain-monitor-report-analyst Profile复盘2026-05-01
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
@@ -329,6 +331,7 @@ Wrapper internal commands document only:
 ./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
+./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD
 ./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD
@@ -434,6 +437,7 @@ Rules:
 /chain-monitor-report-analyst 分析报告2026-05-01
 /chain-monitor-report-analyst 检查回放2026-05-01
 /chain-monitor-report-analyst 数据质量2026-05-01
+/chain-monitor-report-analyst 数据完整性检查2026-05-01
 /chain-monitor-report-analyst Profile复盘2026-05-01
 /chain-monitor-report-analyst Blocker复盘2026-05-01
 /chain-monitor-report-analyst Shadow复盘2026-05-01
@@ -600,6 +604,39 @@ Rules:
 - Do not provide trading advice.
 - Do not treat `CANDIDATE` or `VERIFIED` as an order instruction.
 - Requests such as “今天的分析报告”“昨天的报告”“分析一下” must not execute; ask for an absolute `YYYY-MM-DD`.
+
+## Data Integrity Check
+
+用户说：
+
+```text
+数据完整性检查YYYY-MM-DD
+数据入库检查YYYY-MM-DD
+入库完整性YYYY-MM-DD
+```
+
+Hermes should run only the router:
+
+```bash
+~/.hermes/bin/chain-monitor-cn-router --text "数据完整性检查YYYY-MM-DD" --execute --platform telegram
+```
+
+Router maps to:
+
+```bash
+./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD
+```
+
+This command is read-only. It checks archive file presence, SQLite mirror table counts and latest timestamps, replay/outcome closure, daily_report field availability, and SQLite locked warning aggregates.
+
+Rules:
+
+- It must not execute make, migrate, report generation, replay generation, outcome catchup, archive compression, compact, vacuum, prune, or export execute.
+- It must not modify SQLite, archive, cache, report inputs, or private config.
+- If the status is `recoverable`, only tell the user that SSH can manually run `make db-migrate-date DATE=YYYY-MM-DD`; do not run it.
+- `数据完整性检查昨天` and all relative-date variants must be rejected by the router.
+- Output only aggregate counts and statuses; do not print raw DB rows, archive payloads, full transaction hashes, full EVM addresses, tokens, or RPC URLs.
+- The result statuses are `complete`, `recoverable`, `degraded`, `invalid`, and `unchecked`.
 
 ## Learning Review
 

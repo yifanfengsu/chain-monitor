@@ -90,6 +90,11 @@ require_out learning_review 'learning-review'
 require_out learning_review '"--date"'
 require_out learning_review '"2026-05-04"'
 
+run_ok data_integrity --text '数据完整性检查2026-05-07' --dry-run
+require_out data_integrity 'data-integrity'
+require_out data_integrity '"--date"'
+require_out data_integrity '"2026-05-07"'
+
 run_ok learning_summary --text '学习总结2026-05-04' --dry-run
 require_out learning_summary 'learning-review'
 require_out learning_summary '"--date"'
@@ -159,6 +164,11 @@ run_fail learning_relative --text '学习复盘昨天' --dry-run
 require_out learning_relative '绝对日期'
 require_out learning_relative 'YYYY-MM-DD'
 forbid_out learning_relative 'learning-review'
+
+run_fail data_integrity_relative --text '数据完整性检查昨天' --dry-run
+require_out data_integrity_relative '绝对日期'
+require_out data_integrity_relative 'YYYY-MM-DD'
+forbid_out data_integrity_relative 'data-integrity'
 
 run_fail candidate_relative --text '候选覆盖昨天' --dry-run
 require_out candidate_relative '绝对日期'

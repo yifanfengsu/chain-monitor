@@ -88,6 +88,7 @@ for pattern in \
   "分析报告YYYY-MM-DD" \
   "检查回放YYYY-MM-DD" \
   "数据质量YYYY-MM-DD" \
+  "数据完整性检查YYYY-MM-DD" \
   "Profile复盘YYYY-MM-DD" \
   "Blocker复盘YYYY-MM-DD" \
   "Shadow复盘YYYY-MM-DD" \
@@ -141,6 +142,7 @@ for pattern in \
   "不给交易建议" \
   "数据库瘦身预检" \
   "db-slim-dry-run" \
+  "data-integrity" \
   "不输出原始地址" \
   "/chain-monitor-report-analyst 标准日报流程2026-05-01" \
   "/chain-monitor-report-analyst 周复盘2026-04-27到2026-05-03"
@@ -161,6 +163,7 @@ for pattern in \
   "submit-daily-flow" \
   "replay-check" \
   "data-quality" \
+  "data-integrity" \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
@@ -198,6 +201,7 @@ for pattern in \
   "submit-daily-flow" \
   "replay-check" \
   "data-quality" \
+  "data-integrity" \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
@@ -240,6 +244,7 @@ for pattern in \
   "submit-daily-flow" \
   "replay-check" \
   "data-quality" \
+  "data-integrity" \
   "profile-review" \
   "blocker-review" \
   "shadow-review" \
@@ -284,6 +289,7 @@ for wrapper_argv in \
   "./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD" \
+  "./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD" \
   "./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD" \
@@ -426,6 +432,13 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "db-size-diagnose"' "$TMP_DIR/db_size.ou
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库瘦身预检" --dry-run --platform telegram >"$TMP_DIR/db_slim.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "db-slim-dry-run"' "$TMP_DIR/db_slim.out" || fail "router db-slim-dry-run argv is not wrapper-only"
 
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据完整性检查2026-05-07" --dry-run --platform telegram >"$TMP_DIR/data_integrity.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "data-integrity"' "$TMP_DIR/data_integrity.out" || fail "router data-integrity argv is not wrapper-only"
+grep -Fq '"--date", "2026-05-07"' "$TMP_DIR/data_integrity.out" || fail "router data-integrity did not include date"
+
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据入库检查2026-05-07" --dry-run --platform telegram >"$TMP_DIR/data_integrity_alias.out"
+grep -Fq '"./scripts/hermes_cm_ops.sh", "data-integrity"' "$TMP_DIR/data_integrity_alias.out" || fail "router data-integrity alias is not wrapper-only"
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "学习复盘2026-05-04" --dry-run --platform telegram >"$TMP_DIR/learning.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "learning-review"' "$TMP_DIR/learning.out" || fail "router learning-review argv is not wrapper-only"
 
@@ -486,6 +499,13 @@ candidate_relative_rc=$?
 set -e
 [[ "$candidate_relative_rc" -ne 0 ]] || fail "router accepted relative candidate-coverage date"
 grep -Fq 'YYYY-MM-DD' "$TMP_DIR/candidate_relative.out" "$TMP_DIR/candidate_relative.err" || fail "router relative candidate-coverage did not ask for absolute date"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据完整性检查昨天" --dry-run --platform telegram >"$TMP_DIR/data_integrity_relative.out" 2>"$TMP_DIR/data_integrity_relative.err"
+data_integrity_relative_rc=$?
+set -e
+[[ "$data_integrity_relative_rc" -ne 0 ]] || fail "router accepted relative data-integrity date"
+grep -Fq 'YYYY-MM-DD' "$TMP_DIR/data_integrity_relative.out" "$TMP_DIR/data_integrity_relative.err" || fail "router relative data-integrity did not ask for absolute date"
 
 set +e
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome闭环诊断昨天" --dry-run --platform telegram >"$TMP_DIR/outcome_relative.out" 2>"$TMP_DIR/outcome_relative.err"

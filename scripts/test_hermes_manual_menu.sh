@@ -95,6 +95,20 @@ require_out data_quality 'data-quality'
 require_out data_quality '--date'
 require_out data_quality '2026-05-01'
 
+run_ok data_integrity --text '数据完整性检查2026-05-07' --dry-run --platform telegram
+require_out data_integrity 'data-integrity'
+require_out data_integrity '--date'
+require_out data_integrity '2026-05-07'
+
+run_ok data_integrity_ingest --text '数据入库检查2026-05-07' --dry-run --platform telegram
+require_out data_integrity_ingest 'data-integrity'
+
+run_ok data_integrity_short --text '入库完整性2026-05-07' --dry-run --platform telegram
+require_out data_integrity_short 'data-integrity'
+
+run_fail data_integrity_relative --text '数据完整性检查昨天' --dry-run --platform telegram
+require_out data_integrity_relative 'YYYY-MM-DD'
+
 run_ok profile_review --text 'Profile复盘2026-05-01' --dry-run --platform telegram
 require_out profile_review 'profile-review'
 require_out profile_review '--date'
@@ -282,6 +296,7 @@ grep -Fq '最近任务' "$TMP_DIR/menu_execute.out" || fail "menu execute missin
 grep -Fq '空间快检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 空间快检"
 grep -Fq '数据库体积诊断' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库体积诊断"
 grep -Fq '数据库瘦身预检' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据库瘦身预检"
+grep -Fq '数据完整性检查YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 数据完整性检查YYYY-MM-DD"
 grep -Fq '学习复盘YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习复盘YYYY-MM-DD"
 grep -Fq '学习总结YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing 学习总结YYYY-MM-DD"
 grep -Fq 'CANDIDATE覆盖诊断YYYY-MM-DD' "$TMP_DIR/menu_execute.out" || fail "menu execute missing CANDIDATE覆盖诊断YYYY-MM-DD"

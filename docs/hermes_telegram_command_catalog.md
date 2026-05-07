@@ -30,6 +30,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 /chain-monitor-report-analyst 分析报告2026-05-01
 /chain-monitor-report-analyst 检查回放2026-05-01
 /chain-monitor-report-analyst 数据质量2026-05-01
+/chain-monitor-report-analyst 数据完整性检查2026-05-01
 /chain-monitor-report-analyst 学习复盘2026-05-01
 /chain-monitor-report-analyst 学习总结2026-05-01
 /chain-monitor-report-analyst CANDIDATE覆盖诊断2026-05-04
@@ -74,6 +75,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | 生成摘要YYYY-MM-DD 深度 | 生成深度分析输入包 | `./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD --mode deep` | medium | sync。输出脱敏 digest 路径。 |
 | 检查回放YYYY-MM-DD | 检查 trade replay 是否为 persisted full replay | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | 返回 replay_source、replay_scope、persisted_rows_found、replay_count、valid_replay_count、avg_net_pnl_bps、suppressed_replay_count 等摘要。 |
 | 数据质量YYYY-MM-DD | 判断这天是否适合做策略质量分析 | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | 返回 data_quality_status、zero_activity_day、active_hours、signal_count、raw_event_count、LP 行数、market context、coverage、DB/archive mismatch。 |
+| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | 判断 archive 与 SQLite mirror 是否完整，archive 是否可补齐 SQLite | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | 只读，不执行 make，不自动修复；返回 archive 文件状态、核心 SQLite 表当日行数和最新时间、replay/outcome 闭环、daily_report 字段、SQLite locked warning，并给出 complete/recoverable/degraded/invalid/unchecked。 |
 | Profile复盘YYYY-MM-DD | 查看 trade_replay_profile_daily_stats 的 profile 后验 | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | 返回样本最多 profile、avg_net_pnl_bps、clean_followthrough_rate、bad_entry_rate、absorption_reversal_rate、chop_rate、recommended_action。 |
 | Blocker复盘YYYY-MM-DD | 查看 replay_profile_negative / no_trade_lock / low_quality 等 blocker 分布 | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | 用于判断风控是否正确阻止负收益 profile。 |
 | Shadow复盘YYYY-MM-DD | 查看 shadow_funnel_summary | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | 返回 shadow_candidate_count、shadow_verified_count、near_candidate_but_blocked、score_below_shadow_candidate 等。 |
@@ -99,6 +101,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 ## 禁止命令区
 
 - 不支持“分析昨天的报告”
+- 不支持“数据完整性检查昨天”
 - 不支持“学习复盘昨天”
 - 不支持“候选覆盖昨天”
 - 不支持“LP诊断昨天”
@@ -149,6 +152,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
+- 数据完整性检查YYYY-MM-DD：只读检查 archive / SQLite mirror / replay / outcome / locked warning
 
 【后验复盘】
 - Profile复盘YYYY-MM-DD

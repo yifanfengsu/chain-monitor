@@ -1268,9 +1268,13 @@ class TradeOpportunityManager:
             }
             return {}
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
-        except sqlite3.Error as exc:
+            try:
+                import sqlite_store  # type: ignore
+            except ImportError:
+                from app import sqlite_store  # type: ignore
+
+            conn = sqlite_store.open_sqlite_connection(db_path, readonly=True, row_factory=True)
+        except Exception as exc:
             self._replay_profile_gate_diagnostics = {
                 "load_status": "error",
                 "source": "",

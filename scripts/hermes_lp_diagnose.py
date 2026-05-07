@@ -40,6 +40,18 @@ MAJOR_PAIRS = (
     "SOL/USDT",
     "SOL/USDC",
 )
+
+
+def open_ro_sqlite(db_path: Path) -> sqlite3.Connection:
+    # sqlite_store opens read-only connections with URI ?mode=ro and shared PRAGMAs.
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    if str(app_dir) not in sys.path:
+        sys.path.insert(0, str(app_dir))
+    import sqlite_store  # type: ignore
+
+    return sqlite_store.open_sqlite_connection(db_path, readonly=True, row_factory=True)
+
+
 BJ_TZ = dt.timezone(dt.timedelta(hours=8))
 
 
@@ -537,8 +549,7 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
         warnings.append("sqlite_missing:data/chain_monitor.sqlite")
     else:
         try:
-            conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
+            conn = open_ro_sqlite(db_path)
         except sqlite3.Error as exc:
             warnings.append(f"sqlite_open_failed:{exc.__class__.__name__}")
         else:

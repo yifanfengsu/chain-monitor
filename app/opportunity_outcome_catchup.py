@@ -382,16 +382,25 @@ def opportunity_outcome_catchup(
         result["error"] = "sqlite_missing"
         return result
 
-    uri = path.resolve().as_uri() + ("?mode=ro" if dry_run else "")
-    conn = sqlite3.connect(uri, uri=dry_run)
-    conn.row_factory = sqlite3.Row
+    try:
+        import sqlite_store  # type: ignore
+    except ImportError:
+        from app import sqlite_store  # type: ignore
+
+    conn = sqlite_store.open_sqlite_connection(path, readonly=dry_run, row_factory=True)
     try:
         if not table_exists(conn, "opportunity_outcomes"):
             result["error"] = "missing_table:opportunity_outcomes"
             return result
         if not dry_run:
-            conn.execute("BEGIN")
-            ensure_opportunity_outcome_columns(conn)
+            if not sqlite_store.transaction_with_retry(
+                conn,
+                lambda: ensure_opportunity_outcome_columns(conn),
+                op_name="outcome_catchup:ensure_schema",
+                table_name="opportunity_outcomes",
+            ):
+                result["error"] = "ensure_schema_failed"
+                return result
         pending_rows = fetch_pending_rows(conn, logical_date)
         result["pending_rows"] = len(pending_rows)
         horizon_counter = Counter(str(coerce_int(row.get("window_sec")) or "missing") for row in pending_rows)
@@ -403,6 +412,7 @@ def opportunity_outcome_catchup(
         source_counter: Counter[str] = Counter()
         still_pending = 0
         updates: list[dict[str, Any]] = []
+        write_actions: list[tuple[str, dict[str, Any], dict[str, Any] | str]] = []
         for row in pending_rows:
             due_at = coerce_epoch(row.get("due_at"))
             window = coerce_int(row.get("window_sec"))
@@ -411,7 +421,7 @@ def opportunity_outcome_catchup(
                 result["due_time_parse_error_count"] += 1
                 still_pending += 1
                 if not dry_run:
-                    _record_unresolved(conn, columns, row, "due_time_parse_error", now_value)
+                    write_actions.append(("unresolved", row, "due_time_parse_error"))
                 continue
             if due_at > now_value:
                 reason_counter["due_time_not_reached"] += 1
@@ -430,7 +440,7 @@ def opportunity_outcome_catchup(
                 reason_counter[reason or "missing_price_snapshot"] += 1
                 still_pending += 1
                 if not dry_run:
-                    _record_unresolved(conn, columns, row, reason or "missing_price_snapshot", now_value)
+                    write_actions.append(("unresolved", row, reason or "missing_price_snapshot"))
                 continue
             source = str(completion.get("source") or "catchup_unknown")
             source_counter[source] += 1
@@ -448,7 +458,7 @@ def opportunity_outcome_catchup(
                 }
             )
             if not dry_run:
-                _update_row(conn, columns, row, completion, now_value)
+                write_actions.append(("update", row, completion))
                 result["updated_count"] += 1
         result["still_pending_count"] = still_pending
         result["unresolved_count"] = still_pending
@@ -456,12 +466,31 @@ def opportunity_outcome_catchup(
         result["source_distribution"] = dict(sorted(source_counter.items()))
         result["updates"] = updates[:20]
         if not dry_run:
-            conn.commit()
+            batch_size = sqlite_store.sqlite_write_batch_size()
+            for index in range(0, len(write_actions), batch_size):
+                batch = write_actions[index : index + batch_size]
+
+                def apply_batch(actions: list[tuple[str, dict[str, Any], dict[str, Any] | str]] = batch) -> None:
+                    for action, action_row, payload in actions:
+                        if action == "update" and isinstance(payload, dict):
+                            _update_row(conn, columns, action_row, payload, now_value)
+                        elif action == "unresolved":
+                            _record_unresolved(conn, columns, action_row, str(payload), now_value)
+
+                if not sqlite_store.transaction_with_retry(
+                    conn,
+                    apply_batch,
+                    op_name="outcome_catchup:update_batch",
+                    table_name="opportunity_outcomes",
+                ):
+                    result["error"] = "sqlite_update_failed"
+                    break
+                sqlite_store._pause_between_batches()
             after = fetch_pending_rows(conn, logical_date)
             result["still_pending_count"] = len(after)
         return result
     except Exception:
-        if not dry_run:
+        if not dry_run and conn.in_transaction:
             conn.rollback()
         raise
     finally:
