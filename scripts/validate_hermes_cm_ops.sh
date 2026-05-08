@@ -139,6 +139,7 @@ health_block="$(extract_block 'cmd_health()' 'cmd_system_health()')"
 system_health_block="$(extract_block 'cmd_system_health()' 'cmd_listener_health()')"
 listener_block="$(extract_block 'cmd_listener_health()' 'append_flow_step()')"
 daily_flow_block="$(extract_block 'cmd_daily_flow()' 'cmd_replay_check()')"
+data_quality_block="$(extract_block 'cmd_data_quality()' 'cmd_data_integrity()')"
 space_block="$(extract_block 'cmd_space_check()' 'cmd_archive_compress_check()')"
 db_size_block="$(extract_block 'cmd_db_size_diagnose()' 'run_output_value()')"
 db_slim_block="$(extract_block 'cmd_db_slim_dry_run()' 'run_output_value()')"
@@ -155,6 +156,7 @@ lp_block="$(extract_block 'cmd_lp_diagnose()' 'cmd_space_check()')"
 [[ -n "$help_block" ]] || die "could not extract cmd_help"
 [[ -n "$menu_block" ]] || die "could not extract cmd_command_menu"
 [[ -n "$daily_flow_block" ]] || die "could not extract cmd_daily_flow"
+[[ -n "$data_quality_block" ]] || die "could not extract cmd_data_quality"
 [[ -n "$db_size_block" ]] || die "could not extract cmd_db_size_diagnose"
 [[ -n "$db_slim_block" ]] || die "could not extract cmd_db_slim_dry_run"
 [[ -n "$data_integrity_block" ]] || die "could not extract cmd_data_integrity"
@@ -232,6 +234,10 @@ for required in \
   "daily-close:archive_compress_dry_run" \
   "make archive-compress-dry-run" \
   "make trade-replay-full" \
+  "outcome_catchup_dry_run" \
+  "outcome_catchup_execute" \
+  "outcome_catchup_skipped" \
+  "would_update_rows" \
   "make report-daily-date" \
   "make daily-compare" \
   "make sqlite-checkpoint" \
@@ -239,6 +245,19 @@ for required in \
   "failed_substep"
 do
   grep -Fq -- "$required" <<<"$daily_flow_block" || die "daily-flow missing required command: ${required}"
+done
+
+for required in \
+  "lp_rows_source" \
+  "lp_status" \
+  "run_overview" \
+  "lp_signal_summary" \
+  "delivered_plus_suppressed" \
+  "lp_suppression_summary" \
+  "report_mapping_missing" \
+  "no_lp_samples_or_coverage_gap"
+do
+  grep -Fq -- "$required" <<<"$data_quality_block" || die "data-quality missing required LP compatibility content: ${required}"
 done
 
 if grep -Fq -- "make daily-close" <<<"$daily_flow_block"; then
@@ -306,6 +325,14 @@ for required in \
   "opportunity_outcomes" \
   "archive_sqlite_status" \
   "final_status" \
+  "core_collection_status" \
+  "learning_loop_degraded" \
+  "mirror_degraded" \
+  "report_schema_degraded" \
+  "sqlite_write_warning" \
+  "checked_tables" \
+  "unchecked_tables" \
+  "mismatch_by_table" \
   "recoverable" \
   "make db-migrate-date DATE=" \
   "sqlite_locked_warning_count" \
@@ -530,7 +557,16 @@ for required in \
   "notifier.get_notifier_health" \
   "attempted=" \
   "sent_ok=" \
+  "send_failed=" \
   "sent_failed=" \
+  "send_attempted=" \
+  "suppressed_or_not_eligible" \
+  "delivery_audit_rows" \
+  "telegram_deliveries_rows" \
+  "delivery_audit_time_field" \
+  "window_start_bj" \
+  "latest_row_bj" \
+  "metric_invariant_warning" \
   "pool_timeout_count" \
   "retry_after_count" \
   "network_error_count" \
@@ -629,6 +665,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bash scripts/test_listener_health_telegram_outbound_breakdown.sh >"$TMP_DIR/listener_health_tg_breakdown.out"
+grep -Fq "listener-health Telegram outbound breakdown test ok" "$TMP_DIR/listener_health_tg_breakdown.out" || die "listener-health Telegram outbound breakdown test did not pass"
+
+bash scripts/test_listener_health_time_window_consistency.sh >"$TMP_DIR/listener_health_time_window.out"
+grep -Fq "listener-health time window consistency test ok" "$TMP_DIR/listener_health_time_window.out" || die "listener-health time window consistency test did not pass"
+
 bash scripts/test_listener_health_telegram_outbound.sh >"$TMP_DIR/listener_health_tg_outbound.out"
 grep -Fq "listener-health Telegram outbound test ok" "$TMP_DIR/listener_health_tg_outbound.out" || die "listener-health Telegram outbound test did not pass"
 
@@ -640,6 +682,15 @@ grep -Fq "Hermes outcome diagnose test passed" "$TMP_DIR/outcome_diagnose.out" |
 
 bash scripts/test_data_integrity_check.sh >"$TMP_DIR/data_integrity.out"
 grep -Fq "data-integrity check tests passed" "$TMP_DIR/data_integrity.out" || die "data-integrity test did not pass"
+
+bash scripts/test_daily_flow_outcome_catchup.sh >"$TMP_DIR/daily_flow_outcome_catchup.out"
+grep -Fq "daily-flow outcome-catchup tests passed" "$TMP_DIR/daily_flow_outcome_catchup.out" || die "daily-flow outcome-catchup test did not pass"
+
+bash scripts/test_data_quality_lp_rows.sh >"$TMP_DIR/data_quality_lp_rows.out"
+grep -Fq "data-quality LP rows tests passed" "$TMP_DIR/data_quality_lp_rows.out" || die "data-quality LP rows test did not pass"
+
+bash scripts/test_data_integrity_learning_loop_degraded.sh >"$TMP_DIR/data_integrity_learning_loop.out"
+grep -Fq "data-integrity learning-loop degraded test passed" "$TMP_DIR/data_integrity_learning_loop.out" || die "data-integrity learning-loop degraded test did not pass"
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/ops_audit.ndjson" \
 HERMES_OPS_LOCK_PATH="$TMP_DIR/hermes_ops.lock" \

@@ -627,6 +627,23 @@ def load_existing(job_id: str) -> dict[str, Any]:
     return refresh_meta(job_id)
 
 
+def daily_flow_substeps(meta: dict[str, Any]) -> list[str]:
+    if meta.get("kind") != "daily-flow":
+        return []
+    path = result_file_for_meta(meta)
+    if not path.exists():
+        return []
+    steps: list[str] = []
+    for line in redact(path.read_text(encoding="utf-8", errors="replace")).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("step="):
+            continue
+        step = stripped.split("=", 1)[1].strip()
+        if step and step not in steps:
+            steps.append(step)
+    return steps
+
+
 def action_status(args: argparse.Namespace, request_id: str, original_hash: str) -> int:
     with job_lock():
         meta = load_existing(args.job_id)
@@ -661,6 +678,9 @@ def action_status(args: argparse.Namespace, request_id: str, original_hash: str)
         print(f"refused_reason: {meta.get('refused_reason', '')}")
         print(f"timeout_hit: {meta.get('timeout_hit', '')}")
         print(f"timeout_limit_sec: {meta.get('timeout_limit_sec', '')}")
+    substeps = daily_flow_substeps(meta)
+    if substeps:
+        print("daily_flow_substeps: " + ",".join(substeps))
     print(f"result command: 查看结果{meta.get('job_id')}")
     print(f"log command: 查看日志{meta.get('job_id')}")
     print(f"diagnose command: 诊断任务{meta.get('job_id')}")

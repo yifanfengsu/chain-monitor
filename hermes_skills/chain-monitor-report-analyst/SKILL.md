@@ -167,6 +167,7 @@ Rules:
 - 标准日报流程、空间检查、归档压缩预检、周复盘是后台任务。
 - 标准日报流程只能跑已经结束的北京时间逻辑日，不支持当前北京时间日期。
 - 例如北京时间 2026-05-03 还没结束时，不能跑 标准日报流程2026-05-03；请在次日 00:05 后执行。
+- 标准日报流程在 full replay 后会记录 outcome_catchup_dry_run；would_update_rows > 0 时内部受控执行 outcome_catchup_execute，否则记录 outcome_catchup_skipped。
 - 不要因为用户催促就重新提交相同任务；应查询 existing job 或让用户使用“任务状态JOB_ID”。
 - 不得绕过 job submit 直接执行 daily-flow/space-check/weekly-review。
 - 不得用 date 解析相对日期。
@@ -233,6 +234,7 @@ Rules:
 - 不得把“昨天/今天/前天”转换成日期。
 - 不得运行 date -u 或 TZ=Asia/Shanghai date 来解析用户相对日期。
 - 标准日报流程只能跑已经结束的北京时间逻辑日；当前北京时间日期会被 submit 阶段拒绝且不创建 job。
+- 标准日报流程自动处理已结束日期的 opportunity_outcomes catchup；Telegram 仍只开放 Outcome补全预检。
 - 报告缺失时，不得自动生成日报；必须提示用户运行：标准日报流程YYYY-MM-DD。
 - 所有输出中文、简洁、适合 Telegram。
 - 必须展示 request_id，如果 wrapper 输出中有。
@@ -627,7 +629,7 @@ Router maps to:
 ./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD
 ```
 
-This command is read-only. It checks archive file presence, SQLite mirror table counts and latest timestamps, replay/outcome closure, daily_report field availability, and SQLite locked warning aggregates.
+This command is read-only. It checks archive file presence, SQLite mirror table counts and latest timestamps, replay/outcome closure, daily_report field availability, SQLite locked warning aggregates, and mirror checked/unchecked/mismatch details.
 
 Rules:
 
@@ -637,6 +639,8 @@ Rules:
 - `数据完整性检查昨天` and all relative-date variants must be rejected by the router.
 - Output only aggregate counts and statuses; do not print raw DB rows, archive payloads, full transaction hashes, full EVM addresses, tokens, or RPC URLs.
 - The result statuses are `complete`, `recoverable`, `degraded`, `invalid`, and `unchecked`.
+- It must distinguish `collection_degraded`, `mirror_degraded`, `learning_loop_degraded`, and `report_schema_degraded`. If core collection is complete but opportunity_outcomes are past-due pending, report `reason=learning_loop_degraded` rather than implying collection failure.
+- `sqlite_final_write_failure_count` is a warning (`sqlite_write_warning=final_write_failure_detected`) unless core archive/table checks are actually broken.
 
 ## Learning Review
 
@@ -764,7 +768,7 @@ Router maps to:
 ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run
 ```
 
-Telegram 不开放 `outcome-catchup --execute`；execute 只能 SSH 手动运行并带 `--confirm`。
+Telegram 不开放写入补全；写入补全只允许标准日报流程内部对已结束的北京时间逻辑日受控执行。
 
 LP 抑制抽样预检只允许 dry-run：
 
@@ -837,6 +841,7 @@ LP 诊断必须只读 canonical daily report 和 SQLite 聚合字段。输出必
 
 Rules:
 
+- data-quality 和 LP 诊断读取 LP rows 时按 `run_overview.lp_signal_rows`、`lp_signal_summary.lp_signal_rows`、`delivered_count + suppressed_count`、`lp_suppression_summary.delivered + suppressed` 兼容判断；如果得到正数，不得提示 LP rows missing。
 - 如果 SQLite 有 LP-like signals 但 daily_report 缺少 LP 明细字段或 lp_signal_rows 为 0，提示 report mapping 问题。
 - 如果 raw/parsed 有 LP-like 但 signals 为 0，提示 LP analyzer / gate 问题。
 - 如果 signals、raw/parsed、delivery_audit 全部为 0，提示当天无可用 LP 样本或扫描覆盖不足。

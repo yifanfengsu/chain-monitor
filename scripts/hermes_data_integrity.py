@@ -62,6 +62,23 @@ REPORT_FIELDS = (
     "major_coverage_summary",
 )
 
+CORE_COLLECTION_TABLES = (
+    "raw_events",
+    "parsed_events",
+    "signals",
+    "delivery_audit",
+    "trade_opportunities",
+)
+
+CORE_MIRROR_TABLES = (
+    "raw_events",
+    "parsed_events",
+    "signals",
+    "delivery_audit",
+    "trade_opportunities",
+    "trade_replay_examples",
+)
+
 LOCK_WARNING_TERMS = (
     "database is locked",
     "sqlite_store warning",
@@ -713,6 +730,82 @@ def archive_sqlite_status(archive: dict[str, Any], tables: dict[str, dict[str, A
     return "unchecked", "字段不足，无法判断 archive 与 SQLite 是否匹配"
 
 
+def list_text(values: list[str]) -> str:
+    return ",".join(values) if values else "none"
+
+
+def mirror_detail_summary(report: dict[str, Any]) -> dict[str, Any]:
+    payload = as_dict(report.get("payload"))
+    data_source = as_dict(payload.get("data_source_summary"))
+    quality = as_dict(payload.get("data_quality_summary"))
+    detail = as_dict(data_source.get("db_archive_mirror_detail"))
+    checked: list[str] = []
+    matched: list[str] = []
+    mismatched: list[str] = []
+    unchecked: list[str] = []
+    mismatch_by_table: dict[str, Any] = {}
+
+    for table, raw_item in sorted(detail.items()):
+        item = as_dict(raw_item)
+        match_rate = item.get("match_rate")
+        mismatch = item.get("mismatch")
+        if match_rate is None and mismatch is None:
+            unchecked.append(str(table))
+            continue
+        checked.append(str(table))
+        if boolish_true(mismatch):
+            mismatched.append(str(table))
+            mismatch_by_table[str(table)] = {
+                key: item.get(key)
+                for key in ("match_rate", "sqlite_rows", "archive_rows", "cache_rows", "compressed_archive_rows", "unavailable_rows")
+                if key in item
+            }
+        else:
+            matched.append(str(table))
+
+    sqlite_health = as_dict(data_source.get("sqlite_health"))
+    archive_mirror = as_dict(sqlite_health.get("archive_mirror"))
+    skipped = str(archive_mirror.get("skipped") or "").strip()
+    skipped_by_fast_mode = unchecked if skipped == "fast_mode" else []
+    match_rate = data_source.get("db_archive_mirror_match_rate", quality.get("db_archive_mirror_match_rate"))
+
+    return {
+        "db_archive_mirror_match_rate": match_rate if match_rate is not None else "missing",
+        "checked_tables": checked,
+        "matched_tables": matched,
+        "mismatched_tables": mismatched,
+        "unchecked_tables": unchecked,
+        "skipped_by_fast_mode": skipped_by_fast_mode,
+        "mismatch_by_table": mismatch_by_table,
+        "low_rate_without_mismatch": bool(checked or unchecked) and not mismatched and safe_float(match_rate) is not None and float(match_rate) < 0.95,
+        "core_mismatched_tables": [table for table in mismatched if table in CORE_MIRROR_TABLES],
+    }
+
+
+def core_collection_status(
+    archive: dict[str, Any],
+    sqlite_data: dict[str, Any],
+    report_stats: dict[str, Any],
+) -> tuple[str, list[str]]:
+    tables = as_dict(sqlite_data.get("tables"))
+    missing: list[str] = []
+    for table in CORE_COLLECTION_TABLES:
+        if safe_int(as_dict(tables.get(table)).get("rows_for_date")) <= 0:
+            missing.append(table)
+    replay = as_dict(sqlite_data.get("replay"))
+    replay_full = safe_int(replay.get("full_count"), 0)
+    report_replay_count = safe_int(report_stats.get("replay_count"), 0)
+    replay_source = str(report_stats.get("replay_source") or "missing")
+    replay_scope = str(report_stats.get("replay_scope") or "missing")
+    if replay_full <= 0 and not (replay_source == "persisted" and replay_scope == "full" and report_replay_count > 0):
+        missing.append("trade_replay_examples")
+    if str(archive.get("archive_status")) != "present":
+        missing.append("archive")
+    if not missing:
+        return "complete", []
+    return "incomplete", missing
+
+
 def final_status(
     archive: dict[str, Any],
     sqlite_data: dict[str, Any],
@@ -720,8 +813,15 @@ def final_status(
     report_stats: dict[str, Any],
     locked: dict[str, Any],
     mirror_status: str,
-) -> tuple[str, list[str]]:
+    mirror_detail: dict[str, Any],
+) -> tuple[str, str, list[str], dict[str, str]]:
     reasons: list[str] = []
+    categories = {
+        "collection_degraded": "false",
+        "mirror_degraded": "false",
+        "learning_loop_degraded": "false",
+        "report_schema_degraded": "false",
+    }
     tables = as_dict(sqlite_data.get("tables"))
     core_rows = [safe_int(as_dict(tables.get(table)).get("rows_for_date")) for table in ("raw_events", "parsed_events", "signals")]
     archive_status = str(archive.get("archive_status"))
@@ -735,44 +835,64 @@ def final_status(
     if past_due == "missing":
         past_due = as_dict(sqlite_data.get("opportunity_outcomes")).get("past_due_pending")
     past_due_count = safe_int(past_due, 0) if not isinstance(past_due, str) or str(past_due).isdigit() else 0
+    core_status, core_missing = core_collection_status(archive, sqlite_data, report_stats)
+    field_status = as_dict(report_stats.get("field_status"))
+    missing_report_fields = [field for field in REPORT_FIELDS if field_status.get(field) == "missing"]
 
     if boolish_true(report_stats.get("zero_activity_day")):
-        return "invalid", ["data_quality zero_activity_day=true"]
+        categories["collection_degraded"] = "true"
+        return "invalid", "collection_degraded", ["data_quality zero_activity_day=true"], categories
     if archive_status in {"missing", "empty_or_invalid"} and all(count == 0 for count in core_rows):
-        return "invalid", ["archive 缺失或为空，且 SQLite raw/parsed/signals 均为 0"]
+        categories["collection_degraded"] = "true"
+        return "invalid", "collection_degraded", ["archive 缺失或为空，且 SQLite raw/parsed/signals 均为 0"], categories
 
     if archive_status == "present" and any(count == 0 for count in core_rows):
-        if any(count == 0 for count in core_rows):
-            reasons.append("archive 有数据但 SQLite core table 不完整")
-        return "recoverable", reasons
+        categories["collection_degraded"] = "true"
+        reasons.append("archive 有数据但 SQLite core table 不完整")
+        return "recoverable", "collection_degraded", reasons, categories
 
-    if locked.get("sqlite_final_write_failure_count", 0) and safe_int(locked.get("sqlite_final_write_failure_count")) > 0:
-        reasons.append("日志检测到 SQLite final write failure")
-    if data_quality_status in {"invalid", "invalid_or_no_activity", "degraded"}:
+    if core_status != "complete":
+        categories["collection_degraded"] = "true"
+        reasons.append("core collection incomplete:" + ",".join(core_missing))
+    if data_quality_status in {"invalid", "invalid_or_no_activity"}:
+        categories["collection_degraded"] = "true"
         reasons.append(f"daily_report data_quality_status={data_quality_status}")
     if daily_json_present and (replay_source != "persisted" or replay_scope != "full" or replay_count <= 0):
+        categories["learning_loop_degraded"] = "true"
         reasons.append("replay 不是 persisted/full 或 replay_count=0")
     if not daily_json_present and any(count > 0 for count in core_rows):
+        categories["report_schema_degraded"] = "true"
         reasons.append("SQLite 有数据但 daily_report 缺失")
     if sqlite_replay_rows == 0 and any(count > 0 for count in core_rows):
+        categories["learning_loop_degraded"] = "true"
         reasons.append("SQLite 有 core 数据但 trade_replay_examples 为 0")
     if past_due_count > 0:
+        categories["learning_loop_degraded"] = "true"
         reasons.append(f"opportunity_outcomes past_due_pending={past_due_count}")
+    if missing_report_fields and daily_json_present:
+        categories["report_schema_degraded"] = "true"
+        reasons.append("daily_report 字段缺失:" + ",".join(missing_report_fields))
+    if mirror_detail.get("core_mismatched_tables"):
+        categories["mirror_degraded"] = "true"
+        reasons.append("core mirror mismatch:" + ",".join(mirror_detail.get("core_mismatched_tables") or []))
+
     if reasons:
-        return "degraded", reasons
+        for key in ("collection_degraded", "learning_loop_degraded", "mirror_degraded", "report_schema_degraded"):
+            if categories[key] == "true":
+                return "degraded", key, reasons, categories
+        return "degraded", "degraded", reasons, categories
 
     if (
-        mirror_status == "complete"
+        core_status == "complete"
         and daily_json_present
         and replay_source == "persisted"
         and replay_scope == "full"
         and replay_count > 0
         and past_due_count == 0
-        and data_quality_status in {"valid", "ok"}
     ):
-        return "complete", ["archive、SQLite、persisted/full replay 和 outcome 闭环未见明显缺口"]
+        return "complete", "complete", ["archive、SQLite、persisted/full replay 和 outcome 闭环未见明显缺口"], categories
 
-    return "unchecked", ["缺少足够字段，未发现明确异常但不能判定 complete"]
+    return "unchecked", "unchecked", ["缺少足够字段，未发现明确异常但不能判定 complete"], categories
 
 
 def print_table(summary: dict[str, Any]) -> None:
@@ -800,7 +920,14 @@ def run(
     report_stats = report_metrics(report)
     locked = locked_warning_scan(logical_date, log_roots)
     mirror_status, mirror_reason = archive_sqlite_status(archive, as_dict(sqlite_data.get("tables")))
-    status, reasons = final_status(archive, sqlite_data, report, report_stats, locked, mirror_status)
+    mirror_detail = mirror_detail_summary(report)
+    status, reason, reasons, categories = final_status(archive, sqlite_data, report, report_stats, locked, mirror_status, mirror_detail)
+    core_status, core_missing = core_collection_status(archive, sqlite_data, report_stats)
+    sqlite_write_warning = (
+        "final_write_failure_detected"
+        if safe_int(locked.get("sqlite_final_write_failure_count")) > 0
+        else "none"
+    )
 
     print(f"Chain Monitor 数据完整性检查｜{logical_date}")
     print()
@@ -869,15 +996,34 @@ def run(
     print("SQLite locked warning：")
     print(f"- sqlite_locked_warning_count={locked['sqlite_locked_warning_count']}")
     print(f"- sqlite_final_write_failure_count={locked['sqlite_final_write_failure_count']}")
+    print(f"- sqlite_write_warning={sqlite_write_warning}")
     print(f"- latest_locked_warning_time={locked['latest_locked_warning_time']}")
     print(f"- locked_status={locked['locked_status']}")
     print()
     print("mirror 判断：")
     print(f"- archive_sqlite_status={mirror_status}")
     print(f"- reason={mirror_reason}")
+    print(f"- db_archive_mirror_match_rate={mirror_detail.get('db_archive_mirror_match_rate')}")
+    print(f"- checked_tables={list_text(list(mirror_detail.get('checked_tables') or []))}")
+    print(f"- matched_tables={list_text(list(mirror_detail.get('matched_tables') or []))}")
+    print(f"- mismatched_tables={list_text(list(mirror_detail.get('mismatched_tables') or []))}")
+    print(f"- unchecked_tables={list_text(list(mirror_detail.get('unchecked_tables') or []))}")
+    print(f"- skipped_by_fast_mode={list_text(list(mirror_detail.get('skipped_by_fast_mode') or []))}")
+    print("- mismatch_by_table=" + json.dumps(mirror_detail.get("mismatch_by_table") or {}, ensure_ascii=False, sort_keys=True))
+    if mirror_detail.get("low_rate_without_mismatch"):
+        print("- mirror_rate_warning=low_match_rate_nonblocking_no_mismatch")
+    print()
+    print("分层状态：")
+    print(f"- core_collection_status={core_status}")
+    print(f"- core_collection_missing={list_text(core_missing)}")
+    print(f"- collection_degraded={categories.get('collection_degraded')}")
+    print(f"- mirror_degraded={categories.get('mirror_degraded')}")
+    print(f"- learning_loop_degraded={categories.get('learning_loop_degraded')}")
+    print(f"- report_schema_degraded={categories.get('report_schema_degraded')}")
     print()
     print("最终结论：")
     print(f"- final_status={status}")
+    print(f"- reason={reason}")
     print("- reasons=" + "；".join(reasons))
     print()
     print("下一步建议：")
@@ -886,7 +1032,14 @@ def run(
     elif status == "recoverable":
         print(f"- 建议 SSH 手动执行 make db-migrate-date DATE={logical_date}，然后重新 report/replay。")
     elif status == "degraded":
-        print("- 先排查 listener / archive / SQLite write errors，不建议用于策略评估。")
+        if reason == "learning_loop_degraded" and core_status == "complete":
+            print("- 核心采集完整；先修 opportunity_outcomes / replay 学习闭环，再用于策略质量评估。")
+        elif reason == "mirror_degraded":
+            print("- 核心采集未必缺失；先查看 mismatch_by_table，再决定是否补 mirror。")
+        elif reason == "report_schema_degraded":
+            print("- 先补齐 canonical daily report schema，再复查。")
+        else:
+            print("- 先排查 listener / archive / SQLite core table 缺口，不建议用于策略评估。")
     elif status == "invalid":
         print("- 该日仅用于运维排障。")
     else:

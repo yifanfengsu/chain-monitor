@@ -67,15 +67,15 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | 锁状态 / 锁检查 / Hermes锁状态 | 只读检查 Hermes lock 是否被占用 | `./scripts/hermes_cm_ops.sh lock-status` | low | 不删除 lock 文件；lock 未被持有时提示后续命令可重试，lock 被持有时提示查看最近任务/任务状态。 |
 | 系统体检 | 检查 SQLite / report source / market health / coverage | `./scripts/hermes_cm_ops.sh system-health` | low | wrapper 内部可限时执行只读健康检查，包括 db-report、report-source-fast、market health、coverage，但 Telegram 不得直接调用 make。 |
 | 监听器体检 | 检查监听器是否可能停摆、最近 raw/parsed/signal/archive 时间、zero activity 风险、Telegram outbound 健康 | `./scripts/hermes_cm_ops.sh listener-health` | low | 只读，不重启 listener，不发送 Telegram warning；输出 sent_ok / sent_failed、最近成功/失败时间和 pool timeout / NetworkError / TimedOut 聚合 warning。 |
-| 标准日报流程YYYY-MM-DD | 提交后台任务跑展开后的 daily-close 子步骤 + full replay + report + compare + checkpoint | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job。只能跑已经结束的北京时间逻辑日；当前北京时间日期会在 submit 阶段拒绝，不创建 job。daily-close 默认只做 archive compression dry-run；不执行 archive gzip，不 compact，不 vacuum，不 prune。 |
+| 标准日报流程YYYY-MM-DD | 提交后台任务跑展开后的 daily-close 子步骤 + full replay + outcome-catchup + report + compare + checkpoint | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job。只能跑已经结束的北京时间逻辑日；当前北京时间日期会在 submit 阶段拒绝，不创建 job。full replay 后会先跑 outcome_catchup_dry_run，would_update_rows>0 时内部执行 outcome_catchup_execute，否则记录 outcome_catchup_skipped。daily-close 默认只做 archive compression dry-run；不执行 archive gzip，不 compact，不 vacuum，不 prune。 |
 | 生成日报YYYY-MM-DD | 生成 canonical 日报 | `./scripts/hermes_cm_ops.sh report --date YYYY-MM-DD` | low-medium | sync。不执行 vacuum/prune/compact execute。 |
 | 分析报告YYYY-MM-DD | Hermes 分析 canonical daily report | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium | 不自动生成日报；报告缺失时应提示先运行“标准日报流程YYYY-MM-DD”或“生成日报YYYY-MM-DD”，不得自动构建。 |
 | 深度分析报告YYYY-MM-DD | Hermes 深度分析 canonical daily report | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode deep` | medium | 不自动生成日报；只生成分析输入，后续由 Hermes 产出中文复盘。 |
 | 生成摘要YYYY-MM-DD 快速 | 生成快速分析输入包 | `./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD --mode fast` | low | sync。输出脱敏 digest 路径。 |
 | 生成摘要YYYY-MM-DD 深度 | 生成深度分析输入包 | `./scripts/hermes_cm_ops.sh digest --date YYYY-MM-DD --mode deep` | medium | sync。输出脱敏 digest 路径。 |
 | 检查回放YYYY-MM-DD | 检查 trade replay 是否为 persisted full replay | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | 返回 replay_source、replay_scope、persisted_rows_found、replay_count、valid_replay_count、avg_net_pnl_bps、suppressed_replay_count 等摘要。 |
-| 数据质量YYYY-MM-DD | 判断这天是否适合做策略质量分析 | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | 返回 data_quality_status、zero_activity_day、active_hours、signal_count、raw_event_count、LP 行数、market context、coverage、DB/archive mismatch。 |
-| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | 判断 archive 与 SQLite mirror 是否完整，archive 是否可补齐 SQLite | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | 只读，不执行 make，不自动修复；返回 archive 文件状态、核心 SQLite 表当日行数和最新时间、replay/outcome 闭环、daily_report 字段、SQLite locked warning，并给出 complete/recoverable/degraded/invalid/unchecked。 |
+| 数据质量YYYY-MM-DD | 判断这天是否适合做策略质量分析 | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | 返回 data_quality_status、zero_activity_day、active_hours、signal_count、raw_event_count、lp_signal_rows、lp_status、lp_rows_source、market context、coverage、DB/archive mismatch。LP 行数按 run_overview、lp_signal_summary、delivered+suppressed、lp_suppression_summary 兼容读取。 |
+| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | 判断 archive、SQLite mirror、学习闭环和日报 schema 是否完整 | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | 只读，不执行 make，不自动修复；返回 archive 文件状态、核心 SQLite 表当日行数和最新时间、replay/outcome 闭环、daily_report 字段、SQLite locked warning、mirror checked/unchecked/mismatch 明细，并区分 collection_degraded、mirror_degraded、learning_loop_degraded、report_schema_degraded。 |
 | Profile复盘YYYY-MM-DD | 查看 trade_replay_profile_daily_stats 的 profile 后验 | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | 返回样本最多 profile、avg_net_pnl_bps、clean_followthrough_rate、bad_entry_rate、absorption_reversal_rate、chop_rate、recommended_action。 |
 | Blocker复盘YYYY-MM-DD | 查看 replay_profile_negative / no_trade_lock / low_quality 等 blocker 分布 | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | 用于判断风控是否正确阻止负收益 profile。 |
 | Shadow复盘YYYY-MM-DD | 查看 shadow_funnel_summary | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | 返回 shadow_candidate_count、shadow_verified_count、near_candidate_but_blocked、score_below_shadow_candidate 等。 |
@@ -83,7 +83,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | 排查当日 signals -> trade_opportunities -> replay 的 CANDIDATE 覆盖连接 | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals 总数、opportunity 总数、状态分布、replay examples 关联数量、replay status=CANDIDATE 数量、delivery_audit 实时推送 stage/status 分布，并提示是 gate 严格还是 replay 关联层可能漏接。 |
 | 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | 检查 canonical daily report 新学习字段是否完整 | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；检查 LP / CLMM / candidate frontier 字段，输出 report_mapping_missing / lp_analyzer_or_gate_missing / no_lp_samples_or_coverage_gap。 |
 | Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | 排查当日 signals/opportunities -> outcomes/replay/profile 闭环不足 | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | 只读 SQLite 和 daily_report；返回 signals、trade_opportunities、outcomes、opportunity_outcomes、trade_replay_examples 总数及匹配率，按 asset/status/signal_type/stage 汇总 outcome 缺失，并推断时间窗口、price snapshot、ID 关联、worker、report mapping 问题。 |
-| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | 预检 past-due opportunity_outcomes 可补全数量 | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | Telegram 只开放 dry-run；显示 would_update_rows、still_pending_count、catchup_from_replay / catchup_from_outcomes 分布，不执行写入。 |
+| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | 预检 past-due opportunity_outcomes 可补全数量 | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | Telegram 只开放 dry-run；显示 would_update_rows、still_pending_count、catchup_from_replay / catchup_from_outcomes 分布，不执行写入。写入补全只允许标准日报流程内部受控执行。 |
 | LP抑制抽样预检YYYY-MM-DD / LP抽样预检YYYY-MM-DD | 预检 LP early suppression sample replay | `./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run` | low | Telegram 只开放 dry-run；显示 candidate_sample_count、by_reason、by_pair、by_intent、would_insert_replay_rows，不改变 gate、不发 Telegram、不改原始 audit/opportunity。 |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | 排查 daily report 中 LP signal rows 缺失的来源 | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | 只读 daily_report 和 SQLite 聚合；输出 LP 相关字段存在性、signals/raw/parsed LP-like 计数、delivery_audit 推送/抑制数量、ETH/BTC/SOL x USDT/USDC major coverage，并判断 report mapping、LP analyzer/gate 或样本覆盖不足。 |
 | 空间检查 | 提交后台任务查看 SQLite / WAL / archive / reports 占用 | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job。只读，不删除，不 vacuum，不 prune。 |
@@ -152,7 +152,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
 - 数据质量YYYY-MM-DD：判断该日是否有效
-- 数据完整性检查YYYY-MM-DD：只读检查 archive / SQLite mirror / replay / outcome / locked warning
+- 数据完整性检查YYYY-MM-DD：只读检查 archive / SQLite mirror / replay / outcome / locked warning，并区分 collection/mirror/learning_loop/report_schema degraded
 
 【后验复盘】
 - Profile复盘YYYY-MM-DD
@@ -161,7 +161,7 @@ Telegram -> Hermes gateway -> /chain-monitor-report-analyst -> ~/.hermes/bin/cha
 - 学习复盘YYYY-MM-DD：整合数据质量、回放、profile、blocker、shadow、Telegram 去噪，输出中文学习结论
 - CANDIDATE覆盖诊断YYYY-MM-DD：排查 replay 中 CANDIDATE 覆盖率为 0 的原因
 - Outcome闭环诊断YYYY-MM-DD：排查 outcome/replay/profile 闭环不足的原因
-- Outcome补全预检YYYY-MM-DD：只做 opportunity_outcomes catchup dry-run
+- Outcome补全预检YYYY-MM-DD：只做 opportunity_outcomes catchup dry-run；写入补全只在标准日报流程内部执行
 - LP抑制抽样预检YYYY-MM-DD：只做 LP early suppression sample replay dry-run
 - LP诊断YYYY-MM-DD：排查 daily_report 中 LP signal rows 缺失的 report/analyzer/gate 链路
 

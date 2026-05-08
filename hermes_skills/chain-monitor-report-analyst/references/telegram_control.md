@@ -34,11 +34,11 @@ Hermes lock 硬规则：
 | 锁状态 / 锁检查 / Hermes锁状态 | lock-status | `./scripts/hermes_cm_ops.sh lock-status` | low | sync quick；只读检查 Hermes lock 是否被占用，不删除 lock 文件 |
 | 系统体检 / 体检 / 健康检查 / 系统状态 / 状态 | system-health | `./scripts/hermes_cm_ops.sh system-health` | low | sync |
 | 监听器体检 / 监听器检查 / 监听状态 / 监听器状态 / 最近数据 / 零活动排查 | listener-health | `./scripts/hermes_cm_ops.sh listener-health` | low | sync |
-| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job；当前北京时间日期会拒绝且不创建 job |
+| 标准日报流程YYYY-MM-DD / 跑标准日报流程YYYY-MM-DD / 每日标准流程YYYY-MM-DD / 日常报告流程YYYY-MM-DD | submit-daily-flow | `./scripts/hermes_cm_ops.sh submit-daily-flow --date YYYY-MM-DD` | medium | async job；当前北京时间日期会拒绝且不创建 job；full replay 后内部执行 outcome-catchup dry-run，必要时受控补全 opportunity_outcomes |
 | 分析报告YYYY-MM-DD / 快速分析报告YYYY-MM-DD / 日报分析YYYY-MM-DD / 报告分析YYYY-MM-DD | analyze fast | `./scripts/hermes_cm_ops.sh analyze --date YYYY-MM-DD --mode fast` | low-medium | sync |
 | 检查回放YYYY-MM-DD / 回放检查YYYY-MM-DD / 回放摘要YYYY-MM-DD / 检查replayYYYY-MM-DD / Replay检查YYYY-MM-DD | replay-check | `./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD` | low | sync quick |
-| 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | sync quick |
-| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | data-integrity | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | sync quick；只读检查 archive、SQLite mirror、replay/outcome 闭环、daily_report 字段和 SQLite locked warning，不自动修复 |
+| 数据质量YYYY-MM-DD / 报告是否有效YYYY-MM-DD / 检查数据质量YYYY-MM-DD / 异常摘要YYYY-MM-DD | data-quality | `./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD` | low | sync quick；输出 lp_signal_rows、lp_status、lp_rows_source |
+| 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD | data-integrity | `./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD` | low | sync quick；只读检查 archive、SQLite mirror、replay/outcome 闭环、daily_report 字段和 SQLite locked warning，不自动修复；区分 collection/mirror/learning_loop/report_schema degraded |
 | Profile复盘YYYY-MM-DD / profile复盘YYYY-MM-DD / 画像复盘YYYY-MM-DD / 后验画像YYYY-MM-DD | profile-review | `./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD` | low | sync quick |
 | Blocker复盘YYYY-MM-DD / blocker复盘YYYY-MM-DD / 阻断复盘YYYY-MM-DD / 风控阻断复盘YYYY-MM-DD | blocker-review | `./scripts/hermes_cm_ops.sh blocker-review --date YYYY-MM-DD` | low | sync quick |
 | Shadow复盘YYYY-MM-DD / shadow复盘YYYY-MM-DD / 影子复盘YYYY-MM-DD / Shadow Funnel复盘YYYY-MM-DD / 影子漏斗YYYY-MM-DD | shadow-review | `./scripts/hermes_cm_ops.sh shadow-review --date YYYY-MM-DD` | low | sync quick |
@@ -46,7 +46,7 @@ Hermes lock 硬规则：
 | CANDIDATE覆盖诊断YYYY-MM-DD / 候选覆盖诊断YYYY-MM-DD / 候选覆盖YYYY-MM-DD | candidate-coverage | `./scripts/hermes_cm_ops.sh candidate-coverage --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 CANDIDATE 覆盖率为 0 是 gate 结果还是 replay 关联层漏接 |
 | 日报结构检查YYYY-MM-DD / 日报schema检查YYYY-MM-DD / 报告结构检查YYYY-MM-DD | daily-report-schema-check | `./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD` | low | sync quick；只读 daily_report 和 SQLite 聚合，检查 LP / CLMM / candidate frontier 字段完整性 |
 | Outcome闭环诊断YYYY-MM-DD / 后验闭环诊断YYYY-MM-DD / 结果闭环诊断YYYY-MM-DD | outcome-diagnose | `./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 signals/opportunities -> outcomes/replay/profile 闭环不足 |
-| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | outcome-catchup | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | sync dry-run；Telegram 只允许预检，不开放 execute |
+| Outcome补全预检YYYY-MM-DD / 后验补全预检YYYY-MM-DD | outcome-catchup | `./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run` | low | sync dry-run；Telegram 只允许预检，不开放写入补全 |
 | LP抑制抽样预检YYYY-MM-DD / LP抽样预检YYYY-MM-DD / LP suppression抽样预检YYYY-MM-DD | lp-suppression-sample-replay | `./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run` | low | sync dry-run；Telegram 只允许预检，不开放 execute |
 | LP诊断YYYY-MM-DD / LP信号诊断YYYY-MM-DD / 池子诊断YYYY-MM-DD / CLMM诊断YYYY-MM-DD | lp-diagnose | `./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD` | low | sync quick；只读 SQLite 和 daily_report，排查 LP signal rows 缺失是 report mapping、解析/gate 还是扫描覆盖不足 |
 | 空间检查 / 磁盘检查 / VPS空间检查 / 数据库空间检查 / DB空间检查 | submit-space-check | `./scripts/hermes_cm_ops.sh submit-space-check` | low-medium | async job |
@@ -91,7 +91,7 @@ Hermes lock 硬规则：
 - 学习复盘只接受绝对日期，例如 `学习复盘2026-05-04` 或 `学习总结2026-05-04`；`学习复盘昨天` 和 `学习总结昨天` 必须拒绝。
 - CANDIDATE 覆盖诊断只接受绝对日期，例如 `CANDIDATE覆盖诊断2026-05-04`；`候选覆盖昨天` 必须拒绝。
 - Outcome 闭环诊断只接受绝对日期，例如 `Outcome闭环诊断2026-05-04`；`后验闭环诊断昨天` 必须拒绝。
-- Outcome 补全预检只接受绝对日期，例如 `Outcome补全预检2026-05-04`；只映射 dry-run。
+- Outcome 补全预检只接受绝对日期，例如 `Outcome补全预检2026-05-04`；只映射 dry-run。写入补全只允许标准日报流程内部受控执行。
 - LP 抑制抽样预检只接受绝对日期，例如 `LP抑制抽样预检2026-05-04`；只映射 dry-run。
 - LP 诊断只接受绝对日期，例如 `LP诊断2026-05-04`；`LP诊断昨天` 必须拒绝。
 - job_id 必须匹配 `cmjob_YYYYMMDDTHHMMSSZ_<hex>`。

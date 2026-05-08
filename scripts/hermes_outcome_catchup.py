@@ -29,6 +29,19 @@ def parse_date(value: str) -> str:
     return value
 
 
+def beijing_today() -> str:
+    override = os.environ.get("HERMES_TEST_BEIJING_TODAY", "").strip()
+    if override:
+        return parse_date(override)
+    try:
+        from zoneinfo import ZoneInfo
+
+        tzinfo = ZoneInfo("Asia/Shanghai")
+    except Exception:  # noqa: BLE001
+        tzinfo = dt.timezone(dt.timedelta(hours=8))
+    return dt.datetime.now(tzinfo).date().isoformat()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Catch up past-due opportunity_outcomes from replay/outcomes.")
     parser.add_argument("--date", required=True, help="Beijing logical date YYYY-MM-DD")
@@ -50,6 +63,12 @@ def main(argv: list[str]) -> int:
         return 2
     if args.execute and not (args.confirm or os.environ.get("CONFIRM") == "YES"):
         print("error: outcome-catchup execute requires --confirm or CONFIRM=YES", file=sys.stderr)
+        return 2
+    if args.execute and os.environ.get("HERMES_OUTCOME_CATCHUP_EXECUTE_CONTEXT") != "daily-flow":
+        print("error: outcome-catchup execute is restricted to internal daily-flow", file=sys.stderr)
+        return 2
+    if args.execute and logical_date == beijing_today():
+        print("error: current_beijing_date_protected", file=sys.stderr)
         return 2
     db_path = Path(args.db_path)
     if not db_path.is_absolute():

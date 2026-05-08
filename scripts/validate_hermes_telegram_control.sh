@@ -432,6 +432,15 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "db-size-diagnose"' "$TMP_DIR/db_size.ou
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库瘦身预检" --dry-run --platform telegram >"$TMP_DIR/db_slim.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "db-slim-dry-run"' "$TMP_DIR/db_slim.out" || fail "router db-slim-dry-run argv is not wrapper-only"
 
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据库瘦身执行" --dry-run --platform telegram >"$TMP_DIR/db_slim_execute.out" 2>"$TMP_DIR/db_slim_execute.err"
+db_slim_execute_rc=$?
+set -e
+[[ "$db_slim_execute_rc" -ne 0 ]] || fail "router accepted DB execute grammar"
+if grep -Fq 'db-' "$TMP_DIR/db_slim_execute.out" "$TMP_DIR/db_slim_execute.err"; then
+  fail "router mapped DB execute grammar"
+fi
+
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "数据完整性检查2026-05-07" --dry-run --platform telegram >"$TMP_DIR/data_integrity.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "data-integrity"' "$TMP_DIR/data_integrity.out" || fail "router data-integrity argv is not wrapper-only"
 grep -Fq '"--date", "2026-05-07"' "$TMP_DIR/data_integrity.out" || fail "router data-integrity did not include date"
@@ -472,9 +481,21 @@ grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-diagnose"' "$TMP_DIR/outcome_di
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome补全预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_catchup.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-catchup"' "$TMP_DIR/outcome_catchup.out" || fail "router outcome-catchup argv is not wrapper-only"
 grep -Fq '"--dry-run"' "$TMP_DIR/outcome_catchup.out" || fail "router outcome-catchup did not force dry-run"
+if grep -Fq '"--execute"' "$TMP_DIR/outcome_catchup.out"; then
+  fail "router outcome-catchup exposed execute"
+fi
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "后验补全预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_catchup_cn.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "outcome-catchup"' "$TMP_DIR/outcome_catchup_cn.out" || fail "router outcome-catchup Chinese alias is not wrapper-only"
+
+set +e
+HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "Outcome补全执行2026-05-04" --dry-run --platform telegram >"$TMP_DIR/outcome_catchup_execute.out" 2>"$TMP_DIR/outcome_catchup_execute.err"
+outcome_catchup_execute_rc=$?
+set -e
+[[ "$outcome_catchup_execute_rc" -ne 0 ]] || fail "router accepted outcome-catchup execute grammar"
+if grep -Fq '"outcome-catchup"' "$TMP_DIR/outcome_catchup_execute.out" "$TMP_DIR/outcome_catchup_execute.err"; then
+  fail "router mapped outcome-catchup execute grammar"
+fi
 
 HERMES_OPS_AUDIT_LOG="$TMP_DIR/router_audit.ndjson" "$ROUTER" --text "LP抑制抽样预检2026-05-04" --dry-run --platform telegram >"$TMP_DIR/lp_sample.out"
 grep -Fq '"./scripts/hermes_cm_ops.sh", "lp-suppression-sample-replay"' "$TMP_DIR/lp_sample.out" || fail "router LP suppression sample argv is not wrapper-only"

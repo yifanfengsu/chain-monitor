@@ -41,13 +41,13 @@ Usage:
   ./scripts/hermes_cm_ops.sh daily-report-schema-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh outcome-diagnose --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --dry-run
-  ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --execute --confirm
   ./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --dry-run
   ./scripts/hermes_cm_ops.sh lp-suppression-sample-replay --date YYYY-MM-DD --execute --confirm
   ./scripts/hermes_cm_ops.sh lp-diagnose --date YYYY-MM-DD
 
   # Internal job runner only; Telegram users must use submit-* above:
   ./scripts/hermes_cm_ops.sh daily-flow --date YYYY-MM-DD
+  HERMES_OPS_DAILY_FLOW_INTERNAL=1 ./scripts/hermes_cm_ops.sh outcome-catchup --date YYYY-MM-DD --execute --confirm
   ./scripts/hermes_cm_ops.sh space-check
   ./scripts/hermes_cm_ops.sh archive-compress-check --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh weekly-review --start YYYY-MM-DD --end YYYY-MM-DD
@@ -407,6 +407,44 @@ audit_write() {
   line+=",\"lock_path\":$(json_string "$(safe_basename "${HERMES_OPS_LOCK_PATH:-}")")"
   line+=",\"workdir\":$(json_string "$(safe_basename "$REPO_ROOT")")"
   line+=",\"output_hint\":$(json_string "$(display_safe_path "${AUDIT_OUTPUT_HINT:-}")")"
+  line+="}"
+
+  if ! printf '%s\n' "$line" >>"$HERMES_OPS_AUDIT_LOG"; then
+    echo "error: unable to write audit log" >&2
+    return 1
+  fi
+}
+
+audit_write_flow_step() {
+  local substep="$1"
+  local status="$2"
+  local exit_code="$3"
+  local timeout_hit="$4"
+  local timeout_limit_sec="$5"
+  local substep_command="$6"
+  local output_hint="$7"
+  local line
+
+  [[ "${AUDIT_READY:-0}" -eq 1 ]] || return 0
+
+  line="{"
+  line+="\"schema\":\"chain_monitor_hermes_ops_audit_v1\""
+  line+=",\"ts_utc\":$(json_string "$(TZ=UTC date +%Y-%m-%dT%H:%M:%S+00:00)")"
+  line+=",\"request_id\":$(json_string "$HERMES_OPS_REQUEST_ID")"
+  line+=",\"event\":\"daily_flow_substep_finish\""
+  line+=",\"platform\":$(json_string "${HERMES_OPS_PLATFORM:-unknown}")"
+  line+=",\"command\":$(json_string "${AUDIT_COMMAND:-unknown}")"
+  line+=",\"substep\":$(json_string "$substep")"
+  line+=",\"substep_status\":$(json_string "$status")"
+  line+=",\"substep_command\":$(json_string "$substep_command")"
+  line+=",\"allowed\":${AUDIT_ALLOWED}"
+  line+=",\"refused_reason\":$(json_string "${AUDIT_REFUSED_REASON:-}")"
+  line+=",\"date\":$(json_string "${AUDIT_DATE:-}")"
+  line+=",\"mode\":$(json_string "${AUDIT_MODE:-}")"
+  line+=",\"exit_code\":${exit_code}"
+  line+=",\"timeout_hit\":$(json_string "$timeout_hit")"
+  line+=",\"timeout_limit_sec\":$(json_string "$timeout_limit_sec")"
+  line+=",\"output_hint\":$(json_string "$(display_safe_path "$output_hint")")"
   line+="}"
 
   if ! printf '%s\n' "$line" >>"$HERMES_OPS_AUDIT_LOG"; then
@@ -1339,20 +1377,28 @@ def columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
+def ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _epoch_sql(column: str) -> str:
-    return f"(CASE WHEN {column} > 10000000000 THEN {column} / 1000.0 ELSE {column} END)"
+    col = ident(column)
+    return f"(CASE WHEN {col} > 10000000000 THEN {col} / 1000.0 ELSE {col} END)"
+
+
+def time_info(conn: sqlite3.Connection, table: str, candidates: list[str]) -> tuple[str | None, str | None]:
+    if not table_exists(conn, table):
+        return None, None
+    cols = columns(conn, table)
+    for col in candidates:
+        if col in cols:
+            return _epoch_sql(col), col
+    return None, None
 
 
 def time_expr(conn: sqlite3.Connection, table: str, candidates: list[str]) -> str | None:
-    if not table_exists(conn, table):
-        return None
-    cols = columns(conn, table)
-    present = [col for col in candidates if col in cols]
-    if not present:
-        return None
-    if len(present) == 1:
-        return _epoch_sql(present[0])
-    return "COALESCE(" + ", ".join(_epoch_sql(col) for col in present) + ")"
+    expr, _field = time_info(conn, table, candidates)
+    return expr
 
 
 def count_recent(
@@ -1369,6 +1415,21 @@ def count_recent(
     if predicate:
         sql += f" AND ({predicate})"
     return safe_count(conn, sql, (NOW_TS - window_sec,))
+
+
+def count_window_expr(
+    conn: sqlite3.Connection,
+    table: str,
+    expr: str | None,
+    window_start: float,
+    predicate: str = "",
+) -> int | None:
+    if expr is None or not table_exists(conn, table):
+        return None
+    sql = f"SELECT COUNT(*) FROM {table} WHERE {expr} >= ?"
+    if predicate:
+        sql += f" AND ({predicate})"
+    return safe_count(conn, sql, (window_start,))
 
 
 def max_recent_ts(conn: sqlite3.Connection, table: str, time_candidates: list[str], predicate: str = "") -> float | None:
@@ -1404,19 +1465,40 @@ def fmt_ts(value: object) -> str:
     return f"{utc.strftime('%Y-%m-%d %H:%M:%S')} UTC / 北京 {bj.strftime('%Y-%m-%d %H:%M:%S')}"
 
 
-def _text_match_predicate(conn: sqlite3.Connection, table: str, needles: list[str]) -> str:
+def fmt_ts_bj(value: object) -> str:
+    if value in (None, "", "none"):
+        return "none"
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if ts > 10000000000:
+        ts = ts / 1000.0
+    return datetime.fromtimestamp(ts, timezone.utc).astimezone(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _text_match_predicate(
+    conn: sqlite3.Connection,
+    table: str,
+    needles: list[str],
+    candidate_cols: tuple[str, ...] | None = None,
+) -> str:
     cols = columns(conn, table)
     text_cols = [
         col
         for col in (
-            "reason",
-            "blocked_reason",
-            "gate_reason",
-            "suppression_reason",
-            "stage",
-            "delivery_decision",
-            "audit_json",
-            "message_json",
+            candidate_cols
+            or (
+                "reason",
+                "blocked_reason",
+                "gate_reason",
+                "suppression_reason",
+                "drop_reason",
+                "stage",
+                "delivery_decision",
+                "audit_json",
+                "message_json",
+            )
         )
         if col in cols
     ]
@@ -1424,16 +1506,61 @@ def _text_match_predicate(conn: sqlite3.Connection, table: str, needles: list[st
     for col in text_cols:
         for needle in needles:
             escaped = needle.lower().replace("'", "''")
-            parts.append(f"LOWER(COALESCE({col}, '')) LIKE '%{escaped}%'")
+            parts.append(f"LOWER(COALESCE({ident(col)}, '')) LIKE '%{escaped}%'")
     return " OR ".join(parts) if parts else "0"
 
 
 def notifier_failure_predicate(conn: sqlite3.Connection, table: str = "delivery_audit") -> str:
-    return _text_match_predicate(conn, table, ["notifier_send_failed"])
+    return _text_match_predicate(
+        conn,
+        table,
+        ["notifier_send_failed"],
+        ("audit_json", "reason", "delivery_decision", "stage", "message_json"),
+    )
 
 
 def transport_error_predicate(conn: sqlite3.Connection, table: str = "delivery_audit") -> str:
-    return _text_match_predicate(conn, table, ["pool timeout", "connection pool", "NetworkError", "TimedOut"])
+    return _text_match_predicate(
+        conn,
+        table,
+        ["RetryAfter", "TimedOut", "NetworkError", "Pool timeout", "BadRequest", "Forbidden", "Request was not sent"],
+        ("audit_json", "reason", "delivery_decision", "stage", "message_json"),
+    )
+
+
+def delivery_policy_predicate(conn: sqlite3.Connection) -> str:
+    return _text_match_predicate(
+        conn,
+        "delivery_audit",
+        ["delivery_policy"],
+        ("suppression_reason", "delivery_decision", "reason", "audit_json"),
+    )
+
+
+def gate_suppressed_predicate(conn: sqlite3.Connection) -> str:
+    return _text_match_predicate(
+        conn,
+        "delivery_audit",
+        [
+            "gate/",
+            "lp_noise_filtered",
+            "low_quality",
+            "replay_profile_negative",
+            "no_trade",
+            "profile_adverse_too_high",
+            "score_below_shadow_candidate",
+        ],
+        ("gate_reason", "suppression_reason", "reason", "audit_json"),
+    )
+
+
+def listener_prefilter_drop_predicate(conn: sqlite3.Connection) -> str:
+    return _text_match_predicate(
+        conn,
+        "delivery_audit",
+        ["listener_prefilter/drop"],
+        ("drop_reason", "suppression_reason", "reason", "audit_json"),
+    )
 
 
 def read_notifier_runtime_health() -> tuple[dict | None, str]:
@@ -1452,101 +1579,233 @@ def read_notifier_runtime_health() -> tuple[dict | None, str]:
     return payload, "readable"
 
 
+DELIVERY_AUDIT_TIME_CANDIDATES = ["archive_written_at", "timestamp", "created_at", "updated_at"]
+SIGNALS_TIME_CANDIDATES = ["timestamp", "created_at", "updated_at", "archive_written_at", "notifier_sent_at"]
+TELEGRAM_DELIVERIES_TIME_CANDIDATES = ["created_at", "sent_at", "updated_at", "timestamp"]
+
+
+def _or_pred(parts: list[str]) -> str:
+    real = [part for part in parts if part and part != "0"]
+    return " OR ".join(real) if real else "0"
+
+
+def _and_not_pred(predicate: str, excluded: str) -> str:
+    if not predicate or predicate == "0":
+        return "0"
+    if not excluded or excluded == "0":
+        return predicate
+    return f"({predicate}) AND NOT ({excluded})"
+
+
+def _flag_true(cols: set[str], column: str) -> str:
+    return f"COALESCE({ident(column)}, 0) = 1" if column in cols else "0"
+
+
+def _flag_false(cols: set[str], column: str) -> str:
+    return f"COALESCE({ident(column)}, 0) = 0" if column in cols else "0"
+
+
+def _int_or_zero(value: object) -> int:
+    return int(value) if isinstance(value, int) else 0
+
+
+def max_ts_expr(conn: sqlite3.Connection, table: str, expr: str | None, predicate: str = "") -> float | None:
+    if expr is None or not table_exists(conn, table):
+        return None
+    sql = f"SELECT MAX({expr}) FROM {table}"
+    if predicate:
+        sql += f" WHERE {predicate}"
+    value = safe_scalar(conn, sql)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _field_label(field: str | None) -> str:
+    return field or "unavailable"
+
+
 def count_telegram_window(conn: sqlite3.Connection, label: str, window_sec: int) -> dict[str, int | None | str]:
+    window_start = NOW_TS - window_sec
+    signals_expr, signals_field = time_info(conn, "signals", SIGNALS_TIME_CANDIDATES)
+    audit_expr, audit_field = time_info(conn, "delivery_audit", DELIVERY_AUDIT_TIME_CANDIDATES)
+    tg_expr, tg_field = time_info(conn, "telegram_deliveries", TELEGRAM_DELIVERIES_TIME_CANDIDATES)
+
     audit_cols = columns(conn, "delivery_audit") if table_exists(conn, "delivery_audit") else set()
     tg_cols = columns(conn, "telegram_deliveries") if table_exists(conn, "telegram_deliveries") else set()
-    failure_pred = notifier_failure_predicate(conn)
-    transport_pred = transport_error_predicate(conn)
 
-    sent_1_pred = "sent_to_telegram = 1" if "sent_to_telegram" in audit_cols else "0"
-    sent_0_pred = "sent_to_telegram = 0" if "sent_to_telegram" in audit_cols else "0"
-    tg_sent_pred = "sent = 1" if "sent" in tg_cols else "0"
-    tg_failed_pred = "sent = 0 AND COALESCE(suppressed, 0) = 0" if {"sent", "suppressed"}.issubset(tg_cols) else "0"
+    notifier_pred = notifier_failure_predicate(conn, "delivery_audit")
+    transport_pred = transport_error_predicate(conn, "delivery_audit")
+    send_failed_pred = _or_pred([f"({notifier_pred})", f"({transport_pred})"])
+    sent_ok_base_pred = _or_pred([_flag_true(audit_cols, "sent_to_telegram"), _flag_true(audit_cols, "delivered")])
+    sent_ok_pred = _and_not_pred(sent_ok_base_pred, send_failed_pred)
+    sent_1_pred = _flag_true(audit_cols, "sent_to_telegram")
+    sent_0_pred = _flag_false(audit_cols, "sent_to_telegram")
 
-    audit_sent_ok = count_recent(conn, "delivery_audit", ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"], window_sec, sent_1_pred)
-    tg_sent_ok = count_recent(conn, "telegram_deliveries", ["sent_at", "created_at"], window_sec, tg_sent_pred)
-    sent_ok_candidates = [value for value in (audit_sent_ok, tg_sent_ok) if value is not None]
-    sent_ok = max(sent_ok_candidates) if sent_ok_candidates else None
-
-    failed_count = count_recent(
-        conn,
-        "delivery_audit",
-        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-        window_sec,
-        failure_pred,
+    signals_count = count_window_expr(conn, "signals", signals_expr, window_start)
+    delivery_audit_rows = count_window_expr(conn, "delivery_audit", audit_expr, window_start)
+    sent_ok = count_window_expr(conn, "delivery_audit", audit_expr, window_start, sent_ok_pred)
+    send_failed = count_window_expr(conn, "delivery_audit", audit_expr, window_start, send_failed_pred)
+    notifier_send_failed = count_window_expr(conn, "delivery_audit", audit_expr, window_start, notifier_pred)
+    transport_error_records = count_window_expr(conn, "delivery_audit", audit_expr, window_start, transport_pred)
+    sent_to_telegram_1 = count_window_expr(conn, "delivery_audit", audit_expr, window_start, sent_1_pred)
+    sent_to_telegram_0 = count_window_expr(conn, "delivery_audit", audit_expr, window_start, sent_0_pred)
+    delivery_policy_dropped = count_window_expr(
+        conn, "delivery_audit", audit_expr, window_start, delivery_policy_predicate(conn)
     )
-    tg_failed_count = count_recent(conn, "telegram_deliveries", ["sent_at", "created_at"], window_sec, tg_failed_pred)
-    sent_failed_candidates = [value for value in (failed_count, tg_failed_count) if value is not None]
-    sent_failed = max(sent_failed_candidates) if sent_failed_candidates else None
+    gate_suppressed = count_window_expr(
+        conn, "delivery_audit", audit_expr, window_start, gate_suppressed_predicate(conn)
+    )
+    listener_prefilter_drop = count_window_expr(
+        conn, "delivery_audit", audit_expr, window_start, listener_prefilter_drop_predicate(conn)
+    )
+
+    send_attempted: int | None = None
+    suppressed_or_not_eligible: int | None = None
+    metric_warnings: list[str] = []
+    if isinstance(sent_ok, int) and isinstance(send_failed, int):
+        send_attempted = sent_ok + send_failed
+    if isinstance(delivery_audit_rows, int) and isinstance(send_attempted, int):
+        if sent_ok > delivery_audit_rows:
+            metric_warnings.append("sent_ok_gt_delivery_audit_rows")
+        if send_failed > delivery_audit_rows:
+            metric_warnings.append("send_failed_gt_delivery_audit_rows")
+        if send_attempted > delivery_audit_rows:
+            metric_warnings.append("send_attempted_gt_delivery_audit_rows")
+        bounded_attempted = min(send_attempted, delivery_audit_rows)
+        suppressed_or_not_eligible = max(delivery_audit_rows - bounded_attempted, 0)
+        if suppressed_or_not_eligible > delivery_audit_rows:
+            metric_warnings.append("suppressed_or_not_eligible_gt_delivery_audit_rows")
+
+    tg_sent_ok_pred = _or_pred([_flag_true(tg_cols, "sent_ok"), _flag_true(tg_cols, "sent")])
+    tg_failure_pred = _or_pred(
+        [f"({notifier_failure_predicate(conn, 'telegram_deliveries')})", f"({transport_error_predicate(conn, 'telegram_deliveries')})"]
+    )
+    telegram_deliveries_rows = count_window_expr(conn, "telegram_deliveries", tg_expr, window_start)
+    telegram_deliveries_sent_ok = count_window_expr(conn, "telegram_deliveries", tg_expr, window_start, tg_sent_ok_pred)
+    telegram_deliveries_send_failed = count_window_expr(conn, "telegram_deliveries", tg_expr, window_start, tg_failure_pred)
+
+    if sent_ok in (None, 0) and isinstance(telegram_deliveries_sent_ok, int) and telegram_deliveries_sent_ok > 0:
+        sent_ok = telegram_deliveries_sent_ok
+        if isinstance(send_failed, int):
+            send_attempted = sent_ok + send_failed
+            if isinstance(delivery_audit_rows, int):
+                if send_attempted > delivery_audit_rows:
+                    metric_warnings.append("telegram_deliveries_sent_ok_exceeds_delivery_audit_rows")
+                suppressed_or_not_eligible = max(delivery_audit_rows - min(send_attempted, delivery_audit_rows), 0)
+
+    if isinstance(delivery_audit_rows, int) and isinstance(sent_ok, int) and isinstance(send_failed, int):
+        if sent_ok > delivery_audit_rows:
+            metric_warnings.append("sent_ok_gt_delivery_audit_rows")
+            sent_ok = delivery_audit_rows
+        if send_failed > delivery_audit_rows:
+            metric_warnings.append("send_failed_gt_delivery_audit_rows")
+            send_failed = delivery_audit_rows
+        send_attempted = sent_ok + send_failed
+        if send_attempted > delivery_audit_rows:
+            metric_warnings.append("send_attempted_gt_delivery_audit_rows")
+            send_attempted = delivery_audit_rows
+        suppressed_or_not_eligible = max(delivery_audit_rows - send_attempted, 0)
 
     return {
         "label": label,
-        "signals": count_recent(conn, "signals", ["timestamp", "created_at", "updated_at", "notifier_sent_at", "archive_written_at"], window_sec),
-        "delivery_audit": count_recent(
-            conn,
-            "delivery_audit",
-            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-            window_sec,
-        ),
+        "source": "sqlite",
+        "window_start_ts": f"{window_start:.0f}",
+        "window_start_bj": fmt_ts_bj(window_start),
+        "signals_time_field": _field_label(signals_field),
+        "signals_latest_row_bj": fmt_ts_bj(max_ts_expr(conn, "signals", signals_expr)),
+        "delivery_audit_time_field": _field_label(audit_field),
+        "delivery_audit_latest_bj": fmt_ts_bj(max_ts_expr(conn, "delivery_audit", audit_expr)),
+        "latest_row_bj": fmt_ts_bj(max_ts_expr(conn, "delivery_audit", audit_expr)),
+        "telegram_deliveries_time_field": _field_label(tg_field),
+        "telegram_deliveries_latest_bj": fmt_ts_bj(max_ts_expr(conn, "telegram_deliveries", tg_expr)),
+        "signals": signals_count,
+        "signals_count": signals_count,
+        "delivery_audit": delivery_audit_rows,
+        "delivery_audit_rows": delivery_audit_rows,
+        "telegram_deliveries_rows": telegram_deliveries_rows,
+        "telegram_deliveries_window_rows": telegram_deliveries_rows,
+        "telegram_deliveries_sent_ok": telegram_deliveries_sent_ok,
+        "telegram_deliveries_send_failed": telegram_deliveries_send_failed,
+        "send_attempted": send_attempted,
         "sent_ok": sent_ok,
-        "sent_failed": sent_failed,
-        "sent_to_telegram_1": audit_sent_ok,
-        "sent_to_telegram_0": count_recent(
-            conn,
-            "delivery_audit",
-            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-            window_sec,
-            sent_0_pred,
-        ),
-        "notifier_send_failed": failed_count,
-        "transport_error_records": count_recent(
-            conn,
-            "delivery_audit",
-            ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-            window_sec,
-            transport_pred,
-        ),
+        "send_failed": send_failed,
+        "sent_failed": send_failed,
+        "suppressed_or_not_eligible": suppressed_or_not_eligible,
+        "delivery_policy_dropped": delivery_policy_dropped,
+        "gate_suppressed": gate_suppressed,
+        "listener_prefilter_drop": listener_prefilter_drop,
+        "sent_to_telegram_1": sent_to_telegram_1,
+        "sent_to_telegram_0": sent_to_telegram_0,
+        "notifier_send_failed": notifier_send_failed,
+        "transport_error_records": transport_error_records,
+        "metric_invariant_warning": ",".join(sorted(set(metric_warnings))) if metric_warnings else "none",
     }
 
 
 def print_telegram_outbound_health(conn: sqlite3.Connection) -> None:
     print()
     print("## Telegram outbound health")
-    print("source=SQLite 聚合 + notifier.get_notifier_health；只读；未发送 Telegram warning")
+    print("source=sqlite 聚合 + notifier.get_notifier_health；只读；未发送 Telegram warning")
 
     window_rows = [count_telegram_window(conn, label, window_sec) for label, window_sec in WINDOWS]
-    warning_reasons: list[str] = []
     recent_transport_errors = 0
     for row in window_rows:
-        signals = row["signals"] if isinstance(row["signals"], int) else 0
-        sent_ok = row["sent_ok"] if isinstance(row["sent_ok"], int) else 0
-        transport_errors = row["transport_error_records"] if isinstance(row["transport_error_records"], int) else 0
+        transport_errors = _int_or_zero(row["transport_error_records"])
         recent_transport_errors += int(transport_errors)
-        if signals > 0 and sent_ok == 0:
-            warning_reasons.append(f"{row['label']} signals>0 且 sent_ok=0")
         print(
             f"{row['label']}："
             f"signals={fmt_count(row['signals'] if isinstance(row['signals'], int) else None)} "
+            f"signals_count={fmt_count(row['signals_count'] if isinstance(row['signals_count'], int) else None)} "
             f"delivery_audit={fmt_count(row['delivery_audit'] if isinstance(row['delivery_audit'], int) else None)} "
+            f"delivery_audit_rows={fmt_count(row['delivery_audit_rows'] if isinstance(row['delivery_audit_rows'], int) else None)} "
+            f"telegram_deliveries_rows={fmt_count(row['telegram_deliveries_rows'] if isinstance(row['telegram_deliveries_rows'], int) else None)} "
+            f"send_attempted={fmt_count(row['send_attempted'] if isinstance(row['send_attempted'], int) else None)} "
             f"sent_ok={fmt_count(row['sent_ok'] if isinstance(row['sent_ok'], int) else None)} "
+            f"send_failed={fmt_count(row['send_failed'] if isinstance(row['send_failed'], int) else None)} "
             f"sent_failed={fmt_count(row['sent_failed'] if isinstance(row['sent_failed'], int) else None)} "
+            f"suppressed_or_not_eligible={fmt_count(row['suppressed_or_not_eligible'] if isinstance(row['suppressed_or_not_eligible'], int) else None)} "
+            f"delivery_policy_dropped={fmt_count(row['delivery_policy_dropped'] if isinstance(row['delivery_policy_dropped'], int) else None)} "
+            f"gate_suppressed={fmt_count(row['gate_suppressed'] if isinstance(row['gate_suppressed'], int) else None)} "
+            f"listener_prefilter_drop={fmt_count(row['listener_prefilter_drop'] if isinstance(row['listener_prefilter_drop'], int) else None)} "
             f"sent_to_telegram=1数量={fmt_count(row['sent_to_telegram_1'] if isinstance(row['sent_to_telegram_1'], int) else None)} "
             f"sent_to_telegram=0数量={fmt_count(row['sent_to_telegram_0'] if isinstance(row['sent_to_telegram_0'], int) else None)} "
             f"notifier_send_failed={fmt_count(row['notifier_send_failed'] if isinstance(row['notifier_send_failed'], int) else None)} "
-            f"transport_error_records={fmt_count(row['transport_error_records'] if isinstance(row['transport_error_records'], int) else None)}"
+            f"transport_error_records={fmt_count(row['transport_error_records'] if isinstance(row['transport_error_records'], int) else None)} "
+            f"telegram_deliveries_window_rows={fmt_count(row['telegram_deliveries_window_rows'] if isinstance(row['telegram_deliveries_window_rows'], int) else None)} "
+            f"telegram_deliveries_sent_ok={fmt_count(row['telegram_deliveries_sent_ok'] if isinstance(row['telegram_deliveries_sent_ok'], int) else None)} "
+            f"telegram_deliveries_send_failed={fmt_count(row['telegram_deliveries_send_failed'] if isinstance(row['telegram_deliveries_send_failed'], int) else None)} "
+            f"source={row['source']} "
+            f"signals_time_field={row['signals_time_field']} "
+            f"delivery_audit_time_field={row['delivery_audit_time_field']} "
+            f"telegram_deliveries_time_field={row['telegram_deliveries_time_field']} "
+            f"window_start_ts={row['window_start_ts']} "
+            f"window_start_bj={row['window_start_bj']} "
+            f"signals_latest_row_bj={row['signals_latest_row_bj']} "
+            f"delivery_audit_latest_bj={row['delivery_audit_latest_bj']} "
+            f"latest_row_bj={row['latest_row_bj']} "
+            f"telegram_deliveries_latest_bj={row['telegram_deliveries_latest_bj']} "
+            f"metric_invariant_warning={row['metric_invariant_warning']}"
         )
 
     audit_success = max_recent_ts(
         conn,
         "delivery_audit",
-        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-        "sent_to_telegram = 1" if "sent_to_telegram" in columns(conn, "delivery_audit") else "0",
+        ["notifier_sent_at", "archive_written_at", "timestamp", "created_at", "updated_at"],
+        _or_pred([
+            _flag_true(columns(conn, "delivery_audit"), "sent_to_telegram"),
+            _flag_true(columns(conn, "delivery_audit"), "delivered"),
+        ]),
     )
     tg_success = max_recent_ts(
         conn,
         "telegram_deliveries",
-        ["sent_at", "created_at"],
-        "sent = 1" if "sent" in columns(conn, "telegram_deliveries") else "0",
+        ["sent_at", "created_at", "updated_at", "timestamp"],
+        _or_pred([
+            _flag_true(columns(conn, "telegram_deliveries"), "sent_ok"),
+            _flag_true(columns(conn, "telegram_deliveries"), "sent"),
+        ]),
     )
     success_candidates = [value for value in (audit_success, tg_success) if value is not None]
     last_success = max(success_candidates) if success_candidates else None
@@ -1555,16 +1814,19 @@ def print_telegram_outbound_health(conn: sqlite3.Connection) -> None:
     audit_failure = max_recent_ts(
         conn,
         "delivery_audit",
-        ["notifier_sent_at", "timestamp", "created_at", "archive_written_at", "updated_at"],
-        failure_pred,
+        ["notifier_sent_at", "archive_written_at", "timestamp", "created_at", "updated_at"],
+        _or_pred([f"({failure_pred})", f"({transport_error_predicate(conn)})"]),
     )
     tg_failure = max_recent_ts(
         conn,
         "telegram_deliveries",
-        ["sent_at", "created_at"],
-        "sent = 0 AND COALESCE(suppressed, 0) = 0"
-        if {"sent", "suppressed"}.issubset(columns(conn, "telegram_deliveries"))
-        else "0",
+        ["sent_at", "created_at", "updated_at", "timestamp"],
+        _or_pred(
+            [
+                f"({notifier_failure_predicate(conn, 'telegram_deliveries')})",
+                f"({transport_error_predicate(conn, 'telegram_deliveries')})",
+            ]
+        ),
     )
     failure_candidates = [value for value in (audit_failure, tg_failure) if value is not None]
     last_failure = max(failure_candidates) if failure_candidates else None
@@ -1590,15 +1852,35 @@ def print_telegram_outbound_health(conn: sqlite3.Connection) -> None:
         )
         if int(runtime_health.get("pool_timeout_count") or 0) > 0 or int(runtime_health.get("network_error_count") or 0) > 0:
             recent_transport_errors += 1
-        if int(runtime_health.get("sent_failed") or 0) > 0 and int(runtime_health.get("sent_ok") or 0) == 0:
-            warning_reasons.append("notifier runtime sent_failed>0 且 sent_ok=0")
+
+    primary_row = window_rows[-1] if window_rows else {}
+    any_sent_ok = any(
+        _int_or_zero(row.get("sent_ok")) > 0 or _int_or_zero(row.get("telegram_deliveries_sent_ok")) > 0
+        for row in window_rows
+    )
+    primary_signals = _int_or_zero(primary_row.get("signals_count"))
+    primary_attempted = _int_or_zero(primary_row.get("send_attempted"))
+    primary_sent_ok = _int_or_zero(primary_row.get("sent_ok"))
+    primary_failed = _int_or_zero(primary_row.get("send_failed"))
+    primary_notifier_failed = _int_or_zero(primary_row.get("notifier_send_failed"))
+    primary_transport_failed = _int_or_zero(primary_row.get("transport_error_records"))
+
+    warning_reasons: list[str] = []
+    if any_sent_ok:
+        print("Telegram outbound 状态: 正常")
+    elif primary_attempted == 0 and primary_signals > 0:
+        print("Telegram outbound 状态: 无实际 Telegram 发送尝试，近期信号多被 policy/gate 抑制，不是 outbound 停摆")
+    elif primary_attempted > 0 and primary_sent_ok == 0 and primary_failed > 0:
+        warning_reasons.append(f"{primary_row.get('label', '窗口')} send_attempted>0 且 sent_ok=0 且 send_failed>0")
+    elif primary_notifier_failed == 0 and primary_transport_failed == 0:
+        print("Telegram outbound 状态: 未发现明显异常")
+    else:
+        print("Telegram outbound 状态: 未发现明显异常")
 
     if warning_reasons:
         print(f"warning: Telegram outbound 可能异常（{'; '.join(warning_reasons)}）")
     if recent_transport_errors > 0:
         print("warning: 最近发现 Telegram pool timeout / NetworkError / TimedOut 记录")
-    if not warning_reasons and recent_transport_errors <= 0:
-        print("Telegram outbound 状态: 未发现明显异常")
 
 
 def print_sqlite_write_health(conn: sqlite3.Connection) -> None:
@@ -1630,9 +1912,54 @@ def max_field(conn: sqlite3.Connection, table: str, candidates: list[str]) -> st
     cols = columns(conn, table)
     for col in candidates:
         if col in cols:
-            value = safe_scalar(conn, f"SELECT MAX({col}) FROM {table}")
+            value = safe_scalar(conn, f"SELECT MAX({ident(col)}) FROM {table}")
             return str(value if value is not None else "empty")
     return "missing_time_column"
+
+
+def latest_sqlite_logical_date(conn: sqlite3.Connection) -> str:
+    date_candidates = ["logical_date", "archive_date", "date"]
+    table_candidates = ["signals", "delivery_audit", "raw_events", "parsed_events", "telegram_deliveries"]
+    found_date_column = False
+    for table in table_candidates:
+        if not table_exists(conn, table):
+            continue
+        cols = columns(conn, table)
+        for field in date_candidates:
+            if field not in cols:
+                continue
+            found_date_column = True
+            value = safe_scalar(conn, f"SELECT MAX({ident(field)}) FROM {table}")
+            if value not in (None, ""):
+                return f"{value} source_table={table} source_field={field}"
+
+    fallback_table = "unavailable"
+    fallback_field = "unavailable"
+    fallback_ts: float | None = None
+    fallback_candidates: dict[str, list[str]] = {
+        "signals": SIGNALS_TIME_CANDIDATES,
+        "delivery_audit": DELIVERY_AUDIT_TIME_CANDIDATES,
+        "raw_events": ["timestamp", "block_timestamp", "created_at", "updated_at"],
+        "parsed_events": ["timestamp", "block_timestamp", "created_at", "updated_at"],
+        "telegram_deliveries": TELEGRAM_DELIVERIES_TIME_CANDIDATES,
+    }
+    for table, time_candidates in fallback_candidates.items():
+        expr, field = time_info(conn, table, time_candidates)
+        ts = max_ts_expr(conn, table, expr)
+        if ts is None:
+            continue
+        if fallback_ts is None or ts > fallback_ts:
+            fallback_ts = ts
+            fallback_table = table
+            fallback_field = field or "unavailable"
+
+    reason = "no_logical_date_value" if found_date_column else "no_logical_date_column"
+    return (
+        "unavailable "
+        f"reason={reason} "
+        f"fallback_latest_table_time={fmt_ts(fallback_ts)} "
+        f"fallback_time_field={fallback_table}.{fallback_field}"
+    )
 
 
 def latest_archive_mtime() -> str:
@@ -1693,7 +2020,7 @@ print("## Listener Data Freshness")
 if db_path.exists():
     conn = open_ro_sqlite(db_path)
     try:
-        print(f"SQLite 最新 logical_date: {max_field(conn, 'signals', ['logical_date'])}")
+        print(f"SQLite 最新逻辑日期: {latest_sqlite_logical_date(conn)}")
         print(f"最近 raw_events 时间: {max_field(conn, 'raw_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
         print(f"最近 parsed_events 时间: {max_field(conn, 'parsed_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
         print(f"最近 signals 时间: {max_field(conn, 'signals', ['timestamp', 'created_at', 'updated_at', 'notifier_sent_at'])}")
@@ -1727,7 +2054,7 @@ PY
   else
     echo "listener_process=no_process_match_or_pgrep_failed"
   fi
-  grep -E '^(最近 raw_events 时间|最近 parsed_events 时间|最近 signals 时间|最近 archive 修改时间|latest zero_activity_day|SQLite 最新 logical_date|queue spill|sqlite_write_health):' "$final_output" || true
+  grep -E '^(最近 raw_events 时间|最近 parsed_events 时间|最近 signals 时间|最近 archive 修改时间|latest zero_activity_day|SQLite 最新逻辑日期|queue spill|sqlite_write_health):' "$final_output" || true
   echo "Telegram outbound:"
   grep -E '^(最近30分钟|最近2小时)：|^(warning: Telegram outbound|warning: 最近发现 Telegram|warning: SQLite)|^(最近成功 Telegram 发送时间|最近失败时间|notifier\.get_notifier_health|Telegram outbound 状态):' "$final_output" || true
   echo "action=只读体检；未重启 listener。"
@@ -1766,6 +2093,8 @@ run_flow_command() {
   FLOW_TIMEOUT_HIT=false
   FLOW_STDOUT_TAIL="$stdout_tail"
   FLOW_STDERR_TAIL="$stderr_tail"
+  FLOW_STDOUT_RAW="$stdout_raw"
+  FLOW_STDERR_RAW="$stderr_raw"
   FLOW_STDOUT_RAW_BYTES=0
   FLOW_STDOUT_RAW_LINES=0
   FLOW_STDERR_RAW_BYTES=0
@@ -1847,7 +2176,36 @@ append_flow_step() {
   } >>"$output_path"
 
   FLOW_STEP_SUMMARY+=("${title}: $([[ "$rc" -eq 0 ]] && echo ok || echo failed) exit_code=${rc} timeout_hit=${FLOW_TIMEOUT_HIT}")
+  audit_write_flow_step "$title" "$([[ "$rc" -eq 0 ]] && echo ok || echo failed)" "$rc" "$FLOW_TIMEOUT_HIT" "$FLOW_TIMEOUT_LIMIT_SEC" "$FLOW_COMMAND" "$output_path"
   return "$rc"
+}
+
+append_flow_skipped_step() {
+  local output_path="$1"
+  local title="$2"
+  local reason="$3"
+
+  {
+    echo "## ${title}"
+    echo "step=${title}"
+    echo "command=(skipped)"
+    echo "status=skipped"
+    echo "exit_code=0"
+    echo "reason=${reason}"
+    echo
+  } >>"$output_path"
+
+  FLOW_STEP_SUMMARY+=("${title}: skipped reason=${reason}")
+  audit_write_flow_step "$title" "skipped" 0 false 0 "(skipped)" "$output_path"
+}
+
+flow_stdout_value() {
+  local key="$1"
+
+  if [[ -z "${FLOW_STDOUT_RAW:-}" || ! -f "$FLOW_STDOUT_RAW" ]]; then
+    return 0
+  fi
+  sed -n "s/^${key}=//p" "$FLOW_STDOUT_RAW" | tail -n1
 }
 
 finish_daily_flow_failure() {
@@ -2767,6 +3125,8 @@ cmd_daily_flow() {
   local final_output
   local latest_output="${output_dir}/hermes_daily_flow_latest.md"
   local tmp_output
+  local outcome_would_update_rows=""
+  local outcome_still_pending_count=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2833,6 +3193,34 @@ cmd_daily_flow() {
     finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "daily-close:sqlite_checkpoint" "$?"
   append_flow_step "$tmp_output" "replay:trade_replay_full" "$REPORT_TIMEOUT_SEC" make trade-replay-full "DATE=${report_date}" || \
     finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "replay:trade_replay_full" "$?"
+  append_flow_step "$tmp_output" "outcome_catchup_dry_run" "$REPORT_TIMEOUT_SEC" "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --dry-run || \
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "outcome_catchup_dry_run" "$?"
+  outcome_would_update_rows="$(flow_stdout_value would_update_rows)"
+  if [[ ! "$outcome_would_update_rows" =~ ^[0-9]+$ ]]; then
+    {
+      echo "## outcome_catchup_decision"
+      echo "error=outcome_catchup_dry_run_missing_would_update_rows"
+      echo "raw_would_update_rows=${outcome_would_update_rows:-missing}"
+      echo
+    } >>"$tmp_output"
+    finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "outcome_catchup_dry_run" 1
+  fi
+  if [[ "$outcome_would_update_rows" -gt 0 ]]; then
+    append_flow_step "$tmp_output" "outcome_catchup_execute" "$REPORT_TIMEOUT_SEC" env CONFIRM=YES HERMES_OUTCOME_CATCHUP_EXECUTE_CONTEXT=daily-flow "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --execute --confirm || \
+      finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "outcome_catchup_execute" "$?"
+    outcome_still_pending_count="$(flow_stdout_value still_pending_count)"
+    if [[ "$outcome_still_pending_count" =~ ^[0-9]+$ && "$outcome_still_pending_count" -gt 0 ]]; then
+      {
+        echo "## outcome_catchup_warning"
+        echo "warning=still_pending_count_gt_zero"
+        echo "still_pending_count=${outcome_still_pending_count}"
+        echo
+      } >>"$tmp_output"
+      FLOW_STEP_SUMMARY+=("outcome_catchup_warning: still_pending_count=${outcome_still_pending_count}")
+    fi
+  else
+    append_flow_skipped_step "$tmp_output" "outcome_catchup_skipped" "would_update_rows=0"
+  fi
   append_flow_step "$tmp_output" "report:report_daily_after_full_replay" "$REPORT_TIMEOUT_SEC" make report-daily-date "DATE=${report_date}" || \
     finish_daily_flow_failure "$tmp_output" "$final_output" "$latest_output" "$report_date" "report:report_daily_after_full_replay" "$?"
   append_flow_step "$tmp_output" "compare:daily_compare_after_full_replay" "$REPORT_TIMEOUT_SEC" make daily-compare "DATE=${report_date}" || \
@@ -2955,9 +3343,13 @@ cmd_data_quality() {
   "$(python_bin)" - "$report_date" <<'PY'
 from __future__ import annotations
 
+import datetime as dt
 import json
+import os
+import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 date = sys.argv[1]
 payload = json.loads((Path("reports/daily") / f"daily_report_{date}.json").read_text(encoding="utf-8"))
@@ -2970,7 +3362,181 @@ replay = replay if isinstance(replay, dict) else {}
 coverage = coverage if isinstance(coverage, dict) else {}
 market = market if isinstance(market, dict) else {}
 
-lp_rows = payload.get("lp_signal_rows", payload.get("lp_rows", "missing")) if isinstance(payload, dict) else "missing"
+LP_TERMS = (
+    "lp",
+    "liquidity",
+    "pool",
+    "clmm",
+    "lp_alert",
+    "lp_stage",
+    "lp_noise",
+)
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def boolish_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def intish(value: Any) -> int | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def pick_lp_rows(report_payload: dict[str, Any]) -> tuple[int | str, str]:
+    run_overview = as_dict(report_payload.get("run_overview"))
+    lp_signal_summary = as_dict(report_payload.get("lp_signal_summary"))
+    lp_suppression_summary = as_dict(report_payload.get("lp_suppression_summary"))
+
+    value = intish(run_overview.get("lp_signal_rows"))
+    if value is not None:
+        return value, "run_overview"
+    value = intish(lp_signal_summary.get("lp_signal_rows"))
+    if value is not None:
+        return value, "lp_signal_summary"
+
+    delivered = intish(lp_signal_summary.get("delivered_count"))
+    suppressed = intish(lp_signal_summary.get("suppressed_count"))
+    if delivered is not None or suppressed is not None:
+        return int(delivered or 0) + int(suppressed or 0), "delivered_plus_suppressed"
+
+    delivered = intish(lp_suppression_summary.get("delivered"))
+    suppressed = intish(lp_suppression_summary.get("suppressed"))
+    if delivered is not None or suppressed is not None:
+        return int(delivered or 0) + int(suppressed or 0), "lp_suppression_summary"
+
+    return "missing", "missing"
+
+
+def quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row)
+
+
+def columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()}
+
+
+def logical_window(logical_date: str) -> tuple[int, int]:
+    parsed = dt.date.fromisoformat(logical_date)
+    start = dt.datetime(parsed.year, parsed.month, parsed.day, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    start_ts = int(start.timestamp())
+    return start_ts, start_ts + 24 * 3600
+
+
+def epoch_expr(column: str) -> str:
+    ref = quote_ident(column)
+    return f"(CASE WHEN CAST({ref} AS REAL) > 10000000000 THEN CAST({ref} AS REAL) / 1000.0 ELSE CAST({ref} AS REAL) END)"
+
+
+def sqlite_lp_like_signals(logical_date: str) -> int:
+    configured = os.environ.get("HERMES_DATA_QUALITY_DB_PATH") or os.environ.get("SQLITE_DB_PATH") or "data/chain_monitor.sqlite"
+    db_path = Path(configured)
+    if not db_path.is_absolute():
+        db_path = Path.cwd() / db_path
+    if not db_path.exists():
+        return 0
+    uri = db_path.resolve().as_uri() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        cols = columns(conn, "signals")
+        if not cols:
+            return 0
+        params: list[Any] = []
+        if "logical_date" in cols:
+            time_sql = 'CAST("logical_date" AS TEXT) = ?'
+            params.append(logical_date)
+        else:
+            start_ts, end_ts = logical_window(logical_date)
+            time_parts = []
+            for field in ("timestamp", "archive_written_at", "created_at", "updated_at", "notifier_sent_at"):
+                if field in cols:
+                    expr = epoch_expr(field)
+                    time_parts.append(f"({expr} >= ? AND {expr} < ?)")
+                    params.extend([start_ts, end_ts])
+            if not time_parts:
+                return 0
+            time_sql = "(" + " OR ".join(time_parts) + ")"
+
+        lp_parts: list[str] = []
+        for field in (
+            "signal_json",
+            "lp_alert_stage",
+            "canonical_semantic_key",
+            "trade_action_key",
+            "asset_market_state_key",
+            "pool_address",
+            "scan_path",
+            "notifier_template",
+            "delivery_decision",
+        ):
+            if field not in cols:
+                continue
+            ref = quote_ident(field)
+            for term in LP_TERMS:
+                lp_parts.append(f"LOWER(COALESCE(CAST({ref} AS TEXT), '')) LIKE ?")
+                params.append(f"%{term}%")
+        for field in ("lp_alert_stage", "pool_address"):
+            if field in cols:
+                ref = quote_ident(field)
+                lp_parts.append(f"TRIM(COALESCE(CAST({ref} AS TEXT), '')) != ''")
+        if not lp_parts:
+            return 0
+        row = conn.execute(f"SELECT COUNT(*) FROM signals WHERE {time_sql} AND ({' OR '.join(lp_parts)})", params).fetchone()
+        return int(row[0] or 0) if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+payload = as_dict(payload)
+lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
+lp_suppression_summary = as_dict(payload.get("lp_suppression_summary"))
+lp_rows, lp_rows_source = pick_lp_rows(payload)
+sqlite_lp_like = intish(lp_signal_summary.get("lp_like_signals_sqlite"))
+if sqlite_lp_like is None:
+    sqlite_lp_like = sqlite_lp_like_signals(date)
+lp_rows_int = intish(lp_rows)
+lp_report_available = any(
+    (
+        boolish_true(lp_signal_summary.get("available")),
+        boolish_true(lp_suppression_summary.get("available")),
+        isinstance(payload.get("lp_stage_summary"), dict),
+        isinstance(payload.get("clmm_summary"), dict),
+    )
+)
+if lp_rows_int is not None and lp_rows_int > 0:
+    lp_status = "ok"
+elif sqlite_lp_like and sqlite_lp_like > 0:
+    lp_status = "report_mapping_missing"
+elif not lp_report_available:
+    lp_status = "no_lp_samples_or_coverage_gap"
+else:
+    lp_status = "no_lp_samples_or_coverage_gap"
+
 status = quality.get("data_quality_status", "missing")
 zero = quality.get("zero_activity_day", "missing")
 print("数据质量检查")
@@ -2982,6 +3548,9 @@ print(f"signal_count={quality.get('signals_count', quality.get('signal_count', '
 print(f"raw_event_count={quality.get('raw_events_count', quality.get('raw_event_count', 'missing'))}")
 print(f"parsed_event_count={quality.get('parsed_events_count', quality.get('parsed_event_count', 'missing'))}")
 print(f"lp_signal_rows={lp_rows}")
+print(f"lp_status={lp_status}")
+print(f"lp_rows_source={lp_rows_source}")
+print(f"sqlite_lp_like_signals={sqlite_lp_like}")
 print(f"market_context_success_rate={quality.get('market_context_success_rate', market.get('market_context_attempt_success_rate', 'missing'))}")
 print(f"db_archive_mirror_match_rate={quality.get('db_archive_mirror_match_rate', 'missing')}")
 print(f"db_archive_mismatch_summary={quality.get('db_archive_mismatch_status', quality.get('mismatch_categories', 'missing'))}")
@@ -4274,6 +4843,7 @@ cmd_outcome_catchup() {
   local report_date=""
   local mode=""
   local confirm=false
+  local today_bj=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -4307,6 +4877,11 @@ cmd_outcome_catchup() {
     if [[ "${HERMES_OPS_PLATFORM:-}" == "telegram" ]]; then
       refuse telegram_execute_forbidden "Telegram outcome-catchup only allows --dry-run"
     fi
+    [[ "${HERMES_OPS_DAILY_FLOW_INTERNAL:-}" == "1" ]] || refuse outcome_catchup_execute_forbidden "outcome-catchup execute is restricted to internal daily-flow"
+    today_bj="$(beijing_today)"
+    if [[ "$report_date" == "$today_bj" ]]; then
+      refuse_current_beijing_date "$report_date"
+    fi
     [[ "$confirm" == true || "${CONFIRM:-}" == "YES" ]] || die "outcome-catchup --execute requires --confirm or CONFIRM=YES"
   fi
 
@@ -4318,7 +4893,7 @@ cmd_outcome_catchup() {
   if [[ "$mode" == "dry-run" ]]; then
     "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --dry-run
   else
-    CONFIRM=YES "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --execute --confirm
+    CONFIRM=YES HERMES_OUTCOME_CATCHUP_EXECUTE_CONTEXT=daily-flow "$(python_bin)" scripts/hermes_outcome_catchup.py --date "$report_date" --execute --confirm
   fi
 }
 
@@ -4945,6 +5520,8 @@ FLOW_TIMEOUT_LIMIT_SEC=0
 FLOW_TIMEOUT_HIT=false
 FLOW_STDOUT_TAIL=""
 FLOW_STDERR_TAIL=""
+FLOW_STDOUT_RAW=""
+FLOW_STDERR_RAW=""
 FLOW_STDOUT_RAW_BYTES=0
 FLOW_STDOUT_RAW_LINES=0
 FLOW_STDERR_RAW_BYTES=0
