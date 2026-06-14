@@ -1,0 +1,20 @@
+chain-monitor system audit — run log (UTC)
+2026-06-14T~14:58-15:16Z
+- Static review only: read app/ (56 non-test modules), config.py, AGENTS.md, Makefile.
+- No live monitoring, no .env read, no CU spent.
+- Dynamic check (minimal, allowed): copied data/chain_monitor.sqlite -> /tmp/audit_test.sqlite,
+  replayed real archived payloads:
+    sqlite_store.write_delivery_audit(<real delivery_audit row>) -> True (1 row written)
+    sqlite_store.write_signal(<real 2026-04-05 signal row>)      -> True (1 row written)
+  => SQLite write path is functional; empty local DB is a data-lifecycle issue, not a write bug.
+  Temp DB deleted after test.
+- Key code sites verified:
+    pipeline.py:450  outcome registration = LP-only (sole call site)
+    config.py:884    MARKET_CONTEXT_ADAPTER_MODE default 'unavailable'
+    outcome_scheduler.py:202-204,280-285  price None -> market_price_unavailable
+    listener.py:1782/1794/1810-1811/2054-2056  break-on-failure cursor (stall risk I1)
+    archive_store.py:159-161,183-185  silent write-exception swallow (I3)
+    analyzer.py:126-139 vs lp_analyzer.py:226-241  duplicate pool_buy/sell classification (M2)
+    main.py:391-394  5 shared-state workers, state_manager has no Lock (M3)
+    config.py: 355 _get_*_env thresholds, ~0 derivation comments (S2)
+- Outputs: README.md, findings.json, dataflow.md, run_log.txt

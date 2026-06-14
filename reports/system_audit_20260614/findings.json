@@ -1,0 +1,116 @@
+{
+  "_meta": {
+    "generated_utc": "2026-06-14T15:15:59Z",
+    "scope": "static code/logic/engineering audit of ~/whale (chain-monitor). No live run, no .env, no CU. Dynamic checks limited to minimal replay of already-archived data on a temp SQLite copy.",
+    "severity_levels": ["FATAL", "IMPORTANT", "MINOR", "SUGGESTION"],
+    "certainty_levels": ["confirmed_bug", "confirmed_design_flaw", "suspect_needs_runtime_confirmation"]
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "FATAL",
+      "certainty": "confirmed_design_flaw",
+      "title": "系统无法验证自身预测准确率（可验证性根本缺陷）",
+      "evidence": ["app/pipeline.py:450", "app/config.py:884", "app/outcome_scheduler.py:202-204", "app/outcome_scheduler.py:280-285", "app/main.py:341-352"],
+      "detail": "outcome 跟踪链路存在但有两处结构性断点：(1) 只对 LP 记录注册 outcome——`self.outcome_scheduler.register_from_lp_record(payload)` 是 pipeline.py 中唯一的 outcome 注册点，exchange_deposit_candidate / liquidation / smart_money 等所有非 LP 信号永远不被 outcome 跟踪；(2) outcome 的起止价格都取自 market_context_adapter，而 MARKET_CONTEXT_ADAPTER_MODE 默认 'unavailable'（config.py:884），默认 `make run` 下 start_price=None → 行 202-204 立即写 failure_reason='market_price_unavailable'，结算端 280-285 同样拿不到价 → 全部 outcome 标记 unavailable。",
+      "impact": "outcome / opportunity_outcomes 表 0 行；daily report outcome_30s/60s/300s_completed_count 全 0；系统从不记录自己说对没说对，无法计算精确率/召回率，learning loop（calibration/shadow/replay）全部缺少真实样本输入。一个'监控+验证'系统失去验证维度。",
+      "fix_direction": "(a) 把 outcome 注册从 LP-only 扩展到所有发出的信号（在 finalize_notification_delivery 处统一注册，按 signal 标的+方向）；(b) 让 outcome 价格源独立于交易研判用的 market_context，默认即可用一个只读价源（如 OKX 公共 1m，或本研究已验证的离线对齐方式）；(c) 把 `make run-research` 的 live 价配置设为生产默认，或在 unavailable 时显式告警而非静默产生 0 样本。"
+    },
+    {
+      "id": "I1",
+      "severity": "IMPORTANT",
+      "certainty": "confirmed_bug",
+      "title": "单个持续失败的区块会让 producer 永久卡死（liveness / 数据缺口）",
+      "evidence": ["app/listener.py:1781-1782", "app/listener.py:1793-1794", "app/listener.py:1810-1811", "app/listener.py:2054-2056"],
+      "detail": "producer 对 last_block+1..latest 逐块处理；任一块 _rpc_get_block 返回 None 或 _fetch_transfer_logs_for_scan_groups 的 failure_count>0 时 `break`，而 last_block 只在块成功后经 processed_until 推进（2054-2056）。break 后下次从同一失败块重试，无最大重试/跳过/降级。若某块 getLogs 持续失败（本环境已实测公共 RPC 408 限流频发），监听会无限卡在该块、彻底停止前进，且无显式告警。",
+      "impact": "在 RPC 抖动/限流下，整套监控可能静默停摆并越落越远，产生大段数据缺口；与 F1 叠加后连'缺了多少'都无法事后核验。",
+      "fix_direction": "对单块设最大重试次数 + 退避；超限后记录 gap、跳过该块并继续（或切备用 RPC）；把 last_processed_block 持久化以便重启续传与缺口审计。"
+    },
+    {
+      "id": "I2",
+      "severity": "IMPORTANT",
+      "certainty": "confirmed_design_flaw",
+      "title": "outcome 覆盖面只含 LP 信号，主力信号族（交易所流）无任何 ground truth",
+      "evidence": ["app/pipeline.py:450", "delivery_audit 分布: exchange_deposit_candidate 233 vs lp 事件极少"],
+      "detail": "系统发出最频繁的是 exchange_deposit/withdraw 类（样本日 233+78 条），但这些信号从不进入 outcome 注册（仅 LP 记录注册）。即使修好 F1 的价格问题，交易所流信号仍无反馈闭环。",
+      "impact": "对系统最主要的产出无法度量对错，calibration/quality 统计对这部分恒为空。",
+      "fix_direction": "同 F1(a)：注册口径覆盖全部信号类型，按可交易标的映射价格窗口。"
+    },
+    {
+      "id": "I3",
+      "severity": "IMPORTANT",
+      "certainty": "confirmed_bug",
+      "title": "SQLite/归档写入异常被静默吞掉，NDJSON 与 SQLite 可无声分叉",
+      "evidence": ["app/archive_store.py:159-161", "app/archive_store.py:183-185", "app/archive_store.py:142-144"],
+      "detail": "_write 先 _mirror_to_sqlite 再写 NDJSON；两处 except 仅 print 后返回，不抛、不计数、不告警。replay 验证：write_delivery_audit/write_signal 对真实归档 payload 在临时库上均成功（返回 True，各写入 1 行），说明写路径本身正确——因此当前本地 data/chain_monitor.sqlite 全空并非写路径 bug，而是该库从未被某次运行填充（库被重新 init 过 / 运行期 mirror 关闭 / 用的是别的库文件，data/*.sqlite 本就 gitignore 且易失）。但静默吞错机制意味着真分叉发生时无人知晓。",
+      "impact": "DB-first 的报告（AGENTS.md 规定）可能基于残缺 DB 给出'系统进步'等结论；REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH 默认 False（config.py:972）进一步放过不一致。",
+      "fix_direction": "mirror 失败要计数+暴露到健康指标；周期性 DB/NDJSON 行数对账；生产将 REPORT_FAIL_ON_DB_ARCHIVE_MISMATCH 设真或至少降级 data_quality_status。"
+    },
+    {
+      "id": "M1",
+      "severity": "MINOR",
+      "certainty": "confirmed_design_flaw",
+      "title": "无链重组（reorg）处理",
+      "evidence": ["app/listener.py:1745", "app/listener.py:2054-2056"],
+      "detail": "producer 仅按 last_block+1..latest 单向前进，无 reorg 回滚/重扫；reorg 时孤块上已处理的事件不会用规范链重处理，若 latest<last_block 则 range 为空、停滞直到链追上。",
+      "impact": "重组期（通常 1-2 块）少量事件可能漏处理或基于孤块数据，whale 监控场景影响有限但存在。",
+      "fix_direction": "维护近 N 块滚动确认窗口，检测父哈希不连续时回退重扫。"
+    },
+    {
+      "id": "M2",
+      "severity": "MINOR",
+      "certainty": "confirmed_design_flaw",
+      "title": "pool_buy/sell_pressure 在两个模块用不同方法重复判定，可能互相矛盾",
+      "evidence": ["app/analyzer.py:126-139", "app/lp_analyzer.py:226-241"],
+      "detail": "analyzer.py 以 event.side(买入/卖出)+连续笔数得出 behavior_type=pool_buy/sell_pressure；lp_analyzer.py 以 base_net/quote_net 符号得出 intent_type=pool_buy/sell_pressure。同一事件两套判据可能给出不同方向，下游对二者引用不一致时产生隐性冲突。",
+      "impact": "信号方向在 behavior 层与 intent 层可能不一致；难以追溯'谁说了算'。",
+      "fix_direction": "统一为单一权威方向判定，另一处改为引用而非重算。"
+    },
+    {
+      "id": "M3",
+      "severity": "MINOR",
+      "certainty": "suspect_needs_runtime_confirmation",
+      "title": "5 个并发 worker 共享无锁 state_manager，可能存在跨 await 竞态",
+      "evidence": ["app/main.py:391-394", "app/main.py:341-350", "app/state_manager.py (无 threading.Lock / asyncio.Lock)"],
+      "detail": "main 起 5 个 worker 协程并发跑 pipeline.process，全部共享单个 state_manager。state_manager 无任何锁。asyncio 单线程下单步 append 安全，但 process 内存在 await（取价等），若某逻辑是'读取 recent 窗口→await→基于旧窗口写回/判定'，可在 await 点被其他 worker 交错修改同一 deque，导致确认/共振/cooldown 统计偏差。",
+      "impact": "确认窗口/共振/cooldown 等基于近期事件的判定可能偶发不一致。需运行确认是否真有跨 await 的读改写。",
+      "fix_direction": "对共享读改写段加 asyncio.Lock，或将每事件状态更新收敛为无 await 的原子段。"
+    },
+    {
+      "id": "S1",
+      "severity": "SUGGESTION",
+      "certainty": "confirmed_design_flaw",
+      "title": "信号定义不区分'信息性参与者'与'机械噪声'（设计层缺陷）",
+      "evidence": ["app/lp_analyzer.py:250-257", "app/pipeline.py:8876-8907", "reports/lp_removal_offline_study_20260614/ (实证: liquidity_removal ~99% 为 dust+自动化再平衡)"],
+      "detail": "liquidity_removal=任意 UniV2 Burn，未过滤自动化做市/金库的机械 remove-add（研究证实 ~96% 是 ~$9-33M 规律再平衡，中位 dust ~$3）；exchange_deposit_candidate=任意外部→交易所热钱包的大额转入，未区分散户例行充值与知情大户出货。门控只有金额下限（LP_PREALERT_MIN_USD=1500 等），无'机器人/再平衡/例行流'识别。",
+      "impact": "把噪声当信号是源头性问题：与具体 edge 无关，再多门控也救不回'输入即噪声'。",
+      "fix_direction": "引入参与者画像（地址行为聚类、自动化节律检测、相对池 TVL 占比、是否伴随同向 swap 抽干）以隔离信息性事件——这是信号能否有用的前提，但属设计层、与已证否的 edge 是两个维度。"
+    },
+    {
+      "id": "S2",
+      "severity": "SUGGESTION",
+      "certainty": "confirmed_design_flaw",
+      "title": "约 355 个阈值为无依据的魔法数字",
+      "evidence": ["app/config.py (355 处 _get_*_env 默认值)", "config 中 calibrat/derived/statistic/backtest 相关注释仅 16 行，且均指 OPPORTUNITY_CALIBRATION_* 配置项本身而非阈值推导"],
+      "detail": "size buckets 1500/10000、LIQUIDATION_MIN_USD 35000/125000、几十个 intensity/ratio/score floor 等均为硬编码，无统计或机制推导、无校准记录。",
+      "impact": "无法判断阈值是否合理；过滤/放行边界靠拍脑袋，难以归因误报漏报。",
+      "fix_direction": "对关键阈值用历史样本做敏感性/ROC 分析定标；至少在注释标注来源与最后校准日期。"
+    },
+    {
+      "id": "S3",
+      "severity": "SUGGESTION",
+      "certainty": "suspect_needs_runtime_confirmation",
+      "title": "原始/解析事件归档按 tier 门控，非 research 运行无法离线重放",
+      "evidence": ["app/config.py:120", "app/config.py:930-931", "app/data/archive/raw_events (0 文件), parsed_events (0 文件)"],
+      "detail": "ARCHIVE_ENABLE_RAW_EVENTS/PARSED_EVENTS 默认 = (DEFAULT_USER_TIER=='research')。默认 tier 即 research（应为 True），但实际归档里 raw/parsed 为空 → 实际运行很可能用了非 research tier（.env 未读，需运行确认），导致原始事件未留存、无法事后重放校验。",
+      "impact": "削弱离线可验证性：没有 raw/parsed 就只能用 delivery_audit（且其全是 drop 记录）反推。",
+      "fix_direction": "无论 tier 都保留至少 parsed_events（体量可控）以支撑离线重放与审计。"
+    }
+  ],
+  "non_findings_verified": [
+    {"item": "whale 内部时区一致", "evidence": "app/archive_store.py:305-306 archive_ts 用 UTC unix；archive_time_bj 仅展示用（BJ）；outcome 用 int(time.time()) UTC + OKX(UTC)。whale 自身无 UTC+8 错配（UTC+8 坑只存在于外部 cta_strategy 库，本审查不涉及其修改）。"},
+    {"item": "SQLite 写路径正确", "evidence": "replay: write_delivery_audit / write_signal 对真实归档 payload 成功写入临时库各 1 行。"},
+    {"item": "区块游标在瞬时失败下不丢块", "evidence": "listener.py:2054-2056 processed_until 仅随成功块推进，break 保留游标——瞬时失败不产生缺口（但持续失败会卡死，见 I1）。"},
+    {"item": "liquidity_removal / exchange_deposit 触发语义与代码一致", "evidence": "lp_analyzer.py:129-133,250-257 (base_net<0&quote_net<0=Burn=移除)；pipeline.py:8876-8990 (流入交易所大额=deposit=抛压) 语义自洽。"}
+  ]
+}
