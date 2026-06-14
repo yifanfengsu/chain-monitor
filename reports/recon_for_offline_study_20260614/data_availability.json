@@ -1,0 +1,109 @@
+{
+  "_meta": {
+    "generated_utc": "2026-06-14T12:31:55Z",
+    "verdict": "YELLOW-leaning-RED",
+    "one_line": "Signal definitions are fully extractable (GREEN). Self-stored historical data is ~1 day, local-only, git-ignored, and carries NO settled price outcomes (RED for using as-is). Offline study is only startable after a batch backfill from an archive node / data vendor (YELLOW: medium engineering)."
+  },
+  "self_stored_history": {
+    "sqlite_db": {
+      "path": "data/chain_monitor.sqlite (508 KB, git-ignored)",
+      "tables": 19,
+      "populated_tables": ["schema_meta (1 row)"],
+      "empty_tables": ["signals", "outcomes", "opportunity_outcomes", "trade_opportunities", "delivery_audit", "raw_events", "parsed_events", "signal_features", "asset_cases", "asset_market_states", "quality_stats", "market_context_snapshots", "no_trade_locks", "..."],
+      "conclusion": "SQLite mirror was never populated / was reset. Unusable as a history source."
+    },
+    "ndjson_archive": {
+      "base_dir": "app/data/archive/ (git-ignored, LOCAL-ONLY, not in version control)",
+      "files": {
+        "delivery_audit.ndjson": {
+          "rows": 1758,
+          "size": "6.5 MB",
+          "ts_range_utc": "2026-04-05 10:14:39 -> 2026-04-06 06:24:38",
+          "ts_range_bj": "2026-04-05 18:14:39 -> 2026-04-06 14:24:38",
+          "span_hours": 20.2,
+          "all_rows_delivery_class": "drop (this is the SUPPRESSED/gated-out event log, not fired signals)",
+          "richest_fields": ["archive_ts", "tx_hash", "token", "usd_value", "side", "intent_type", "intent_stage", "is_exchange_related", "lp_action", "lp_direction", "lp_pool_address", "behavior_type", "quality_score", "delivery_reason", "chain"],
+          "value": "best timestamped on-chain event record available locally; alignable to price via archive_ts + token + tx_hash"
+        },
+        "signals/2026-04-04.ndjson": {"rows": 2},
+        "signals/2026-04-05.ndjson": {"rows": 1},
+        "signals_total_fired": 3,
+        "signals_fields": ["signal_id", "event_id", "tx_hash", "token", "usd_value", "side", "intent_type", "confidence", "quality_score", "archive_ts", "ts (event time)"],
+        "signals_have_price_or_outcome": false,
+        "case_followups": {"2026-04-04": 2, "2026-04-05": 2},
+        "raw_events": "0 files (ARCHIVE_ENABLE_RAW_EVENTS tied to research tier; not retained here)",
+        "parsed_events": "0 files",
+        "cases": "0 files (ARCHIVE_ENABLE_CASES=False)"
+      },
+      "distinct_calendar_days": 2,
+      "effective_coverage": "~1 contiguous day (Apr 5 18:14 -> Apr 6 14:24 BJ)"
+    },
+    "intent_distribution_in_delivery_audit": {
+      "pure_transfer": 1399,
+      "exchange_deposit_candidate": 233,
+      "exchange_withdraw_candidate": 78,
+      "pool_buy_pressure": 26,
+      "possible_buy_preparation": 12,
+      "pool_sell_pressure": 7,
+      "market_making_inventory_move": 2,
+      "liquidity_addition": 1
+    },
+    "drop_reason_distribution": {
+      "stable_non_swap_filtered": 1250,
+      "below_min_usd": 272,
+      "quality_score_below_threshold": 129,
+      "exchange_flow_weak_confirmation": 51,
+      "strategy_rejected": 43,
+      "pricing_unavailable_no_proxy": 12,
+      "smart_money_non_execution_weak": 1
+    },
+    "telegram_push_history_export": {
+      "found": false,
+      "note": "no telegram export file present. delivery_audit.ndjson is the de-facto delivery record but contains only DROP-class rows in this window (nothing was pushed)."
+    }
+  },
+  "settled_outcomes_present": {
+    "answer": false,
+    "evidence": "reports/daily/daily_report_latest.json: outcome_30s/60s/300s_completed_count all 0; trade_opportunity_summary candidate/verified counts all 0; SQLite outcomes & opportunity_outcomes tables 0 rows.",
+    "implication": "no ready-made event->price labels exist; price reaction must be reconstructed offline from an external price source."
+  },
+  "batch_backfill_options": {
+    "_evaluated_not_executed": true,
+    "archive_node_getLogs": {
+      "availability": "high (Alchemy already configured; archive getLogs by contract for Transfer/Swap/Mint/Burn)",
+      "cost": "Alchemy CU (NOT spent in this recon beyond a permitted single-contract single-day probe, which was also skipped to be safe)",
+      "engineering": "medium: re-derive intent_type with existing app/ classifiers (pipeline.py exchange logic, lp_analyzer.py) over historical logs; pools fixed (4) so getLogs scope is small; exchange-deposit needs Transfer logs filtered by the 19 watched / 4 exchange addresses",
+      "quality": "high / canonical (raw chain data); reuses existing parsing code => definition parity",
+      "best_target": "the 4 Uniswap V2 pools (ETH/WBTC) for LP signals + ERC20 Transfer logs touching exchange hot wallets for the deposit signal"
+    },
+    "dune": {"availability": "high", "cost": "low (free tier may suffice for 4 pools + a few addresses)", "engineering": "medium (SQL + re-implement intent classify outside app code => definition drift risk)", "quality": "good"},
+    "the_graph": {"availability": "medium (Uniswap V2 subgraph has swaps/mints/burns)", "cost": "low", "engineering": "medium", "quality": "good for LP, weak for arbitrary exchange-deposit address flows"},
+    "allium_nansen": {"availability": "high, paid", "cost": "high (subscription)", "engineering": "low-medium", "quality": "high, has labeled CEX wallets (useful for exchange-deposit signal)"},
+    "recommended": "archive-node getLogs replaying through existing app/ classifiers — preserves exact signal definitions and the pool set is tiny."
+  },
+  "price_alignment": {
+    "block_time_to_kline": "delivery_audit/signals carry archive_ts (unix) and event ts; align to minute klines by floor(ts/60). System already prefers OKX perp mark at 30/60/300s offsets (sub-minute), so for finer study use OKX trades/1m candles.",
+    "price_source_in_repo": "app/market_data_clients.py: OKX (okx_perp) primary, Kraken futures secondary, Binance/Bybit base URLs present but de-prioritized for US VPS.",
+    "monitored_majors_in_existing_price_lib": "ETH and BTC (the LP pools are ETH/WBTC) are universally covered by any price lib incl. cta_strategy's 5/22-coin set; long-tail tokens (PEPE, etc.) may need supplemental price feeds.",
+    "note": "cta_strategy price library was NOT inspected (separate repo, out of scope); ETH+BTC coverage is assumed-safe, long-tail must be confirmed."
+  },
+  "tradeable_mapping": {
+    "lp_signal_assets": {
+      "ETH": {"perp": "OKX ETH-USDT-SWAP / Binance ETHUSDT", "available": true, "liquidity": "very high"},
+      "BTC": {"perp": "via WBTC pools -> BTC-USDT-SWAP", "available": true, "liquidity": "very high"}
+    },
+    "exchange_deposit_signal_assets": "dynamic per watched-address token; needs per-token perp check. Observed tokens incl USDT/USDC (stable, no directional perp), WETH (ETH perp), PEPE (PEPE perp exists). Stablecoin-dominant flows (is_stablecoin_flow True in 1318/1758) are not directly directionally tradeable as the moved asset.",
+    "configured_major_assets": ["ETH", "WETH", "BTC", "WBTC", "CBBTC", "SOL", "WSOL"],
+    "configured_major_quotes": ["USDT", "USDC", "USDC.E"]
+  },
+  "event_frequency_for_sample_sizing": {
+    "window": "~20 hours (single sample day)",
+    "exchange_deposit_candidate_events": 233,
+    "exchange_withdraw_candidate_events": 78,
+    "lp_directional_events_buy_plus_sell_pressure": 33,
+    "lp_liquidity_addition": 1,
+    "lp_liquidity_removal_in_window": 0,
+    "caveat": "these are pre-gate (mostly dropped). True actionable frequency after quality gate is far lower. Single day is far below the OPPORTUNITY_MIN_HISTORY_SAMPLES=20 the system itself requires.",
+    "reaction_window_hint": "system measures reaction at 30s/60s/300s => the operator's hypothesized edge is MINUTE-scale, consistent with the 'execution-latency killed it' framing."
+  }
+}

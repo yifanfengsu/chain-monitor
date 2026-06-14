@@ -1,0 +1,224 @@
+{
+  "_meta": {
+    "generated_utc": "2026-06-14T12:31:55Z",
+    "task": "recon-only: signal definition extraction; no backtest, no project decision",
+    "source_of_truth": "code (app/) + committed config defaults",
+    "chain_scope": "ethereum only (active LP scan is Ethereum-only; Solana/Base appear in coverage diagnostics but are NOT runtime scan targets)",
+    "note_thresholds": "all numeric thresholds below are the committed .env-overridable DEFAULTS in app/config.py; runtime .env was NOT read (forbidden). Live thresholds may differ."
+  },
+  "monitored_scope": {
+    "watch_addresses": {
+      "total": 19,
+      "active": 14,
+      "inactive": 5,
+      "category_distribution": {"smart_money": 11, "exchange_whale": 4, "celebrity_whale": 3, "issuer_whale": 1},
+      "strategy_role_distribution": {"smart_money_wallet": 7, "exchange_hot_wallet": 4, "market_maker_wallet": 3, "celebrity_wallet": 3, "alpha_wallet": 1, "treasury_issuer": 1},
+      "source_file": "data/addresses.json (git-ignored, local-only)"
+    },
+    "lp_pools": {
+      "total": 4,
+      "dex": "Uniswap V2",
+      "pairs": ["ETH/USDT", "ETH/USDC", "WBTC/USDT", "WBTC/USDC"],
+      "source_file": "data/lp_pools.json (git-ignored, local-only)"
+    },
+    "cex_entities_for_classification": ["binance", "okx", "bybit", "jump_trading", "wintermute", "uniswap"],
+    "clmm_managers": 4,
+    "token_universe": "DYNAMIC, not a fixed list. Tokens are whatever the 19 watched addresses + 4 LP pools touch. Observed top tokens in delivery_audit: USDT, WETH, USDC, PEPE, plus long tail."
+  },
+  "size_buckets_usd": {
+    "definition_location": "app/pipeline.py:8790-8795",
+    "small": "< 1500",
+    "medium": "1500 - 10000",
+    "large": ">= 10000"
+  },
+  "signals": [
+    {
+      "id": "exchange_deposit_candidate",
+      "label_cn": "大额资金转入交易所 (抛压预期)",
+      "status": "CODE_DEFINED",
+      "this_is_the_brief_target_signal": true,
+      "definition_location": "app/pipeline.py:8876-8907 (watch=exchange hot wallet, inbound) and :8983-8990 (watch=non-exchange, counterparty=exchange, outbound)",
+      "precise_trigger": {
+        "primary": "event.kind != swap AND watched addr is exchange_hot_wallet AND direction==流入 (into exchange) AND size_bucket==large (>=10000 USD) AND counterparty is external & non-exchange",
+        "secondary_medium": "same but size_bucket==medium (1500-10000) AND (counterparty_unknown OR is_stablecoin_flow) -> lower confidence/info",
+        "mirror": "non-exchange watched addr sends token TO an exchange-related counterparty (direction==流出) -> also classified exchange_deposit_candidate (pipeline.py:8983)"
+      },
+      "semantics": "asset arriving at a CEX hot wallet => potential sell pressure => price-down prior",
+      "intent_confidence_default": 0.56,
+      "outputs_fields": ["intent_type", "direction", "size_bucket", "is_stablecoin_flow", "counterparty_strategy_role"]
+    },
+    {
+      "id": "exchange_withdraw_candidate",
+      "label_cn": "交易所外流方向",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/pipeline.py:8926-8955, :8992-9000",
+      "precise_trigger": "watched exchange hot wallet, direction==流出, external & non-exchange counterparty, size_bucket large (or stablecoin+medium). Mirror: non-exchange addr receiving from exchange.",
+      "semantics": "asset leaving CEX => accumulation / reduced sell pressure",
+      "intent_confidence_default": 0.56
+    },
+    {
+      "id": "possible_buy_preparation",
+      "label_cn": "入场前资金准备",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/pipeline.py:8909-8924, :8976-8982",
+      "precise_trigger": "large stablecoin leaving exchange hot wallet toward unknown external addr (size_bucket large, is_stable, counterparty_unknown)",
+      "semantics": "dry powder moving out of CEX before a buy"
+    },
+    {
+      "id": "lp_liquidity_removal",
+      "label_cn": "LP 流动性流出 / 移除 (策略档所指 LP大额流出)",
+      "status": "CODE_DEFINED",
+      "this_is_the_brief_target_signal": true,
+      "definition_location": "app/lp_analyzer.py:129-133 (action classify) + :250-257 (intent)",
+      "precise_trigger": "in a monitored Uniswap V2 pool: base_net < 0 AND quote_net < 0 (BOTH sides flow out of the pool) => action=liquidity_removal (i.e. Burn). intent_confidence=0.76.",
+      "definition_of_outflow": "BOTH token reserves decrease in the same parsed pool event = liquidity removed. NOT a swap (swap = one side in, one side out).",
+      "thresholds_for_prealert": {
+        "LP_PREALERT_LIQUIDITY_REMOVAL_MIN_ACTION_INTENSITY": 0.26,
+        "LP_PREALERT_LIQUIDITY_REMOVAL_MIN_VOLUME_SURGE_RATIO": 1.25,
+        "LP_PREALERT_MIN_USD": 1500.0,
+        "LP_NOTIFY_HARD_MIN_USD": 1000.0,
+        "LP_OBSERVE_MIN_USD": 3000.0
+      },
+      "semantics": "two-sided pool drain; combined with sell pressure / exchange inflow it was the operator's down-move prior"
+    },
+    {
+      "id": "lp_pool_sell_pressure",
+      "label_cn": "同池连续卖压",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/lp_analyzer.py:234-241 (intent) + app/analyzer.py:133-139 (consecutive count)",
+      "precise_trigger": "pool swap with event.side==卖出 AND consecutive_sell >= max(min_consecutive_count-1, 2). base_net>0 & quote_net<0 in pool (base token flows IN, quote/stable flows OUT).",
+      "intent_confidence_default": 0.78
+    },
+    {
+      "id": "lp_pool_buy_pressure",
+      "label_cn": "同池连续买压",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/lp_analyzer.py:226-233 + app/analyzer.py:126-132",
+      "precise_trigger": "pool swap with event.side==买入 AND consecutive_buy>=max(min_consecutive_count-1,2). base_net<0 & quote_net>0.",
+      "intent_confidence_default": 0.78
+    },
+    {
+      "id": "lp_liquidity_addition",
+      "label_cn": "流动性增加",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/lp_analyzer.py:124-128, :242-249",
+      "precise_trigger": "base_net>0 AND quote_net>0 (both sides flow IN) => Mint."
+    },
+    {
+      "id": "lp_pool_rebalance",
+      "label_cn": "池子再平衡",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/lp_analyzer.py:134-135, :258-265",
+      "precise_trigger": "mixed/partial net flow not matching swap/add/remove patterns."
+    },
+    {
+      "id": "lp_sweep_liquidity",
+      "label_cn": "流动性清扫 (sweep)",
+      "status": "CODE_DEFINED",
+      "definition_location": "thresholds in app/config.py:315-322; phase mapping app/test_lp_sweep_phase_mapping.py",
+      "precise_trigger": {
+        "LP_SWEEP_MIN_RESERVE_SKEW": 0.18,
+        "LP_SWEEP_MIN_ACTION_INTENSITY": 0.42,
+        "LP_SWEEP_MIN_VOLUME_SURGE_RATIO": 1.8,
+        "LP_SWEEP_MIN_SAME_POOL_CONTINUITY": 2,
+        "LP_SWEEP_MIN_BURST_EVENT_COUNT": 3,
+        "LP_SWEEP_MAX_BURST_WINDOW_SEC": 45,
+        "LP_SWEEP_CONTINUATION_MIN_SCORE": 0.56,
+        "LP_SWEEP_EXHAUSTION_MIN_SCORE": 0.60
+      },
+      "semantics": "burst of same-direction same-pool swaps draining one side fast; has continuation vs exhaustion-reversal sub-states. sweep_exhaustion_risk is a HARD blocker."
+    },
+    {
+      "id": "lp_burst_fastlane",
+      "label_cn": "LP 突发快通道",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/config.py:718-751",
+      "precise_trigger": {
+        "LP_BURST_WINDOW_SEC": 60,
+        "LP_BURST_MIN_EVENT_COUNT": 6,
+        "LP_BURST_MIN_TOTAL_USD": 15000.0,
+        "LP_BURST_MIN_MAX_SINGLE_USD": 5000.0,
+        "LP_BURST_MIN_VOLUME_SURGE_RATIO": 6.0
+      }
+    },
+    {
+      "id": "liquidation_event",
+      "label_cn": "清算 / 清算风险",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/liquidation_detector.py; thresholds app/config.py:768-777",
+      "precise_trigger": {
+        "LIQUIDATION_MIN_USD": 35000.0,
+        "LIQUIDATION_PRIMARY_MIN_USD": 125000.0,
+        "LIQUIDATION_RISK_MIN_SCORE": 0.66,
+        "LIQUIDATION_EXECUTION_MIN_SCORE": 0.86
+      },
+      "semantics": "lending-protocol liquidation flow scored by protocol hit / continuity / resonance / surge bonuses."
+    },
+    {
+      "id": "smart_money_swap_execution",
+      "label_cn": "聪明钱 swap 执行",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/pipeline.py:8797 (kind==swap => swap_execution); gates in signal_quality_gate.py",
+      "precise_trigger": "watched smart-money/market-maker addr performs a DEX swap; size & quality gated. Notify only on execution (SMART_MONEY_NOTIFY_EXECUTION_ONLY=True)."
+    },
+    {
+      "id": "clmm_position_events",
+      "label_cn": "CLMM 仓位事件类",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/clmm_parser.py, app/clmm_decoder_normalizer.py; intents in signal_interpreter.py:893-955",
+      "intent_types": ["clmm_position_open", "clmm_position_add_range_liquidity", "clmm_position_remove_range_liquidity", "clmm_position_close", "clmm_passive_fee_harvest", "clmm_jit_liquidity_likely"]
+    },
+    {
+      "id": "market_making_inventory_move",
+      "label_cn": "做市库存调整",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/pipeline.py:8860; app/analyzer.py:200-259"
+    },
+    {
+      "id": "adjacent_watch_followup",
+      "label_cn": "邻接地址跟踪 / 下游预警",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/config.py:207-296 (ADJACENT_WATCH_*, DOWNSTREAM_EARLY_WARNING_*)",
+      "note": "1-hop expansion from a super-large move (ADJACENT_WATCH_SUPER_LARGE_USD=1,000,000)."
+    },
+    {
+      "id": "pure_transfer",
+      "label_cn": "一般资金转移 (噪声基线)",
+      "status": "CODE_DEFINED",
+      "definition_location": "app/pipeline.py:8957, 9002",
+      "note": "default fallback; ~80% of observed events; mostly filtered at gate (stable_non_swap_filtered)."
+    }
+  ],
+  "downstream_gating_layers": {
+    "signal_quality_gate": {
+      "QUALITY_GATE_SCORE_THRESHOLD": 0.69,
+      "QUALITY_GATE_MIN_GLOBAL_USD": 800.0,
+      "QUALITY_GATE_STABLE_TRANSFER_MIN_USD": 2000.0,
+      "QUALITY_GATE_STABLE_NON_SWAP_HARD_FILTER_USD": 14000.0,
+      "QUALITY_GATE_COOLDOWN_SEC": 180,
+      "note": "stable_non_swap_filtered was 1250/1758 (71%) of dropped events in the sample window"
+    },
+    "trade_opportunity_layer": {
+      "states": ["CANDIDATE", "VERIFIED", "BLOCKED", "NONE"],
+      "OPPORTUNITY_MIN_CANDIDATE_SCORE": 0.68,
+      "OPPORTUNITY_MIN_VERIFIED_SCORE": 0.78,
+      "OPPORTUNITY_REQUIRE_LIVE_CONTEXT": true,
+      "OPPORTUNITY_REQUIRE_OUTCOME_HISTORY": true,
+      "OPPORTUNITY_MIN_HISTORY_SAMPLES": 20,
+      "hard_blockers": ["NO_TRADE", "NO_TRADE_LOCK", "DO_NOT_CHASE_LONG", "DO_NOT_CHASE_SHORT", "direction_conflict", "data_gap", "sweep_exhaustion_risk"]
+    },
+    "shadow_opportunity_layer": {
+      "purpose": "research-only sample accumulation, never triggers Telegram",
+      "SHADOW_CANDIDATE_MIN_SCORE": 0.58,
+      "SHADOW_VERIFIED_MIN_SCORE": 0.65
+    }
+  },
+  "event_to_price_correlation": {
+    "exists_in_code": true,
+    "mechanism": "app/outcome_scheduler.py: OUTCOME_WINDOWS = (30, 60, 300) seconds. For each signal, schedules price settlement at +30s/+60s/+300s.",
+    "price_source": "OKX perp mark price preferred (OUTCOME_PREFER_OKX_MARK=True, OUTCOME_USE_MARKET_CONTEXT_PRICE=True), Kraken futures secondary",
+    "derived_metrics": ["followthrough_rate (price moved in signal direction)", "adverse_rate", "outcome_completion_rate"],
+    "replay_engine": "app/trade_replay.py simulates entry(+5s)/exit(SL 30bps / TP 50bps / max-hold 60s), nets fees(6bps)+slippage(5bps), labels clean_followthrough/bad_entry/absorption_reversal/chop_no_edge",
+    "CRITICAL_CAVEAT": "the correlation/outcome/replay MACHINERY exists but produced ZERO real settled samples. Daily report shows outcome_30s/60s/300s_completed_count = 0, candidate=0, verified=0, SQLite outcomes table = 0 rows. No empirically validated event->price edge is recorded anywhere in the repo."
+  }
+}
