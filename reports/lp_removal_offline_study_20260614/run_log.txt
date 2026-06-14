@@ -1,0 +1,134 @@
+[2026-06-14T14:02:46.396841Z] backfill: cur=25316192 window blocks [22578192,25206192] pools=4 chunk=10000
+[2026-06-14T14:02:46.408731Z] threaded backfill: 1052 tasks remaining of 1052 (8 workers)
+[2026-06-14T14:03:08.561355Z]   done=20/1052 burns_new=35
+[2026-06-14T14:03:24.393445Z]   done=40/1052 burns_new=63
+[2026-06-14T14:03:34.329084Z]   done=60/1052 burns_new=101
+[2026-06-14T14:03:52.400329Z]   done=80/1052 burns_new=145
+[2026-06-14T14:04:01.631496Z]   done=100/1052 burns_new=186
+[2026-06-14T14:04:08.815743Z]   done=120/1052 burns_new=222
+[2026-06-14T14:04:20.905774Z]   done=140/1052 burns_new=503
+[2026-06-14T14:04:32.760363Z]   done=160/1052 burns_new=10121
+[2026-06-14T14:04:46.438221Z]   chunk 23288192-23298191 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:04:51.720861Z]   done=180/1052 burns_new=10268
+[2026-06-14T14:05:01.083051Z]   done=200/1052 burns_new=10410
+[2026-06-14T14:05:12.937504Z]   done=220/1052 burns_new=10494
+[2026-06-14T14:05:28.740846Z]   done=240/1052 burns_new=10549
+[2026-06-14T14:05:47.465978Z]   done=260/1052 burns_new=10588
+[2026-06-14T14:08:18.805599Z] backfill: cur=25316220 window blocks [22578220,25206220] pools=4 chunk=10000
+[2026-06-14T14:08:18.805777Z] resume: 260 chunks already done
+[2026-06-14T14:08:18.810875Z] threaded backfill: 1052 tasks remaining of 1052 (8 workers)
+[2026-06-14T14:08:36.873279Z]   done=280/1052 burns_new=35
+[2026-06-14T14:09:05.587763Z]   done=300/1052 burns_new=64
+[2026-06-14T14:09:37.568688Z]   done=320/1052 burns_new=105
+[2026-06-14T14:10:14.396306Z]   done=340/1052 burns_new=149
+[2026-06-14T14:10:41.878968Z]   done=360/1052 burns_new=185
+[2026-06-14T14:10:56.232153Z]   chunk 23288220-23298219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:11:00.783048Z]   done=380/1052 burns_new=218
+[2026-06-14T14:11:22.051351Z]   done=400/1052 burns_new=539
+[2026-06-14T14:11:36.934581Z]   done=420/1052 burns_new=10148
+[2026-06-14T14:11:55.996278Z]   done=440/1052 burns_new=10283
+[2026-06-14T14:12:11.820967Z]   done=460/1052 burns_new=10407
+[2026-06-14T14:12:27.644083Z]   done=480/1052 burns_new=10495
+[2026-06-14T14:12:43.162532Z]   done=500/1052 burns_new=10548
+[2026-06-14T14:13:00.037126Z]   done=520/1052 burns_new=10582
+[2026-06-14T14:13:15.755645Z]   done=540/1052 burns_new=10632
+[2026-06-14T14:13:30.054352Z]   done=560/1052 burns_new=10682
+[2026-06-14T14:13:44.257107Z]   done=580/1052 burns_new=10740
+[2026-06-14T14:13:59.656931Z]   done=600/1052 burns_new=10809
+[2026-06-14T14:14:16.618157Z]   done=620/1052 burns_new=10868
+[2026-06-14T14:14:29.646834Z]   done=640/1052 burns_new=10912
+[2026-06-14T14:14:45.640951Z]   done=660/1052 burns_new=11280
+[2026-06-14T14:15:05.674514Z]   done=680/1052 burns_new=12314
+[2026-06-14T14:15:23.678742Z]   done=700/1052 burns_new=13192
+[2026-06-14T14:15:49.514734Z]   done=720/1052 burns_new=13696
+[2026-06-14T14:16:07.697883Z]   done=740/1052 burns_new=14048
+[2026-06-14T14:16:22.933816Z]   done=760/1052 burns_new=14616
+[2026-06-14T14:16:40.925016Z]   done=780/1052 burns_new=15132
+[2026-06-14T14:17:16.447066Z]   done=800/1052 burns_new=15315
+[2026-06-14T14:17:49.389233Z]   done=820/1052 burns_new=15315
+[2026-06-14T14:18:44.489428Z]   done=840/1052 burns_new=15315
+[2026-06-14T14:18:59.155886Z]   chunk 22998220-23008219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:19:45.309993Z]   chunk 23168220-23178219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:20:04.427050Z]   chunk 23228220-23238219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:20:13.807023Z]   chunk 23258220-23268219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:20:35.023378Z]   chunk 23278220-23288219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:20:44.154079Z]   chunk 23298220-23308219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:21:20.680295Z]   CHUNK FAILED WBTC/USDT 23258220-23268219: rpc failed after 14: eth_getLogs last=HTTP 408 (will retry on resume)
+[2026-06-14T14:21:20.904064Z]   done=860/1052 burns_new=15315
+[2026-06-14T14:22:11.887385Z]   CHUNK FAILED WBTC/USDT 23168220-23178219: rpc failed after 14: eth_getLogs last=HTTP 408 (will retry on resume)
+[2026-06-14T14:22:22.239016Z]   CHUNK FAILED WBTC/USDT 23228220-23238219: rpc failed after 14: eth_getLogs last=HTTP 408 (will retry on resume)
+[2026-06-14T14:22:28.559843Z]   chunk 23388220-23398219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:22:52.652234Z]   done=880/1052 burns_new=15315
+[2026-06-14T14:23:17.390141Z]   chunk 23468220-23478219 full-range failed (rpc failed after 14: eth_getLogs last=HTTP 408); splitting into 2k
+[2026-06-14T14:27:35.692858Z] timestamps: 4248 unique burn-blocks, 4248 to fetch (threaded)
+[2026-06-14T14:28:12.297553Z]   ts batch failed permanently (blocks 23180257..23279104)
+[2026-06-14T14:28:12.590834Z]   ts batch failed permanently (blocks 22728673..22874959)
+[2026-06-14T14:28:13.039264Z]   ts batch failed permanently (blocks 23281109..23365273)
+[2026-06-14T14:28:13.352117Z]   ts batch failed permanently (blocks 23089231..23179366)
+[2026-06-14T14:28:14.311468Z]   ts batch failed permanently (blocks 23371798..23478586)
+[2026-06-14T14:28:14.372321Z]   ts batch failed permanently (blocks 23007375..23082372)
+[2026-06-14T14:28:14.506455Z]   ts batch failed permanently (blocks 22875447..23005191)
+[2026-06-14T14:28:19.380781Z]   ts batch failed permanently (blocks 22579959..22721526)
+[2026-06-14T14:28:49.438431Z]   ts batch failed permanently (blocks 23478985..23559684)
+[2026-06-14T14:28:50.465643Z]   ts batch failed permanently (blocks 23821849..23865554)
+[2026-06-14T14:28:51.501559Z]   ts batch failed permanently (blocks 23865942..23876450)
+[2026-06-14T14:28:51.539845Z]   ts batch failed permanently (blocks 23565486..23692602)
+[2026-06-14T14:28:51.713263Z]   ts batch failed permanently (blocks 23887706..23894651)
+[2026-06-14T14:28:52.670810Z]   ts batch failed permanently (blocks 23877165..23887282)
+[2026-06-14T14:28:57.278775Z]   ts batch failed permanently (blocks 23694931..23821775)
+[2026-06-14T14:28:57.491323Z]   ts batch failed permanently (blocks 23894837..23900370)
+[2026-06-14T14:29:28.599178Z]   ts batch failed permanently (blocks 23913545..23917968)
+[2026-06-14T14:29:28.740449Z]   ts batch failed permanently (blocks 23918133..23923647)
+[2026-06-14T14:29:30.154908Z]   ts batch failed permanently (blocks 23909121..23913381)
+[2026-06-14T14:29:30.290501Z]   ts batch failed permanently (blocks 23905039..23908959)
+[2026-06-14T14:30:14.061939Z] timestamps: 4248 unique burn-blocks, 4248 to fetch (threaded)
+[2026-06-14T14:31:19.840700Z]   ts batch partial: 12 blocks unresolved (e.g. 22649469)
+[2026-06-14T14:31:20.443403Z]   ts batch partial: 12 blocks unresolved (e.g. 23049676)
+[2026-06-14T14:31:20.722813Z]   ts batch partial: 12 blocks unresolved (e.g. 22579959)
+[2026-06-14T14:31:22.118476Z]   ts batch partial: 12 blocks unresolved (e.g. 22922561)
+[2026-06-14T14:31:22.539229Z]   ts batch partial: 12 blocks unresolved (e.g. 22721526)
+[2026-06-14T14:31:22.634759Z]   ts batch partial: 12 blocks unresolved (e.g. 22798380)
+[2026-06-14T14:31:24.329951Z]   ts batch partial: 12 blocks unresolved (e.g. 22874917)
+[2026-06-14T14:31:24.625404Z]   ts batch partial: 12 blocks unresolved (e.g. 22997745)
+[2026-06-14T14:32:25.908022Z]   ts batch partial: 12 blocks unresolved (e.g. 23072683)
+[2026-06-14T14:32:27.857723Z]   ts batch partial: 12 blocks unresolved (e.g. 23163704)
+[2026-06-14T14:32:28.216672Z]   ts batch partial: 12 blocks unresolved (e.g. 23120883)
+[2026-06-14T14:32:28.918951Z]   ts batch partial: 12 blocks unresolved (e.g. 23212844)
+[2026-06-14T14:32:30.065568Z]   ts batch partial: 12 blocks unresolved (e.g. 23316433)
+[2026-06-14T14:32:30.190485Z]   ts batch partial: 12 blocks unresolved (e.g. 23343078)
+[2026-06-14T14:32:32.218002Z]   ts batch partial: 12 blocks unresolved (e.g. 23403879)
+[2026-06-14T14:32:32.958756Z]   ts batch partial: 12 blocks unresolved (e.g. 23250023)
+[2026-06-14T14:33:41.134105Z] timestamps: 4248 unique burn-blocks, 4248 to fetch (threaded)
+[2026-06-14T14:34:49.071480Z]   ts batch partial: 12 blocks unresolved (e.g. 22721526)
+[2026-06-14T14:34:49.504648Z]   ts batch partial: 12 blocks unresolved (e.g. 22579959)
+[2026-06-14T14:34:50.032389Z]   ts batch partial: 12 blocks unresolved (e.g. 22649469)
+[2026-06-14T14:34:50.560084Z]   ts batch partial: 12 blocks unresolved (e.g. 22798380)
+[2026-06-14T14:35:57.892883Z]   ts batch partial: 12 blocks unresolved (e.g. 22997745)
+[2026-06-14T14:35:58.091351Z]   ts batch partial: 12 blocks unresolved (e.g. 22922561)
+[2026-06-14T14:35:58.496009Z]   ts batch partial: 12 blocks unresolved (e.g. 22874917)
+[2026-06-14T14:36:28.324505Z] timestamps: 4248 unique burn-blocks, 4248 to fetch (single-call, threaded)
+[2026-06-14T14:37:29.849001Z]   ts 200/4248 (fail=0)
+[2026-06-14T14:38:27.772425Z]   ts 400/4248 (fail=0)
+[2026-06-14T14:39:19.710278Z]   ts 600/4248 (fail=0)
+[2026-06-14T14:40:10.771631Z]   ts 800/4248 (fail=0)
+[2026-06-14T14:40:56.965448Z]   ts 1000/4248 (fail=0)
+[2026-06-14T14:41:43.899406Z]   ts 1200/4248 (fail=0)
+[2026-06-14T14:42:28.463718Z]   ts 1400/4248 (fail=0)
+[2026-06-14T14:43:13.772213Z]   ts 1600/4248 (fail=0)
+[2026-06-14T14:43:58.685929Z]   ts 1800/4248 (fail=0)
+[2026-06-14T14:44:46.050520Z]   ts 2000/4248 (fail=0)
+[2026-06-14T14:45:30.164776Z]   ts 2200/4248 (fail=0)
+[2026-06-14T14:46:15.328361Z]   ts 2400/4248 (fail=0)
+[2026-06-14T14:47:01.219211Z]   ts 2600/4248 (fail=0)
+[2026-06-14T14:47:44.696124Z]   ts 2800/4248 (fail=0)
+[2026-06-14T14:48:30.312682Z]   ts 3000/4248 (fail=0)
+[2026-06-14T14:49:17.365537Z]   ts 3200/4248 (fail=0)
+[2026-06-14T14:50:01.958638Z]   ts 3400/4248 (fail=0)
+[2026-06-14T14:50:47.877964Z]   ts 3600/4248 (fail=0)
+[2026-06-14T14:51:32.631306Z]   ts 3800/4248 (fail=0)
+[2026-06-14T14:52:16.834548Z]   ts 4000/4248 (fail=0)
+[2026-06-14T14:53:01.668120Z]   ts 4200/4248 (fail=0)
+[2026-06-14T14:53:16.037224Z] timestamps done: 4248 blocks resolved, 0 failed
+[2026-06-14T14:54:11.881364Z] price coverage UTC: ETH:[2022-12-31 16:00:00..2026-05-28 15:59:00], BTC:[2022-12-31 16:00:00..2026-05-28 15:59:00]
+[2026-06-14T14:54:12.009853Z] events usable (>= $1500, price-covered): 4222; by floor {'1500': 4222, '10000': 4072, '50000': 3968, '100000': 3950}
+[2026-06-14T14:54:25.023420Z] analyze done -> results.json, event_sample.json

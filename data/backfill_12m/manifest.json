@@ -1,0 +1,51 @@
+{
+  "purpose": "12-month UniV2 Burn (=liquidity_removal) backfill for offline LP-removal edge study",
+  "generated_utc": "2026-06-14T14:38:22Z",
+  "source": {
+    "rpc": "https://eth.drpc.org (public no-key; Alchemy key NOT used, .env not read)",
+    "event": "UniV2 Burn topic 0xdccd412f...96",
+    "chunk_blocks": 10000
+  },
+  "pools": [
+    {
+      "pair": "ETH/USDT",
+      "addr_tail": "471f1852",
+      "underlying": "ETH"
+    },
+    {
+      "pair": "ETH/USDC",
+      "addr_tail": "ec28c9dc",
+      "underlying": "ETH"
+    },
+    {
+      "pair": "WBTC/USDT",
+      "addr_tail": "8648425b",
+      "underlying": "BTC"
+    },
+    {
+      "pair": "WBTC/USDC",
+      "addr_tail": "fef3a416",
+      "underlying": "BTC"
+    }
+  ],
+  "chunks_done": 880,
+  "chunks_total": 1052,
+  "raw_rows": 25934,
+  "dedup_burns": 15253,
+  "burns_by_pair": {
+    "ETH/USDT": 10556,
+    "ETH/USDC": 4697
+  },
+  "meaningful_by_pair_ge_1500usd": {
+    "ETH/USDT": 167,
+    "ETH/USDC": 4081
+  },
+  "size_floor_counts": {
+    "1500": 4248,
+    "10000": 4096,
+    "50000": 3992,
+    "100000": 3974
+  },
+  "wbtc_pools_status": "WBTC/USDT 94+ chunks & WBTC/USDC 260+ chunks scanned -> 0 burns (V2 BTC pools effectively dead; BTC leg N/A)",
+  "note": "raw .jsonl + block_ts.json are git-ignored (large/regenerable); this manifest is tracked."
+}

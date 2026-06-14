@@ -49,3 +49,10 @@ reports/generate_afternoon_evening_state_analysis_latest.py
 reports/generate_overnight_opportunity_retention_analysis_latest.py
 .idea/
 .vscode/
+
+# offline LP-removal study: large on-chain backfill (manifest tracked, raw data ignored)
+!data/backfill_12m/
+data/backfill_12m/*.jsonl
+data/backfill_12m/*.json
+data/backfill_12m/*.log
+!data/backfill_12m/manifest.json
