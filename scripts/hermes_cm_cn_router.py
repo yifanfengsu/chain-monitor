@@ -315,6 +315,18 @@ def parse_command(text: str) -> dict[str, Any]:
             "auto_build": False,
         }
 
+    match = re.fullmatch(r"(?:监听间隔诊断|监听空窗诊断|数据间隔诊断)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
+    if match:
+        report_date = validate_date(match.group(1))
+        return {
+            "action": "listener-gap-diagnose",
+            "command_intent": "listener-gap-diagnose",
+            "argv": wrapper_argv("listener-gap-diagnose", "--date", report_date),
+            "date": report_date,
+            "mode": "",
+            "auto_build": False,
+        }
+
     match = re.fullmatch(r"(?:数据质量|报告是否有效|检查数据质量|异常摘要)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", text)
     if match:
         report_date = validate_date(match.group(1))

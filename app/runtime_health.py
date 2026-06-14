@@ -27,6 +27,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from sqlite_store import get_connection, init_sqlite_store
+try:
+    import gap_diagnosis
+except ImportError:  # pragma: no cover - package import fallback
+    from app import gap_diagnosis  # type: ignore
 
 _GAP_WARNING_SEC = 900  # 15 min
 _GAP_DEGRADED_SEC = 3600  # 60 min
@@ -135,6 +139,17 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
     data = _query_timestamps(date_str)
     if "error" in data:
         return data
+    gap_payload: dict = {}
+    gap_summary: dict = {}
+    if date_str:
+        try:
+            gap_payload = gap_diagnosis.build_gap_diagnosis(date_str)
+            gap_summary = gap_payload.get("gap_diagnosis_summary") or {}
+        except Exception as exc:
+            gap_summary = {
+                "root_diagnosis": "gap_diagnosis_unavailable",
+                "warnings": [f"gap_diagnosis_unavailable:{exc.__class__.__name__}"],
+            }
 
     raw_timestamps = data["raw_timestamps"]
     parsed_timestamps = data["parsed_timestamps"]
@@ -163,17 +178,27 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
     last_market_context_success_ts = mc_timestamps[-1] if mc_timestamps else None
 
     # data quality status
-    zero_activity = (raw_event_count == 0 and signal_count == 0)
+    layers = gap_payload.get("layers") if isinstance(gap_payload.get("layers"), dict) else {}
+    audit_rows = int((layers.get("delivery_audit") or {}).get("rows") or 0) if isinstance(layers, dict) else 0
+    raw_status = str((layers.get("raw_events") or {}).get("status") or "") if isinstance(layers, dict) else ""
+    raw_time_unavailable = raw_status == "time_field_unavailable"
+    zero_activity = raw_event_count == 0 and signal_count == 0 and audit_rows == 0
     if raw_event_count == 0 and int(data.get("trade_opportunity_count") or 0) > 0:
         all_warnings.append("stale_or_cross_day_data_warning")
-    if zero_activity or raw_event_count == 0:
+    collection_degraded = bool(gap_summary.get("collection_degraded"))
+    root_diagnosis = str(gap_summary.get("root_diagnosis") or "")
+    if zero_activity or (raw_event_count == 0 and not raw_time_unavailable and signal_count == 0 and audit_rows == 0):
         data_quality_status = "invalid_or_no_activity"
+    elif collection_degraded:
+        data_quality_status = "degraded"
     elif max_raw_gap and max_raw_gap > _GAP_DEGRADED_SEC:
         data_quality_status = "degraded"
-    elif max_signal_gap and max_signal_gap > _GAP_DEGRADED_SEC:
+    elif max_signal_gap and max_signal_gap > _GAP_DEGRADED_SEC and root_diagnosis != "signal_generation_gap":
         data_quality_status = "degraded"
     else:
         data_quality_status = "valid"
+    if gap_summary.get("warnings"):
+        all_warnings.extend(str(item) for item in gap_summary.get("warnings") or [])
 
     return {
         "active_hours": active_hours,
@@ -190,6 +215,9 @@ def build_runtime_health_report(date_str: str | None = None) -> dict:
         "data_gap_warnings": all_warnings,
         "zero_activity_day": 1 if zero_activity else 0,
         "data_quality_status": data_quality_status,
+        "data_quality_degraded_reason": root_diagnosis if root_diagnosis and root_diagnosis != "ok" else "",
+        "collection_degraded": collection_degraded,
+        "gap_diagnosis_summary": gap_summary,
         "process_heartbeat_ts": int(time.time()),
         "trade_opportunities_count": int(data.get("trade_opportunity_count") or 0),
     }

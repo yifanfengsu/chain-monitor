@@ -95,6 +95,11 @@ require_out data_integrity 'data-integrity'
 require_out data_integrity '"--date"'
 require_out data_integrity '"2026-05-07"'
 
+run_ok listener_gap --text '监听间隔诊断2026-05-10' --dry-run
+require_out listener_gap 'listener-gap-diagnose'
+require_out listener_gap '"--date"'
+require_out listener_gap '"2026-05-10"'
+
 run_ok learning_summary --text '学习总结2026-05-04' --dry-run
 require_out learning_summary 'learning-review'
 require_out learning_summary '"--date"'
@@ -169,6 +174,11 @@ run_fail data_integrity_relative --text '数据完整性检查昨天' --dry-run
 require_out data_integrity_relative '绝对日期'
 require_out data_integrity_relative 'YYYY-MM-DD'
 forbid_out data_integrity_relative 'data-integrity'
+
+run_fail listener_gap_relative --text '监听间隔诊断昨天' --dry-run
+require_out listener_gap_relative '绝对日期'
+require_out listener_gap_relative 'YYYY-MM-DD'
+forbid_out listener_gap_relative 'listener-gap-diagnose'
 
 run_fail candidate_relative --text '候选覆盖昨天' --dry-run
 require_out candidate_relative '绝对日期'

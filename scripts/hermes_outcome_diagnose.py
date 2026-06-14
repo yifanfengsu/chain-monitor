@@ -22,6 +22,11 @@ DEFAULT_DAILY_DIR = "reports/daily"
 PRICE_FAILURE_TERMS = ("price", "snapshot", "unavailable", "missing", "no_price", "no market")
 TEXT_LIMIT = 64
 
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+from opportunity_status_explanation import explain_opportunity_status_rows  # noqa: E402
+
 
 def parse_date(value: str) -> str:
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value or ""):
@@ -262,6 +267,20 @@ def fetch_daily_opportunities(
         "opportunity_profile_strategy",
         "opportunity_profile_key",
         "label",
+        "primary_blocker",
+        "primary_hard_blocker",
+        "primary_verification_blocker",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "opportunity_gate_required",
+        "opportunity_gate_passed",
+        "opportunity_gate_failure_reason",
+        "shadow_status",
+        "shadow_reason",
+        "shadow_score",
+        "would_have_been_candidate",
+        "would_have_been_verified",
         "opportunity_json",
     )
     select_list = ", ".join(select_value(cols, column, column, "t") for column in wanted)
@@ -273,23 +292,27 @@ def fetch_daily_opportunities(
     for row in rows:
         payload = safe_json(row["opportunity_json"])
         profile_key = first_text(row["opportunity_profile_key"], payload.get("opportunity_profile_key"))
-        result.append(
-            {
-                "trade_opportunity_id": first_text(row["trade_opportunity_id"], payload.get("trade_opportunity_id")),
-                "signal_id": first_text(row["signal_id"], payload.get("signal_id")),
-                "asset": first_text(row["asset"], payload.get("asset"), payload.get("asset_symbol")),
-                "pair": first_text(row["pair"], payload.get("pair"), payload.get("pair_label")),
-                "status": normalize_status(first_text(row["status"], payload.get("trade_opportunity_status"), payload.get("status"))),
-                "signal_type": first_text(
-                    row["opportunity_profile_strategy"],
-                    payload.get("opportunity_profile_strategy"),
-                    payload.get("canonical_semantic_key"),
-                    payload.get("trade_action_key"),
-                    profile_key.split("|")[2] if "|" in profile_key and len(profile_key.split("|")) > 2 else "",
-                ),
-                "stage": first_text(row["maturity"], payload.get("maturity"), payload.get("stage"), row["label"]),
-            }
-        )
+        item = {
+            "trade_opportunity_id": first_text(row["trade_opportunity_id"], payload.get("trade_opportunity_id")),
+            "signal_id": first_text(row["signal_id"], payload.get("signal_id")),
+            "asset": first_text(row["asset"], payload.get("asset"), payload.get("asset_symbol")),
+            "pair": first_text(row["pair"], payload.get("pair"), payload.get("pair_label")),
+            "status": normalize_status(first_text(row["status"], payload.get("trade_opportunity_status"), payload.get("status"))),
+            "signal_type": first_text(
+                row["opportunity_profile_strategy"],
+                payload.get("opportunity_profile_strategy"),
+                payload.get("canonical_semantic_key"),
+                payload.get("trade_action_key"),
+                profile_key.split("|")[2] if "|" in profile_key and len(profile_key.split("|")) > 2 else "",
+            ),
+            "stage": first_text(row["maturity"], payload.get("maturity"), payload.get("stage"), row["label"]),
+            "opportunity_json": payload,
+        }
+        for key in wanted:
+            if key in {"trade_opportunity_id", "signal_id", "asset", "pair", "status", "side", "maturity", "opportunity_profile_strategy", "opportunity_profile_key", "label", "opportunity_json"}:
+                continue
+            item[key] = first_text(row[key], payload.get(key), payload.get(f"trade_opportunity_{key}"))
+        result.append(item)
     return result
 
 
@@ -868,6 +891,7 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     }
     replay_scope_counts = Counter(normalize_small(row.get("replay_scope")) for row in replay_examples)
     opportunity_status_counter = Counter(row.get("status") or "NONE" for row in opportunities)
+    opportunity_status_explained = explain_opportunity_status_rows(opportunities)
     root_cause = infer_root_cause(
         opportunity_outcomes=opportunity_outcomes,
         opportunity_outcome_completed=opportunity_outcome_completed,
@@ -899,6 +923,26 @@ def run(logical_date: str, db_path: Path, daily_dir: Path) -> int:
     print(f"opportunities_to_opportunity_outcomes_match_rate={format_rate(len(matched_opportunity_outcome_ids), opportunities_total)}")
     print(f"opportunities_to_replay_examples_match_rate={format_rate(len(replay_opportunity_ids), opportunities_total)}")
     print(f"trade_opportunity_status_distribution={format_counter(opportunity_status_counter)}")
+    print("raw_status_distribution=" + json.dumps(opportunity_status_explained.get("raw_status_distribution") or {}, ensure_ascii=False, sort_keys=True))
+    print("derived_status_distribution=" + json.dumps(opportunity_status_explained.get("derived_status_distribution") or {}, ensure_ascii=False, sort_keys=True))
+    print(f"true_none_count={opportunity_status_explained.get('true_none_count', 0)}")
+    print(f"blocked_like_none_count={opportunity_status_explained.get('blocked_like_none_count', 0)}")
+    print(f"gate_failed_none_count={opportunity_status_explained.get('gate_failed_none_count', 0)}")
+    print(f"near_candidate_count={opportunity_status_explained.get('near_candidate_count', opportunity_status_explained.get('near_candidate_none_count', 0))}")
+    print("top_derived_reasons=" + json.dumps(opportunity_status_explained.get("top_derived_reasons") or {}, ensure_ascii=False, sort_keys=True))
+    if opportunity_status_explained.get("status_assignment_warning"):
+        print(f"status_assignment_warning={opportunity_status_explained.get('status_assignment_warning')}")
+    if (
+        opportunities_total > 0
+        and int(opportunity_status_counter.get("NONE", 0)) == opportunities_total
+        and (
+            safe_int(opportunity_status_explained.get("blocked_like_none_count"))
+            + safe_int(opportunity_status_explained.get("gate_failed_none_count"))
+            + safe_int(opportunity_status_explained.get("near_candidate_count", opportunity_status_explained.get("near_candidate_none_count", 0)))
+        )
+        > 0
+    ):
+        print("status解释=raw status 全 NONE；derived status 需要结合 blocker/gate/shadow 解释；不应简单理解为整天无机会。")
     print(f"outcomes_status_distribution={format_counter(outcome_statuses)}")
     print(f"opportunity_outcomes_status_distribution={format_counter(opportunity_outcome_statuses)}")
     print(f"opportunity_outcomes_pending_horizon_distribution={format_counter(pending_horizon_distribution)}")

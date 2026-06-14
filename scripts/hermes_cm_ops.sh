@@ -31,6 +31,7 @@ Usage:
   ./scripts/hermes_cm_ops.sh db-size-diagnose
   ./scripts/hermes_cm_ops.sh db-slim-dry-run
   ./scripts/hermes_cm_ops.sh replay-check --date YYYY-MM-DD
+  ./scripts/hermes_cm_ops.sh listener-gap-diagnose --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-quality --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh data-integrity --date YYYY-MM-DD
   ./scripts/hermes_cm_ops.sh profile-review --date YYYY-MM-DD
@@ -89,6 +90,7 @@ cmd_help() {
   /chain-monitor-report-analyst 最近任务
   /chain-monitor-report-analyst 分析报告YYYY-MM-DD
   /chain-monitor-report-analyst 检查回放YYYY-MM-DD
+  /chain-monitor-report-analyst 监听间隔诊断YYYY-MM-DD
   /chain-monitor-report-analyst 数据质量YYYY-MM-DD
   /chain-monitor-report-analyst 数据完整性检查YYYY-MM-DD
   /chain-monitor-report-analyst Profile复盘YYYY-MM-DD
@@ -171,6 +173,7 @@ cmd_command_menu() {
 - 生成摘要YYYY-MM-DD 快速：生成快速分析输入包
 - 生成摘要YYYY-MM-DD 深度：生成深度分析输入包
 - 检查回放YYYY-MM-DD：确认 replay_source=persisted、scope=full
+- 监听间隔诊断YYYY-MM-DD / 监听空窗诊断YYYY-MM-DD / 数据间隔诊断YYYY-MM-DD：分层诊断 raw/parsed/signals/delivery/opportunity gap 归因
 - 数据质量YYYY-MM-DD：判断该日是否有效
 - 数据完整性检查YYYY-MM-DD / 数据入库检查YYYY-MM-DD / 入库完整性YYYY-MM-DD：只读检查 archive、SQLite mirror、replay/outcome 闭环和 locked warning
 
@@ -892,7 +895,7 @@ is_gateway_router_required() {
 
 is_router_guarded_command() {
   case "$1" in
-    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
+    lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|listener-gap-diagnose|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
       return 0
       ;;
     *)
@@ -1939,8 +1942,8 @@ def latest_sqlite_logical_date(conn: sqlite3.Connection) -> str:
     fallback_candidates: dict[str, list[str]] = {
         "signals": SIGNALS_TIME_CANDIDATES,
         "delivery_audit": DELIVERY_AUDIT_TIME_CANDIDATES,
-        "raw_events": ["timestamp", "block_timestamp", "created_at", "updated_at"],
-        "parsed_events": ["timestamp", "block_timestamp", "created_at", "updated_at"],
+        "raw_events": ["captured_at", "ingest_ts", "timestamp", "ts"],
+        "parsed_events": ["parsed_at", "timestamp", "ts"],
         "telegram_deliveries": TELEGRAM_DELIVERIES_TIME_CANDIDATES,
     }
     for table, time_candidates in fallback_candidates.items():
@@ -2021,8 +2024,8 @@ if db_path.exists():
     conn = open_ro_sqlite(db_path)
     try:
         print(f"SQLite 最新逻辑日期: {latest_sqlite_logical_date(conn)}")
-        print(f"最近 raw_events 时间: {max_field(conn, 'raw_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
-        print(f"最近 parsed_events 时间: {max_field(conn, 'parsed_events', ['timestamp', 'block_timestamp', 'created_at', 'updated_at'])}")
+        print(f"最近 raw_events 时间: {max_field(conn, 'raw_events', ['captured_at', 'ingest_ts', 'timestamp', 'ts'])}")
+        print(f"最近 parsed_events 时间: {max_field(conn, 'parsed_events', ['parsed_at', 'timestamp', 'ts'])}")
         print(f"最近 signals 时间: {max_field(conn, 'signals', ['timestamp', 'created_at', 'updated_at', 'notifier_sent_at'])}")
         if table_exists(conn, "runtime_heartbeats"):
             print(f"runtime_heartbeats 最新 check_ts: {safe_scalar(conn, 'SELECT MAX(check_ts) FROM runtime_heartbeats')}")
@@ -2040,6 +2043,7 @@ else:
     print("source=SQLite 聚合；只读；未发送 Telegram warning")
     print("Telegram outbound 状态: 数据不足，SQLite missing")
 print(f"最近 archive 修改时间: {latest_archive_mtime()}")
+print("archive_mtime_gap_evidence=ignored_for_historical_logical_day")
 print(f"latest zero_activity_day: {latest_zero_activity()}")
 print(f"queue spill: {spill_summary()}")
 PY
@@ -3320,6 +3324,34 @@ if summary.get("replay_source") != "persisted" or summary.get("replay_scope") !=
 PY
 }
 
+cmd_listener_gap_diagnose() {
+  local report_date=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || die "listener-gap-diagnose --date requires YYYY-MM-DD"
+        report_date="$2"
+        shift 2
+        ;;
+      *) die "unknown listener-gap-diagnose argument" ;;
+    esac
+  done
+
+  [[ -n "$report_date" ]] || die "listener-gap-diagnose requires --date YYYY-MM-DD"
+  parse_required_date "$report_date"
+  AUDIT_DATE="$report_date"
+  AUDIT_ALLOWED=true
+
+  local db_path="${HERMES_LISTENER_GAP_DB_PATH:-${HERMES_DATA_QUALITY_DB_PATH:-${SQLITE_DB_PATH:-data/chain_monitor.sqlite}}}"
+  local archive_base_dir="${HERMES_LISTENER_GAP_ARCHIVE_BASE_DIR:-${ARCHIVE_BASE_DIR:-app/data/archive}}"
+  "$(python_bin)" app/gap_diagnosis.py \
+    --date "$report_date" \
+    --db-path "$db_path" \
+    --archive-base-dir "$archive_base_dir" \
+    --format text
+}
+
 cmd_data_quality() {
   local report_date=""
 
@@ -3513,6 +3545,14 @@ def sqlite_lp_like_signals(logical_date: str) -> int:
 
 
 payload = as_dict(payload)
+gap_summary = as_dict(payload.get("gap_diagnosis_summary")) or as_dict(quality.get("gap_diagnosis_summary"))
+gap_root = str(quality.get("gap_root_diagnosis") or gap_summary.get("root_diagnosis") or "missing")
+gap_final = str(quality.get("gap_final_status") or gap_summary.get("final_status") or "missing")
+collection_degraded = quality.get("collection_degraded")
+if collection_degraded in (None, ""):
+    collection_degraded = gap_summary.get("collection_degraded", "missing")
+degraded_reason = str(quality.get("degraded_reason") or gap_summary.get("degraded_reason") or gap_root or "missing")
+data_quality_warning = str(quality.get("data_quality_warning") or gap_final if str(gap_final).startswith("warning_") else quality.get("data_quality_warning") or "")
 lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
 lp_suppression_summary = as_dict(payload.get("lp_suppression_summary"))
 lp_rows, lp_rows_source = pick_lp_rows(payload)
@@ -3542,6 +3582,12 @@ zero = quality.get("zero_activity_day", "missing")
 print("数据质量检查")
 print(f"date={date}")
 print(f"data_quality_status={status}")
+print(f"gap_root_diagnosis={gap_root}")
+print(f"gap_final_status={gap_final}")
+print(f"collection_degraded={collection_degraded}")
+print(f"degraded_reason={degraded_reason}")
+print(f"data_quality_warning={data_quality_warning or 'missing'}")
+print("table_time_fields_used=" + json.dumps(as_dict(gap_summary.get("table_time_fields_used")), ensure_ascii=False, sort_keys=True))
 print(f"zero_activity_day={zero}")
 print(f"active_hours={quality.get('active_hours', quality.get('active_duration', 'missing'))}")
 print(f"signal_count={quality.get('signals_count', quality.get('signal_count', 'missing'))}")
@@ -3842,10 +3888,22 @@ cmd_learning_review() {
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import sys
 from collections import Counter
+from datetime import date as date_type
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+app_dir = Path.cwd() / "app"
+if str(app_dir) not in sys.path:
+    sys.path.insert(0, str(app_dir))
+from opportunity_status_explanation import explain_opportunity_status_rows  # type: ignore
+
+
+BJ_TZ = timezone(timedelta(hours=8))
 
 
 def as_dict(value: Any) -> dict[str, Any]:
@@ -3920,6 +3978,92 @@ def profile_line(profile: Any) -> str:
     )
 
 
+def logical_window(logical_date: str) -> tuple[int, int]:
+    parsed = date_type.fromisoformat(logical_date)
+    start_bj = datetime(parsed.year, parsed.month, parsed.day, tzinfo=BJ_TZ)
+    start_ts = int(start_bj.timestamp())
+    return start_ts, start_ts + 24 * 3600 - 1
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row)
+
+
+def columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def epoch_expr(column: str) -> str:
+    return f"(CASE WHEN CAST({column} AS REAL) > 10000000000 THEN CAST({column} AS REAL) / 1000.0 ELSE CAST({column} AS REAL) END)"
+
+
+def time_expr(cols: set[str], candidates: tuple[str, ...]) -> str:
+    present = [column for column in candidates if column in cols]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return epoch_expr(present[0])
+    return "COALESCE(" + ", ".join(epoch_expr(column) for column in present) + ")"
+
+
+def sqlite_status_explained(logical_date: str) -> dict[str, Any]:
+    configured_db = os.getenv("HERMES_LEARNING_REVIEW_DB_PATH") or os.getenv("HERMES_CANDIDATE_COVERAGE_DB_PATH") or "data/chain_monitor.sqlite"
+    db_path = Path(configured_db)
+    if not db_path.is_absolute():
+        db_path = Path.cwd() / db_path
+    if not db_path.exists():
+        return {}
+    start_ts, end_ts = logical_window(logical_date)
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return {}
+    try:
+        cols = columns(conn, "trade_opportunities")
+        if not cols:
+            return {}
+        expr = time_expr(cols, ("created_at", "updated_at"))
+        if not expr:
+            return {}
+        wanted = (
+            "status",
+            "opportunity_json",
+            "primary_blocker",
+            "primary_hard_blocker",
+            "primary_verification_blocker",
+            "blockers_json",
+            "hard_blockers_json",
+            "verification_blockers_json",
+            "opportunity_gate_required",
+            "opportunity_gate_passed",
+            "opportunity_gate_failure_reason",
+            "shadow_reason",
+            "shadow_status",
+            "shadow_score",
+            "would_have_been_candidate",
+            "would_have_been_verified",
+        )
+        select_cols = [column for column in wanted if column in cols]
+        if not select_cols:
+            return {}
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT {', '.join(select_cols)} FROM trade_opportunities WHERE {expr} >= ? AND {expr} <= ?",
+                (start_ts, end_ts),
+            ).fetchall()
+        ]
+        return explain_opportunity_status_rows(rows)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
 date = sys.argv[1]
 path = Path("reports/daily") / f"daily_report_{date}.json"
 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -3940,6 +4084,13 @@ data_source = as_dict(payload.get("data_source_summary"))
 row_counts = as_dict(data_source.get("row_counts"))
 frontier = as_dict(payload.get("candidate_frontier_summary"))
 outcome_diagnosis = as_dict(payload.get("outcome_diagnosis_summary"))
+status_explained = first_dict(
+    payload.get("opportunity_status_explained_summary"),
+    as_dict(payload.get("trade_opportunity_summary")).get("opportunity_status_explained_summary"),
+    as_dict(payload.get("candidate_coverage_summary")).get("opportunity_status_explained_summary"),
+)
+if not status_explained or (intish(status_explained.get("total")) or 0) <= 0:
+    status_explained = sqlite_status_explained(date)
 lp_signal_summary = as_dict(payload.get("lp_signal_summary"))
 lp_suppression_summary = as_dict(payload.get("lp_suppression_summary"))
 lp_suppression_replay = as_dict(payload.get("lp_suppression_replay_summary"))
@@ -3999,10 +4150,16 @@ add_counter(blocker_counter, blocker.get("top_blockers"))
 add_counter(blocker_counter, blocker.get("hard_blocker_distribution"))
 shadow_blockers = as_dict(shadow.get("shadow_reason_distribution")) or as_dict(shadow.get("shadow_blocked_reasons"))
 add_counter(blocker_counter, shadow_blockers)
+add_counter(blocker_counter, status_explained.get("top_blocker_like_reasons"))
 
 shadow_candidate = intish(shadow.get("shadow_candidate_count"))
 shadow_verified = intish(shadow.get("shadow_verified_count"))
 candidate_count = intish(first_dict(payload.get("trade_opportunity_summary")).get("opportunity_candidate_count")) or 0
+blocked_like_none_count = intish(status_explained.get("blocked_like_none_count")) or 0
+gate_failed_none_count = intish(status_explained.get("gate_failed_none_count")) or 0
+true_none_count = intish(status_explained.get("true_none_count")) or 0
+derived_near_candidate_count = intish(status_explained.get("near_candidate_count")) or intish(status_explained.get("near_candidate_none_count")) or 0
+status_assignment_warning = str(status_explained.get("status_assignment_warning") or "")
 near_candidate_count = intish(frontier.get("near_candidate_count")) or 0
 near_candidate_avg = num(frontier.get("near_candidate_avg_net_pnl_bps"))
 opportunity_outcomes_total = intish(outcome_diagnosis.get("opportunity_outcomes_total")) or 0
@@ -4051,6 +4208,10 @@ if data_valid and negative_profiles and not high_sample_positive:
     why_not_stronger.append("all_profiles_negative")
 if candidate_count == 0:
     why_not_stronger.append("candidate_zero_gate_closed")
+if candidate_count == 0 and blocked_like_none_count > 0:
+    why_not_stronger.append("raw_status_all_none_but_blocked_like_present")
+if candidate_count == 0 and gate_failed_none_count > 0:
+    why_not_stronger.append("gate_failed_none")
 if not shadow_candidate and not shadow_verified:
     why_not_stronger.append("no_shadow_candidates")
 if missing_schema_fields and lp_data_present_for_mapping:
@@ -4168,6 +4329,8 @@ if avg_net is not None and suppressed_avg is not None and avg_net < 0 and suppre
 replay_with_opp = intish(frontier.get("near_candidate_replay_count")) or 0
 if candidate_count == 0 and replay_with_opp:
     learned.append("CANDIDATE=0 是 gate 行为，不是 pipeline 断连")
+if candidate_count == 0 and (blocked_like_none_count > 0 or gate_failed_none_count > 0 or derived_near_candidate_count > 0):
+    learned.append("没有 CANDIDATE，但不是没有机会形态；需要按 blocker/gate/shadow 解释")
 if lp_signal_summary:
     learned.append("LP 数据存在且报告映射已输出" if not missing_schema_fields else "LP 数据存在但报告 schema 不完整")
 if near_candidate_count and near_candidate_avg is not None:
@@ -4256,6 +4419,23 @@ print(f"avg_net_pnl_bps={fmt(avg_net, 2)}")
 print(f"suppressed_avg_net_pnl_bps={fmt(suppressed_avg, 2)}")
 print(f"CANDIDATE 覆盖率={fmt(candidate_coverage, 4)}")
 print(f"CANDIDATE=0={'是' if candidate_count == 0 else '否'} near_candidate_count={near_candidate_count} near_candidate_avg_net_pnl_bps={fmt(near_candidate_avg, 2)}")
+print(
+    "opportunity status解释="
+    f"true_none_count={true_none_count} "
+    f"blocked_like_none_count={blocked_like_none_count} "
+    f"gate_failed_none_count={gate_failed_none_count} "
+    f"near_candidate_count={derived_near_candidate_count} "
+    f"status_assignment_warning={value_or_missing(status_assignment_warning)}"
+)
+if candidate_count == 0:
+    print(
+        "CANDIDATE状态解释="
+        f"没有 CANDIDATE；true_none={true_none_count} "
+        f"blocked_like={blocked_like_none_count} "
+        f"gate_failed={gate_failed_none_count} "
+        f"near_candidate={derived_near_candidate_count}；"
+        "gate 保持合理；不建议放宽 gate"
+    )
 print(
     "opportunity_outcomes 结算="
     f"completed_rate={fmt(opportunity_outcomes_completed_rate, 4)} "
@@ -4372,6 +4552,7 @@ app_dir = Path.cwd() / "app"
 if str(app_dir) not in sys.path:
     sys.path.insert(0, str(app_dir))
 import sqlite_store  # type: ignore
+from opportunity_status_explanation import explain_opportunity_status_rows  # type: ignore
 
 
 STATUSES = ("NONE", "CANDIDATE", "VERIFIED", "BLOCKED", "INVALIDATED")
@@ -4499,26 +4680,42 @@ def trade_opportunity_distribution(
     start_ts: int,
     end_ts: int,
     warnings: list[str],
-) -> tuple[int, Counter[str]]:
+) -> tuple[int, Counter[str], dict[str, Any]]:
     table = "trade_opportunities"
     counter = status_counter()
+    empty_explanation = explain_opportunity_status_rows([])
     cols = columns(conn, table)
     if not cols:
         warnings.append("sqlite_missing_table:trade_opportunities")
-        return 0, counter
+        return 0, counter, empty_explanation
     expr = time_expr(cols, ("created_at", "updated_at"))
     if not expr:
         warnings.append("sqlite_missing_time_column:trade_opportunities")
-        return 0, counter
+        return 0, counter, empty_explanation
 
-    select_parts = []
-    if "status" in cols:
-        select_parts.append("status")
-    if "opportunity_json" in cols:
-        select_parts.append("opportunity_json")
+    wanted_columns = (
+        "status",
+        "opportunity_json",
+        "primary_blocker",
+        "primary_hard_blocker",
+        "primary_verification_blocker",
+        "blockers_json",
+        "hard_blockers_json",
+        "verification_blockers_json",
+        "opportunity_gate_required",
+        "opportunity_gate_passed",
+        "opportunity_gate_failure_reason",
+        "shadow_reason",
+        "shadow_status",
+        "shadow_score",
+        "would_have_been_candidate",
+        "would_have_been_verified",
+    )
+    select_parts = [column for column in wanted_columns if column in cols]
     if not select_parts:
         warnings.append("sqlite_missing_status_column:trade_opportunities")
-        return count_window(conn, table, ("created_at", "updated_at"), start_ts, end_ts, warnings), counter
+        total = count_window(conn, table, ("created_at", "updated_at"), start_ts, end_ts, warnings)
+        return total, counter, empty_explanation
 
     sql = f"SELECT {', '.join(select_parts)} FROM {table} WHERE {expr} >= ? AND {expr} <= ?"
     rows = []
@@ -4526,19 +4723,22 @@ def trade_opportunity_distribution(
         rows = conn.execute(sql, (start_ts, end_ts)).fetchall()
     except sqlite3.Error as exc:
         warnings.append(f"sqlite_query_failed:trade_opportunities:{exc.__class__.__name__}")
-        return 0, counter
+        return 0, counter, empty_explanation
 
+    row_dicts: list[dict[str, Any]] = []
     for row in rows:
-        status_value = row["status"] if "status" in row.keys() else ""
-        if not status_value and "opportunity_json" in row.keys():
+        row_dict = dict(row)
+        row_dicts.append(row_dict)
+        status_value = row_dict.get("status") or ""
+        if not status_value and "opportunity_json" in row_dict:
             try:
-                payload = json.loads(row["opportunity_json"] or "{}")
+                payload = json.loads(row_dict.get("opportunity_json") or "{}")
             except json.JSONDecodeError:
                 payload = {}
             if isinstance(payload, dict):
                 status_value = payload.get("trade_opportunity_status") or payload.get("status")
         counter[norm_status(status_value)] += 1
-    return len(rows), counter
+    return len(rows), counter, explain_opportunity_status_rows(row_dicts)
 
 
 def replay_stats(
@@ -4685,6 +4885,7 @@ if not db_path.is_absolute():
 signals_total = 0
 trade_total = 0
 trade_status = status_counter()
+status_explained = explain_opportunity_status_rows([])
 replay_scope_used = "missing"
 replay_total = 0
 replay_with_opportunity = 0
@@ -4710,7 +4911,7 @@ else:
                 end_ts,
                 warnings,
             )
-            trade_total, trade_status = trade_opportunity_distribution(conn, start_ts, end_ts, warnings)
+            trade_total, trade_status, status_explained = trade_opportunity_distribution(conn, start_ts, end_ts, warnings)
             replay_scope_used, replay_total, replay_with_opportunity, replay_candidate, replay_scope_counts = replay_stats(
                 conn,
                 logical_date,
@@ -4743,6 +4944,40 @@ print(
 print(f"signals_total={signals_total}")
 print(f"trade_opportunities_total={trade_total}")
 print(f"trade_opportunity_status_distribution={format_status_distribution(trade_status)}")
+print(
+    "raw_status_distribution="
+    + json.dumps(as_dict(status_explained.get("raw_status_distribution")), ensure_ascii=False, sort_keys=True)
+)
+print(
+    "derived_status_distribution="
+    + json.dumps(as_dict(status_explained.get("derived_status_distribution")), ensure_ascii=False, sort_keys=True)
+)
+print(f"NONE_total={status_explained.get('none_count', 0)}")
+print(f"true_none_count={status_explained.get('true_none_count', 0)}")
+print(f"none_with_blockers_count={status_explained.get('none_with_blockers_count', 0)}")
+print(f"none_with_hard_blockers_count={status_explained.get('none_with_hard_blockers_count', 0)}")
+print(f"none_with_primary_blocker_count={status_explained.get('none_with_primary_blocker_count', 0)}")
+print(f"blocked_like_none_count={status_explained.get('blocked_like_none_count', 0)}")
+print(f"gate_failed_none_count={status_explained.get('gate_failed_none_count', 0)}")
+print(f"near_candidate_count={status_explained.get('near_candidate_count', status_explained.get('near_candidate_none_count', 0))}")
+print(f"low_quality_none_count={status_explained.get('low_quality_none_count', 0)}")
+print(f"replay_negative_none_count={status_explained.get('replay_negative_none_count', 0)}")
+print(f"do_not_chase_none_count={status_explained.get('do_not_chase_none_count', 0)}")
+print(f"local_absorption_none_count={status_explained.get('local_absorption_none_count', 0)}")
+print("top_derived_reasons=" + json.dumps(as_dict(status_explained.get("top_derived_reasons")), ensure_ascii=False, sort_keys=True))
+print("top_none_reasons=" + json.dumps(as_dict(status_explained.get("top_none_reasons")), ensure_ascii=False, sort_keys=True))
+print("top_none_blockers=" + json.dumps(as_dict(status_explained.get("top_none_blockers")), ensure_ascii=False, sort_keys=True))
+print(
+    "top_blocker_like_reasons="
+    + json.dumps(as_dict(status_explained.get("top_blocker_like_reasons")), ensure_ascii=False, sort_keys=True)
+)
+print(
+    "top_gate_failure_reasons="
+    + json.dumps(as_dict(status_explained.get("top_gate_failure_reasons")), ensure_ascii=False, sort_keys=True)
+)
+print(f"status_assignment_diagnosis={status_explained.get('status_assignment_diagnosis', 'missing')}")
+if status_explained.get("status_assignment_warning"):
+    print(f"status_assignment_warning={status_explained.get('status_assignment_warning')}")
 print(f"replay_scope_used={replay_scope_used}")
 print(f"replay_scope_counts={json.dumps(replay_scope_counts, ensure_ascii=False, sort_keys=True) if replay_scope_counts else 'missing'}")
 print(f"replay_examples_total={replay_total}")
@@ -4770,6 +5005,15 @@ if trade_candidate > 0 and replay_candidate == 0:
     diagnostics.append("trade_opportunities 有 CANDIDATE 但 replay examples 未覆盖，replay 关联层可能漏接。")
 if trade_candidate == 0:
     diagnostics.append("CANDIDATE 本身为 0，candidate gate 太严格或当天无合格候选。")
+derived_explainable = (
+    safe_int(status_explained.get("blocked_like_none_count"))
+    + safe_int(status_explained.get("gate_failed_none_count"))
+    + safe_int(status_explained.get("near_candidate_count", status_explained.get("near_candidate_none_count", 0)))
+)
+if derived_explainable > 0:
+    diagnostics.append("raw status 含 NONE，但 derived 诊断显示 opportunity 被 blocker/gate/shadow 分层解释；不应解读为 pipeline 没发现机会。")
+if trade_total > 0 and safe_int(trade_status.get("NONE")) == trade_total and derived_explainable > 0:
+    diagnostics.append("raw status 全 NONE，但 derived 诊断显示大量 opportunity 被 blocker/gate 阻断；不应理解为 pipeline 没发现机会。")
 if replay_total > 0 and replay_with_opportunity == 0:
     diagnostics.append("replay examples 没有关联 opportunity_id，signals -> opportunity -> replay 连接需要排查。")
 if trade_candidate == 0 and trade_total > 0 and replay_with_opportunity > 0:
@@ -5576,7 +5820,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
+  help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|listener-gap-diagnose|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review)
     AUDIT_COMMAND="$1"
     ;;
   *)
@@ -5748,6 +5992,10 @@ case "$1" in
   replay-check)
     shift
     cmd_replay_check "$@"
+    ;;
+  listener-gap-diagnose)
+    shift
+    cmd_listener_gap_diagnose "$@"
     ;;
   data-quality)
     shift

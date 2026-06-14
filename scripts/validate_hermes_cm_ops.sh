@@ -24,6 +24,7 @@ for pattern in \
   "cmd_lock_status()" \
   "cmd_system_health()" \
   "cmd_listener_health()" \
+  "cmd_listener_gap_diagnose()" \
   "cmd_daily_flow()" \
   "cmd_replay_check()" \
   "cmd_data_quality()" \
@@ -69,6 +70,7 @@ for pattern in \
   "job-log" \
   "job-diagnose" \
   "job-cancel" \
+  "listener-gap-diagnose" \
   "db-slim-dry-run" \
   "data-integrity" \
   "learning-review" \
@@ -114,7 +116,7 @@ done
 require_pattern 'HERMES_DIGEST_WORKDIR="$REPO_ROOT"'
 require_pattern 'HERMES_DIGEST_REDACT=1'
 require_pattern "case \"\$1\" in"
-require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "help|command-menu|lock-status|report|close|health|system-health|listener-health|digest|analyze|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|__run-job|daily-flow|replay-check|listener-gap-diagnose|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "refuse unknown_command"
 require_pattern "unknown command"
 require_pattern "today_utc=\"\$(TZ=UTC date +%F)\""
@@ -122,7 +124,7 @@ require_pattern "refusing close for current UTC date"
 require_pattern "refuse invalid_date"
 require_pattern "refuse missing_confirm_compress"
 require_pattern "refuse current_utc_date_protected"
-require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
+require_pattern "lock-status|report|digest|analyze|close|submit-daily-flow|submit-space-check|submit-archive-compress-check|submit-weekly-review|job-status|job-list|job-result|job-log|job-diagnose|job-cancel|space-fast|db-size-diagnose|db-slim-dry-run|daily-flow|replay-check|listener-gap-diagnose|data-quality|data-integrity|profile-review|blocker-review|shadow-review|learning-review|candidate-coverage|daily-report-schema-check|outcome-diagnose|outcome-catchup|lp-suppression-sample-replay|lp-diagnose|space-check|archive-compress-check|weekly-review"
 require_pattern "enforce_router_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_long_job_runner_guard \"\$AUDIT_COMMAND\""
 require_pattern "enforce_job_runner_guard \"\$AUDIT_COMMAND\""
@@ -179,6 +181,7 @@ for required in \
   "标准日报流程YYYY-MM-DD" \
   "分析报告YYYY-MM-DD" \
   "检查回放YYYY-MM-DD" \
+  "监听间隔诊断YYYY-MM-DD" \
   "数据质量YYYY-MM-DD" \
   "数据完整性检查YYYY-MM-DD" \
   "Profile复盘YYYY-MM-DD" \
@@ -255,7 +258,10 @@ for required in \
   "delivered_plus_suppressed" \
   "lp_suppression_summary" \
   "report_mapping_missing" \
-  "no_lp_samples_or_coverage_gap"
+  "no_lp_samples_or_coverage_gap" \
+  "gap_root_diagnosis" \
+  "degraded_reason" \
+  "table_time_fields_used"
 do
   grep -Fq -- "$required" <<<"$data_quality_block" || die "data-quality missing required LP compatibility content: ${required}"
 done
@@ -605,6 +611,7 @@ for guarded in \
   "db-size-diagnose" \
   "db-slim-dry-run" \
   "replay-check" \
+  "listener-gap-diagnose" \
   "data-quality" \
   "data-integrity" \
   "profile-review" \
@@ -688,6 +695,12 @@ grep -Fq "daily-flow outcome-catchup tests passed" "$TMP_DIR/daily_flow_outcome_
 
 bash scripts/test_data_quality_lp_rows.sh >"$TMP_DIR/data_quality_lp_rows.out"
 grep -Fq "data-quality LP rows tests passed" "$TMP_DIR/data_quality_lp_rows.out" || die "data-quality LP rows test did not pass"
+
+bash scripts/test_listener_gap_diagnose.sh >"$TMP_DIR/listener_gap_diagnose.out"
+grep -Fq "listener-gap-diagnose router tests passed" "$TMP_DIR/listener_gap_diagnose.out" || die "listener-gap-diagnose router test did not pass"
+
+bash scripts/test_data_quality_gap_reason.sh >"$TMP_DIR/data_quality_gap_reason.out"
+grep -Fq "data-quality gap reason tests passed" "$TMP_DIR/data_quality_gap_reason.out" || die "data-quality gap reason test did not pass"
 
 bash scripts/test_data_integrity_learning_loop_degraded.sh >"$TMP_DIR/data_integrity_learning_loop.out"
 grep -Fq "data-integrity learning-loop degraded test passed" "$TMP_DIR/data_integrity_learning_loop.out" || die "data-integrity learning-loop degraded test did not pass"

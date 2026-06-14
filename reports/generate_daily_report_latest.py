@@ -25,9 +25,11 @@ for import_path in (ROOT, APP_DIR):
         sys.path.insert(0, str(import_path))
 
 import config as app_config  # noqa: E402
+import gap_diagnosis as gap_diagnosis_module  # noqa: E402
 from replay_profile_gate import profile_payload as replay_profile_payload  # noqa: E402
 from replay_profile_gate import repair_profile_rows_with_sources  # noqa: E402
 from replay_profile_gate import replay_profile_summary  # noqa: E402
+from opportunity_status_explanation import explain_opportunity_status_rows  # noqa: E402
 from trade_opportunity import BLOCKER_PRIORITY, choose_primary_blocker  # noqa: E402
 try:  # noqa: E402
     from trade_replay import normalize_lp_sample_asset_pair
@@ -1019,8 +1021,9 @@ def _build_segments(signal_rows: list[dict[str, Any]], lp_rows: list[dict[str, A
         )
     gap_warnings = []
     if largest_gap > GAP_THRESHOLD_SEC:
-        gap_warnings.append(f"large_gap_detected:{largest_gap}s; active_duration_excludes_gap")
+        gap_warnings.append(f"signal_generation_gap_detected:{largest_gap}s; active_duration_excludes_signal_gap")
     return {
+        "basis": "signals",
         "segment_count": len(formatted),
         "gap_threshold_sec": GAP_THRESHOLD_SEC,
         "largest_gap_sec": largest_gap,
@@ -1718,6 +1721,7 @@ def _trade_opportunity_summary(
     opportunity_db_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     by_status = Counter(_status(row) for row in rows)
+    status_explained = explain_opportunity_status_rows(rows)
     candidate_rows = [row for row in rows if _status(row) == "CANDIDATE"]
     verified_rows = [row for row in rows if _status(row) == "VERIFIED"]
     blocked_rows = [row for row in rows if _status(row) == "BLOCKED"]
@@ -1759,6 +1763,7 @@ def _trade_opportunity_summary(
     summary = {
         "window_record_count": len(rows),
         "creation_status_distribution": dict(sorted(by_status.items())),
+        "opportunity_status_explained_summary": status_explained,
         "opportunity_none_count": by_status.get("NONE", 0),
         "opportunity_candidate_count": len(candidate_rows),
         "opportunity_verified_count": len(verified_rows),
@@ -2022,6 +2027,7 @@ def _candidate_coverage_summary(
     replay_rows: list[dict[str, Any]],
     candidate_frontier: dict[str, Any],
 ) -> dict[str, Any]:
+    status_explained = explain_opportunity_status_rows(opportunity_rows)
     replay_with_opportunity = [
         row
         for row in replay_rows
@@ -2036,6 +2042,7 @@ def _candidate_coverage_summary(
         "available": bool(signal_rows or opportunity_rows or replay_rows),
         "signals_total": len(signal_rows),
         "trade_opportunities_total": len(opportunity_rows),
+        "opportunity_status_explained_summary": status_explained,
         "none_count": int(candidate_frontier.get("none_count") or 0),
         "blocked_count": int(candidate_frontier.get("blocked_count") or 0),
         "candidate_count": int(candidate_frontier.get("candidate_count") or 0),
@@ -2046,6 +2053,19 @@ def _candidate_coverage_summary(
         "near_candidate_count": int(candidate_frontier.get("near_candidate_count") or 0),
         "near_candidate_avg_net_pnl_bps": candidate_frontier.get("near_candidate_avg_net_pnl_bps"),
         "diagnosis": candidate_frontier.get("diagnosis") or "insufficient_data",
+        "true_none_count": int(status_explained.get("true_none_count") or 0),
+        "blocked_like_none_count": int(status_explained.get("blocked_like_none_count") or 0),
+        "gate_failed_none_count": int(status_explained.get("gate_failed_none_count") or 0),
+        "low_quality_none_count": int(status_explained.get("low_quality_none_count") or 0),
+        "replay_negative_none_count": int(status_explained.get("replay_negative_none_count") or 0),
+        "do_not_chase_none_count": int(status_explained.get("do_not_chase_none_count") or 0),
+        "local_absorption_none_count": int(status_explained.get("local_absorption_none_count") or 0),
+        "near_candidate_none_count": int(status_explained.get("near_candidate_none_count") or 0),
+        "none_with_blockers_count": int(status_explained.get("none_with_blockers_count") or 0),
+        "none_with_hard_blockers_count": int(status_explained.get("none_with_hard_blockers_count") or 0),
+        "none_with_primary_blocker_count": int(status_explained.get("none_with_primary_blocker_count") or 0),
+        "status_assignment_warning": status_explained.get("status_assignment_warning") or "",
+        "status_assignment_diagnosis": status_explained.get("status_assignment_diagnosis") or "",
     }
 
 
@@ -2131,6 +2151,7 @@ def _candidate_frontier_summary(
 ) -> dict[str, Any]:
     candidate_threshold = float(getattr(app_config, "SHADOW_CANDIDATE_MIN_SCORE", 0.58))
     status_counts = Counter(_status(row) for row in opportunity_rows)
+    status_explained = explain_opportunity_status_rows(opportunity_rows)
     near_rows: list[tuple[dict[str, Any], list[str]]] = []
     blocker_counter: Counter[str] = Counter()
     missing_counter: Counter[str] = Counter()
@@ -2194,6 +2215,13 @@ def _candidate_frontier_summary(
         "top_near_candidate_blockers": dict(blocker_counter.most_common(10)),
         "top_missing_requirements": dict(missing_counter.most_common(10)),
         "candidate_gate_blocker_distribution": dict(all_blockers.most_common(20)),
+        "opportunity_status_explained_summary": status_explained,
+        "true_none_count": int(status_explained.get("true_none_count") or 0),
+        "blocked_like_none_count": int(status_explained.get("blocked_like_none_count") or 0),
+        "gate_failed_none_count": int(status_explained.get("gate_failed_none_count") or 0),
+        "near_candidate_none_count": int(status_explained.get("near_candidate_none_count") or 0),
+        "status_assignment_warning": status_explained.get("status_assignment_warning") or "",
+        "status_assignment_diagnosis": status_explained.get("status_assignment_diagnosis") or "",
         "near_candidate_examples": examples,
         "shadow_candidate_count": int((replay_summary.get("shadow_funnel_summary") or {}).get("shadow_candidate_count") or 0),
         "shadow_verified_count": int((replay_summary.get("shadow_funnel_summary") or {}).get("shadow_verified_count") or 0),
@@ -3318,9 +3346,23 @@ def _runtime_health_summary(logical_date: str) -> dict[str, Any]:
     try:
         import runtime_health
 
-        return runtime_health.build_runtime_health_report(date_str=logical_date)
+        payload = runtime_health.build_runtime_health_report(date_str=logical_date)
     except Exception as exc:
-        return {"data_quality_status": "unknown", "data_gap_warnings": [f"runtime_health_unavailable:{exc}"]}
+        payload = {"data_quality_status": "unknown", "data_gap_warnings": [f"runtime_health_unavailable:{exc}"]}
+    if not isinstance(payload.get("gap_diagnosis_summary"), dict):
+        try:
+            gap_payload = gap_diagnosis_module.build_gap_diagnosis(
+                logical_date,
+                db_path=_db_path(),
+                archive_base_dir=_archive_base_dir(),
+            )
+            payload["gap_diagnosis_summary"] = gap_payload.get("gap_diagnosis_summary") or {}
+        except Exception as exc:
+            warnings = list(payload.get("data_gap_warnings") or [])
+            warnings.append(f"gap_diagnosis_unavailable:{exc.__class__.__name__}")
+            payload["data_gap_warnings"] = warnings
+            payload["gap_diagnosis_summary"] = {"root_diagnosis": "gap_diagnosis_unavailable"}
+    return payload
 
 
 def _data_quality_summary(
@@ -3332,6 +3374,10 @@ def _data_quality_summary(
     opportunity_count: int,
 ) -> dict[str, Any]:
     warnings = list(runtime.get("data_gap_warnings") or [])
+    gap_summary = runtime.get("gap_diagnosis_summary") if isinstance(runtime.get("gap_diagnosis_summary"), dict) else {}
+    gap_root = str(gap_summary.get("root_diagnosis") or "")
+    gap_final_status = str(gap_summary.get("final_status") or "")
+    gap_collection_degraded = bool(gap_summary.get("collection_degraded"))
     mismatch_warnings = list(data_source.get("mismatch_warnings") or data_source.get("source_warnings") or [])
     mismatch_rows = 0
     mismatch_categories: list[str] = []
@@ -3344,6 +3390,10 @@ def _data_quality_summary(
         mismatch_categories = [str(item).split(":")[1] if ":" in str(item) else str(item) for item in mismatch_warnings]
         mismatch_rows = len(mismatch_warnings)
     status = str(runtime.get("data_quality_status") or "valid")
+    if status == "degraded" and gap_root in {"signal_generation_gap", "opportunity_generation_sparse", "report_time_field_unavailable"} and not gap_collection_degraded:
+        status = "valid"
+    elif gap_collection_degraded and status == "valid":
+        status = "degraded"
     if mismatch_rows > 0 and status == "valid":
         status = "degraded"
     if int(runtime.get("raw_events_count") or run_overview.get("total_raw_events") or 0) == 0 and opportunity_count > 0:
@@ -3351,6 +3401,23 @@ def _data_quality_summary(
         status = "degraded" if status == "valid" else status
     if int(runtime.get("zero_activity_day") or 0):
         status = "invalid_or_no_activity"
+    degraded_reason = ""
+    if status == "degraded":
+        if gap_collection_degraded and gap_root:
+            degraded_reason = gap_root
+        elif mismatch_rows > 0:
+            degraded_reason = "db_archive_mismatch"
+        else:
+            degraded_reason = str(runtime.get("data_quality_degraded_reason") or gap_root or "degraded")
+    elif gap_root and gap_root != "ok":
+        degraded_reason = gap_root
+    data_quality_warning = ""
+    if gap_final_status.startswith("warning_"):
+        data_quality_warning = gap_final_status
+    elif gap_root == "signal_generation_gap":
+        data_quality_warning = "warning_signal_sparse"
+    elif gap_root == "report_time_field_unavailable":
+        data_quality_warning = "warning_time_field_unavailable"
     return {
         "active_hours": runtime.get("active_hours"),
         "raw_events_count": runtime.get("raw_events_count", run_overview.get("total_raw_events")),
@@ -3362,8 +3429,21 @@ def _data_quality_summary(
             float(runtime.get("max_raw_event_gap_sec") or 0.0),
             float(runtime.get("max_signal_gap_sec") or 0.0),
         ),
+        "max_collection_gap": max(
+            float(runtime.get("max_raw_event_gap_sec") or 0.0),
+            float((gap_summary.get("layer_max_gap_sec") or {}).get("delivery_audit") or 0.0)
+            if isinstance(gap_summary.get("layer_max_gap_sec"), dict)
+            else 0.0,
+        ),
         "zero_activity_day": bool(runtime.get("zero_activity_day")),
         "data_gap_warnings": sorted(set(str(item) for item in warnings if item)),
+        "gap_diagnosis_summary": gap_summary,
+        "gap_root_diagnosis": gap_root or "unknown",
+        "gap_final_status": gap_final_status or "unknown",
+        "collection_degraded": gap_collection_degraded,
+        "degraded_reason": degraded_reason,
+        "data_quality_warning": data_quality_warning,
+        "table_time_fields_used": gap_summary.get("table_time_fields_used") or {},
         "market_context_success_rate": (market_context.get("window") or {}).get("market_context_success_rate"),
         "db_archive_mismatch_status": "mismatch" if mismatch_rows > 0 else "match_or_unchecked",
         "db_archive_mirror_match_rate": data_source.get("db_archive_mirror_match_rate"),
@@ -3572,6 +3652,7 @@ def _markdown(payload: dict[str, Any]) -> str:
     replay = payload.get("trade_replay_summary") or {}
     shadow = payload.get("shadow_opportunity_summary") or {}
     frontier = payload.get("candidate_frontier_summary") or {}
+    status_explained = payload.get("opportunity_status_explained_summary") or {}
     lp_signal = payload.get("lp_signal_summary") or {}
     lp_stage = payload.get("lp_stage_summary") or {}
     lp_suppression = payload.get("lp_suppression_summary") or {}
@@ -3654,6 +3735,7 @@ def _markdown(payload: dict[str, Any]) -> str:
             f"- top_near_candidate_blockers: `{json.dumps(frontier.get('top_near_candidate_blockers', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- top_missing_requirements: `{json.dumps(frontier.get('top_missing_requirements', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- diagnosis: `{frontier.get('diagnosis')}`",
+            f"- opportunity_status_explained_summary: `{json.dumps(status_explained, ensure_ascii=False, sort_keys=True)}`",
             "",
             "## LP / CLMM Mapping",
             "",
@@ -3669,6 +3751,11 @@ def _markdown(payload: dict[str, Any]) -> str:
             "",
             f"- active_hours: `{data_quality.get('active_hours')}`",
             f"- max_gap: `{data_quality.get('max_gap')}`",
+            f"- gap_root_diagnosis: `{data_quality.get('gap_root_diagnosis')}`",
+            f"- gap_final_status: `{data_quality.get('gap_final_status')}`",
+            f"- collection_degraded: `{data_quality.get('collection_degraded')}`",
+            f"- degraded_reason: `{data_quality.get('degraded_reason')}`",
+            f"- data_quality_warning: `{data_quality.get('data_quality_warning')}`",
             f"- zero_activity_day: `{data_quality.get('zero_activity_day')}`",
             f"- market_context_success_rate: `{data_quality.get('market_context_success_rate')}`",
             f"- db_archive_mismatch_status: `{data_quality.get('db_archive_mismatch_status')}`",
@@ -3693,6 +3780,12 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("run", "parsed_events_count", payload.get("run_overview", {}).get("total_parsed_events")),
         ("run", "signals_count", payload.get("run_overview", {}).get("total_signal_rows")),
         ("run", "lp_signal_rows", payload.get("run_overview", {}).get("lp_signal_rows")),
+        ("data_quality", "data_quality_status", payload.get("data_quality_summary", {}).get("data_quality_status")),
+        ("data_quality", "gap_root_diagnosis", payload.get("data_quality_summary", {}).get("gap_root_diagnosis")),
+        ("data_quality", "gap_final_status", payload.get("data_quality_summary", {}).get("gap_final_status")),
+        ("data_quality", "collection_degraded", payload.get("data_quality_summary", {}).get("collection_degraded")),
+        ("data_quality", "degraded_reason", payload.get("data_quality_summary", {}).get("degraded_reason")),
+        ("data_quality", "data_quality_warning", payload.get("data_quality_summary", {}).get("data_quality_warning")),
         ("opportunity", "opportunity_candidate_count", payload.get("trade_opportunity_summary", {}).get("opportunity_candidate_count")),
         ("opportunity", "opportunity_verified_count", payload.get("trade_opportunity_summary", {}).get("opportunity_verified_count")),
         ("opportunity", "verified_maturity", payload.get("trade_opportunity_summary", {}).get("verified_maturity")),
@@ -3753,6 +3846,7 @@ def _csv_text(payload: dict[str, Any]) -> str:
         ("candidate_frontier", "top_near_candidate_blockers", payload.get("candidate_frontier_summary", {}).get("top_near_candidate_blockers")),
         ("candidate_frontier", "top_missing_requirements", payload.get("candidate_frontier_summary", {}).get("top_missing_requirements")),
         ("candidate_frontier", "diagnosis", payload.get("candidate_frontier_summary", {}).get("diagnosis")),
+        ("opportunity_status", "explained_summary", payload.get("opportunity_status_explained_summary")),
         ("candidate_coverage", "summary", payload.get("candidate_coverage_summary")),
         ("outcome_diagnosis", "summary", payload.get("outcome_diagnosis_summary")),
         ("lp", "lp_signal_summary", payload.get("lp_signal_summary")),
@@ -3794,6 +3888,7 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         quality_rows=rows.get("quality_stats", []),
         opportunity_db_summary=opportunity_db_summary,
     )
+    status_explained = trade_summary.get("opportunity_status_explained_summary", {})
     asset_state = _asset_market_state_summary(rows.get("asset_market_states", []) or signal_rows)
     no_trade_lock = _no_trade_lock_summary(asset_state)
     outcome = _outcome_source_summary(rows.get("outcomes", []) or signal_rows)
@@ -3874,10 +3969,18 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         f"logical_date={logical_date} source={data_source.get('report_data_source')} lp_rows={len(lp_rows)}",
         f"segments={segment_summary['segment_count']} active_hours={segment_summary['active_duration_hours']} wall_clock_hours=24.0",
         (
+            "gap_diagnosis: "
+            f"root={data_quality.get('gap_root_diagnosis')} "
+            f"final_status={data_quality.get('gap_final_status')} "
+            f"collection_degraded={data_quality.get('collection_degraded')}"
+        ),
+        (
             "opportunities: "
             f"candidate={trade_summary['opportunity_candidate_count']} "
             f"verified={trade_summary['opportunity_verified_count']} "
-            f"blocked={trade_summary['opportunity_blocked_count']}"
+            f"blocked={trade_summary['opportunity_blocked_count']} "
+            f"blocked_like_none={status_explained.get('blocked_like_none_count', 0)} "
+            f"true_none={status_explained.get('true_none_count', 0)}"
         ),
         f"verified_maturity={verified_maturity}; CANDIDATE is not a trade signal",
         (
@@ -3938,7 +4041,11 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         report_conclusion = "replay_positive_profiles_found"
     elif shadow_summary.get("shadow_candidate_count") or shadow_summary.get("shadow_verified_count"):
         report_conclusion = "learning_samples_accumulating"
-    elif trade_summary.get("opportunity_blocked_count") and not trade_summary.get("opportunity_candidate_count") and not trade_summary.get("opportunity_verified_count"):
+    elif (
+        (trade_summary.get("opportunity_blocked_count") or status_explained.get("blocked_like_none_count"))
+        and not trade_summary.get("opportunity_candidate_count")
+        and not trade_summary.get("opportunity_verified_count")
+    ):
         report_conclusion = "risk_filtering_only"
     elif verified_maturity == "mature" and replay_summary.get("trade_replay_available"):
         report_conclusion = "production_trade_ready"
@@ -3967,10 +4074,12 @@ def build_daily_report(logical_date: str) -> dict[str, Any]:
         "data_source": data_source.get("report_data_source"),
         "data_source_summary": data_source,
         "data_quality_summary": data_quality,
+        "gap_diagnosis_summary": data_quality.get("gap_diagnosis_summary", {}),
         "runtime_health": runtime_health_summary,
         "runtime_health_summary": runtime_health_summary,
         "market_context_health": market_context,
         "trade_opportunity_summary": trade_summary,
+        "opportunity_status_explained_summary": status_explained,
         "replay_profile_negative_summary": trade_summary.get("replay_profile_negative_summary", {}),
         "trade_replay_summary": replay_summary,
         "trade_replay_profile_summary": {
